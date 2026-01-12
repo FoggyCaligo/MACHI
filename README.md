@@ -3,10 +3,74 @@
 3. (prompt) ollama pull qwen2.5:7b
 4. (prompt) ollama run qwen2.5:7b
 5. (prompt) 안녕. 지금은 테스트 단계야.
-6. (prompt) ollama pull phi3.5:medium
-7. (prompt) ollama run phi3.5:medium
-8. 
-9. 
+6. (prompt) ollama pull phi3:medium
+7. (prompt) ollama run phi3:medium
+8. (prompt) ollama create machi -f ollama/Modelfile
+9. (prompt) ollama list
+10.(prompt) ollama run machi
+11. 이제부터 너는 어떤 존재지?
+
+
+1. Ollama 다운로드 
+( https://ollama.com > download > ollama --version )
+2. 프롬프트에서 확인
+ollama list
+3. qwen 다운로드(메인 사고모듈)
+ollama pull qwen2.5:7b
+4. qwen 실행
+ollama run qwen2.5:7b
+5. qwen 테스트
+안녕. 지금은 테스트 단계야.
+6. phi3 다운로드 (서브 사고모듈)
+ollama pull phi3:medium
+7. 서브모듈 실행
+ollama run phi3:medium
+8. 서브모듈 테스트
+안녕. 지금은 테스트 단계야.
+9. machi 생성
+ollama create machi -f ollama/Modelfile
+10. 생성된 machi 확인
+ollama list
+11. machi 실행
+ollama run machi
+12. 프리셋 확인
+이제부터 너는 어떤 존재지?
+
+
+
+ssh로 접속
+
+
+
+3️⃣ 실제 구성 (최소)
+서버 쪽 (집 PC / VPS / 노트북)
+     Ollama 실행 중
+     chat.py 존재
+     Git repo clone 상태
+
+클라이언트 쪽 (어디서든)
+     SSH 클라이언트
+     Windows: PowerShell / Windows Terminal
+     Mac/Linux: 기본 터미널
+
+
+<외부 접속>
+
+1. 서버에 ssh 접속
+ssh username@server_ip
+2. 디렉토리 이동
+cd machi/scripts
+3. 대화 시작
+python chat.py
+4. 종료 : exit
+
+
+<깃 업데이트 정책>
+
+git add memory/
+git commit -m "log: add conversation and summary"
+git push
+
 
 
 
