@@ -17,7 +17,7 @@ MEMORY_DIR = PROJECT_ROOT / "memory" / "conversations"
 
 
 
-
+TIMEOUTSEC = 1000
 
 # =========================
 # BootStrap
@@ -113,7 +113,7 @@ def generate_summary(log_path):
         response = requests.post(
             OLLAMA_API,
             json=payload,
-            timeout=300
+            timeout=TIMEOUTSEC
         )
         response.raise_for_status()
 
@@ -177,7 +177,7 @@ def generate_pattern_signal(summary_path, session_id):
         response = requests.post(
             OLLAMA_API,
             json=payload,
-            timeout=300
+            timeout=TIMEOUTSEC
         )
         response.raise_for_status()
 
@@ -254,7 +254,7 @@ def query_ollama(message, bootstrap_summary=None, first_turn=False):
         response = requests.post(
             OLLAMA_API,
             json=payload,
-            timeout=300
+            timeout=TIMEOUTSEC
         )
         response.raise_for_status()
         return response.json()["message"]["content"]

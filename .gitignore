@@ -1,0 +1,7 @@
+runtime/
+*.env
+*.db
+logs/
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>Jaeyong Local Agent</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; height:100vh; display:flex; }
+    #left { flex:1; display:flex; flex-direction:column; }
+    #chat { flex:1; overflow-y:auto; padding:16px; }
+    .msg { margin-bottom:12px; white-space:pre-wrap; }
+    .user { color:#93c5fd; }
+    .assistant { color:#a7f3d0; }
+
+    #input { display:flex; padding:12px; background:#020617; gap:8px; }
+    textarea { flex:1; resize:none; padding:10px; font-size:14px; border-radius:8px; border:1px solid #334155; background:#0b1220; color:#e5e7eb; }
+    button { padding:10px 14px; cursor:pointer; border-radius:8px; border:1px solid #334155; background:#111827; color:#e5e7eb; }
+
+    #right { width:360px; border-left:1px solid #334155; background:#020617; display:flex; flex-direction:column; }
+    #approvalsHeader { padding:12px 12px 8px; border-bottom:1px solid #334155; }
+    #approvals { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:12px; }
+    .card { border:1px solid #334155; border-radius:10px; padding:10px; background:#0b1220; }
+    .meta { font-size:12px; color:#94a3b8; margin-bottom:6px; }
+    .atype { font-weight:700; margin-bottom:6px; }
+    .payload { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; color:#cbd5e1; white-space:pre-wrap; max-height:140px; overflow:auto; border:1px solid #334155; border-radius:8px; padding:8px; background:#0a1020; }
+    .actions { display:flex; gap:8px; margin-top:8px; }
+    .approve { border-color:#166534; background:#052e16; }
+    .reject { border-color:#7f1d1d; background:#2b0b0b; }
+
+    #statusBar { padding:10px 12px; border-top:1px solid #334155; font-size:12px; color:#94a3b8; }
+  </style>
+</head>
+<body>
+  <div id="left">
+    <div id="chat"></div>
+    <div id="input">
+      <textarea id="text" rows="2" placeholder="메시지 입력... (Enter 전송 / Shift+Enter 줄바꿈)"></textarea>
+      <button onclick="send()">전송</button>
+    </div>
+  </div>
+
+  <div id="right">
+    <div id="approvalsHeader">
+      <div style="font-weight:800;">승인 요청</div>
+      <div style="font-size:12px; color:#94a3b8;">외부 게시/명령 실행/삭제 등 위험 행동은 여기서만 승인</div>
+    </div>
+    <div id="approvals"></div>
+    <div id="statusBar">연결: -</div>
+  </div>
+
+<script>
+const chat = document.getElementById("chat");
+const text = document.getElementById("text");
+const approvalsDiv = document.getElementById("approvals");
+const statusBar = document.getElementById("statusBar");
+
+function add(role, content) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = (role === "user" ? "🧑 " : "🤖 ") + content;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function fmtTs(ts) {
+  try {
+    const d = new Date(ts * 1000);
+    return d.toLocaleString();
+  } catch { return String(ts); }
+}
+
+async function send() {
+    const res = await fetch("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: msg })
+  });
+
+  const raw = await res.text();
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = { type: "raw", assistant: raw, http_status: res.status };
+  }
+
+  if (!res.ok) {
+    add("assistant", `[HTTP ${res.status}] ` + (data.assistant || raw));
+    return;
+  }
+
+  add("assistant", data.assistant || JSON.stringify(data));
+  await refreshApprovals();
+}
+
+text.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+async function refreshApprovals() {
+  try {
+    const res = await fetch("/approvals/pending");
+    const data = await res.json();
+    const pending = data.pending || [];
+    approvalsDiv.innerHTML = "";
+
+    if (pending.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.color = "#94a3b8";
+      empty.textContent = "대기 중인 승인 요청이 없습니다.";
+      approvalsDiv.appendChild(empty);
+    } else {
+      for (const item of pending) {
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `#${item.id} · ${fmtTs(item.ts)}`;
+
+        const atype = document.createElement("div");
+        atype.className = "atype";
+        atype.textContent = item.action_type;
+
+        const payload = document.createElement("div");
+        payload.className = "payload";
+        payload.textContent = item.payload;
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+
+        const btnA = document.createElement("button");
+        btnA.className = "approve";
+        btnA.textContent = "승인";
+        btnA.onclick = async () => {
+          await resolveApproval(item.id, true);
+        };
+
+        const btnR = document.createElement("button");
+        btnR.className = "reject";
+        btnR.textContent = "거절";
+        btnR.onclick = async () => {
+          await resolveApproval(item.id, false);
+        };
+
+        actions.appendChild(btnA);
+        actions.appendChild(btnR);
+
+        card.appendChild(meta);
+        card.appendChild(atype);
+        card.appendChild(payload);
+        card.appendChild(actions);
+
+        approvalsDiv.appendChild(card);
+      }
+    }
+
+    statusBar.textContent = `연결: OK · pending=${pending.length}`;
+  } catch (e) {
+    statusBar.textContent = "연결: ERROR";
+  }
+}
+
+async function resolveApproval(id, approve) {
+  try {
+    await fetch(`/approvals/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approve })
+    });
+    await refreshApprovals();
+  } catch (e) {
+    add("assistant", "[APPROVAL_UI_ERROR] " + e);
+  }
+}
+
+// 2초마다 승인 요청 갱신
+setInterval(refreshApprovals, 2000);
+refreshApprovals();
+</script>
+</body>
+</html>
