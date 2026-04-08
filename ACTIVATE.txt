@@ -1,9 +1,0 @@
-1. download python
-2. pip install -r requirements.txt
-3. python -m uvicorn src.app:app --port 8000
-4. open ui/chat.html on browser
-
-http://127.0.0.1:8000/docs
-
-
-네 지금 상태를 요약해줄래? 정상작동하고 있는지, 지금 가동시간이 어느정도 되는지 같은 것들. 그리고 베이스 프롬프트로 받은 정보가 있는지, 있다면 내용은 어땠는지 등
