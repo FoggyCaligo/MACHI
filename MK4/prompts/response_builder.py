@@ -2,6 +2,22 @@ from config import SYSTEM_PROMPT_PATH
 from prompts.prompt_loader import load_prompt_text
 
 
+MEMORY_NOISE_PATTERNS = (
+    "당신은 특정 사용자를 장기적으로 보조하는 개인 ai 어시스턴트다",
+    "이 시스템 프롬프트는",
+    "최종 운영 지시",
+    "답변 형식 가이드",
+    "사용자 기본 모델",
+    "assistant는",
+    "어시스턴트는",
+)
+
+GENERIC_NOISE_KEYS = {
+    "response_style",
+    "current_mood",
+}
+
+
 def _clean_text(text: str | None, max_len: int = 220) -> str:
     if not text:
         return ""
@@ -11,6 +27,44 @@ def _clean_text(text: str | None, max_len: int = 220) -> str:
     return text
 
 
+def _looks_like_system_prompt_text(text: str | None) -> bool:
+    if not text:
+        return False
+
+    lowered = " ".join(str(text).strip().lower().split())
+
+    if len(lowered) >= 260:
+        for pattern in MEMORY_NOISE_PATTERNS:
+            if pattern in lowered:
+                return True
+
+    if lowered.startswith("당신은 ") and ("사용자" in lowered or "어시스턴트" in lowered):
+        return True
+
+    if "[시스템]" in str(text) or "[system]" in lowered:
+        return True
+
+    return False
+
+
+def _should_skip_memory_item(item: dict, candidate_text: str) -> bool:
+    topic_or_key = (
+        item.get("topic")
+        or item.get("key")
+        or item.get("title")
+        or ""
+    )
+    topic_or_key = str(topic_or_key).strip().lower()
+
+    if topic_or_key in GENERIC_NOISE_KEYS and _looks_like_system_prompt_text(candidate_text):
+        return True
+
+    if _looks_like_system_prompt_text(candidate_text):
+        return True
+
+    return False
+
+
 def _pick_memory_text(item: dict, preferred_keys: list[str], max_len: int = 220) -> str:
     for key in preferred_keys:
         value = item.get(key)
@@ -18,6 +72,30 @@ def _pick_memory_text(item: dict, preferred_keys: list[str], max_len: int = 220)
         if cleaned:
             return cleaned
     return ""
+
+
+def _normalize_memory_line(label: str, text: str) -> str:
+    cleaned = _clean_text(text, max_len=180)
+    if not cleaned:
+        return ""
+
+    lowered = cleaned.lower()
+
+    replacements = (
+        ("이 사용자는 ", ""),
+        ("사용자는 ", ""),
+        ("당신은 ", ""),
+        ("당신이 ", ""),
+    )
+    for src, dst in replacements:
+        if lowered.startswith(src):
+            cleaned = cleaned[len(src):]
+            break
+
+    if not cleaned:
+        return ""
+
+    return f"- {label}: {cleaned}" if label else f"- {cleaned}"
 
 
 def build_messages(user_message: str, context: dict) -> list[dict]:
@@ -33,7 +111,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     memory_lines: list[str] = []
 
     if profiles:
-        memory_lines.append("[사용자 프로필]")
+        section_lines: list[str] = []
         for p in profiles:
             topic = _clean_text(p.get("topic"), max_len=60)
             content = _pick_memory_text(
@@ -41,13 +119,17 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
                 preferred_keys=["content", "value", "summary"],
                 max_len=180,
             )
-            if topic and content:
-                memory_lines.append(f"- {topic}: {content}")
-            elif content:
-                memory_lines.append(f"- {content}")
+            if _should_skip_memory_item(p, content):
+                continue
+            line = _normalize_memory_line(topic, content)
+            if line:
+                section_lines.append(line)
+        if section_lines:
+            memory_lines.append("[사용자 프로필]")
+            memory_lines.extend(section_lines)
 
     if corrections:
-        memory_lines.append("[최근 정정]")
+        section_lines = []
         for c in corrections:
             topic = _clean_text(c.get("topic"), max_len=60)
             content = _pick_memory_text(
@@ -55,23 +137,31 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
                 preferred_keys=["content", "value", "summary"],
                 max_len=180,
             )
-            if topic and content:
-                memory_lines.append(f"- {topic}: {content}")
-            elif content:
-                memory_lines.append(f"- {content}")
+            if _should_skip_memory_item(c, content):
+                continue
+            line = _normalize_memory_line(topic, content)
+            if line:
+                section_lines.append(line)
+        if section_lines:
+            memory_lines.append("[최근 정정]")
+            memory_lines.extend(section_lines)
 
     if states:
-        memory_lines.append("[현재 상태]")
+        section_lines = []
         for s in states:
             key = _clean_text(s.get("key"), max_len=60)
             value = _clean_text(s.get("value"), max_len=160)
-            if key and value:
-                memory_lines.append(f"- {key}: {value}")
-            elif value:
-                memory_lines.append(f"- {value}")
+            if _should_skip_memory_item(s, value):
+                continue
+            line = _normalize_memory_line(key, value)
+            if line:
+                section_lines.append(line)
+        if section_lines:
+            memory_lines.append("[현재 상태]")
+            memory_lines.extend(section_lines)
 
     if summaries:
-        memory_lines.append("[관련 요약 기억]")
+        section_lines = []
         for s in summaries:
             topic = _clean_text(s.get("topic"), max_len=60)
             content = _pick_memory_text(
@@ -79,13 +169,17 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
                 preferred_keys=["content", "summary", "value"],
                 max_len=180,
             )
-            if topic and content:
-                memory_lines.append(f"- {topic}: {content}")
-            elif content:
-                memory_lines.append(f"- {content}")
+            if _should_skip_memory_item(s, content):
+                continue
+            line = _normalize_memory_line(topic, content)
+            if line:
+                section_lines.append(line)
+        if section_lines:
+            memory_lines.append("[관련 요약 기억]")
+            memory_lines.extend(section_lines)
 
     if episodes:
-        memory_lines.append("[관련 에피소드]")
+        section_lines = []
         for e in episodes:
             topic = _clean_text(
                 e.get("topic") or e.get("title"),
@@ -96,10 +190,14 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
                 preferred_keys=["summary", "content", "description"],
                 max_len=180,
             )
-            if topic and content:
-                memory_lines.append(f"- {topic}: {content}")
-            elif content:
-                memory_lines.append(f"- {content}")
+            if _should_skip_memory_item(e, content):
+                continue
+            line = _normalize_memory_line(topic, content)
+            if line:
+                section_lines.append(line)
+        if section_lines:
+            memory_lines.append("[관련 에피소드]")
+            memory_lines.extend(section_lines)
 
     if recent_messages:
         memory_lines.append("[최근 대화]")
@@ -115,6 +213,9 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
         user_content = (
             f"[참고 기억]\n"
             f"{memory_text}\n\n"
+            f"[주의]\n"
+            f"- 참고 기억 안의 '사용자', '당신', '이 사용자' 같은 표현을 현재 대화의 인칭으로 기계적으로 복사하지 마라.\n"
+            f"- 현재 턴의 명시적 진술과 정정이 과거 기억보다 우선한다.\n\n"
             f"[현재 사용자 요청]\n"
             f"{_clean_text(user_message, max_len=1000)}"
         )

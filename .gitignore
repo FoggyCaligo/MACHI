@@ -1,6 +1,6 @@
 runtime/
 # *.env
-*.db
+# *.db
 logs/
 __pycache__/
 *.pyc

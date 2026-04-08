@@ -1,7 +1,10 @@
 import json
 import re
 
-from config import PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH
+from config import (
+    PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH,
+    PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
+)
 from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from profile_analysis.stores.uploaded_profile_source_store import UploadedProfileSourceStore
@@ -34,6 +37,7 @@ class ProfileAttachmentIngestService:
         self.evidence_store = UploadedProfileEvidenceStore()
         self.sync_service = ProfileMemorySyncService()
         self.extract_client = OllamaClient(timeout=150, num_predict=640)
+        self.answer_client = OllamaClient(timeout=150, num_predict=560)
 
     def _normalize_whitespace(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "")).strip()
@@ -279,60 +283,92 @@ class ProfileAttachmentIngestService:
 
         return result
 
-    def _build_user_reply(
+    def _summarize_user_request(self, user_request: str, filename: str) -> str:
+        text = self._normalize_whitespace(user_request)
+        if not text:
+            return "사용자는 첨부한 텍스트가 프로필 이해와 기억 업데이트에 실제로 도움이 되는지 묻고 있다."
+
+        request_lower = text.lower()
+        filename = filename or "첨부 텍스트"
+
+        if ("기억" in text and ("못" in text or "안난" in text or "안 나" in text)) and ("이해" in text or "파악" in text):
+            return (
+                f"사용자는 내가 이전에 공유된 내용을 정확히 떠올리지 못하더라도, 첨부한 '{filename}'를 바탕으로 "
+                "다시 자신에 대한 이해를 시도해줄 수 있는지 묻고 있다."
+            )
+
+        if ("도움" in text or "도움이" in text) and ("이해" in text or "파악" in text):
+            return (
+                f"사용자는 첨부한 '{filename}' 같은 글 묶음이 자신의 성향과 사고 기준을 더 잘 이해하는 데 실제로 도움이 되는지 확인하려 한다."
+            )
+
+        if "업데이트" in request_lower or "기억시스템" in text or "기억 시스템" in text:
+            return (
+                f"사용자는 첨부한 '{filename}'를 기억 시스템의 프로필 근거로 반영해도 되는지, 그리고 이를 바탕으로 자신을 더 입체적으로 이해할 수 있는지 묻고 있다."
+            )
+
+        shortened = text[:180].rstrip()
+        if len(text) > 180:
+            shortened += "..."
+        return f"사용자 요청 요지: {shortened}"
+
+    def _build_answer_messages(
         self,
         filename: str,
+        user_request: str,
         used_evidence: list[dict],
         sync_result: dict,
-    ) -> str:
-        stable_candidates = [
-            item for item in used_evidence
-            if (item.get("source_strength") or "") != "temporary_interest"
-        ]
-        top_candidates = stable_candidates[:2]
+        extract_result: dict,
+    ) -> list[dict]:
+        system_prompt = load_prompt_text(PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH)
 
-        lines: list[str] = [
-            "응, 이런 글 묶음은 일반 대화만 있을 때보다 나를 파악하는 데 확실히 더 도움이 돼. "
-            "대화에서는 순간 반응이 많이 보이지만, 글에서는 네가 무엇을 중요하게 보는지와 어떤 기준으로 생각을 정리하는지가 더 길게 드러나기 때문이야.",
-        ]
+        request_summary = self._summarize_user_request(user_request=user_request, filename=filename)
 
-        if top_candidates:
-            candidate_bits = []
-            for item in top_candidates:
-                candidate = str(item.get("candidate_content") or "").strip()
-                topic = str(item.get("topic") or "").strip()
-                if topic and candidate:
-                    candidate_bits.append(f"{topic}: {candidate}")
-                elif candidate:
-                    candidate_bits.append(candidate)
+        evidence_lines = []
+        for item in used_evidence[:4]:
+            topic = self._normalize_whitespace(str(item.get("topic") or ""))
+            candidate = self._normalize_whitespace(str(item.get("candidate_content") or ""))
+            strength = self._normalize_whitespace(str(item.get("source_strength") or ""))
+            confidence = item.get("confidence")
+            if topic and candidate:
+                evidence_lines.append(
+                    f"- topic={topic} | candidate={candidate} | strength={strength or '-'} | confidence={confidence}"
+                )
 
-            lines.append(
-                "이번 텍스트에서는 특히 "
-                + "; ".join(candidate_bits)
-                + " 쪽이 반복 패턴 후보로 잡혔어. "
-                  "다만 이걸 곧바로 확정 성향으로 박아두진 않고, 다른 자료에서도 같은 방향이 반복되는지 보면서 보수적으로 반영하는 게 맞아."
-            )
-        else:
-            lines.append(
-                "이번 텍스트도 내부 근거로는 저장했지만, 지금 당장 강하게 잡히는 반복 패턴은 많지 않았어. "
-                "그래도 이후 자료와 합쳐 보면 의미가 생길 수 있어서 일단 evidence로는 남겨두는 쪽이 좋아."
-            )
+        evidence_text = "\n".join(evidence_lines).strip() or "- 강하게 잡힌 evidence 없음"
 
-        promoted = int(sync_result.get("promoted_profiles") or 0)
-        linked = int(sync_result.get("linked_existing_profiles") or 0) + int(sync_result.get("linked_to_existing_active_profile") or 0)
-        blocked = int(sync_result.get("blocked_by_correction") or 0) + int(sync_result.get("blocked_by_existing_profile_conflict") or 0)
+        promoted = int(sync_result.get("promoted_profiles", 0) or 0)
+        linked = int(sync_result.get("linked_existing_profiles", 0) or 0) + int(
+            sync_result.get("linked_to_existing_active_profile", 0) or 0
+        )
+        blocked = int(sync_result.get("blocked_by_correction", 0) or 0) + int(
+            sync_result.get("blocked_by_existing_profile_conflict", 0) or 0
+        )
+        candidate_count = int(extract_result.get("candidate_count", 0) or 0)
 
-        lines.append(
-            f"이번 업로드는 내부적으로 프로필 evidence로 저장했고, "
-            f"기존 기억과의 연결 {linked}건, 새 승격 {promoted}건, 보류/충돌 {blocked}건으로 처리했어. "
-            f"파일명은 {filename} 기준으로 묶여 있어서 나중에 다시 추적도 가능해."
+        status_summary = (
+            f"candidate_count={candidate_count}, linked={linked}, promoted={promoted}, blocked={blocked}"
         )
 
-        lines.append(
-            "한 줄로 말하면, 이런 텍스트 파일은 분명 도움이 되고, 특히 네 사고 기준이나 불편함의 방향 같은 건 일반 잡담보다 훨씬 잘 드러나. "
-            "다만 한 번의 글 묶음만으로 단정하지 않고, 반복성과 충돌 여부를 같이 보면서 업데이트할게."
+        user_prompt = (
+            f"[사용자 요청 요지]\n{request_summary}\n\n"
+            f"[이번 파일 정보]\n"
+            f"- filename: {filename}\n"
+            f"- 문서 수: {extract_result.get('document_count', 0)}\n"
+            f"- 선별 문단 수: {extract_result.get('selected_passage_count', 0)}\n\n"
+            f"[이번 파일에서 잡힌 evidence 요약]\n{evidence_text}\n\n"
+            f"[반영 상태 요약]\n{status_summary}\n\n"
+            "[답변 지침]\n"
+            "- 사용자에게 자연스럽게 설명하되, 내부 통계를 그대로 나열하지 말 것\n"
+            "- 존댓말만 사용할 것\n"
+            "- 질문 문장을 거의 그대로 반복하지 말 것\n"
+            "- evidence가 거의 없으면 억지로 의미를 부풀리지 말 것"
         )
-        return "\n\n".join(lines)
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
 
     def ingest_text(
         self,
@@ -405,24 +441,29 @@ class ProfileAttachmentIngestService:
             for item in self._dedupe_evidence(stored_evidence)
         ]
 
-        user_answer = self._build_user_reply(
+        extract_result = {
+            "stored": True,
+            "document_count": 1,
+            "candidate_count": len(candidates),
+            "selected_passage_count": selection_meta["selected_passage_count"],
+            "selected_chars": selection_meta["selected_chars"],
+            "selection_mode": selection_meta["selection_mode"],
+            "source_files": [filename],
+        }
+
+        answer_messages = self._build_answer_messages(
             filename=filename,
+            user_request=user_request,
             used_evidence=used_profile_evidence,
             sync_result=sync_result,
+            extract_result=extract_result,
         )
+        user_answer = self.answer_client.chat(answer_messages, model=model)
 
         return {
             "answer": user_answer,
             "source_id": source_id,
-            "profile_evidence_extract": {
-                "stored": True,
-                "document_count": 1,
-                "candidate_count": len(candidates),
-                "selected_passage_count": selection_meta["selected_passage_count"],
-                "selected_chars": selection_meta["selected_chars"],
-                "selection_mode": selection_meta["selection_mode"],
-                "source_files": [filename],
-            },
+            "profile_evidence_extract": extract_result,
             "profile_memory_sync": sync_result,
             "used_profile_evidence": used_profile_evidence,
         }
