@@ -6,6 +6,6 @@ class Agent:
     def __init__(self) -> None:
         self.client = OllamaClient()
 
-    def respond(self, user_message: str, context: dict) -> str:
+    def respond(self, user_message: str, context: dict, model: str | None = None) -> str:
         messages = build_messages(user_message=user_message, context=context)
-        return self.client.chat(messages)
+        return self.client.chat(messages, model=model)

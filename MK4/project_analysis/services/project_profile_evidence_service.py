@@ -1,0 +1,549 @@
+import json
+from pathlib import Path
+
+from config import (
+    PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH,
+    PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
+)
+from memory.stores.correction_store import CorrectionStore
+from memory.stores.profile_store import ProfileStore
+from prompts.prompt_loader import load_prompt_text
+from project_analysis.stores.project_file_store import ProjectFileStore
+from project_analysis.stores.project_profile_evidence_store import (
+    ProjectProfileEvidenceStore,
+)
+from tools.ollama_client import OllamaClient
+
+
+PROFILE_DOC_EXTENSIONS = {".txt", ".md", ".markdown", ".rst"}
+PROFILE_NAME_HINTS = {
+    "readme.md",
+    "readme.txt",
+    "about.md",
+    "profile.md",
+    "notes.md",
+    "blog.md",
+    "blog.txt",
+    "plan.md",
+    "planning.md",
+    "retrospective.md",
+}
+PROFILE_QUESTION_KEYWORDS = {
+    "성향",
+    "프로필",
+    "스타일",
+    "선호",
+    "need",
+    "니즈",
+    "작동 방식",
+    "나에 대해",
+    "어떤 사람",
+    "나답",
+    "습관",
+    "판단 기준",
+    "불편해하는",
+}
+SOURCE_STRENGTH_ORDER = {
+    "temporary_interest": 1,
+    "repeated_behavior": 2,
+    "explicit_self_statement": 3,
+}
+
+
+class ProjectProfileEvidenceService:
+    def __init__(self) -> None:
+        self.file_store = ProjectFileStore()
+        self.evidence_store = ProjectProfileEvidenceStore()
+        self.profile_store = ProfileStore()
+        self.correction_store = CorrectionStore()
+        self.client = OllamaClient()
+
+    def is_profile_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        return any(keyword in q for keyword in PROFILE_QUESTION_KEYWORDS)
+
+    def _select_documents(self, project_id: str) -> list[dict]:
+        files = self.file_store.list_full_by_project(project_id)
+        selected: list[dict] = []
+
+        for file in files:
+            path = file.get("path") or ""
+            ext = (file.get("ext") or "").lower()
+            name = Path(path).name.lower()
+            content = (file.get("content") or "").strip()
+
+            if not content:
+                continue
+
+            if ext in PROFILE_DOC_EXTENSIONS or name in PROFILE_NAME_HINTS:
+                selected.append(
+                    {
+                        "path": path,
+                        "content": content,
+                    }
+                )
+
+        return selected[:8]
+
+    def _build_extract_messages(self, project_id: str, documents: list[dict]) -> list[dict]:
+        system_prompt = load_prompt_text(PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH)
+
+        blocks = []
+        for idx, doc in enumerate(documents, start=1):
+            content = doc["content"]
+            if len(content) > 3500:
+                content = content[:3500].rstrip() + "\n..."
+
+            blocks.append(
+                f"[자료 {idx}]\n"
+                f"프로젝트: {project_id}\n"
+                f"경로: {doc['path']}\n"
+                f"본문:\n{content}"
+            )
+
+        user_prompt = "[분석 자료]\n" + "\n\n".join(blocks)
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _build_answer_messages(self, question: str, evidences: list[dict]) -> list[dict]:
+        system_prompt = load_prompt_text(PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH)
+
+        blocks = []
+        for idx, evidence in enumerate(evidences, start=1):
+            text = (evidence.get("evidence_text") or "").strip()
+            if len(text) > 1500:
+                text = text[:1500].rstrip() + "\n..."
+
+            blocks.append(
+                f"[evidence {idx}]\n"
+                f"topic: {evidence.get('topic')}\n"
+                f"candidate_content: {evidence.get('candidate_content')}\n"
+                f"source_strength: {evidence.get('source_strength')}\n"
+                f"source_file_path: {evidence.get('source_file_path')}\n"
+                f"confidence: {evidence.get('confidence')}\n"
+                f"근거: {text}"
+            )
+
+        user_prompt = (
+            f"[질문]\n{question}\n\n"
+            f"[프로필 evidence]\n" + "\n\n".join(blocks)
+        )
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _extract_json_array(self, text: str) -> list[dict]:
+        raw = (text or "").strip()
+        if not raw:
+            return []
+
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
+
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start == -1 or end == -1 or end < start:
+            return []
+
+        raw = raw[start:end + 1]
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        result: list[dict] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+
+            topic = str(item.get("topic") or "").strip()
+            candidate_content = str(item.get("candidate_content") or "").strip()
+            source_strength = str(item.get("source_strength") or "").strip()
+            evidence_text = str(item.get("evidence_text") or "").strip()
+
+            try:
+                confidence = float(item.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+
+            source_file_paths = item.get("source_file_paths") or []
+            if not isinstance(source_file_paths, list):
+                source_file_paths = []
+
+            if not topic or not candidate_content:
+                continue
+
+            if source_strength not in SOURCE_STRENGTH_ORDER:
+                source_strength = "repeated_behavior"
+
+            result.append(
+                {
+                    "topic": topic,
+                    "candidate_content": candidate_content,
+                    "source_strength": source_strength,
+                    "confidence": max(0.0, min(confidence, 1.0)),
+                    "evidence_text": evidence_text,
+                    "source_file_paths": [str(x) for x in source_file_paths],
+                }
+            )
+
+        return result
+
+    def _normalize_text(self, text: str) -> str:
+        return " ".join((text or "").strip().lower().split())
+
+    def _same_meaning(self, a: str, b: str) -> bool:
+        na = self._normalize_text(a)
+        nb = self._normalize_text(b)
+        if not na or not nb:
+            return False
+        return na == nb or na in nb or nb in na
+
+    def _build_candidate_clusters(self, evidences: list[dict]) -> list[dict]:
+        clusters: dict[tuple[str, str], dict] = {}
+
+        for evidence in evidences:
+            topic = (evidence.get("topic") or "").strip()
+            candidate_content = (evidence.get("candidate_content") or "").strip()
+            source_strength = (evidence.get("source_strength") or "").strip()
+
+            if not topic or not candidate_content:
+                continue
+
+            if source_strength == "temporary_interest":
+                continue
+
+            key = (
+                self._normalize_text(topic),
+                self._normalize_text(candidate_content),
+            )
+
+            if key not in clusters:
+                clusters[key] = {
+                    "topic": topic,
+                    "candidate_content": candidate_content,
+                    "evidence_ids": [],
+                    "project_ids": set(),
+                    "source_paths": set(),
+                    "confidence_values": [],
+                    "source_strength_counts": {
+                        "explicit_self_statement": 0,
+                        "repeated_behavior": 0,
+                        "temporary_interest": 0,
+                    },
+                    "linked_profile_ids": set(),
+                }
+
+            cluster = clusters[key]
+            cluster["evidence_ids"].append(str(evidence.get("id") or ""))
+            cluster["project_ids"].add(str(evidence.get("project_id") or ""))
+            cluster["source_paths"].add(str(evidence.get("source_file_path") or ""))
+            cluster["confidence_values"].append(float(evidence.get("confidence") or 0.0))
+            cluster["source_strength_counts"][source_strength] = (
+                cluster["source_strength_counts"].get(source_strength, 0) + 1
+            )
+
+            linked_profile_id = str(evidence.get("linked_profile_id") or "").strip()
+            if linked_profile_id:
+                cluster["linked_profile_ids"].add(linked_profile_id)
+
+        result: list[dict] = []
+        for cluster in clusters.values():
+            confidence_values = cluster["confidence_values"] or [0.0]
+            source_strength_counts = cluster["source_strength_counts"]
+
+            primary_strength = "repeated_behavior"
+            if source_strength_counts.get("explicit_self_statement", 0) > 0:
+                primary_strength = "explicit_self_statement"
+            elif source_strength_counts.get("repeated_behavior", 0) > 0:
+                primary_strength = "repeated_behavior"
+
+            result.append(
+                {
+                    "topic": cluster["topic"],
+                    "candidate_content": cluster["candidate_content"],
+                    "evidence_ids": cluster["evidence_ids"],
+                    "evidence_count": len(cluster["evidence_ids"]),
+                    "distinct_project_count": len([x for x in cluster["project_ids"] if x]),
+                    "distinct_source_count": len([x for x in cluster["source_paths"] if x]),
+                    "avg_confidence": sum(confidence_values) / len(confidence_values),
+                    "max_confidence": max(confidence_values),
+                    "primary_strength": primary_strength,
+                    "explicit_count": source_strength_counts.get("explicit_self_statement", 0),
+                    "repeated_count": source_strength_counts.get("repeated_behavior", 0),
+                    "linked_profile_ids": cluster["linked_profile_ids"],
+                }
+            )
+
+        result.sort(
+            key=lambda item: (
+                -SOURCE_STRENGTH_ORDER.get(item["primary_strength"], 0),
+                -item["evidence_count"],
+                -item["distinct_source_count"],
+                -item["avg_confidence"],
+                item["topic"],
+            )
+        )
+        return result
+
+    def _is_promotable_cluster(self, cluster: dict) -> tuple[bool, str]:
+        evidence_count = int(cluster.get("evidence_count") or 0)
+        distinct_source_count = int(cluster.get("distinct_source_count") or 0)
+        distinct_project_count = int(cluster.get("distinct_project_count") or 0)
+        avg_confidence = float(cluster.get("avg_confidence") or 0.0)
+        primary_strength = cluster.get("primary_strength") or "repeated_behavior"
+
+        diversity_ok = distinct_source_count >= 2 or distinct_project_count >= 2
+
+        if primary_strength == "explicit_self_statement":
+            if evidence_count < 2:
+                return False, "not_enough_repetition"
+            if not diversity_ok:
+                return False, "not_enough_source_diversity"
+            if avg_confidence < 0.55:
+                return False, "low_confidence"
+            return True, "promotable_explicit"
+
+        if evidence_count < 3:
+            return False, "not_enough_repetition"
+        if not diversity_ok:
+            return False, "not_enough_source_diversity"
+        if avg_confidence < 0.60:
+            return False, "low_confidence"
+        return True, "promotable_repeated"
+
+    def _promotion_confidence(self, cluster: dict) -> float:
+        avg_confidence = float(cluster.get("avg_confidence") or 0.0)
+        evidence_count = int(cluster.get("evidence_count") or 0)
+        primary_strength = cluster.get("primary_strength") or "repeated_behavior"
+
+        boosted = avg_confidence
+        if primary_strength == "explicit_self_statement":
+            boosted += 0.10
+        if evidence_count >= 4:
+            boosted += 0.05
+
+        return min(max(boosted, 0.45), 0.90)
+
+    def _load_topic_corrections(self, topic: str) -> list[dict]:
+        if hasattr(self.correction_store, "list_active_by_topic"):
+            return self.correction_store.list_active_by_topic(topic, limit=5)
+
+        if hasattr(self.correction_store, "search"):
+            rows = self.correction_store.search(topic, limit=5)
+            filtered: list[dict] = []
+            for row in rows:
+                status = str(row.get("status") or "").lower()
+                if not status or status == "active":
+                    filtered.append(row)
+            return filtered
+
+        return []
+
+    def _has_conflicting_active_correction(self, topic: str, candidate_content: str) -> bool:
+        active_corrections = self._load_topic_corrections(topic)
+        for correction in active_corrections:
+            correction_content = str(correction.get("content") or "").strip()
+            if not correction_content:
+                continue
+            if not self._same_meaning(correction_content, candidate_content):
+                return True
+        return False
+
+    def _promote_confirmed_profiles(self) -> dict:
+        evidences = self.evidence_store.list_candidate_evidence()
+        clusters = self._build_candidate_clusters(evidences)
+
+        promoted_profiles = 0
+        linked_existing_profiles = 0
+        blocked_by_correction = 0
+        blocked_by_existing_profile_conflict = 0
+        pending_candidates = 0
+
+        for cluster in clusters:
+            topic = cluster["topic"]
+            candidate_content = cluster["candidate_content"]
+
+            promotable, _reason = self._is_promotable_cluster(cluster)
+            if not promotable:
+                pending_candidates += 1
+                continue
+
+            if self._has_conflicting_active_correction(topic, candidate_content):
+                blocked_by_correction += 1
+                continue
+
+            active_profile = self.profile_store.get_active_by_topic(topic)
+
+            if active_profile:
+                active_content = str(active_profile.get("content") or "").strip()
+                if self._same_meaning(active_content, candidate_content):
+                    linked_count = self.evidence_store.link_profile_for_candidate(
+                        topic=topic,
+                        candidate_content=candidate_content,
+                        profile_id=active_profile["id"],
+                    )
+                    if linked_count > 0:
+                        linked_existing_profiles += 1
+                    continue
+
+                blocked_by_existing_profile_conflict += 1
+                continue
+
+            new_profile_id = self.profile_store.insert_profile(
+                topic=topic,
+                content=candidate_content,
+                source=f"artifact_promotion_v1:{cluster['primary_strength']}",
+                confidence=self._promotion_confidence(cluster),
+            )
+            self.evidence_store.link_profile_for_candidate(
+                topic=topic,
+                candidate_content=candidate_content,
+                profile_id=new_profile_id,
+            )
+            promoted_profiles += 1
+
+        return {
+            "promoted_profiles": promoted_profiles,
+            "linked_existing_profiles": linked_existing_profiles,
+            "blocked_by_correction": blocked_by_correction,
+            "blocked_by_existing_profile_conflict": blocked_by_existing_profile_conflict,
+            "pending_candidates": pending_candidates,
+        }
+
+    def extract_and_store(self, project_id: str, model: str | None = None) -> dict:
+        documents = self._select_documents(project_id)
+        self.evidence_store.delete_by_project(project_id)
+
+        if not documents:
+            return {
+                "stored": False,
+                "document_count": 0,
+                "source_files": [],
+                "candidate_count": 0,
+            }
+
+        messages = self._build_extract_messages(project_id=project_id, documents=documents)
+        answer = self.client.chat(messages, model=model).strip()
+        candidates = self._extract_json_array(answer)
+
+        for candidate in candidates:
+            source_paths = candidate.get("source_file_paths") or []
+            source_file_path = ", ".join(source_paths) if source_paths else "__unknown__"
+
+            self.evidence_store.add(
+                project_id=project_id,
+                source_file_path=source_file_path,
+                evidence_type="profile_candidate",
+                topic=candidate["topic"],
+                candidate_content=candidate["candidate_content"],
+                source_strength=candidate["source_strength"],
+                evidence_text=candidate["evidence_text"],
+                confidence=candidate["confidence"],
+            )
+
+        return {
+            "stored": True,
+            "document_count": len(documents),
+            "source_files": [doc["path"] for doc in documents],
+            "candidate_count": len(candidates),
+        }
+
+    def sync_to_memory(self, project_id: str) -> dict:
+        evidences = self.evidence_store.list_unapplied_by_project(project_id)
+
+        processed = 0
+        linked_to_existing_active_profile = 0
+        skipped = 0
+
+        for evidence in evidences:
+            topic = (evidence.get("topic") or "").strip()
+            candidate_content = (evidence.get("candidate_content") or "").strip()
+            source_strength = (evidence.get("source_strength") or "").strip()
+
+            if not topic or not candidate_content:
+                self.evidence_store.mark_applied(evidence["id"])
+                skipped += 1
+                processed += 1
+                continue
+
+            if source_strength == "temporary_interest":
+                self.evidence_store.mark_applied(evidence["id"])
+                skipped += 1
+                processed += 1
+                continue
+
+            active_profile = self.profile_store.get_active_by_topic(topic)
+            if active_profile and self._same_meaning(active_profile.get("content", ""), candidate_content):
+                self.evidence_store.mark_applied(
+                    evidence["id"],
+                    linked_profile_id=active_profile["id"],
+                )
+                linked_to_existing_active_profile += 1
+                processed += 1
+                continue
+
+            self.evidence_store.mark_applied(evidence["id"])
+            processed += 1
+
+        promotion_result = self._promote_confirmed_profiles()
+
+        return {
+            "processed": processed,
+            "inserted_profiles": promotion_result["promoted_profiles"],
+            "added_corrections": 0,
+            "linked_to_existing_active_profile": linked_to_existing_active_profile,
+            "promoted_profiles": promotion_result["promoted_profiles"],
+            "linked_existing_profiles": promotion_result["linked_existing_profiles"],
+            "blocked_by_correction": promotion_result["blocked_by_correction"],
+            "blocked_by_existing_profile_conflict": promotion_result["blocked_by_existing_profile_conflict"],
+            "pending_candidates": promotion_result["pending_candidates"],
+            "skipped": skipped,
+        }
+
+    def answer_from_project(
+        self,
+        project_id: str,
+        question: str,
+        model: str | None = None,
+    ) -> dict | None:
+        evidences = self.evidence_store.list_by_project(project_id)
+        if not evidences:
+            self.extract_and_store(project_id, model=model)
+            self.sync_to_memory(project_id)
+            evidences = self.evidence_store.list_by_project(project_id)
+
+        if not evidences:
+            return None
+
+        messages = self._build_answer_messages(question=question, evidences=evidences)
+        answer = self.client.chat(messages, model=model)
+
+        used_evidence = [
+            {
+                "topic": item.get("topic"),
+                "source_file_path": item.get("source_file_path"),
+                "confidence": item.get("confidence"),
+                "source_strength": item.get("source_strength"),
+            }
+            for item in evidences
+        ]
+
+        return {
+            "answer": answer,
+            "used_profile_evidence": used_evidence,
+        }
