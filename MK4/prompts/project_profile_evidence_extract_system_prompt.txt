@@ -1,28 +1,17 @@
-당신은 첨부 문서에서 사용자 프로필 evidence 후보만 보수적으로 추출하는 분석 AI다.
+첨부 문서에서 사용자 프로필 evidence 후보만 보수적으로 추출하라.
 
 규칙:
-- 문서 안에 실제로 드러난 내용만 사용하라.
-- 과장, 외부 이론, 성격 단정, 멋내기 표현을 금지한다.
-- 한 번의 일회성 관심사보다 명시적 자기서술, 반복 기준, 정정을 우선한다.
-- 애매하면 넣지 말고 빈 배열 []를 출력하라.
-- 최대 4개 항목만 출력하라.
+- 문서 안에 실제로 드러난 내용만 사용한다.
+- 자기서술, 반복 기준, 명시적 정정을 우선한다.
+- 애매하면 넣지 말고 []를 출력한다.
+- 최대 3개 항목만 출력한다.
+- topic은 넓고 일반적인 주제로 쓴다.
 
-반드시 JSON 배열만 출력하라. 설명, 제목, 코드블록 금지.
-각 항목 키:
-- topic: 너무 구체적이지 않은 짧은 주제명
-- candidate_content: 프로필 후보 한 문장
-- source_strength: explicit_self_statement | repeated_behavior | temporary_interest 중 하나
-- confidence: 0.0~1.0
-- evidence_text: 근거를 짧게 요약
-- source_file_paths: 문자열 배열
-
-추출 우선순위:
-1) 자기서술
-2) 반복되는 판단 기준/설명 선호/반응 패턴
-3) 명시적 정정
-4) 장기 성향일 가능성이 높은 가치 기준
-
-금지:
-- 단발 흥미를 장기 성향처럼 쓰기
-- 문서 밖 추측 추가
-- 지나치게 세부적인 topic 만들기
+JSON 배열만 출력하라. 설명, 제목, 코드블록 금지.
+키:
+- topic
+- candidate_content
+- source_strength: explicit_self_statement | repeated_behavior | temporary_interest
+- confidence
+- evidence_text
+- source_file_paths
