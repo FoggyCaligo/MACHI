@@ -2,6 +2,9 @@ import json
 import re
 
 from config import (
+    ATTACHMENT_REPLY_MAX_CONTINUATIONS,
+    ATTACHMENT_REPLY_NUM_PREDICT,
+    ATTACHMENT_REPLY_TIMEOUT,
     PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH,
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
 )
@@ -10,6 +13,7 @@ from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProf
 from profile_analysis.stores.uploaded_profile_source_store import UploadedProfileSourceStore
 from prompts.prompt_loader import load_prompt_text
 from tools.ollama_client import OllamaClient
+from tools.response_runner import ResponseRunner
 
 
 FIRST_PERSON_MARKERS = {
@@ -38,7 +42,7 @@ class ProfileAttachmentIngestService:
         self.sync_service = ProfileMemorySyncService()
         self.extract_client = OllamaClient(timeout=120, num_predict=384)
         self.extract_retry_client = OllamaClient(timeout=120, num_predict=256)
-        self.answer_client = OllamaClient(timeout=180, num_predict=700)
+        self.answer_runner = ResponseRunner(timeout=ATTACHMENT_REPLY_TIMEOUT, num_predict=ATTACHMENT_REPLY_NUM_PREDICT, max_continuations=ATTACHMENT_REPLY_MAX_CONTINUATIONS)
 
     def _normalize_whitespace(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "")).strip()
@@ -416,41 +420,6 @@ class ProfileAttachmentIngestService:
             {"role": "user", "content": user_prompt},
         ]
 
-    def _continue_answer_if_truncated(
-        self,
-        answer_messages: list[dict],
-        first_result: dict,
-        model: str | None = None,
-    ) -> str:
-        first_text = str(first_result.get("raw_content") or first_result.get("content") or "").strip()
-        if not first_text:
-            return ""
-
-        if not bool(first_result.get("truncated")):
-            return first_text
-
-        continuation_messages = list(answer_messages) + [
-            {"role": "assistant", "content": first_text},
-            {
-                "role": "user",
-                "content": "이어서 계속해 주세요. 이미 말한 내용은 반복하지 말고, 남은 핵심만 자연스럽게 마무리해 주세요.",
-            },
-        ]
-
-        try:
-            second_result = self.answer_client.chat_with_metadata(
-                continuation_messages,
-                model=model,
-                require_complete=False,
-                truncated_notice=None,
-            )
-            second_text = str(second_result.get("raw_content") or second_result.get("content") or "").strip()
-            if not second_text:
-                return first_text
-            return (first_text + "\n\n" + second_text).strip()
-        except RuntimeError:
-            return first_text
-
     def ingest_text(
         self,
         filename: str,
@@ -553,17 +522,10 @@ class ProfileAttachmentIngestService:
             extract_result=extract_result,
             extract_error=extract_error,
         )
-        first_answer_result = self.answer_client.chat_with_metadata(
+        user_answer = self.answer_runner.run(
             answer_messages,
             model=model,
-            require_complete=False,
-            truncated_notice=None,
-        )
-        user_answer = self._continue_answer_if_truncated(
-            answer_messages=answer_messages,
-            first_result=first_answer_result,
-            model=model,
-        )
+        ).text
 
         return {
             "answer": user_answer,

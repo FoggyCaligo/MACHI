@@ -2,6 +2,9 @@ import json
 from pathlib import Path
 
 from config import (
+    PROJECT_REPLY_MAX_CONTINUATIONS,
+    PROJECT_REPLY_NUM_PREDICT,
+    PROJECT_REPLY_TIMEOUT,
     PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH,
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
 )
@@ -15,6 +18,7 @@ from project_analysis.stores.project_profile_evidence_store import (
     ProjectProfileEvidenceStore,
 )
 from tools.ollama_client import OllamaClient
+from tools.response_runner import ResponseRunner
 
 
 PROFILE_DOC_EXTENSIONS = {".txt", ".md", ".markdown", ".rst"}
@@ -579,7 +583,7 @@ class ProjectProfileEvidenceService:
             return None
 
         messages = self._build_answer_messages(question=question, evidences=evidences)
-        answer = self.client.chat(messages, model=model)
+        answer = self.answer_runner.run(messages, model=model).text
 
         used_evidence = [
             {
