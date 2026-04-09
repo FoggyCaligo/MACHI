@@ -159,7 +159,7 @@ async def chat(
     effective_project_id = project_id
     effective_model = _resolve_model_name(model)
 
-    filename = file.filename if file is not None else ""
+    filename = (file.filename or "") if file is not None else ""
     lower_name = filename.lower()
     is_zip_upload = bool(file is not None and lower_name.endswith(".zip"))
 

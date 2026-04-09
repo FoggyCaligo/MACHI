@@ -116,13 +116,10 @@ class ProfileAttachmentIngestService:
 
     def _summarize_user_request(self, user_request: str, filename: str) -> str:
         text = self.passage_selector.normalize_whitespace(user_request)
-        if not text:
-            return "사용자는 첨부한 텍스트를 바탕으로 자신에 대한 이해를 요청하고 있다."
-
         shortened = text[:220].rstrip()
         if len(text) > 220:
             shortened += "..."
-        return f"사용자 요청 요지: {shortened}"
+        return shortened
 
     def _build_answer_messages(
         self,
@@ -136,6 +133,7 @@ class ProfileAttachmentIngestService:
         system_prompt = load_prompt_text(PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH)
 
         request_summary = self._summarize_user_request(user_request=user_request, filename=filename)
+        request_summary = request_summary or "(요청 요지 없음)"
 
         evidence_lines = []
         for item in used_evidence[:4]:
@@ -166,7 +164,7 @@ class ProfileAttachmentIngestService:
             status_summary += f", extract_error={extract_error[:120]}"
 
         user_prompt = (
-            f"[사용자 요청 요지]\n{request_summary}\n\n"
+            f"[요청 요지]\n{request_summary}\n\n"
             f"[핵심 evidence]\n{evidence_text}\n\n"
             f"[반영 상태]\n{status_summary}\n\n"
             "[답변 지침]\n"
