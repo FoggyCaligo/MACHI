@@ -16,8 +16,13 @@ class ExtractionPolicy:
         correction_tokens = ("정정", "정확히는", "맞긴 해", "핵심은", "다만")
         return any(token in user_message for token in correction_tokens) or "new_correction" in action_types
 
-    def extract(self, user_message: str, reply: str, update_plan: dict, model: str | None = None) -> dict:
-        topic_resolution = self.topic_router.resolve(user_message=user_message, model=model)
+    def extract(self, user_message: str, reply: str, update_plan: dict, model: str | None = None) -> dict:       
+        topic_resolution = self.topic_router.resolve(
+            user_message=user_message,
+            model=model,
+            use_active_topic=True,
+            persist_active=True,
+        )
         topic = topic_resolution.topic_summary or "general"
         topic_id = topic_resolution.topic_id
 

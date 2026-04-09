@@ -160,22 +160,41 @@ class TopicRouter:
         query_embedding = embed_text(user_message, kind="query")
         return cosine_similarity(query_embedding, topic.get("embedding") or [])
 
-    def resolve(self, user_message: str, model: str | None = None) -> TopicResolution:
+    def _persist_active_topic(
+        self,
+        topic_id: str | None,
+        summary: str,
+        *,
+        persist_active: bool,
+    ) -> None:
+        if not persist_active or not topic_id:
+            return
+        self.state_store.set_active_topic(topic_id, summary, source="topic_router")
+
+    def resolve(
+        self,
+        user_message: str,
+        model: str | None = None,
+        *,
+        use_active_topic: bool = True,
+        persist_active: bool = True,
+    ) -> TopicResolution:
         cleaned = " ".join((user_message or "").strip().split())
         if not cleaned:
             return TopicResolution("general", None, "general", "general", 0.0, False)
 
-        active_topic_id = self.state_store.get_active_topic_id()
-        if active_topic_id:
+        active_topic_id = self.state_store.get_active_topic_id() if use_active_topic else None
+
+        if use_active_topic and active_topic_id:
             active_topic = self.topic_store.get_topic(active_topic_id)
             if active_topic:
                 similarity = self._active_topic_similarity(cleaned, active_topic)
                 if similarity >= KEEP_ACTIVE_THRESHOLD:
                     self.topic_store.mark_used(active_topic_id)
-                    self.state_store.set_active_topic(
+                    self._persist_active_topic(
                         active_topic_id,
                         active_topic.get("summary") or active_topic.get("name") or "",
-                        source="topic_router",
+                        persist_active=persist_active,
                     )
                     return TopicResolution(
                         decision="keep_active",
@@ -190,7 +209,7 @@ class TopicRouter:
             text=cleaned,
             limit=TOPIC_SIMILARITY_CANDIDATE_LIMIT,
             min_similarity=ATTACH_EXISTING_THRESHOLD,
-            exclude_topic_id=active_topic_id,
+            exclude_topic_id=active_topic_id if use_active_topic else None,
         )
         if similar_topics:
             best = similar_topics[0]
@@ -198,7 +217,11 @@ class TopicRouter:
             if topic_id:
                 self.topic_store.mark_used(topic_id)
                 summary = best.get("summary") or best.get("name") or ""
-                self.state_store.set_active_topic(topic_id, summary, source="topic_router")
+                self._persist_active_topic(
+                    topic_id,
+                    summary,
+                    persist_active=persist_active,
+                )
                 return TopicResolution(
                     decision="attach_existing",
                     topic_id=topic_id,
@@ -215,7 +238,7 @@ class TopicRouter:
             text=new_summary,
             limit=3,
             min_similarity=ATTACH_EXISTING_THRESHOLD,
-            exclude_topic_id=active_topic_id,
+            exclude_topic_id=active_topic_id if use_active_topic else None,
         )
         if summary_matches:
             best = summary_matches[0]
@@ -223,7 +246,11 @@ class TopicRouter:
             if topic_id:
                 self.topic_store.mark_used(topic_id)
                 summary = best.get("summary") or best.get("name") or new_summary
-                self.state_store.set_active_topic(topic_id, summary, source="topic_router")
+                self._persist_active_topic(
+                    topic_id,
+                    summary,
+                    persist_active=persist_active,
+                )
                 return TopicResolution(
                     decision="attach_existing",
                     topic_id=topic_id,
@@ -240,7 +267,11 @@ class TopicRouter:
             confidence=TOPIC_CREATE_MIN_CONFIDENCE,
         )
         self.topic_store.mark_used(topic_id)
-        self.state_store.set_active_topic(topic_id, new_summary, source="topic_router")
+        self._persist_active_topic(
+            topic_id,
+            new_summary,
+            persist_active=persist_active,
+        )
         return TopicResolution(
             decision="create_new",
             topic_id=topic_id,

@@ -172,7 +172,7 @@ class ProjectProfileEvidenceService:
             routing_text = f"{routing_text}\n{raw_topic}".strip()
         if evidence_text:
             routing_text = f"{routing_text}\n{evidence_text[:280]}".strip()
-
+        # 저장용 후보 분류이므로 현재 대화의 active topic/state는 건드리지 않는다.
         resolution = self.topic_router.resolve(
             user_message=routing_text,
             model=model,
