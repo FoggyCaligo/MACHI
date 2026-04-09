@@ -87,3 +87,23 @@ CREATE TABLE IF NOT EXISTS raw_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_messages_created_at ON raw_messages(created_at);
+
+CREATE TABLE IF NOT EXISTS topics (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    embedding_json TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'merged', 'archived', 'dropped')),
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    merged_into_topic_id TEXT,
+    FOREIGN KEY (merged_into_topic_id) REFERENCES topics(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_status_updated ON topics(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_topics_status_last_used ON topics(status, last_used_at DESC);
+

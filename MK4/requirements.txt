@@ -3,3 +3,5 @@ uvicorn[standard]
 requests
 python-multipart
 pydantic
+sentence-transformers
+numpy
