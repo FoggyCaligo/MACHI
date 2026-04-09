@@ -117,29 +117,10 @@ class ProfileAttachmentIngestService:
     def _summarize_user_request(self, user_request: str, filename: str) -> str:
         text = self.passage_selector.normalize_whitespace(user_request)
         if not text:
-            return "사용자는 첨부한 텍스트가 프로필 이해와 기억 업데이트에 실제로 도움이 되는지 묻고 있다."
+            return "사용자는 첨부한 텍스트를 바탕으로 자신에 대한 이해를 요청하고 있다."
 
-        request_lower = text.lower()
-        filename = filename or "첨부 텍스트"
-
-        if ("기억" in text and ("못" in text or "안난" in text or "안 나" in text)) and ("이해" in text or "파악" in text):
-            return (
-                f"사용자는 내가 이전에 공유된 내용을 정확히 떠올리지 못하더라도, 첨부한 '{filename}'를 바탕으로 "
-                "다시 자신에 대한 이해를 시도해줄 수 있는지 묻고 있다."
-            )
-
-        if ("도움" in text or "도움이" in text) and ("이해" in text or "파악" in text):
-            return (
-                f"사용자는 첨부한 '{filename}' 같은 글 묶음이 자신의 성향과 사고 기준을 더 잘 이해하는 데 실제로 도움이 되는지 확인하려 한다."
-            )
-
-        if "업데이트" in request_lower or "기억시스템" in text or "기억 시스템" in text:
-            return (
-                f"사용자는 첨부한 '{filename}'를 기억 시스템의 프로필 근거로 반영해도 되는지, 그리고 이를 바탕으로 자신을 더 입체적으로 이해할 수 있는지 묻고 있다."
-            )
-
-        shortened = text[:180].rstrip()
-        if len(text) > 180:
+        shortened = text[:220].rstrip()
+        if len(text) > 220:
             shortened += "..."
         return f"사용자 요청 요지: {shortened}"
 
