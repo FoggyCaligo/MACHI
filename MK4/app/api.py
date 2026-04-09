@@ -45,6 +45,10 @@ FIRST_PERSON_MARKERS = {
     "나는", "내가", "나의", "저는", "제가", "저의", "i am", "i'm", "my ",
 }
 
+RECENT_PROFILE_FOLLOWUP_HINTS = {
+    '그 글', '그 글들', '그 파일', '첨부파일', '첨부 파일', '직전', '방금', '바로 직전',
+    '블로그 글', '그 내용', '첫번째 글', '첫 번째 글', '화자', '그 텍스트', '방금 준',
+}
 
 def _log(message: str) -> None:
     print(f"[API] {message}", flush=True)
@@ -172,6 +176,26 @@ def _looks_like_profile_request(message: str, filename: str, content: str) -> bo
         return True
 
     return False
+
+
+def _looks_like_recent_profile_followup(message: str) -> bool:
+    text = (message or '').strip().lower()
+    if not text:
+        return False
+    return any(hint.lower() in text for hint in RECENT_PROFILE_FOLLOWUP_HINTS)
+
+
+def _merge_message_with_recent_source(message: str, filename: str, excerpt: str) -> str:
+    excerpt = (excerpt or '').strip()
+    if not excerpt:
+        return message
+    return (
+        f"{message}\n\n"
+        f"[직전 첨부 참고 자료]\n"
+        f"파일명: {filename}\n"
+        "아래 내용은 바로 직전 첨부 텍스트에서 현재 질문과 관련성이 높다고 판단된 발췌다. 이 범위 안에서만 근거 있게 답하고, 모르면 모른다고 말하라.\n\n"
+        f"{excerpt}"
+    )
 
 
 @app.post("/chat")
@@ -364,6 +388,32 @@ async def chat(
                 "profile_memory_sync": result.get("profile_memory_sync"),
             }
 
+        merged_recent_file = None
+        if _looks_like_recent_profile_followup(message):
+            profile_ingest_service = ProfileAttachmentIngestService()
+            recent_source_id = profile_ingest_service.get_recent_source_id()
+            if recent_source_id:
+                recent_ref = profile_ingest_service.build_followup_reference(
+                    source_id=recent_source_id,
+                    user_request=message,
+                )
+                if recent_ref:
+                    message = _merge_message_with_recent_source(
+                        message=message,
+                        filename=recent_ref["filename"],
+                        excerpt=recent_ref["excerpt"],
+                    )
+                    merged_recent_file = {
+                        "filename": recent_ref["filename"],
+                        "selected_passage_count": recent_ref.get("selection_meta", {}).get("selected_passage_count"),
+                        "selected_chars": recent_ref.get("selection_meta", {}).get("selected_chars"),
+                        "selection_mode": recent_ref.get("selection_meta", {}).get("selection_mode"),
+                    }
+                    _log(
+                        f"recent profile followup merged | source_id={recent_source_id} | "
+                        f"selected_passages={merged_recent_file.get('selected_passage_count')}"
+                    )
+
         _log("general chat branch entered")
         result = orchestrator.handle_chat(message, model=model)
 
@@ -381,6 +431,7 @@ async def chat(
             "used_profile_evidence": [],
             "profile_evidence_extract": None,
             "profile_memory_sync": None,
+            "attached_file": merged_recent_file,
         }
     except HTTPException:
         raise

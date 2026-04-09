@@ -31,9 +31,20 @@ class ResponseRunner:
             return True
         incomplete_endings = (
             '라는 것을', '것을', '때문에', '그래서', '다만', '하지만', '즉', '그리고',
-            '있습니다만', '있는데', '있어', '같습니', '같아',
+            '있습니다만', '있는데', '있어', '같습니', '같아', '입니다만', '인데',
+            '것 같', '보입니다만', '의미하', '말하자면',
         )
         return any(stripped.endswith(token) for token in incomplete_endings)
+
+    @staticmethod
+    def _trim_ellipsis(text: str) -> str:
+        stripped = (text or '').rstrip()
+        while stripped.endswith('...') or stripped.endswith('…'):
+            if stripped.endswith('...'):
+                stripped = stripped[:-3].rstrip()
+            elif stripped.endswith('…'):
+                stripped = stripped[:-1].rstrip()
+        return stripped
 
     def run(
         self,
@@ -41,7 +52,7 @@ class ResponseRunner:
         model: str | None = None,
         continuation_prompt: str | None = None,
     ) -> ResponseRunResult:
-        continuation_prompt = continuation_prompt or '이어서 계속해 주세요. 이미 말한 내용은 반복하지 말고, 남은 핵심만 자연스럽게 마무리해 주세요.'
+        continuation_prompt = continuation_prompt or '이어서 계속해 주세요. 앞에서 한 말을 반복하지 말고, 필요한 설명은 충분히 이어서 하세요. 한두 문장으로 급하게 끝내지 말고, 줄임표 없이 완결된 문장으로 마무리하세요.'
 
         result = self.client.chat_with_metadata(
             messages,
@@ -76,7 +87,7 @@ class ResponseRunner:
             if not next_text:
                 break
 
-            text = (text + "\n\n" + next_text).strip()
+            text = (self._trim_ellipsis(text) + "\n\n" + next_text).strip()
             truncated = bool(next_result.get('truncated'))
             count += 1
 

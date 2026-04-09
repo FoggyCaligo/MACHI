@@ -1,4 +1,3 @@
-import json
 import re
 
 from config import (
@@ -12,11 +11,12 @@ from memory.policies.memory_classification_policy import (
     MemoryClassificationPolicy,
     SOURCE_STRENGTH_ORDER,
 )
+from memory.stores.state_store import StateStore
 from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from profile_analysis.stores.uploaded_profile_source_store import UploadedProfileSourceStore
+from memory.services.evidence_extraction_service import EvidenceExtractionService
 from prompts.prompt_loader import load_prompt_text
-from tools.ollama_client import OllamaClient
 from tools.response_runner import ResponseRunner
 
 
@@ -38,8 +38,8 @@ class ProfileAttachmentIngestService:
         self.source_store = UploadedProfileSourceStore()
         self.evidence_store = UploadedProfileEvidenceStore()
         self.sync_service = ProfileMemorySyncService()
-        self.extract_client = OllamaClient(timeout=120, num_predict=384)
-        self.extract_retry_client = OllamaClient(timeout=120, num_predict=256)
+        self.state_store = StateStore()
+        self.extraction_service = EvidenceExtractionService(timeout=120, num_predict=384, retry_num_predict=256)
         self.answer_runner = ResponseRunner(timeout=ATTACHMENT_REPLY_TIMEOUT, num_predict=ATTACHMENT_REPLY_NUM_PREDICT, max_continuations=ATTACHMENT_REPLY_MAX_CONTINUATIONS)
         self.memory_policy = MemoryClassificationPolicy()
 
@@ -70,6 +70,114 @@ class ProfileAttachmentIngestService:
             grouped.append(" ".join(bucket))
 
         return [part for part in grouped if len(part) >= 40]
+
+    def _extract_query_terms(self, user_request: str) -> list[str]:
+        text = (user_request or '').lower()
+        terms = re.findall(r"[a-zA-Z]{2,}|[가-힣]{2,}", text)
+        stopwords = {
+            '그리고', '그러면', '그러니까', '이거', '그거', '그것', '이것', '저것', '직전', '바로', '질문', '답변',
+            '파일', '첨부', '글들', '블로그', '내용', '기억', '말해줘', '알려줘', '있니', '뭐였지', '화자', '특징',
+        }
+        ordered = []
+        seen = set()
+        for term in terms:
+            if term in stopwords:
+                continue
+            if term not in seen:
+                seen.add(term)
+                ordered.append(term)
+        return ordered[:10]
+
+    def _score_passage_for_followup(self, passage: str, filename: str, user_request: str, passage_index: int) -> int:
+        score = self._score_passage(passage, filename)
+        lowered = passage.lower()
+        for term in self._extract_query_terms(user_request):
+            if term in lowered:
+                score += 4
+        if any(token in user_request for token in ('첫번째', '첫 번째', '처음', '맨 처음', '첫 글')):
+            score += max(0, 6 - min(passage_index, 6))
+        if any(token in user_request for token in ('화자', '특징', '성향', '어떤 사람', '프로필')):
+            score += 2
+        return score
+
+    def _select_followup_passages(
+        self,
+        filename: str,
+        content: str,
+        user_request: str,
+        max_total_chars: int = 1600,
+        max_passages: int = 4,
+    ) -> tuple[list[dict], dict]:
+        passages = self._split_passages(content)
+        candidates: list[dict] = []
+        for index, passage in enumerate(passages, start=1):
+            candidates.append({
+                'filename': filename,
+                'passage_index': index,
+                'score': self._score_passage_for_followup(passage, filename, user_request, index),
+                'text': passage,
+            })
+
+        candidates.sort(key=lambda item: (-item['score'], item['passage_index']))
+
+        selected: list[dict] = []
+        total_chars = 0
+
+        if passages:
+            head = self._normalize_whitespace(passages[0])[:500].rstrip()
+            if head:
+                selected.append({
+                    'filename': filename,
+                    'passage_index': 1,
+                    'score': 0,
+                    'text': head if len(head) == len(passages[0][:500].rstrip()) else head + '...',
+                })
+                total_chars += len(selected[0]['text'])
+
+        seen_index = {1}
+        for item in candidates:
+            if len(selected) >= max_passages:
+                break
+            if item['passage_index'] in seen_index:
+                continue
+            remaining = max_total_chars - total_chars
+            if remaining <= 120:
+                break
+            text = item['text']
+            if len(text) > remaining:
+                if remaining < 180:
+                    continue
+                text = text[:remaining].rstrip() + '...'
+            selected.append({
+                'filename': item['filename'],
+                'passage_index': item['passage_index'],
+                'score': item['score'],
+                'text': text,
+            })
+            seen_index.add(item['passage_index'])
+            total_chars += len(text)
+
+        if selected:
+            return selected, {
+                'selected_passage_count': len(selected),
+                'selected_chars': total_chars,
+                'selection_mode': 'recent_source_followup',
+            }
+
+        excerpt = self._normalize_whitespace(content)[:1200].rstrip()
+        if len(content) > 1200:
+            excerpt += '...'
+        fallback = [{
+            'filename': filename,
+            'passage_index': 1,
+            'score': 0,
+            'text': excerpt,
+        }]
+        return fallback, {
+            'selected_passage_count': 1 if excerpt else 0,
+            'selected_chars': len(excerpt),
+            'selection_mode': 'recent_source_head_excerpt',
+        }
 
     def _score_passage(self, passage: str, filename: str) -> int:
         lowered = passage.lower()
@@ -189,15 +297,14 @@ class ProfileAttachmentIngestService:
             f"[passages]\n" + "\n\n".join(passage_blocks)
         )
 
-    def _build_extract_messages(
+    def _build_extract_user_prompt(
         self,
         source_id: str,
         filename: str,
         content: str,
         max_total_chars: int = 1800,
         max_passages: int = 5,
-    ) -> tuple[list[dict], dict]:
-        system_prompt = load_prompt_text(PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH)
+    ) -> tuple[str, dict]:
         selected_passages, selection_meta = self._select_relevant_passages(
             filename=filename,
             content=content,
@@ -210,99 +317,29 @@ class ProfileAttachmentIngestService:
             selected_passages=selected_passages,
             selection_meta=selection_meta,
         )
-
-        return [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ], selection_meta
+        return user_prompt, selection_meta
 
     def _run_extract(
         self,
-        messages: list[dict],
+        user_prompt: str,
         model: str | None = None,
-        retry_messages: list[dict] | None = None,
+        retry_user_prompt: str | None = None,
     ) -> tuple[str, str | None]:
-        try:
-            answer = self.extract_client.chat(
-                messages,
-                model=model,
-                require_complete=True,
-                truncated_notice=None,
-            ).strip()
-            return answer, None
-        except RuntimeError as exc:
-            error_text = str(exc)
-            if 'TRUNCATED_REPLY_LENGTH' not in error_text or not retry_messages:
-                return '', error_text
-
-        try:
-            answer = self.extract_retry_client.chat(
-                retry_messages,
-                model=model,
-                require_complete=True,
-                truncated_notice=None,
-            ).strip()
-            return answer, 'retried_after_truncation'
-        except RuntimeError as exc:
-            return '', str(exc)
+        result = self.extraction_service.run_extract(
+            system_prompt_path=PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
+            user_prompt=user_prompt,
+            retry_user_prompt=retry_user_prompt,
+            model=model,
+            require_complete=True,
+        )
+        return result.text, result.error
 
     def _extract_json_array(self, text: str) -> list[dict]:
-        raw = (text or "").strip()
-        if not raw:
-            return []
-
-        if raw.startswith("```"):
-            lines = raw.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            raw = "\n".join(lines).strip()
-
-        start = raw.find("[")
-        end = raw.rfind("]")
-        if start == -1 or end == -1 or end < start:
-            return []
-
-        raw = raw[start:end + 1]
-
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
-
-        if not isinstance(data, list):
-            return []
-
-        result: list[dict] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-
-            topic = str(item.get("topic") or "").strip()
-            candidate_content = str(item.get("candidate_content") or "").strip()
-            source_strength = self.memory_policy.normalize_source_strength(item.get("source_strength"))
-            evidence_text = str(item.get("evidence_text") or "").strip()
-
-            try:
-                confidence = float(item.get("confidence", 0.0))
-            except (TypeError, ValueError):
-                confidence = 0.0
-
-            if not topic or not candidate_content:
-                continue
-
-            result.append(
-                {
-                    "topic": topic,
-                    "candidate_content": candidate_content,
-                    "source_strength": source_strength,
-                    "confidence": max(0.0, min(confidence, 1.0)),
-                    "evidence_text": evidence_text,
-                }
-            )
-
-        return result
+        return self.extraction_service.parse_profile_candidates(
+            text,
+            normalize_source_strength=self.memory_policy.normalize_source_strength,
+            include_source_file_paths=False,
+        )
 
     def _dedupe_evidence(self, evidences: list[dict]) -> list[dict]:
         seen: set[tuple[str, str]] = set()
@@ -416,6 +453,33 @@ class ProfileAttachmentIngestService:
             {"role": "user", "content": user_prompt},
         ]
 
+    def get_recent_source_id(self) -> str | None:
+        row = self.state_store.get_state('recent_profile_source_id')
+        value = (row or {}).get('value')
+        return str(value).strip() or None
+
+    def build_followup_reference(self, source_id: str, user_request: str) -> dict | None:
+        source = self.source_store.get(source_id)
+        if not source:
+            return None
+
+        selected_passages, selection_meta = self._select_followup_passages(
+            filename=str(source.get('filename') or ''),
+            content=str(source.get('content') or ''),
+            user_request=user_request,
+            max_total_chars=1600,
+            max_passages=4,
+        )
+        excerpt = "\n\n".join(item['text'] for item in selected_passages if item.get('text')).strip()
+        if not excerpt:
+            return None
+        return {
+            'source_id': source_id,
+            'filename': str(source.get('filename') or ''),
+            'excerpt': excerpt,
+            'selection_meta': selection_meta,
+        }
+
     def ingest_text(
         self,
         filename: str,
@@ -447,6 +511,8 @@ class ProfileAttachmentIngestService:
             user_request=user_request,
         )
         source_id = source["id"]
+        self.state_store.set_state('recent_profile_source_id', source_id, source='profile_attachment')
+        self.state_store.set_state('recent_profile_source_filename', filename, source='profile_attachment')
 
         self.evidence_store.delete_by_source(source_id)
         messages, selection_meta = self._build_extract_messages(

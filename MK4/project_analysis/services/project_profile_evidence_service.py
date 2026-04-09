@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from config import (
@@ -14,6 +13,7 @@ from memory.policies.memory_classification_policy import (
 )
 from memory.stores.correction_store import CorrectionStore
 from memory.stores.profile_store import ProfileStore
+from memory.services.evidence_extraction_service import EvidenceExtractionService
 from memory.services.topic_router import TopicRouter
 from memory.stores.topic_store import TopicStore
 from prompts.prompt_loader import load_prompt_text
@@ -21,7 +21,6 @@ from project_analysis.stores.project_file_store import ProjectFileStore
 from project_analysis.stores.project_profile_evidence_store import (
     ProjectProfileEvidenceStore,
 )
-from tools.ollama_client import OllamaClient
 from tools.response_runner import ResponseRunner
 
 
@@ -62,7 +61,7 @@ class ProjectProfileEvidenceService:
         self.correction_store = CorrectionStore()
         self.topic_store = TopicStore()
         self.topic_router = TopicRouter()
-        self.client = OllamaClient()
+        self.extraction_service = EvidenceExtractionService(timeout=120, num_predict=384, retry_num_predict=256)
         self.answer_runner = ResponseRunner(
             timeout=PROJECT_REPLY_TIMEOUT,
             num_predict=PROJECT_REPLY_NUM_PREDICT,
@@ -97,14 +96,19 @@ class ProjectProfileEvidenceService:
 
         return selected[:8]
 
-    def _build_extract_messages(self, project_id: str, documents: list[dict]) -> list[dict]:
-        system_prompt = load_prompt_text(PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH)
-
+    def _build_extract_user_prompt(
+        self,
+        project_id: str,
+        documents: list[dict],
+        *,
+        max_docs: int = 8,
+        max_chars_per_doc: int = 3500,
+    ) -> str:
         blocks = []
-        for idx, doc in enumerate(documents, start=1):
+        for idx, doc in enumerate(documents[:max_docs], start=1):
             content = doc["content"]
-            if len(content) > 3500:
-                content = content[:3500].rstrip() + "\n..."
+            if len(content) > max_chars_per_doc:
+                content = content[:max_chars_per_doc].rstrip() + "\n..."
 
             blocks.append(
                 f"[자료 {idx}]\n"
@@ -113,12 +117,7 @@ class ProjectProfileEvidenceService:
                 f"본문:\n{content}"
             )
 
-        user_prompt = "[분석 자료]\n" + "\n\n".join(blocks)
-
-        return [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
+        return "[분석 자료]\n" + "\n\n".join(blocks)
 
     def _build_answer_messages(self, question: str, evidences: list[dict]) -> list[dict]:
         system_prompt = load_prompt_text(PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH)
@@ -150,68 +149,15 @@ class ProjectProfileEvidenceService:
         ]
 
     def _extract_json_array(self, text: str) -> list[dict]:
-        raw = (text or "").strip()
-        if not raw:
-            return []
+        result = self.extraction_service.parse_profile_candidates(
+            text,
+            normalize_source_strength=self.memory_policy.normalize_source_strength,
+            include_source_file_paths=True,
+        )
 
-        if raw.startswith("```"):
-            lines = raw.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            raw = "\n".join(lines).strip()
-
-        start = raw.find("[")
-        end = raw.rfind("]")
-        if start == -1 or end == -1 or end < start:
-            return []
-
-        raw = raw[start:end + 1]
-
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
-
-        if not isinstance(data, list):
-            return []
-
-        result: list[dict] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-
-            topic = str(item.get("topic") or "").strip()
-            candidate_content = str(item.get("candidate_content") or "").strip()
-            source_strength = self.memory_policy.normalize_source_strength(item.get("source_strength"))
-            evidence_text = str(item.get("evidence_text") or "").strip()
-
-            try:
-                confidence = float(item.get("confidence", 0.0))
-            except (TypeError, ValueError):
-                confidence = 0.0
-
-            source_file_paths = item.get("source_file_paths") or []
-            if not isinstance(source_file_paths, list):
-                source_file_paths = []
-
-            if not topic or not candidate_content:
-                continue
-
-            if source_strength not in SOURCE_STRENGTH_ORDER:
-                source_strength = "repeated_behavior"
-
-            result.append(
-                {
-                    "topic": topic,
-                    "candidate_content": candidate_content,
-                    "source_strength": source_strength,
-                    "confidence": max(0.0, min(confidence, 1.0)),
-                    "evidence_text": evidence_text,
-                    "source_file_paths": [str(x) for x in source_file_paths],
-                }
-            )
+        for item in result:
+            if item.get("source_strength") not in SOURCE_STRENGTH_ORDER:
+                item["source_strength"] = "repeated_behavior"
 
         return result
 
@@ -468,9 +414,26 @@ class ProjectProfileEvidenceService:
                 "candidate_count": 0,
             }
 
-        messages = self._build_extract_messages(project_id=project_id, documents=documents)
-        answer = self.client.chat(messages, model=model).strip()
-        candidates = [self._resolve_candidate_topic(candidate, model=model) for candidate in self._extract_json_array(answer)]
+        user_prompt = self._build_extract_user_prompt(
+            project_id=project_id,
+            documents=documents,
+            max_docs=8,
+            max_chars_per_doc=3000,
+        )
+        retry_user_prompt = self._build_extract_user_prompt(
+            project_id=project_id,
+            documents=documents,
+            max_docs=4,
+            max_chars_per_doc=1600,
+        )
+        extract_result = self.extraction_service.run_extract(
+            system_prompt_path=PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
+            user_prompt=user_prompt,
+            retry_user_prompt=retry_user_prompt,
+            model=model,
+            require_complete=True,
+        )
+        candidates = [self._resolve_candidate_topic(candidate, model=model) for candidate in self._extract_json_array(extract_result.text)]
 
         for candidate in candidates:
             source_paths = candidate.get("source_file_paths") or []
