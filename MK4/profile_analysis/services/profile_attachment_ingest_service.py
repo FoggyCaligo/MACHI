@@ -8,6 +8,10 @@ from config import (
     PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH,
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
 )
+from memory.policies.memory_classification_policy import (
+    MemoryClassificationPolicy,
+    SOURCE_STRENGTH_ORDER,
+)
 from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from profile_analysis.stores.uploaded_profile_source_store import UploadedProfileSourceStore
@@ -28,12 +32,6 @@ PROFILE_FILENAME_HINTS = {
     "profile", "blog", "essay", "memo", "notes", "retrospective",
     "회고", "블로그", "프로필", "메모", "생각", "기록",
 }
-SOURCE_STRENGTH_ORDER = {
-    "temporary_interest": 1,
-    "repeated_behavior": 2,
-    "explicit_self_statement": 3,
-}
-
 
 class ProfileAttachmentIngestService:
     def __init__(self) -> None:
@@ -43,6 +41,7 @@ class ProfileAttachmentIngestService:
         self.extract_client = OllamaClient(timeout=120, num_predict=384)
         self.extract_retry_client = OllamaClient(timeout=120, num_predict=256)
         self.answer_runner = ResponseRunner(timeout=ATTACHMENT_REPLY_TIMEOUT, num_predict=ATTACHMENT_REPLY_NUM_PREDICT, max_continuations=ATTACHMENT_REPLY_MAX_CONTINUATIONS)
+        self.memory_policy = MemoryClassificationPolicy()
 
     def _normalize_whitespace(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "")).strip()
@@ -282,7 +281,7 @@ class ProfileAttachmentIngestService:
 
             topic = str(item.get("topic") or "").strip()
             candidate_content = str(item.get("candidate_content") or "").strip()
-            source_strength = str(item.get("source_strength") or "").strip()
+            source_strength = self.memory_policy.normalize_source_strength(item.get("source_strength"))
             evidence_text = str(item.get("evidence_text") or "").strip()
 
             try:
@@ -292,9 +291,6 @@ class ProfileAttachmentIngestService:
 
             if not topic or not candidate_content:
                 continue
-
-            if source_strength not in SOURCE_STRENGTH_ORDER:
-                source_strength = "repeated_behavior"
 
             result.append(
                 {

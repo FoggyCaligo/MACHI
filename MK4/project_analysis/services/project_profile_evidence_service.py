@@ -8,6 +8,10 @@ from config import (
     PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH,
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
 )
+from memory.policies.memory_classification_policy import (
+    MemoryClassificationPolicy,
+    SOURCE_STRENGTH_ORDER,
+)
 from memory.stores.correction_store import CorrectionStore
 from memory.stores.profile_store import ProfileStore
 from memory.services.topic_router import TopicRouter
@@ -49,12 +53,6 @@ PROFILE_QUESTION_KEYWORDS = {
     "판단 기준",
     "불편해하는",
 }
-SOURCE_STRENGTH_ORDER = {
-    "temporary_interest": 1,
-    "repeated_behavior": 2,
-    "explicit_self_statement": 3,
-}
-
 
 class ProjectProfileEvidenceService:
     def __init__(self) -> None:
@@ -65,6 +63,12 @@ class ProjectProfileEvidenceService:
         self.topic_store = TopicStore()
         self.topic_router = TopicRouter()
         self.client = OllamaClient()
+        self.answer_runner = ResponseRunner(
+            timeout=PROJECT_REPLY_TIMEOUT,
+            num_predict=PROJECT_REPLY_NUM_PREDICT,
+            max_continuations=PROJECT_REPLY_MAX_CONTINUATIONS,
+        )
+        self.memory_policy = MemoryClassificationPolicy()
 
     def is_profile_question(self, question: str) -> bool:
         q = (question or "").lower()
@@ -180,7 +184,7 @@ class ProjectProfileEvidenceService:
 
             topic = str(item.get("topic") or "").strip()
             candidate_content = str(item.get("candidate_content") or "").strip()
-            source_strength = str(item.get("source_strength") or "").strip()
+            source_strength = self.memory_policy.normalize_source_strength(item.get("source_strength"))
             evidence_text = str(item.get("evidence_text") or "").strip()
 
             try:
@@ -256,12 +260,13 @@ class ProjectProfileEvidenceService:
             topic_id = str(evidence.get("topic_id") or "").strip() or None
             topic = self._topic_label(evidence.get("topic"), topic_id)
             candidate_content = (evidence.get("candidate_content") or "").strip()
-            source_strength = (evidence.get("source_strength") or "").strip()
+            source_strength = self.memory_policy.normalize_source_strength(evidence.get("source_strength"))
 
             if not candidate_content:
                 continue
 
-            if source_strength == "temporary_interest":
+            classification = self.memory_policy.classify_evidence(evidence)
+            if classification["route"] == "general":
                 continue
 
             topic_key = topic_id or self._normalize_text(topic)
@@ -282,6 +287,8 @@ class ProjectProfileEvidenceService:
                         "temporary_interest": 0,
                     },
                     "linked_profile_ids": set(),
+                    "direct_confirm_count": 0,
+                    "memory_value_hits": 0,
                 }
 
             cluster = clusters[key]
@@ -295,6 +302,11 @@ class ProjectProfileEvidenceService:
             cluster["source_strength_counts"][source_strength] = (
                 cluster["source_strength_counts"].get(source_strength, 0) + 1
             )
+
+            classification = self.memory_policy.classify_evidence(evidence)
+            if classification["route"] == "confirmed":
+                cluster["direct_confirm_count"] += 1
+            cluster["memory_value_hits"] += len(classification["signals"])
 
             linked_profile_id = str(evidence.get("linked_profile_id") or "").strip()
             if linked_profile_id:
@@ -326,6 +338,8 @@ class ProjectProfileEvidenceService:
                     "explicit_count": source_strength_counts.get("explicit_self_statement", 0),
                     "repeated_count": source_strength_counts.get("repeated_behavior", 0),
                     "linked_profile_ids": cluster["linked_profile_ids"],
+                    "direct_confirm_count": cluster["direct_confirm_count"],
+                    "memory_value_hits": cluster["memory_value_hits"],
                 }
             )
 
@@ -341,43 +355,10 @@ class ProjectProfileEvidenceService:
         return result
 
     def _is_promotable_cluster(self, cluster: dict) -> tuple[bool, str]:
-        evidence_count = int(cluster.get("evidence_count") or 0)
-        distinct_source_count = int(cluster.get("distinct_source_count") or 0)
-        distinct_project_count = int(cluster.get("distinct_project_count") or 0)
-        avg_confidence = float(cluster.get("avg_confidence") or 0.0)
-        primary_strength = cluster.get("primary_strength") or "repeated_behavior"
-
-        diversity_ok = distinct_source_count >= 2 or distinct_project_count >= 2
-
-        if primary_strength == "explicit_self_statement":
-            if evidence_count < 2:
-                return False, "not_enough_repetition"
-            if not diversity_ok:
-                return False, "not_enough_source_diversity"
-            if avg_confidence < 0.55:
-                return False, "low_confidence"
-            return True, "promotable_explicit"
-
-        if evidence_count < 3:
-            return False, "not_enough_repetition"
-        if not diversity_ok:
-            return False, "not_enough_source_diversity"
-        if avg_confidence < 0.60:
-            return False, "low_confidence"
-        return True, "promotable_repeated"
+        return self.memory_policy.is_promotable_cluster(cluster)
 
     def _promotion_confidence(self, cluster: dict) -> float:
-        avg_confidence = float(cluster.get("avg_confidence") or 0.0)
-        evidence_count = int(cluster.get("evidence_count") or 0)
-        primary_strength = cluster.get("primary_strength") or "repeated_behavior"
-
-        boosted = avg_confidence
-        if primary_strength == "explicit_self_statement":
-            boosted += 0.10
-        if evidence_count >= 4:
-            boosted += 0.05
-
-        return min(max(boosted, 0.45), 0.90)
+        return self.memory_policy.promotion_confidence(cluster)
 
     def _topic_label(self, topic: str | None, topic_id: str | None) -> str:
         if topic:
@@ -525,7 +506,7 @@ class ProjectProfileEvidenceService:
             topic_id = str(evidence.get("topic_id") or "").strip() or None
             topic = self._topic_label(evidence.get("topic"), topic_id)
             candidate_content = (evidence.get("candidate_content") or "").strip()
-            source_strength = (evidence.get("source_strength") or "").strip()
+            source_strength = self.memory_policy.normalize_source_strength(evidence.get("source_strength"))
 
             if not candidate_content:
                 self.evidence_store.mark_applied(evidence["id"])
@@ -533,7 +514,8 @@ class ProjectProfileEvidenceService:
                 processed += 1
                 continue
 
-            if source_strength == "temporary_interest":
+            classification = self.memory_policy.classify_evidence(evidence)
+            if classification["route"] == "general":
                 self.evidence_store.mark_applied(evidence["id"])
                 skipped += 1
                 processed += 1
