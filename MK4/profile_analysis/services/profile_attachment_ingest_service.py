@@ -1,5 +1,3 @@
-import re
-
 from config import (
     ATTACHMENT_REPLY_MAX_CONTINUATIONS,
     ATTACHMENT_REPLY_NUM_PREDICT,
@@ -19,21 +17,6 @@ from memory.services.evidence_extraction_service import EvidenceExtractionServic
 from memory.services.passage_selection_service import PassageSelectionService
 from prompts.prompt_loader import load_prompt_text
 from tools.response_runner import ResponseRunner
-
-
-FIRST_PERSON_MARKERS = {
-    "나는", "내가", "나의", "저는", "제가", "저의", "i am", "i'm", "my ",
-}
-PREFERENCE_MARKERS = {
-    "좋아", "싫어", "선호", "원한다", "바란다", "중요", "필요", "need",
-    "기준", "습관", "성향", "생각", "판단", "prefer", "want", "important",
-    "habit", "style",
-}
-PROFILE_FILENAME_HINTS = {
-    "profile", "blog", "essay", "memo", "notes", "retrospective",
-    "회고", "블로그", "프로필", "메모", "생각", "기록",
-}
-
 class ProfileAttachmentIngestService:
     def __init__(self) -> None:
         self.source_store = UploadedProfileSourceStore()

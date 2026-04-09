@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.orchestrator import Orchestrator
+from app.text_attachment_route_resolver import TextAttachmentRouteResolver
 from config import OLLAMA_DEFAULT_MODEL
 from memory.db import initialize_database
 from profile_analysis.services.profile_attachment_ingest_service import (
@@ -32,24 +33,6 @@ TEXT_EXTENSIONS = {
     ".ini", ".sql", ".html", ".css",
 }
 
-PROFILE_MESSAGE_HINTS = {
-    "나에 대해", "나를", "프로필", "성향", "스타일", "선호", "습관",
-    "내가 어떤", "어떤 사람", "이해", "파악", "need", "니즈",
-    "작동 방식", "블로그", "글 모음", "글들", "회고", "생각",
-}
-PROFILE_FILE_HINTS = {
-    "profile", "blog", "essay", "memo", "notes", "retrospective",
-    "회고", "블로그", "프로필", "메모", "생각", "기록",
-}
-FIRST_PERSON_MARKERS = {
-    "나는", "내가", "나의", "저는", "제가", "저의", "i am", "i'm", "my ",
-}
-
-RECENT_PROFILE_FOLLOWUP_HINTS = {
-    '그 글', '그 글들', '그 파일', '첨부파일', '첨부 파일', '직전', '방금', '바로 직전',
-    '블로그 글', '그 내용', '첫번째 글', '첫 번째 글', '화자', '그 텍스트', '방금 준',
-}
-
 def _log(message: str) -> None:
     print(f"[API] {message}", flush=True)
 
@@ -67,6 +50,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MK4 Personalization Agent", lifespan=lifespan)
 orchestrator = Orchestrator()
+text_attachment_route_resolver = TextAttachmentRouteResolver()
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -160,45 +144,7 @@ def _merge_message_with_text(message: str, filename: str, content: str) -> tuple
     }
 
 
-def _looks_like_profile_request(message: str, filename: str, content: str) -> bool:
-    lowered_message = (message or "").lower()
-    lowered_filename = (filename or "").lower()
-    lowered_content = (content or "")[:4000].lower()
-
-    if any(hint in lowered_message for hint in PROFILE_MESSAGE_HINTS):
-        return True
-
-    if any(hint in lowered_filename for hint in PROFILE_FILE_HINTS):
-        return True
-
-    first_person_hits = sum(1 for marker in FIRST_PERSON_MARKERS if marker in lowered_content)
-    if first_person_hits >= 3:
-        return True
-
-    return False
-
-
-def _looks_like_recent_profile_followup(message: str) -> bool:
-    text = (message or '').strip().lower()
-    if not text:
-        return False
-    return any(hint.lower() in text for hint in RECENT_PROFILE_FOLLOWUP_HINTS)
-
-
-def _merge_message_with_recent_source(message: str, filename: str, excerpt: str) -> str:
-    excerpt = (excerpt or '').strip()
-    if not excerpt:
-        return message
-    return (
-        f"{message}\n\n"
-        f"[직전 첨부 참고 자료]\n"
-        f"파일명: {filename}\n"
-        "아래 내용은 바로 직전 첨부 텍스트에서 현재 질문과 관련성이 높다고 판단된 발췌다. 이 범위 안에서만 근거 있게 답하고, 모르면 모른다고 말하라.\n\n"
-        f"{excerpt}"
-    )
-
-
-@app.post("/chat")
+app.post("/chat")
 async def chat(
     message: Annotated[str | None, Form()] = None,
     project_id: Annotated[str | None, Form()] = None,
@@ -305,7 +251,14 @@ async def chat(
                     "attached_file": file_meta,
                 }
 
-            if _looks_like_profile_request(message=message, filename=filename, content=text_content):
+            attachment_route = text_attachment_route_resolver.resolve(
+                user_request=message,
+                filename=filename,
+                content=text_content,
+                model=model,
+            )
+
+            if attachment_route == "profile_update":
                 _log("profile attachment update branch entered")
 
                 profile_ingest_service = ProfileAttachmentIngestService()
@@ -388,32 +341,6 @@ async def chat(
                 "profile_memory_sync": result.get("profile_memory_sync"),
             }
 
-        merged_recent_file = None
-        if _looks_like_recent_profile_followup(message):
-            profile_ingest_service = ProfileAttachmentIngestService()
-            recent_source_id = profile_ingest_service.get_recent_source_id()
-            if recent_source_id:
-                recent_ref = profile_ingest_service.build_followup_reference(
-                    source_id=recent_source_id,
-                    user_request=message,
-                )
-                if recent_ref:
-                    message = _merge_message_with_recent_source(
-                        message=message,
-                        filename=recent_ref["filename"],
-                        excerpt=recent_ref["excerpt"],
-                    )
-                    merged_recent_file = {
-                        "filename": recent_ref["filename"],
-                        "selected_passage_count": recent_ref.get("selection_meta", {}).get("selected_passage_count"),
-                        "selected_chars": recent_ref.get("selection_meta", {}).get("selected_chars"),
-                        "selection_mode": recent_ref.get("selection_meta", {}).get("selection_mode"),
-                    }
-                    _log(
-                        f"recent profile followup merged | source_id={recent_source_id} | "
-                        f"selected_passages={merged_recent_file.get('selected_passage_count')}"
-                    )
-
         _log("general chat branch entered")
         result = orchestrator.handle_chat(message, model=model)
 
@@ -431,7 +358,7 @@ async def chat(
             "used_profile_evidence": [],
             "profile_evidence_extract": None,
             "profile_memory_sync": None,
-            "attached_file": merged_recent_file,
+            "attached_file": None,
         }
     except HTTPException:
         raise

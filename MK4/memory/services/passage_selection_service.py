@@ -3,18 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-FIRST_PERSON_MARKERS = {
-    "나는", "내가", "나의", "저는", "제가", "저의", "i am", "i'm", "my ",
-}
-PREFERENCE_MARKERS = {
-    "좋아", "싫어", "선호", "원한다", "바란다", "중요", "필요", "need",
-    "기준", "습관", "성향", "생각", "판단", "prefer", "want", "important",
-    "habit", "style",
-}
-PROFILE_FILENAME_HINTS = {
-    "profile", "blog", "essay", "memo", "notes", "retrospective",
-    "회고", "블로그", "프로필", "메모", "생각", "기록",
-}
+from memory.constants.language_signals import FIRST_PERSON_MARKERS, PREFERENCE_MARKERS
+
 PROFILE_DOC_EXTENSIONS = {".txt", ".md", ".markdown", ".rst"}
 PROFILE_NAME_HINTS = {
     "readme.md",
@@ -22,15 +12,13 @@ PROFILE_NAME_HINTS = {
     "about.md",
     "profile.md",
     "notes.md",
-    "blog.md",
-    "blog.txt",
     "plan.md",
     "planning.md",
     "retrospective.md",
 }
-FOLLOWUP_STOPWORDS = {
-    '그리고', '그러면', '그러니까', '이거', '그거', '그것', '이것', '저것', '직전', '바로', '질문', '답변',
-    '파일', '첨부', '글들', '블로그', '내용', '기억', '말해줘', '알려줘', '있니', '뭐였지', '화자', '특징',
+GENERIC_STOPWORDS = {
+    '그리고', '그러면', '그러니까', '이거', '그거', '그것', '이것', '저것', '질문', '답변',
+    '파일', '첨부', '내용', '기억', '말해줘', '알려줘', '있니', '뭐였지',
 }
 
 
@@ -65,7 +53,7 @@ class PassageSelectionService:
         seen = set()
         ordered: list[str] = []
         for term in terms:
-            if term in FOLLOWUP_STOPWORDS:
+            if term in GENERIC_STOPWORDS:
                 continue
             if term not in seen:
                 seen.add(term)
@@ -82,9 +70,6 @@ class PassageSelectionService:
         for marker in PREFERENCE_MARKERS:
             if marker in lowered:
                 score += 2
-        for hint in PROFILE_FILENAME_HINTS:
-            if hint in path_lower:
-                score += 1
         if len(passage) >= 250:
             score += 1
         if len(passage) >= 500:
@@ -99,8 +84,6 @@ class PassageSelectionService:
                 score += 4
         if any(token in user_request for token in ('첫번째', '첫 번째', '처음', '맨 처음', '첫 글')):
             score += max(0, 6 - min(passage_index, 6))
-        if any(token in user_request for token in ('화자', '특징', '성향', '어떤 사람', '프로필')):
-            score += 2
         return score
 
     def filter_profile_documents(self, files: list[dict], max_docs: int = 8) -> list[dict]:

@@ -1,6 +1,7 @@
 import re
 
 from config import TOPIC_CONFIRM_MIN_CONFIDENCE
+from memory.constants.language_signals import FIRST_PERSON_MARKERS, PREFERENCE_MARKERS
 
 
 SOURCE_STRENGTH_ORDER = {

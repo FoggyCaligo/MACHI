@@ -1,68 +1,32 @@
 from __future__ import annotations
 
-MEMORY_REFERENCE_PATTERNS = (
-    "이전에 내가 준", "예전에 내가 준", "전에 내가 준", "이전에 준",
-    "블로그 글", "그 글", "그 파일", "그 텍스트", "첫번째 글", "첫 번째 글",
-    "기억하고 있", "기억하니", "기억해", "기억나", "기억 안",
-    "remember",
-)
-
-ANALYSIS_REFERENCE_PATTERNS = (
-    "그 글들의", "그 글들", "그 파일", "그 텍스트", "그 내용",
-    "화자", "특징", "무슨 글", "첫번째 글", "첫 번째 글",
-)
-
-SOURCE_MARKERS = (
-    "[직전 첨부 참고 자료]",
-    "[첨부 파일 참고 자료]",
-    "[첨부파일 참고 자료]",
-)
-
-def _normalize(text: str) -> str:
-    return " ".join((text or "").strip().split())
+from dataclasses import dataclass, asdict
+from typing import Any
 
 
-def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
-    lowered = text.lower()
-    return any(p.lower() in lowered for p in patterns)
+@dataclass(slots=True)
+class ReplyGuardContext:
+    has_direct_source: bool
+    has_project_scope: bool
+    has_recent_source: bool
+    source_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
-def maybe_build_direct_reply(user_message: str, context: dict | None = None) -> str | None:
-    text = _normalize(user_message)
-    if not text:
-        return None
-
+def build_guard_context(context: dict | None = None) -> ReplyGuardContext:
     context = context or {}
+    source_contents = context.get("source_contents") or context.get("attached_text") or []
+    if isinstance(source_contents, str):
+        source_count = 1 if source_contents.strip() else 0
+    else:
+        source_count = len(source_contents) if source_contents else 0
 
-    # 현재 턴 message 안에 직전 첨부 발췌가 이미 병합되어 있으면, 가드가 선점하면 안 된다.
-    if any(marker in text for marker in SOURCE_MARKERS):
-        return None
-
-    has_direct_source = bool(
-        context.get("source_contents")
-        or context.get("attached_text")
-        or context.get("project_chunks")
-        or context.get("used_chunks")
-        or context.get("used_profile_evidence")
+    recent_sources = context.get("recent_sources") or []
+    return ReplyGuardContext(
+        has_direct_source=bool(source_count or context.get("project_chunks")),
+        has_project_scope=bool(context.get("project_chunks")),
+        has_recent_source=bool(recent_sources),
+        source_count=source_count,
     )
-    if has_direct_source:
-        return None
-
-    asks_memory = _contains_any(text, MEMORY_REFERENCE_PATTERNS)
-    asks_analysis_without_source = _contains_any(text, ANALYSIS_REFERENCE_PATTERNS) and (
-        "특징" in text or "화자" in text or "말해" in text or "무엇" in text
-    )
-
-    if asks_memory:
-        return (
-            "지금 이 대화 기준으로는, 예전에 주셨던 블로그 글의 구체적인 원문이나 순서를 기억하고 있다고 말할 수 없습니다. "
-            "현재 대화에 그 글의 내용이 다시 들어오지 않았기 때문입니다. 파일이나 텍스트를 다시 주시면, 그걸 기준으로 정확하게 읽고 답하겠습니다."
-        )
-
-    if asks_analysis_without_source:
-        return (
-            "지금 이 대화에는 그 글들의 실제 원문이 없어서, 화자의 특징을 근거 있게 말할 수 없습니다. "
-            "파일이나 텍스트를 다시 주시면, 그 내용을 읽은 뒤 화자의 특징을 구조적으로 정리해드리겠습니다."
-        )
-
-    return None
