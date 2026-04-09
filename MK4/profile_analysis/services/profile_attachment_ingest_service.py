@@ -4,9 +4,7 @@ import re
 from config import (
     PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH,
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
-    TOPIC_CONFIRM_MIN_CONFIDENCE,
 )
-from memory.services.topic_router import TopicRouter
 from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from profile_analysis.stores.uploaded_profile_source_store import UploadedProfileSourceStore
@@ -38,9 +36,9 @@ class ProfileAttachmentIngestService:
         self.source_store = UploadedProfileSourceStore()
         self.evidence_store = UploadedProfileEvidenceStore()
         self.sync_service = ProfileMemorySyncService()
-        self.topic_router = TopicRouter()
-        self.extract_client = OllamaClient(timeout=150, num_predict=640)
-        self.answer_client = OllamaClient(timeout=150, num_predict=560)
+        self.extract_client = OllamaClient(timeout=120, num_predict=384)
+        self.extract_retry_client = OllamaClient(timeout=120, num_predict=256)
+        self.answer_client = OllamaClient(timeout=150, num_predict=420)
 
     def _normalize_whitespace(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "")).strip()
@@ -98,8 +96,8 @@ class ProfileAttachmentIngestService:
         self,
         filename: str,
         content: str,
-        max_total_chars: int = 2600,
-        max_passages: int = 8,
+        max_total_chars: int = 1800,
+        max_passages: int = 5,
     ) -> tuple[list[dict], dict]:
         passages = self._split_passages(content)
         candidates: list[dict] = []
@@ -171,10 +169,7 @@ class ProfileAttachmentIngestService:
             "selection_mode": "fallback_head_excerpt",
         }
 
-    def _build_extract_messages(self, source_id: str, filename: str, content: str) -> tuple[list[dict], dict]:
-        system_prompt = load_prompt_text(PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH)
-        selected_passages, selection_meta = self._select_relevant_passages(filename=filename, content=content)
-
+    def _compact_extract_user_prompt(self, source_id: str, filename: str, selected_passages: list[dict], selection_meta: dict) -> str:
         passage_blocks = []
         for idx, item in enumerate(selected_passages, start=1):
             passage_blocks.append(
@@ -182,23 +177,71 @@ class ProfileAttachmentIngestService:
                 f"source_id: {source_id}\n"
                 f"파일명: {filename}\n"
                 f"문단 번호: {item['passage_index']}\n"
-                f"선별 점수: {item['score']}\n"
                 f"본문:\n{item['text']}"
             )
 
-        user_prompt = (
-            f"[업로드 source]\nsource_id: {source_id}\n파일명: {filename}\n\n"
-            f"[선별 정보]\n"
-            f"- selected_passage_count: {selection_meta['selected_passage_count']}\n"
-            f"- selected_chars: {selection_meta['selected_chars']}\n"
-            f"- selection_mode: {selection_meta['selection_mode']}\n\n"
-            f"[분석 자료]\n" + "\n\n".join(passage_blocks)
+        return (
+            f"[source]\nsource_id: {source_id}\nfilename: {filename}\n\n"
+            f"[selection]\ncount={selection_meta['selected_passage_count']} chars={selection_meta['selected_chars']} mode={selection_meta['selection_mode']}\n\n"
+            f"[passages]\n" + "\n\n".join(passage_blocks)
+        )
+
+    def _build_extract_messages(
+        self,
+        source_id: str,
+        filename: str,
+        content: str,
+        max_total_chars: int = 1800,
+        max_passages: int = 5,
+    ) -> tuple[list[dict], dict]:
+        system_prompt = load_prompt_text(PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH)
+        selected_passages, selection_meta = self._select_relevant_passages(
+            filename=filename,
+            content=content,
+            max_total_chars=max_total_chars,
+            max_passages=max_passages,
+        )
+        user_prompt = self._compact_extract_user_prompt(
+            source_id=source_id,
+            filename=filename,
+            selected_passages=selected_passages,
+            selection_meta=selection_meta,
         )
 
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ], selection_meta
+
+    def _run_extract(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        retry_messages: list[dict] | None = None,
+    ) -> tuple[str, str | None]:
+        try:
+            answer = self.extract_client.chat(
+                messages,
+                model=model,
+                require_complete=True,
+                truncated_notice=None,
+            ).strip()
+            return answer, None
+        except RuntimeError as exc:
+            error_text = str(exc)
+            if 'TRUNCATED_REPLY_LENGTH' not in error_text or not retry_messages:
+                return '', error_text
+
+        try:
+            answer = self.extract_retry_client.chat(
+                retry_messages,
+                model=model,
+                require_complete=True,
+                truncated_notice=None,
+            ).strip()
+            return answer, 'retried_after_truncation'
+        except RuntimeError as exc:
+            return '', str(exc)
 
     def _extract_json_array(self, text: str) -> list[dict]:
         raw = (text or "").strip()
@@ -261,33 +304,6 @@ class ProfileAttachmentIngestService:
 
         return result
 
-    def _resolve_candidate_topic(self, candidate: dict, model: str | None = None) -> dict:
-        candidate_content = self._normalize_whitespace(str(candidate.get("candidate_content") or ""))
-        raw_topic = self._normalize_whitespace(str(candidate.get("topic") or ""))
-        evidence_text = self._normalize_whitespace(str(candidate.get("evidence_text") or ""))
-
-        routing_text = candidate_content
-        if raw_topic:
-            routing_text = f"{routing_text}\n{raw_topic}".strip()
-        if evidence_text:
-            routing_text = f"{routing_text}\n{evidence_text[:280]}".strip()
-
-        resolution = self.topic_router.resolve(
-            user_message=routing_text,
-            model=model,
-            use_active_topic=False,
-            persist_active=False,
-        )
-
-        routed = dict(candidate)
-        routed["topic_id"] = resolution.topic_id
-        routed["topic"] = resolution.topic_summary or raw_topic or "general"
-        routed["topic_resolution"] = {
-            "decision": resolution.decision,
-            "similarity": resolution.similarity,
-        }
-        return routed
-
     def _dedupe_evidence(self, evidences: list[dict]) -> list[dict]:
         seen: set[tuple[str, str]] = set()
         result: list[dict] = []
@@ -303,7 +319,7 @@ class ProfileAttachmentIngestService:
 
         for item in sorted_items:
             key = (
-                str(item.get("topic_id") or item.get("topic") or "").strip().lower(),
+                str(item.get("topic") or "").strip().lower(),
                 str(item.get("candidate_content") or "").strip().lower(),
             )
             if not key[0] or not key[1] or key in seen:
@@ -349,6 +365,7 @@ class ProfileAttachmentIngestService:
         used_evidence: list[dict],
         sync_result: dict,
         extract_result: dict,
+        extract_error: str | None = None,
     ) -> list[dict]:
         system_prompt = load_prompt_text(PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH)
 
@@ -379,6 +396,8 @@ class ProfileAttachmentIngestService:
         status_summary = (
             f"candidate_count={candidate_count}, linked={linked}, promoted={promoted}, blocked={blocked}"
         )
+        if extract_error:
+            status_summary += f", extract_error={extract_error[:120]}"
 
         user_prompt = (
             f"[사용자 요청 요지]\n{request_summary}\n\n"
@@ -437,14 +456,26 @@ class ProfileAttachmentIngestService:
             source_id=source_id,
             filename=filename,
             content=clean_content,
+            max_total_chars=1800,
+            max_passages=5,
         )
-        answer = self.extract_client.chat(
-            messages,
+        retry_messages, retry_selection_meta = self._build_extract_messages(
+            source_id=source_id,
+            filename=filename,
+            content=clean_content,
+            max_total_chars=1100,
+            max_passages=3,
+        )
+        answer, extract_error = self._run_extract(
+            messages=messages,
             model=model,
-            require_complete=True,
-            truncated_notice=None,
-        ).strip()
-        candidates = [self._resolve_candidate_topic(candidate, model=model) for candidate in self._extract_json_array(answer)]
+            retry_messages=retry_messages,
+        )
+        if answer:
+            candidates = self._extract_json_array(answer)
+        else:
+            candidates = []
+            selection_meta = retry_selection_meta
 
         for candidate in candidates:
             self.evidence_store.add(
@@ -452,7 +483,6 @@ class ProfileAttachmentIngestService:
                 source_file_path=filename,
                 evidence_type="profile_candidate",
                 topic=candidate["topic"],
-                topic_id=candidate.get("topic_id"),
                 candidate_content=candidate["candidate_content"],
                 source_strength=candidate["source_strength"],
                 evidence_text=candidate["evidence_text"],
@@ -464,7 +494,6 @@ class ProfileAttachmentIngestService:
         used_profile_evidence = [
             {
                 "topic": item.get("topic"),
-                "topic_id": item.get("topic_id"),
                 "source_file_path": item.get("source_file_path"),
                 "confidence": item.get("confidence"),
                 "source_strength": item.get("source_strength"),
@@ -481,7 +510,7 @@ class ProfileAttachmentIngestService:
             "selected_chars": selection_meta["selected_chars"],
             "selection_mode": selection_meta["selection_mode"],
             "source_files": [filename],
-            "direct_confirm_threshold": TOPIC_CONFIRM_MIN_CONFIDENCE,
+            "extract_error": extract_error,
         }
 
         answer_messages = self._build_answer_messages(
@@ -490,6 +519,7 @@ class ProfileAttachmentIngestService:
             used_evidence=used_profile_evidence,
             sync_result=sync_result,
             extract_result=extract_result,
+            extract_error=extract_error,
         )
         user_answer = self.answer_client.chat(answer_messages, model=model)
 
