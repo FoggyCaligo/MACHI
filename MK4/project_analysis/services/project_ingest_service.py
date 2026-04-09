@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from project_analysis.injest.chunker import chunk_text_by_lines
 from project_analysis.injest.file_filter import is_allowed_file
 from project_analysis.injest.zip_loader import extract_zip
@@ -15,7 +16,7 @@ class ProjectIngestService:
         self.project_file_store = ProjectFileStore()
         self.project_chunk_store = ProjectChunkStore()
         self.profile_evidence_service = ProjectProfileEvidenceService()
-
+        self.profile_memory_sync_service = ProfileMemorySyncService()
     def ingest(
         self,
         zip_path: Path,
@@ -87,22 +88,12 @@ class ProjectIngestService:
 
         self.project_store.update_status(project_id, "extracting_profile_evidence")
 
-        extract_result = {
-            "stored": False,
-            "document_count": 0,
-            "source_files": [],
-            "candidate_count": 0,
-        }
-        sync_result = {
-            "processed": 0,
-            "inserted_profiles": 0,
-            "added_corrections": 0,
-            "skipped": 0,
-        }
+        extract_result = self.profile_evidence_service.extract_and_store(project_id, model=model)
+        sync_result = self.profile_memory_sync_service.sync_project(project_id)
 
         try:
             extract_result = self.profile_evidence_service.extract_and_store(project_id, model=model)
-            sync_result = self.profile_evidence_service.sync_to_memory(project_id)
+            sync_result = self.profile_memory_sync_service.sync_project(project_id)
         finally:
             self.project_store.update_status(project_id, "indexed")
 

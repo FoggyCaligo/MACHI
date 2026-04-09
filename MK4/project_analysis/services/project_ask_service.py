@@ -1,3 +1,4 @@
+from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from project_analysis.retrieval.project_retriever import ProjectRetriever
 from project_analysis.review.project_ask_agent import ProjectAskAgent
 from project_analysis.services.project_profile_evidence_service import ProjectProfileEvidenceService
@@ -9,16 +10,16 @@ class ProjectAskService:
         self.retriever = ProjectRetriever()
         self.ask_agent = ProjectAskAgent()
         self.profile_evidence_service = ProjectProfileEvidenceService()
+        self.profile_memory_sync_service = ProfileMemorySyncService()
         self.project_review_store = ProjectReviewStore()
-
     def ask(self, project_id: str, question: str, model: str | None = None) -> dict:
         profile_extract_result = None
         profile_sync_result = None
 
         if self.profile_evidence_service.is_profile_question(question):
             profile_extract_result = self.profile_evidence_service.extract_and_store(project_id, model=model)
-            profile_sync_result = self.profile_evidence_service.sync_to_memory(project_id)
-
+            profile_sync_result = self.profile_memory_sync_service.sync_project(project_id)
+            
             profile_result = self.profile_evidence_service.answer_from_project(
                 project_id,
                 question,
