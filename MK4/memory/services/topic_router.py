@@ -81,23 +81,31 @@ class TopicRouter:
         query_embedding = embed_text(user_message, kind="query")
         return cosine_similarity(query_embedding, topic.get("embedding") or [])
 
-    def resolve(self, user_message: str, model: str | None = None) -> TopicResolution:
+    def resolve(
+        self,
+        user_message: str,
+        model: str | None = None,
+        *,
+        use_active_topic: bool = True,
+        persist_active: bool = True,
+    ) -> TopicResolution:
         cleaned = " ".join((user_message or "").strip().split())
         if not cleaned:
             return TopicResolution("general", None, "general", "general", 0.0, False)
 
-        active_topic_id = self.state_store.get_active_topic_id()
+        active_topic_id = self.state_store.get_active_topic_id() if use_active_topic else None
         if active_topic_id:
             active_topic = self.topic_store.get_topic(active_topic_id)
             if active_topic:
                 similarity = self._active_topic_similarity(cleaned, active_topic)
                 if similarity >= KEEP_ACTIVE_THRESHOLD:
                     self.topic_store.mark_used(active_topic_id)
-                    self.state_store.set_active_topic(
-                        active_topic_id,
-                        active_topic.get("summary") or active_topic.get("name") or "",
-                        source="topic_router",
-                    )
+                    if persist_active:
+                        self.state_store.set_active_topic(
+                            active_topic_id,
+                            active_topic.get("summary") or active_topic.get("name") or "",
+                            source="topic_router",
+                        )
                     return TopicResolution(
                         decision="keep_active",
                         topic_id=active_topic_id,
@@ -119,7 +127,8 @@ class TopicRouter:
             if topic_id:
                 self.topic_store.mark_used(topic_id)
                 summary = best.get("summary") or best.get("name") or ""
-                self.state_store.set_active_topic(topic_id, summary, source="topic_router")
+                if persist_active:
+                    self.state_store.set_active_topic(topic_id, summary, source="topic_router")
                 return TopicResolution(
                     decision="attach_existing",
                     topic_id=topic_id,
@@ -137,7 +146,8 @@ class TopicRouter:
             confidence=TOPIC_CREATE_MIN_CONFIDENCE,
         )
         self.topic_store.mark_used(topic_id)
-        self.state_store.set_active_topic(topic_id, new_summary, source="topic_router")
+        if persist_active:
+            self.state_store.set_active_topic(topic_id, new_summary, source="topic_router")
         return TopicResolution(
             decision="create_new",
             topic_id=topic_id,

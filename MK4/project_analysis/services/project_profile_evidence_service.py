@@ -7,6 +7,7 @@ from config import (
 )
 from memory.stores.correction_store import CorrectionStore
 from memory.stores.profile_store import ProfileStore
+from memory.services.topic_router import TopicRouter
 from memory.stores.topic_store import TopicStore
 from prompts.prompt_loader import load_prompt_text
 from project_analysis.stores.project_file_store import ProjectFileStore
@@ -58,6 +59,7 @@ class ProjectProfileEvidenceService:
         self.profile_store = ProfileStore()
         self.correction_store = CorrectionStore()
         self.topic_store = TopicStore()
+        self.topic_router = TopicRouter()
         self.client = OllamaClient()
 
     def is_profile_question(self, question: str) -> bool:
@@ -204,6 +206,34 @@ class ProjectProfileEvidenceService:
             )
 
         return result
+
+
+    def _resolve_candidate_topic(self, candidate: dict, model: str | None = None) -> dict:
+        candidate_content = self._normalize_text(str(candidate.get("candidate_content") or ""))
+        raw_topic = self._normalize_text(str(candidate.get("topic") or ""))
+        evidence_text = self._normalize_text(str(candidate.get("evidence_text") or ""))
+
+        routing_text = candidate_content
+        if raw_topic:
+            routing_text = f"{routing_text}\n{raw_topic}".strip()
+        if evidence_text:
+            routing_text = f"{routing_text}\n{evidence_text[:280]}".strip()
+
+        resolution = self.topic_router.resolve(
+            user_message=routing_text,
+            model=model,
+            use_active_topic=False,
+            persist_active=False,
+        )
+
+        routed = dict(candidate)
+        routed["topic_id"] = resolution.topic_id
+        routed["topic"] = resolution.topic_summary or raw_topic or "general"
+        routed["topic_resolution"] = {
+            "decision": resolution.decision,
+            "similarity": resolution.similarity,
+        }
+        return routed
 
     def _normalize_text(self, text: str) -> str:
         return " ".join((text or "").strip().lower().split())
@@ -455,7 +485,7 @@ class ProjectProfileEvidenceService:
 
         messages = self._build_extract_messages(project_id=project_id, documents=documents)
         answer = self.client.chat(messages, model=model).strip()
-        candidates = self._extract_json_array(answer)
+        candidates = [self._resolve_candidate_topic(candidate, model=model) for candidate in self._extract_json_array(answer)]
 
         for candidate in candidates:
             source_paths = candidate.get("source_file_paths") or []
@@ -466,6 +496,7 @@ class ProjectProfileEvidenceService:
                 source_file_path=source_file_path,
                 evidence_type="profile_candidate",
                 topic=candidate["topic"],
+                topic_id=candidate.get("topic_id"),
                 candidate_content=candidate["candidate_content"],
                 source_strength=candidate["source_strength"],
                 evidence_text=candidate["evidence_text"],

@@ -4,7 +4,9 @@ import re
 from config import (
     PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH,
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
+    TOPIC_CONFIRM_MIN_CONFIDENCE,
 )
+from memory.services.topic_router import TopicRouter
 from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from profile_analysis.stores.uploaded_profile_source_store import UploadedProfileSourceStore
@@ -36,8 +38,9 @@ class ProfileAttachmentIngestService:
         self.source_store = UploadedProfileSourceStore()
         self.evidence_store = UploadedProfileEvidenceStore()
         self.sync_service = ProfileMemorySyncService()
-        self.extract_client = OllamaClient(timeout=300, num_predict=640)
-        self.answer_client = OllamaClient(timeout=300, num_predict=560)
+        self.topic_router = TopicRouter()
+        self.extract_client = OllamaClient(timeout=150, num_predict=640)
+        self.answer_client = OllamaClient(timeout=150, num_predict=560)
 
     def _normalize_whitespace(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "")).strip()
@@ -258,6 +261,33 @@ class ProfileAttachmentIngestService:
 
         return result
 
+    def _resolve_candidate_topic(self, candidate: dict, model: str | None = None) -> dict:
+        candidate_content = self._normalize_whitespace(str(candidate.get("candidate_content") or ""))
+        raw_topic = self._normalize_whitespace(str(candidate.get("topic") or ""))
+        evidence_text = self._normalize_whitespace(str(candidate.get("evidence_text") or ""))
+
+        routing_text = candidate_content
+        if raw_topic:
+            routing_text = f"{routing_text}\n{raw_topic}".strip()
+        if evidence_text:
+            routing_text = f"{routing_text}\n{evidence_text[:280]}".strip()
+
+        resolution = self.topic_router.resolve(
+            user_message=routing_text,
+            model=model,
+            use_active_topic=False,
+            persist_active=False,
+        )
+
+        routed = dict(candidate)
+        routed["topic_id"] = resolution.topic_id
+        routed["topic"] = resolution.topic_summary or raw_topic or "general"
+        routed["topic_resolution"] = {
+            "decision": resolution.decision,
+            "similarity": resolution.similarity,
+        }
+        return routed
+
     def _dedupe_evidence(self, evidences: list[dict]) -> list[dict]:
         seen: set[tuple[str, str]] = set()
         result: list[dict] = []
@@ -273,7 +303,7 @@ class ProfileAttachmentIngestService:
 
         for item in sorted_items:
             key = (
-                str(item.get("topic") or "").strip().lower(),
+                str(item.get("topic_id") or item.get("topic") or "").strip().lower(),
                 str(item.get("candidate_content") or "").strip().lower(),
             )
             if not key[0] or not key[1] or key in seen:
@@ -325,11 +355,15 @@ class ProfileAttachmentIngestService:
         request_summary = self._summarize_user_request(user_request=user_request, filename=filename)
 
         evidence_lines = []
-        for item in used_evidence[:3]:
+        for item in used_evidence[:4]:
             topic = self._normalize_whitespace(str(item.get("topic") or ""))
             candidate = self._normalize_whitespace(str(item.get("candidate_content") or ""))
+            strength = self._normalize_whitespace(str(item.get("source_strength") or ""))
+            confidence = item.get("confidence")
             if topic and candidate:
-                evidence_lines.append(f"- {topic}: {candidate}")
+                evidence_lines.append(
+                    f"- topic={topic} | candidate={candidate} | strength={strength or '-'} | confidence={confidence}"
+                )
 
         evidence_text = "\n".join(evidence_lines).strip() or "- 강하게 잡힌 evidence 없음"
 
@@ -342,21 +376,23 @@ class ProfileAttachmentIngestService:
         )
         candidate_count = int(extract_result.get("candidate_count", 0) or 0)
 
-        if promoted > 0:
-            status_summary = "강한 근거 일부가 실제 프로필 쪽으로 반영됐다."
-        elif linked > 0:
-            status_summary = "기존에 있던 이해와 이어 붙일 수 있는 근거가 잡혔다."
-        elif blocked > 0:
-            status_summary = "근거는 있었지만, 기존 정정이나 충돌 때문에 보수적으로 보류된 부분이 있다."
-        elif candidate_count > 0:
-            status_summary = "근거는 잡혔지만 아직은 더 누적해서 보는 편이 안전하다."
-        else:
-            status_summary = "강하게 잡힌 근거는 많지 않았다."
+        status_summary = (
+            f"candidate_count={candidate_count}, linked={linked}, promoted={promoted}, blocked={blocked}"
+        )
 
         user_prompt = (
             f"[사용자 요청 요지]\n{request_summary}\n\n"
-            f"[핵심 evidence]\n{evidence_text}\n\n"
-            f"[반영 상태]\n{status_summary}\n"
+            f"[이번 파일 정보]\n"
+            f"- filename: {filename}\n"
+            f"- 문서 수: {extract_result.get('document_count', 0)}\n"
+            f"- 선별 문단 수: {extract_result.get('selected_passage_count', 0)}\n\n"
+            f"[이번 파일에서 잡힌 evidence 요약]\n{evidence_text}\n\n"
+            f"[반영 상태 요약]\n{status_summary}\n\n"
+            "[답변 지침]\n"
+            "- 사용자에게 자연스럽게 설명하되, 내부 통계를 그대로 나열하지 말 것\n"
+            "- 존댓말만 사용할 것\n"
+            "- 질문 문장을 거의 그대로 반복하지 말 것\n"
+            "- evidence가 거의 없으면 억지로 의미를 부풀리지 말 것"
         )
 
         return [
@@ -408,7 +444,7 @@ class ProfileAttachmentIngestService:
             require_complete=True,
             truncated_notice=None,
         ).strip()
-        candidates = self._extract_json_array(answer)
+        candidates = [self._resolve_candidate_topic(candidate, model=model) for candidate in self._extract_json_array(answer)]
 
         for candidate in candidates:
             self.evidence_store.add(
@@ -416,6 +452,7 @@ class ProfileAttachmentIngestService:
                 source_file_path=filename,
                 evidence_type="profile_candidate",
                 topic=candidate["topic"],
+                topic_id=candidate.get("topic_id"),
                 candidate_content=candidate["candidate_content"],
                 source_strength=candidate["source_strength"],
                 evidence_text=candidate["evidence_text"],
@@ -427,6 +464,7 @@ class ProfileAttachmentIngestService:
         used_profile_evidence = [
             {
                 "topic": item.get("topic"),
+                "topic_id": item.get("topic_id"),
                 "source_file_path": item.get("source_file_path"),
                 "confidence": item.get("confidence"),
                 "source_strength": item.get("source_strength"),
@@ -443,6 +481,7 @@ class ProfileAttachmentIngestService:
             "selected_chars": selection_meta["selected_chars"],
             "selection_mode": selection_meta["selection_mode"],
             "source_files": [filename],
+            "direct_confirm_threshold": TOPIC_CONFIRM_MIN_CONFIDENCE,
         }
 
         answer_messages = self._build_answer_messages(
