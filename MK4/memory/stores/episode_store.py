@@ -5,16 +5,16 @@ from memory.db import connection_context, utc_now
 
 
 class EpisodeStore:
-    def create_episode(self, topic: str, summary: str, raw_ref: str | None = None, importance: float = 0.5):
+    def create_episode(self, topic: str, summary: str, raw_ref: str | None = None, importance: float = 0.5, topic_id: str | None = None):
         episode_id = str(uuid.uuid4())
         now = utc_now()
         with connection_context() as conn:
             conn.execute(
                 """
-                INSERT INTO episodes (id, topic, summary, raw_ref, importance, last_referenced_at, created_at, state, pinned)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0)
+                INSERT INTO episodes (id, topic_id, topic, summary, raw_ref, importance, last_referenced_at, created_at, state, pinned)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0)
                 """,
-                (episode_id, topic, summary, raw_ref, importance, now, now),
+                (episode_id, topic_id, topic, summary, raw_ref, importance, now, now),
             )
         return episode_id
 
@@ -58,5 +58,4 @@ class EpisodeStore:
             conn.execute("UPDATE episodes SET state = 'dropped' WHERE id = ? AND pinned = 0", (episode_id,))
 
     def transition_state(self):
-        # retention policy에서 세부 조건 판단 후 여기 메서드 호출 예정
         return None

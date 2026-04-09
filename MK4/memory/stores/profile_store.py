@@ -5,49 +5,61 @@ from memory.db import connection_context, utc_now
 
 
 class ProfileStore:
-    def get_active_by_topic(self, topic: str) -> dict[str, Any] | None:
+    def _build_topic_clause(self, *, topic: str | None = None, topic_id: str | None = None) -> tuple[str, tuple]:
+        if topic_id:
+            return "topic_id = ?", (topic_id,)
+        return "topic = ?", (topic or "general",)
+
+    def get_active_by_topic(self, topic: str | None = None, topic_id: str | None = None) -> dict[str, Any] | None:
+        clause, values = self._build_topic_clause(topic=topic, topic_id=topic_id)
         with connection_context() as conn:
             row = conn.execute(
-                "SELECT * FROM profiles WHERE topic = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
-                (topic,),
+                f"SELECT * FROM profiles WHERE {clause} AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+                values,
             ).fetchone()
             return dict(row) if row else None
 
-    def get_active_profiles(self) -> list[dict[str, Any]]:
+    def get_active_profiles(self, exclude_general: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT * FROM profiles WHERE status = 'active'"
+        params: tuple = ()
+        if exclude_general:
+            query += " AND COALESCE(topic, '') != 'general'"
+        query += " ORDER BY updated_at DESC"
+        with connection_context() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_recent_history(self, topic: str | None = None, topic_id: str | None = None, limit: int = 2) -> list[dict[str, Any]]:
+        clause, values = self._build_topic_clause(topic=topic, topic_id=topic_id)
         with connection_context() as conn:
             rows = conn.execute(
-                "SELECT * FROM profiles WHERE status = 'active' ORDER BY topic, updated_at DESC"
+                f"SELECT * FROM profiles WHERE {clause} AND status = 'superseded' ORDER BY updated_at DESC LIMIT ?",
+                (*values, limit),
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_history(self, topic: str, limit: int = 2) -> list[dict[str, Any]]:
-        with connection_context() as conn:
-            rows = conn.execute(
-                "SELECT * FROM profiles WHERE topic = ? AND status = 'superseded' ORDER BY updated_at DESC LIMIT ?",
-                (topic, limit),
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def search(self, query: str, limit: int = 5, include_general: bool = True) -> list[dict[str, Any]]:
         pattern = f"%{query}%"
-        with connection_context() as conn:
-            rows = conn.execute(
-                """
+        sql = """
                 SELECT * FROM profiles
                 WHERE status = 'active' AND (topic LIKE ? OR content LIKE ?)
-                ORDER BY updated_at DESC
-                LIMIT ?
-                """,
-                (pattern, pattern, limit),
-            ).fetchall()
+                """
+        params = [pattern, pattern]
+        if not include_general:
+            sql += " AND COALESCE(topic, '') != 'general'"
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        with connection_context() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return [dict(r) for r in rows]
 
-    def insert_profile(self, topic: str, content: str, source: str, confidence: float = 1.0):
+    def insert_profile(self, topic: str, content: str, source: str, confidence: float = 1.0, topic_id: str | None = None):
         now = utc_now()
+        clause, values = self._build_topic_clause(topic=topic, topic_id=topic_id)
         with connection_context() as conn:
             active = conn.execute(
-                "SELECT * FROM profiles WHERE topic = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
-                (topic,),
+                f"SELECT * FROM profiles WHERE {clause} AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+                values,
             ).fetchone()
             version_no = 1
             if active:
@@ -59,20 +71,20 @@ class ProfileStore:
             new_id = str(uuid.uuid4())
             conn.execute(
                 """
-                INSERT INTO profiles (id, topic, content, confidence, source, version_no, created_at, updated_at, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                INSERT INTO profiles (id, topic_id, topic, content, confidence, source, version_no, created_at, updated_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
                 """,
-                (new_id, topic, content, confidence, source, version_no, now, now),
+                (new_id, topic_id, topic, content, confidence, source, version_no, now, now),
             )
-        self.trim_history(topic, keep_superseded=2)
+        self.trim_history(topic=topic, topic_id=topic_id, keep_superseded=2)
         return new_id
 
-    def trim_history(self, topic: str, keep_superseded: int = 2):
+    def trim_history(self, topic: str | None = None, topic_id: str | None = None, keep_superseded: int = 2):
+        clause, values = self._build_topic_clause(topic=topic, topic_id=topic_id)
         with connection_context() as conn:
             rows = conn.execute(
-                "SELECT id FROM profiles WHERE topic = ? AND status = 'superseded' ORDER BY updated_at DESC",
-                (topic,),
+                f"SELECT id FROM profiles WHERE {clause} AND status = 'superseded' ORDER BY updated_at DESC",
+                values,
             ).fetchall()
-            ids = [r['id'] for r in rows]
-            for old_id in ids[keep_superseded:]:
-                conn.execute("DELETE FROM profiles WHERE id = ?", (old_id,))
+            for row in rows[keep_superseded:]:
+                conn.execute("DELETE FROM profiles WHERE id = ?", (row['id'],))

@@ -2,6 +2,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS profiles (
     id TEXT PRIMARY KEY,
+    topic_id TEXT,
     topic TEXT NOT NULL,
     content TEXT NOT NULL,
     confidence REAL NOT NULL DEFAULT 1.0,
@@ -9,13 +10,16 @@ CREATE TABLE IF NOT EXISTS profiles (
     version_no INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('active', 'superseded'))
+    status TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+    FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_profiles_topic_status ON profiles(topic, status);
+CREATE INDEX IF NOT EXISTS idx_profiles_topic_id_status ON profiles(topic_id, status);
 
 CREATE TABLE IF NOT EXISTS corrections (
     id TEXT PRIMARY KEY,
+    topic_id TEXT,
     topic TEXT NOT NULL,
     content TEXT NOT NULL,
     reason TEXT,
@@ -27,14 +31,17 @@ CREATE TABLE IF NOT EXISTS corrections (
     created_at TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active', 'applied', 'removed')),
     FOREIGN KEY (supersedes_profile_id) REFERENCES profiles(id),
-    FOREIGN KEY (supersedes_correction_id) REFERENCES corrections(id)
+    FOREIGN KEY (supersedes_correction_id) REFERENCES corrections(id),
+    FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_corrections_topic_status ON corrections(topic, status);
+CREATE INDEX IF NOT EXISTS idx_corrections_topic_id_status ON corrections(topic_id, status);
 CREATE INDEX IF NOT EXISTS idx_corrections_created_at ON corrections(created_at);
 
 CREATE TABLE IF NOT EXISTS episodes (
     id TEXT PRIMARY KEY,
+    topic_id TEXT,
     topic TEXT,
     summary TEXT NOT NULL,
     raw_ref TEXT,
@@ -42,21 +49,26 @@ CREATE TABLE IF NOT EXISTS episodes (
     last_referenced_at TEXT,
     created_at TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('active', 'compressed', 'dropped')),
-    pinned INTEGER NOT NULL DEFAULT 0
+    pinned INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_topic_state ON episodes(topic, state);
+CREATE INDEX IF NOT EXISTS idx_episodes_topic_id_state ON episodes(topic_id, state);
 CREATE INDEX IF NOT EXISTS idx_episodes_last_referenced ON episodes(last_referenced_at);
 
 CREATE TABLE IF NOT EXISTS summaries (
     id TEXT PRIMARY KEY,
+    topic_id TEXT,
     topic TEXT NOT NULL,
     content TEXT NOT NULL,
     source_episode_ids TEXT,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_summaries_topic ON summaries(topic);
+CREATE INDEX IF NOT EXISTS idx_summaries_topic_id ON summaries(topic_id);
 
 CREATE TABLE IF NOT EXISTS states (
     key TEXT PRIMARY KEY,

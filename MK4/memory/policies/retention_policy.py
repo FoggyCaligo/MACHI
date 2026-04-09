@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+from config import GENERAL_RETENTION_DAYS
+from memory.db import connection_context
 from memory.stores.correction_store import CorrectionStore
 from memory.stores.episode_store import EpisodeStore
 from memory.stores.profile_store import ProfileStore
-from memory.db import connection_context
 
 
 class RetentionPolicy:
@@ -16,6 +17,7 @@ class RetentionPolicy:
         self.correction_store.trim_active_queue(keep=5)
         self._transition_episodes()
         self._trim_profiles()
+        self._purge_old_general_records()
 
     def _transition_episodes(self) -> None:
         now = datetime.now(timezone.utc)
@@ -36,6 +38,15 @@ class RetentionPolicy:
 
     def _trim_profiles(self) -> None:
         active = self.profile_store.get_active_profiles()
-        topics = {row['topic'] for row in active}
-        for topic in topics:
-            self.profile_store.trim_history(topic, keep_superseded=2)
+        topic_keys = {(row.get('topic_id'), row['topic']) for row in active}
+        for topic_id, topic in topic_keys:
+            self.profile_store.trim_history(topic=topic, topic_id=topic_id, keep_superseded=2)
+
+    def _purge_old_general_records(self) -> None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=GENERAL_RETENTION_DAYS)
+        cutoff_iso = cutoff.isoformat()
+        with connection_context() as conn:
+            conn.execute("DELETE FROM profiles WHERE topic = 'general' AND updated_at < ?", (cutoff_iso,))
+            conn.execute("DELETE FROM summaries WHERE topic = 'general' AND updated_at < ?", (cutoff_iso,))
+            conn.execute("DELETE FROM corrections WHERE topic = 'general' AND created_at < ?", (cutoff_iso,))
+            conn.execute("DELETE FROM episodes WHERE topic = 'general' AND created_at < ? AND pinned = 0", (cutoff_iso,))

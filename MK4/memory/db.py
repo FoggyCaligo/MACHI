@@ -61,4 +61,29 @@ def initialize_database() -> None:
     schema = schema_path.read_text(encoding="utf-8")
 
     with connection_context() as conn:
+        existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+        if "profiles" in existing_tables:
+            _ensure_column(conn, "profiles", "topic_id", "TEXT")
+        if "corrections" in existing_tables:
+            _ensure_column(conn, "corrections", "topic_id", "TEXT")
+        if "episodes" in existing_tables:
+            _ensure_column(conn, "episodes", "topic_id", "TEXT")
+        if "summaries" in existing_tables:
+            _ensure_column(conn, "summaries", "topic_id", "TEXT")
+
         conn.executescript(schema)
+
+        _ensure_column(conn, "profiles", "topic_id", "TEXT")
+        _ensure_column(conn, "corrections", "topic_id", "TEXT")
+        _ensure_column(conn, "episodes", "topic_id", "TEXT")
+        _ensure_column(conn, "summaries", "topic_id", "TEXT")
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row[1] == column_name for row in rows)
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_def: str) -> None:
+    if _column_exists(conn, table_name, column_name):
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")

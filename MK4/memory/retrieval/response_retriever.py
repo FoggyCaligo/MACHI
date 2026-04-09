@@ -77,6 +77,8 @@ class ResponseRetriever:
 
         for state in states:
             key = self._clean_text(state.get("key", ""), max_len=80)
+            if key == "active_topic_id":
+                continue
             value = self._clean_text(state.get("value", ""), max_len=160)
 
             if not key or not value:
@@ -98,9 +100,9 @@ class ResponseRetriever:
 
     def retrieve(self, user_message: str) -> dict:
         # E4B 기준으로 retrieval 규모를 줄인다.
-        profiles = self.profile_store.search(user_message, limit=2)
+        profiles = self.profile_store.search(user_message, limit=2, include_general=False)
         if not profiles:
-            profiles = self.profile_store.get_active_profiles()[:2]
+            profiles = self.profile_store.get_active_profiles(exclude_general=True)[:2]
 
         corrections = self.correction_store.search(user_message, limit=1)
         summaries = self.summary_store.search(user_message, limit=1)

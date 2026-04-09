@@ -28,7 +28,7 @@ class Orchestrator:
             raise RuntimeError("Model returned empty reply")
         self.raw_message_store.add(role="assistant", content=reply)
         update_plan = self.update_retriever.classify(user_message=user_message, reply=reply)
-        extracted = self.extraction_policy.extract(user_message=user_message, reply=reply, update_plan=update_plan)
+        extracted = self.extraction_policy.extract(user_message=user_message, reply=reply, update_plan=update_plan, model=model)
         self.conflict_policy.apply(extracted)
         self.retention_policy.run()
 
