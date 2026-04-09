@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 MEMORY_REFERENCE_PATTERNS = (
     "이전에 내가 준", "예전에 내가 준", "전에 내가 준", "이전에 준",
     "블로그 글", "그 글", "그 파일", "그 텍스트", "첫번째 글", "첫 번째 글",
@@ -14,6 +12,11 @@ ANALYSIS_REFERENCE_PATTERNS = (
     "화자", "특징", "무슨 글", "첫번째 글", "첫 번째 글",
 )
 
+SOURCE_MARKERS = (
+    "[직전 첨부 참고 자료]",
+    "[첨부 파일 참고 자료]",
+    "[첨부파일 참고 자료]",
+)
 
 def _normalize(text: str) -> str:
     return " ".join((text or "").strip().split())
@@ -30,12 +33,25 @@ def maybe_build_direct_reply(user_message: str, context: dict | None = None) -> 
         return None
 
     context = context or {}
-    has_direct_source = bool(context.get("source_contents") or context.get("attached_text") or context.get("project_chunks"))
+
+    # 현재 턴 message 안에 직전 첨부 발췌가 이미 병합되어 있으면, 가드가 선점하면 안 된다.
+    if any(marker in text for marker in SOURCE_MARKERS):
+        return None
+
+    has_direct_source = bool(
+        context.get("source_contents")
+        or context.get("attached_text")
+        or context.get("project_chunks")
+        or context.get("used_chunks")
+        or context.get("used_profile_evidence")
+    )
     if has_direct_source:
         return None
 
     asks_memory = _contains_any(text, MEMORY_REFERENCE_PATTERNS)
-    asks_analysis_without_source = _contains_any(text, ANALYSIS_REFERENCE_PATTERNS) and ("특징" in text or "화자" in text or "말해" in text or "무엇" in text)
+    asks_analysis_without_source = _contains_any(text, ANALYSIS_REFERENCE_PATTERNS) and (
+        "특징" in text or "화자" in text or "말해" in text or "무엇" in text
+    )
 
     if asks_memory:
         return (
