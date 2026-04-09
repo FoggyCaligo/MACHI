@@ -26,7 +26,7 @@ class ConflictPolicy:
             self.state_store.set_state(key, value, state.get("source", "user_explicit"))
 
         for profile in extracted.get("profiles", []):
-            topic = profile.get("topic") or "general"
+            topic = profile.get("topic") or profile.get("topic_summary") or "general"
             topic_id = profile.get("topic_id")
             self.profile_store.insert_profile(
                 topic=topic,
@@ -38,7 +38,7 @@ class ConflictPolicy:
             touched_topics.add((topic_id, topic))
 
         for episode in extracted.get("episodes", []):
-            topic = episode.get("topic") or "general"
+            topic = episode.get("topic") or episode.get("topic_summary") or "general"
             topic_id = episode.get("topic_id")
             self.episode_store.create_episode(
                 topic=topic,
@@ -50,7 +50,7 @@ class ConflictPolicy:
             touched_topics.add((topic_id, topic))
 
         for correction in extracted.get("corrections", []):
-            topic = correction.get("topic") or "general"
+            topic = correction.get("topic") or correction.get("topic_summary") or "general"
             topic_id = correction.get("topic_id")
             active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
             supersedes_profile_id = None

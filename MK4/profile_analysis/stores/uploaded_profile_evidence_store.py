@@ -1,10 +1,28 @@
 import uuid
 from datetime import datetime, timezone
 
+from memory.stores.topic_store import TopicStore
 from project_analysis.stores.db import get_conn
 
 
 class UploadedProfileEvidenceStore:
+    def __init__(self) -> None:
+        self.topic_store = TopicStore()
+
+    def _resolve_topic(self, topic: str | None, topic_id: str | None) -> tuple[str | None, str | None]:
+        normalized_topic = " ".join((topic or "").strip().split()) or None
+        resolved_topic_id = topic_id
+        if not resolved_topic_id and normalized_topic and normalized_topic.lower() != "general":
+            resolved_topic_id = self.topic_store.ensure_topic(
+                normalized_topic,
+                source="UploadedProfileEvidenceStore",
+                confidence=0.65,
+            )
+        if resolved_topic_id and (not normalized_topic or normalized_topic.lower() == "general"):
+            topic_row = self.topic_store.get_topic(resolved_topic_id)
+            normalized_topic = str((topic_row or {}).get("summary") or (topic_row or {}).get("name") or "").strip() or None
+        return normalized_topic, resolved_topic_id
+
     def add(
         self,
         source_id: str,
@@ -13,11 +31,13 @@ class UploadedProfileEvidenceStore:
         evidence_text: str,
         confidence: float | None = None,
         topic: str | None = None,
+        topic_id: str | None = None,
         candidate_content: str | None = None,
         source_strength: str | None = None,
     ) -> dict:
         evidence_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        resolved_topic, resolved_topic_id = self._resolve_topic(topic, topic_id)
 
         with get_conn() as conn:
             conn.execute(
@@ -28,6 +48,7 @@ class UploadedProfileEvidenceStore:
                     source_file_path,
                     evidence_type,
                     topic,
+                    topic_id,
                     candidate_content,
                     source_strength,
                     evidence_text,
@@ -37,14 +58,15 @@ class UploadedProfileEvidenceStore:
                     linked_correction_id,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?)
                 """,
                 (
                     evidence_id,
                     source_id,
                     source_file_path,
                     evidence_type,
-                    topic,
+                    resolved_topic,
+                    resolved_topic_id,
                     candidate_content,
                     source_strength,
                     evidence_text,
@@ -59,7 +81,8 @@ class UploadedProfileEvidenceStore:
             "source_id": source_id,
             "source_file_path": source_file_path,
             "evidence_type": evidence_type,
-            "topic": topic,
+            "topic": resolved_topic,
+            "topic_id": resolved_topic_id,
             "candidate_content": candidate_content,
             "source_strength": source_strength,
             "evidence_text": evidence_text,
@@ -114,8 +137,8 @@ class UploadedProfileEvidenceStore:
                 SELECT *
                 FROM uploaded_profile_evidence
                 WHERE evidence_type = 'profile_candidate'
-                  AND topic IS NOT NULL
                   AND candidate_content IS NOT NULL
+                  AND (topic_id IS NOT NULL OR topic IS NOT NULL)
                 ORDER BY created_at ASC
                 """
             ).fetchall()
@@ -143,22 +166,37 @@ class UploadedProfileEvidenceStore:
 
     def link_profile_for_candidate(
         self,
-        topic: str,
         candidate_content: str,
         profile_id: str,
+        topic_id: str | None = None,
+        topic: str | None = None,
     ) -> int:
         with get_conn() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE uploaded_profile_evidence
-                SET linked_profile_id = ?,
-                    applied_to_memory = 1
-                WHERE evidence_type = 'profile_candidate'
-                  AND topic = ?
-                  AND candidate_content = ?
-                  AND (linked_profile_id IS NULL OR linked_profile_id = '')
-                """,
-                (profile_id, topic, candidate_content),
-            )
+            if topic_id:
+                cursor = conn.execute(
+                    """
+                    UPDATE uploaded_profile_evidence
+                    SET linked_profile_id = ?,
+                        applied_to_memory = 1
+                    WHERE evidence_type = 'profile_candidate'
+                      AND topic_id = ?
+                      AND candidate_content = ?
+                      AND (linked_profile_id IS NULL OR linked_profile_id = '')
+                    """,
+                    (profile_id, topic_id, candidate_content),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE uploaded_profile_evidence
+                    SET linked_profile_id = ?,
+                        applied_to_memory = 1
+                    WHERE evidence_type = 'profile_candidate'
+                      AND topic = ?
+                      AND candidate_content = ?
+                      AND (linked_profile_id IS NULL OR linked_profile_id = '')
+                    """,
+                    (profile_id, topic, candidate_content),
+                )
             conn.commit()
             return int(cursor.rowcount or 0)

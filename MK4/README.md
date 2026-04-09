@@ -42,8 +42,12 @@ ollama pull qwen2.5:3b
 예:
 
 ```bash
-ollama pull gemma3:4b
+ollama pull gemma3:1b
+ollama pull qwen2.5:1.5b
+ollama pull gemma4:e2b
+ollama pull gemma4:26b-a4b-it-q4_K_M
 ollama pull llama3.2:3b
+
 ```
 
 ## 설치

@@ -125,6 +125,7 @@ def init_project_tables():
         )
 
         _ensure_column(conn, "project_profile_evidence", "topic", "TEXT")
+        _ensure_column(conn, "project_profile_evidence", "topic_id", "TEXT")
         _ensure_column(conn, "project_profile_evidence", "candidate_content", "TEXT")
         _ensure_column(conn, "project_profile_evidence", "source_strength", "TEXT")
         _ensure_column(conn, "project_profile_evidence", "applied_to_memory", "INTEGER NOT NULL DEFAULT 0")
@@ -132,6 +133,7 @@ def init_project_tables():
         _ensure_column(conn, "project_profile_evidence", "linked_correction_id", "TEXT")
 
         _ensure_column(conn, "uploaded_profile_evidence", "topic", "TEXT")
+        _ensure_column(conn, "uploaded_profile_evidence", "topic_id", "TEXT")
         _ensure_column(conn, "uploaded_profile_evidence", "candidate_content", "TEXT")
         _ensure_column(conn, "uploaded_profile_evidence", "source_strength", "TEXT")
         _ensure_column(conn, "uploaded_profile_evidence", "applied_to_memory", "INTEGER NOT NULL DEFAULT 0")

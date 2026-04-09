@@ -29,6 +29,10 @@ class TopicStore:
     def _encode_embedding(self, embedding: list[float] | None) -> str:
         return json.dumps(embedding or [], ensure_ascii=False)
 
+    def _normalize_topic_text(self, text: str | None) -> str:
+        normalized = " ".join((text or "").strip().split())
+        return normalized[:180].strip()
+
     def _row_to_topic(self, row: Any) -> dict[str, Any]:
         topic = dict(row)
         topic["embedding"] = self._decode_embedding(topic.get("embedding_json"))
@@ -45,8 +49,8 @@ class TopicStore:
     ) -> str:
         now = utc_now()
         topic_id = str(uuid.uuid4())
-        normalized_name = " ".join((name or "").strip().split())
-        normalized_summary = " ".join((summary or normalized_name).strip().split())
+        normalized_name = self._normalize_topic_text(name)
+        normalized_summary = self._normalize_topic_text(summary or normalized_name)
         resolved_embedding = embedding or embed_text(normalized_summary, kind="passage")
 
         with connection_context() as conn:
@@ -75,6 +79,50 @@ class TopicStore:
         with connection_context() as conn:
             row = conn.execute("SELECT * FROM topics WHERE id = ? LIMIT 1", (topic_id,)).fetchone()
             return self._row_to_topic(row) if row else None
+
+    def find_exact_topic_id(self, text: str | None) -> str | None:
+        normalized = self._normalize_topic_text(text)
+        if not normalized or normalized.lower() == "general":
+            return None
+        with connection_context() as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM topics
+                WHERE LOWER(summary) = LOWER(?) OR LOWER(name) = LOWER(?)
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (normalized, normalized),
+            ).fetchone()
+            return str(row[0]).strip() if row else None
+
+    def ensure_topic(
+        self,
+        text: str | None,
+        *,
+        source: str,
+        confidence: float = 0.0,
+    ) -> str | None:
+        normalized = self._normalize_topic_text(text)
+        if not normalized or normalized.lower() == "general":
+            return None
+        existing_id = self.find_exact_topic_id(normalized)
+        if existing_id:
+            return existing_id
+        return self.create_topic(
+            name=normalized,
+            summary=normalized,
+            source=source,
+            confidence=confidence,
+        )
+
+    def get_topic_summary(self, topic_id: str | None) -> str:
+        if not topic_id:
+            return "general"
+        topic = self.get_topic(topic_id)
+        if not topic:
+            return "general"
+        return str(topic.get("summary") or topic.get("name") or "general").strip() or "general"
 
     def list_active_topics(self, limit: int = 100) -> list[dict[str, Any]]:
         with connection_context() as conn:
@@ -119,9 +167,9 @@ class TopicStore:
 
         if name is not None:
             fields.append("name = ?")
-            values.append(" ".join(name.strip().split()))
+            values.append(self._normalize_topic_text(name))
         if summary is not None:
-            normalized_summary = " ".join(summary.strip().split())
+            normalized_summary = self._normalize_topic_text(summary)
             fields.append("summary = ?")
             values.append(normalized_summary)
             if embedding is None:

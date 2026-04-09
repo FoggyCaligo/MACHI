@@ -24,22 +24,11 @@ class ResponseRetriever:
         return text
 
     def _filter_recent_messages(self, messages: list[dict], user_message: str, keep: int = 4) -> list[dict]:
-        """
-        recent_messages를 프롬프트에 넣기 전에 정제한다.
-
-        규칙:
-        1) 빈 content 제거
-        2) 현재 user_message와 동일한 마지막 user 턴 제거
-           - orchestrator에서 user를 먼저 저장하는 구조일 때 중복 방지
-        3) 너무 긴 content는 잘라서 전달
-        4) 최근 keep개만 유지
-        """
         cleaned: list[dict] = []
         normalized_user_message = " ".join((user_message or "").strip().split())
 
         skipped_current_user = False
 
-        # 뒤에서부터 보면서 "현재 질문과 같은 마지막 user 메시지 1개"만 제거
         for msg in reversed(messages):
             role = msg.get("role", "")
             content = self._clean_text(msg.get("content", ""), max_len=300)
@@ -77,7 +66,7 @@ class ResponseRetriever:
 
         for state in states:
             key = self._clean_text(state.get("key", ""), max_len=80)
-            if key == "active_topic_id":
+            if key in {"active_topic_id", "active_topic_summary"}:
                 continue
             value = self._clean_text(state.get("value", ""), max_len=160)
 
@@ -99,7 +88,6 @@ class ResponseRetriever:
         return filtered
 
     def retrieve(self, user_message: str) -> dict:
-        # E4B 기준으로 retrieval 규모를 줄인다.
         profiles = self.profile_store.search(user_message, limit=2, include_general=False)
         if not profiles:
             profiles = self.profile_store.get_active_profiles(exclude_general=True)[:2]

@@ -7,6 +7,7 @@ from config import (
 )
 from memory.stores.correction_store import CorrectionStore
 from memory.stores.profile_store import ProfileStore
+from memory.stores.topic_store import TopicStore
 from prompts.prompt_loader import load_prompt_text
 from project_analysis.stores.project_file_store import ProjectFileStore
 from project_analysis.stores.project_profile_evidence_store import (
@@ -56,6 +57,7 @@ class ProjectProfileEvidenceService:
         self.evidence_store = ProjectProfileEvidenceStore()
         self.profile_store = ProfileStore()
         self.correction_store = CorrectionStore()
+        self.topic_store = TopicStore()
         self.client = OllamaClient()
 
     def is_profile_question(self, question: str) -> bool:
@@ -217,24 +219,24 @@ class ProjectProfileEvidenceService:
         clusters: dict[tuple[str, str], dict] = {}
 
         for evidence in evidences:
-            topic = (evidence.get("topic") or "").strip()
+            topic_id = str(evidence.get("topic_id") or "").strip() or None
+            topic = self._topic_label(evidence.get("topic"), topic_id)
             candidate_content = (evidence.get("candidate_content") or "").strip()
             source_strength = (evidence.get("source_strength") or "").strip()
 
-            if not topic or not candidate_content:
+            if not candidate_content:
                 continue
 
             if source_strength == "temporary_interest":
                 continue
 
-            key = (
-                self._normalize_text(topic),
-                self._normalize_text(candidate_content),
-            )
+            topic_key = topic_id or self._normalize_text(topic)
+            key = (topic_key, self._normalize_text(candidate_content))
 
             if key not in clusters:
                 clusters[key] = {
                     "topic": topic,
+                    "topic_id": topic_id,
                     "candidate_content": candidate_content,
                     "evidence_ids": [],
                     "project_ids": set(),
@@ -249,6 +251,9 @@ class ProjectProfileEvidenceService:
                 }
 
             cluster = clusters[key]
+            if not cluster.get("topic_id") and topic_id:
+                cluster["topic_id"] = topic_id
+            cluster["topic"] = self._topic_label(cluster.get("topic"), cluster.get("topic_id"))
             cluster["evidence_ids"].append(str(evidence.get("id") or ""))
             cluster["project_ids"].add(str(evidence.get("project_id") or ""))
             cluster["source_paths"].add(str(evidence.get("source_file_path") or ""))
@@ -275,10 +280,11 @@ class ProjectProfileEvidenceService:
             result.append(
                 {
                     "topic": cluster["topic"],
+                    "topic_id": cluster.get("topic_id"),
                     "candidate_content": cluster["candidate_content"],
                     "evidence_ids": cluster["evidence_ids"],
                     "evidence_count": len(cluster["evidence_ids"]),
-                    "distinct_project_count": len([x for x in cluster["project_ids"] if x]),
+                    "distinct_group_count": len([x for x in cluster["project_ids"] if x]),
                     "distinct_source_count": len([x for x in cluster["source_paths"] if x]),
                     "avg_confidence": sum(confidence_values) / len(confidence_values),
                     "max_confidence": max(confidence_values),
@@ -339,12 +345,18 @@ class ProjectProfileEvidenceService:
 
         return min(max(boosted, 0.45), 0.90)
 
-    def _load_topic_corrections(self, topic: str) -> list[dict]:
+    def _topic_label(self, topic: str | None, topic_id: str | None) -> str:
+        if topic:
+            return str(topic).strip() or "general"
+        return self.topic_store.get_topic_summary(topic_id)
+
+    def _load_topic_corrections(self, topic: str | None = None, topic_id: str | None = None) -> list[dict]:
         if hasattr(self.correction_store, "list_active_by_topic"):
-            return self.correction_store.list_active_by_topic(topic, limit=5)
+            return self.correction_store.list_active_by_topic(topic=topic, topic_id=topic_id, limit=5)
 
         if hasattr(self.correction_store, "search"):
-            rows = self.correction_store.search(topic, limit=5)
+            query = topic or self.topic_store.get_topic_summary(topic_id)
+            rows = self.correction_store.search(query, limit=5)
             filtered: list[dict] = []
             for row in rows:
                 status = str(row.get("status") or "").lower()
@@ -354,8 +366,8 @@ class ProjectProfileEvidenceService:
 
         return []
 
-    def _has_conflicting_active_correction(self, topic: str, candidate_content: str) -> bool:
-        active_corrections = self._load_topic_corrections(topic)
+    def _has_conflicting_active_correction(self, candidate_content: str, topic: str | None = None, topic_id: str | None = None) -> bool:
+        active_corrections = self._load_topic_corrections(topic=topic, topic_id=topic_id)
         for correction in active_corrections:
             correction_content = str(correction.get("content") or "").strip()
             if not correction_content:
@@ -375,6 +387,7 @@ class ProjectProfileEvidenceService:
         pending_candidates = 0
 
         for cluster in clusters:
+            topic_id = cluster.get("topic_id")
             topic = cluster["topic"]
             candidate_content = cluster["candidate_content"]
 
@@ -383,16 +396,17 @@ class ProjectProfileEvidenceService:
                 pending_candidates += 1
                 continue
 
-            if self._has_conflicting_active_correction(topic, candidate_content):
+            if self._has_conflicting_active_correction(candidate_content, topic=topic, topic_id=topic_id):
                 blocked_by_correction += 1
                 continue
 
-            active_profile = self.profile_store.get_active_by_topic(topic)
+            active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
 
             if active_profile:
                 active_content = str(active_profile.get("content") or "").strip()
                 if self._same_meaning(active_content, candidate_content):
                     linked_count = self.evidence_store.link_profile_for_candidate(
+                        topic_id=active_profile.get("topic_id") or topic_id,
                         topic=topic,
                         candidate_content=candidate_content,
                         profile_id=active_profile["id"],
@@ -406,11 +420,13 @@ class ProjectProfileEvidenceService:
 
             new_profile_id = self.profile_store.insert_profile(
                 topic=topic,
+                topic_id=topic_id,
                 content=candidate_content,
                 source=f"artifact_promotion_v1:{cluster['primary_strength']}",
                 confidence=self._promotion_confidence(cluster),
             )
             self.evidence_store.link_profile_for_candidate(
+                topic_id=topic_id,
                 topic=topic,
                 candidate_content=candidate_content,
                 profile_id=new_profile_id,
@@ -471,11 +487,12 @@ class ProjectProfileEvidenceService:
         skipped = 0
 
         for evidence in evidences:
-            topic = (evidence.get("topic") or "").strip()
+            topic_id = str(evidence.get("topic_id") or "").strip() or None
+            topic = self._topic_label(evidence.get("topic"), topic_id)
             candidate_content = (evidence.get("candidate_content") or "").strip()
             source_strength = (evidence.get("source_strength") or "").strip()
 
-            if not topic or not candidate_content:
+            if not candidate_content:
                 self.evidence_store.mark_applied(evidence["id"])
                 skipped += 1
                 processed += 1
@@ -487,7 +504,7 @@ class ProjectProfileEvidenceService:
                 processed += 1
                 continue
 
-            active_profile = self.profile_store.get_active_by_topic(topic)
+            active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
             if active_profile and self._same_meaning(active_profile.get("content", ""), candidate_content):
                 self.evidence_store.mark_applied(
                     evidence["id"],

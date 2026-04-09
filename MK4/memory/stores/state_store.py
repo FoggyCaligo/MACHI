@@ -35,16 +35,7 @@ class StateStore:
         self.set_state("active_topic_id", topic_id, source=source)
         self.set_state("active_topic_summary", summary, source=source)
 
-    def clear_active_topic(self) -> None:
-        self.delete_state("active_topic_id")
-        self.delete_state("active_topic_summary")
-
     def get_active_topic_id(self) -> str | None:
         row = self.get_state("active_topic_id")
-        value = (row or {}).get("value")
-        return str(value).strip() or None
-
-    def get_active_topic_summary(self) -> str | None:
-        row = self.get_state("active_topic_summary")
         value = (row or {}).get("value")
         return str(value).strip() or None

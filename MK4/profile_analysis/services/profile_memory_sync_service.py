@@ -1,5 +1,6 @@
 from memory.stores.correction_store import CorrectionStore
 from memory.stores.profile_store import ProfileStore
+from memory.stores.topic_store import TopicStore
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
 
@@ -17,6 +18,7 @@ class ProfileMemorySyncService:
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
         self.profile_store = ProfileStore()
         self.correction_store = CorrectionStore()
+        self.topic_store = TopicStore()
 
     def _normalize_text(self, text: str) -> str:
         return " ".join((text or "").strip().lower().split())
@@ -28,12 +30,18 @@ class ProfileMemorySyncService:
             return False
         return na == nb or na in nb or nb in na
 
-    def _load_topic_corrections(self, topic: str) -> list[dict]:
+    def _topic_label(self, topic: str | None, topic_id: str | None) -> str:
+        if topic:
+            return str(topic).strip() or "general"
+        return self.topic_store.get_topic_summary(topic_id)
+
+    def _load_topic_corrections(self, topic: str | None = None, topic_id: str | None = None) -> list[dict]:
         if hasattr(self.correction_store, "list_active_by_topic"):
-            return self.correction_store.list_active_by_topic(topic, limit=5)
+            return self.correction_store.list_active_by_topic(topic=topic, topic_id=topic_id, limit=5)
 
         if hasattr(self.correction_store, "search"):
-            rows = self.correction_store.search(topic, limit=5)
+            query = topic or self.topic_store.get_topic_summary(topic_id)
+            rows = self.correction_store.search(query, limit=5)
             filtered: list[dict] = []
             for row in rows:
                 status = str(row.get("status") or "").lower()
@@ -43,8 +51,8 @@ class ProfileMemorySyncService:
 
         return []
 
-    def _has_conflicting_active_correction(self, topic: str, candidate_content: str) -> bool:
-        active_corrections = self._load_topic_corrections(topic)
+    def _has_conflicting_active_correction(self, candidate_content: str, topic: str | None = None, topic_id: str | None = None) -> bool:
+        active_corrections = self._load_topic_corrections(topic=topic, topic_id=topic_id)
         for correction in active_corrections:
             correction_content = str(correction.get("content") or "").strip()
             if not correction_content:
@@ -57,24 +65,24 @@ class ProfileMemorySyncService:
         clusters: dict[tuple[str, str], dict] = {}
 
         for evidence in evidences:
-            topic = (evidence.get("topic") or "").strip()
+            topic_id = str(evidence.get("topic_id") or "").strip() or None
+            topic = self._topic_label(evidence.get("topic"), topic_id)
             candidate_content = (evidence.get("candidate_content") or "").strip()
             source_strength = (evidence.get("source_strength") or "").strip()
 
-            if not topic or not candidate_content:
+            if not candidate_content:
                 continue
 
             if source_strength == "temporary_interest":
                 continue
 
-            key = (
-                self._normalize_text(topic),
-                self._normalize_text(candidate_content),
-            )
+            topic_key = topic_id or self._normalize_text(topic)
+            key = (topic_key, self._normalize_text(candidate_content))
 
             if key not in clusters:
                 clusters[key] = {
                     "topic": topic,
+                    "topic_id": topic_id,
                     "candidate_content": candidate_content,
                     "evidence_ids": [],
                     "group_ids": set(),
@@ -89,6 +97,9 @@ class ProfileMemorySyncService:
                 }
 
             cluster = clusters[key]
+            if not cluster.get("topic_id") and topic_id:
+                cluster["topic_id"] = topic_id
+            cluster["topic"] = self._topic_label(cluster.get("topic"), cluster.get("topic_id"))
             cluster["evidence_ids"].append(str(evidence.get("id") or ""))
             cluster["group_ids"].add(str(evidence.get("group_id") or ""))
             cluster["source_paths"].add(str(evidence.get("source_file_path") or ""))
@@ -115,6 +126,7 @@ class ProfileMemorySyncService:
             result.append(
                 {
                     "topic": cluster["topic"],
+                    "topic_id": cluster.get("topic_id"),
                     "candidate_content": cluster["candidate_content"],
                     "evidence_ids": cluster["evidence_ids"],
                     "evidence_count": len(cluster["evidence_ids"]),
@@ -196,17 +208,20 @@ class ProfileMemorySyncService:
 
     def _link_profile_for_candidate_across_stores(
         self,
-        topic: str,
         candidate_content: str,
         profile_id: str,
+        topic_id: str | None = None,
+        topic: str | None = None,
     ) -> int:
         linked = 0
         linked += self.project_evidence_store.link_profile_for_candidate(
+            topic_id=topic_id,
             topic=topic,
             candidate_content=candidate_content,
             profile_id=profile_id,
         )
         linked += self.uploaded_evidence_store.link_profile_for_candidate(
+            topic_id=topic_id,
             topic=topic,
             candidate_content=candidate_content,
             profile_id=profile_id,
@@ -224,6 +239,7 @@ class ProfileMemorySyncService:
         pending_candidates = 0
 
         for cluster in clusters:
+            topic_id = cluster.get("topic_id")
             topic = cluster["topic"]
             candidate_content = cluster["candidate_content"]
 
@@ -232,19 +248,20 @@ class ProfileMemorySyncService:
                 pending_candidates += 1
                 continue
 
-            if self._has_conflicting_active_correction(topic, candidate_content):
+            if self._has_conflicting_active_correction(candidate_content, topic=topic, topic_id=topic_id):
                 blocked_by_correction += 1
                 continue
 
-            active_profile = self.profile_store.get_active_by_topic(topic)
+            active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
 
             if active_profile:
                 active_content = str(active_profile.get("content") or "").strip()
                 if self._same_meaning(active_content, candidate_content):
                     linked_count = self._link_profile_for_candidate_across_stores(
-                        topic=topic,
                         candidate_content=candidate_content,
                         profile_id=active_profile["id"],
+                        topic_id=active_profile.get("topic_id") or topic_id,
+                        topic=topic,
                     )
                     if linked_count > 0:
                         linked_existing_profiles += 1
@@ -255,14 +272,16 @@ class ProfileMemorySyncService:
 
             new_profile_id = self.profile_store.insert_profile(
                 topic=topic,
+                topic_id=topic_id,
                 content=candidate_content,
                 source=f"artifact_promotion_v1:{cluster['primary_strength']}",
                 confidence=self._promotion_confidence(cluster),
             )
             self._link_profile_for_candidate_across_stores(
-                topic=topic,
                 candidate_content=candidate_content,
                 profile_id=new_profile_id,
+                topic_id=topic_id,
+                topic=topic,
             )
             promoted_profiles += 1
 
@@ -280,11 +299,12 @@ class ProfileMemorySyncService:
         skipped = 0
 
         for evidence in evidences:
-            topic = (evidence.get("topic") or "").strip()
+            topic_id = str(evidence.get("topic_id") or "").strip() or None
+            topic = self._topic_label(evidence.get("topic"), topic_id)
             candidate_content = (evidence.get("candidate_content") or "").strip()
             source_strength = (evidence.get("source_strength") or "").strip()
 
-            if not topic or not candidate_content:
+            if not candidate_content:
                 evidence_store.mark_applied(evidence["id"])
                 skipped += 1
                 processed += 1
@@ -296,7 +316,7 @@ class ProfileMemorySyncService:
                 processed += 1
                 continue
 
-            active_profile = self.profile_store.get_active_by_topic(topic)
+            active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
             if active_profile and self._same_meaning(active_profile.get("content", ""), candidate_content):
                 evidence_store.mark_applied(
                     evidence["id"],

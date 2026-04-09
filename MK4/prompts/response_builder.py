@@ -47,14 +47,15 @@ def _looks_like_system_prompt_text(text: str | None) -> bool:
     return False
 
 
-def _should_skip_memory_item(item: dict, candidate_text: str) -> bool:
-    topic_or_key = (
-        item.get("topic")
-        or item.get("key")
-        or item.get("title")
-        or ""
+def _topic_label(item: dict) -> str:
+    return _clean_text(
+        item.get("topic_summary") or item.get("topic_name") or item.get("topic") or item.get("key") or item.get("title"),
+        max_len=60,
     )
-    topic_or_key = str(topic_or_key).strip().lower()
+
+
+def _should_skip_memory_item(item: dict, candidate_text: str) -> bool:
+    topic_or_key = _topic_label(item).strip().lower()
 
     if topic_or_key in GENERIC_NOISE_KEYS and _looks_like_system_prompt_text(candidate_text):
         return True
@@ -113,7 +114,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     if profiles:
         section_lines: list[str] = []
         for p in profiles:
-            topic = _clean_text(p.get("topic"), max_len=60)
+            topic = _topic_label(p)
             content = _pick_memory_text(
                 p,
                 preferred_keys=["content", "value", "summary"],
@@ -131,7 +132,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     if corrections:
         section_lines = []
         for c in corrections:
-            topic = _clean_text(c.get("topic"), max_len=60)
+            topic = _topic_label(c)
             content = _pick_memory_text(
                 c,
                 preferred_keys=["content", "value", "summary"],
@@ -163,7 +164,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     if summaries:
         section_lines = []
         for s in summaries:
-            topic = _clean_text(s.get("topic"), max_len=60)
+            topic = _topic_label(s)
             content = _pick_memory_text(
                 s,
                 preferred_keys=["content", "summary", "value"],
@@ -181,10 +182,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     if episodes:
         section_lines = []
         for e in episodes:
-            topic = _clean_text(
-                e.get("topic") or e.get("title"),
-                max_len=60,
-            )
+            topic = _topic_label(e)
             content = _pick_memory_text(
                 e,
                 preferred_keys=["summary", "content", "description"],

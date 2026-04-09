@@ -1,9 +1,28 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS topics (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    embedding_json TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'merged', 'archived', 'dropped')),
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    merged_into_topic_id TEXT,
+    FOREIGN KEY (merged_into_topic_id) REFERENCES topics(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_status_updated ON topics(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_topics_status_last_used ON topics(status, last_used_at DESC);
+CREATE INDEX IF NOT EXISTS idx_topics_summary_name ON topics(summary, name);
+
 CREATE TABLE IF NOT EXISTS profiles (
     id TEXT PRIMARY KEY,
     topic_id TEXT,
-    topic TEXT NOT NULL,
     content TEXT NOT NULL,
     confidence REAL NOT NULL DEFAULT 1.0,
     source TEXT NOT NULL,
@@ -14,13 +33,12 @@ CREATE TABLE IF NOT EXISTS profiles (
     FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_profiles_topic_status ON profiles(topic, status);
 CREATE INDEX IF NOT EXISTS idx_profiles_topic_id_status ON profiles(topic_id, status);
+CREATE INDEX IF NOT EXISTS idx_profiles_updated_at ON profiles(updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS corrections (
     id TEXT PRIMARY KEY,
     topic_id TEXT,
-    topic TEXT NOT NULL,
     content TEXT NOT NULL,
     reason TEXT,
     source TEXT NOT NULL,
@@ -35,14 +53,12 @@ CREATE TABLE IF NOT EXISTS corrections (
     FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_corrections_topic_status ON corrections(topic, status);
 CREATE INDEX IF NOT EXISTS idx_corrections_topic_id_status ON corrections(topic_id, status);
-CREATE INDEX IF NOT EXISTS idx_corrections_created_at ON corrections(created_at);
+CREATE INDEX IF NOT EXISTS idx_corrections_created_at ON corrections(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS episodes (
     id TEXT PRIMARY KEY,
     topic_id TEXT,
-    topic TEXT,
     summary TEXT NOT NULL,
     raw_ref TEXT,
     importance REAL NOT NULL DEFAULT 0.5,
@@ -53,22 +69,21 @@ CREATE TABLE IF NOT EXISTS episodes (
     FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_episodes_topic_state ON episodes(topic, state);
 CREATE INDEX IF NOT EXISTS idx_episodes_topic_id_state ON episodes(topic_id, state);
-CREATE INDEX IF NOT EXISTS idx_episodes_last_referenced ON episodes(last_referenced_at);
+CREATE INDEX IF NOT EXISTS idx_episodes_last_referenced ON episodes(last_referenced_at DESC);
+CREATE INDEX IF NOT EXISTS idx_episodes_created_at ON episodes(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS summaries (
     id TEXT PRIMARY KEY,
     topic_id TEXT,
-    topic TEXT NOT NULL,
     content TEXT NOT NULL,
     source_episode_ids TEXT,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_summaries_topic ON summaries(topic);
 CREATE INDEX IF NOT EXISTS idx_summaries_topic_id ON summaries(topic_id);
+CREATE INDEX IF NOT EXISTS idx_summaries_updated_at ON summaries(updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS states (
     key TEXT PRIMARY KEY,
@@ -98,24 +113,4 @@ CREATE TABLE IF NOT EXISTS raw_messages (
     FOREIGN KEY (episode_id) REFERENCES episodes(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_raw_messages_created_at ON raw_messages(created_at);
-
-CREATE TABLE IF NOT EXISTS topics (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    embedding_json TEXT NOT NULL,
-    confidence REAL NOT NULL DEFAULT 0.0,
-    source TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'merged', 'archived', 'dropped')),
-    usage_count INTEGER NOT NULL DEFAULT 0,
-    last_used_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    merged_into_topic_id TEXT,
-    FOREIGN KEY (merged_into_topic_id) REFERENCES topics(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_topics_status_updated ON topics(status, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_topics_status_last_used ON topics(status, last_used_at DESC);
-
+CREATE INDEX IF NOT EXISTS idx_raw_messages_created_at ON raw_messages(created_at DESC);
