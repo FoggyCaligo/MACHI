@@ -40,7 +40,7 @@ class MemoryClassificationPolicy:
             return base
         return min(0.95, max(base, base + max(0.0, similarity - 0.7) * 0.2))
 
-    def is_direct_confirmable_evidence(self, evidence: dict) -> bool:
+    def is_candidate_level_evidence(self, evidence: dict) -> bool:
         confidence = float(evidence.get("confidence") or 0.0)
         if confidence < TOPIC_CONFIRM_MIN_CONFIDENCE:
             return False
@@ -48,25 +48,44 @@ class MemoryClassificationPolicy:
             return True
         return self.normalize_source_strength(evidence.get("source_strength")) == "explicit_self_statement"
 
-    def classify_chat_memory(self, user_message: str, action_types: set[str] | None = None, similarity: float = 0.0) -> dict:
+    def classify_chat_memory(
+        self,
+        user_message: str,
+        action_types: set[str] | None = None,
+        similarity: float = 0.0,
+        source_strength: str | None = None,
+        direct_candidate: bool = False,
+    ) -> dict:
         action_types = action_types or set()
         cleaned = (user_message or "").strip()
         if not cleaned:
             return {"route": "discard", "signals": [], "confidence": 0.0}
 
-        # explicit correction is handled separately in ExtractionPolicy.
         if action_types == {"discard"}:
             return {"route": "discard", "signals": [], "confidence": 0.0}
 
         if len(cleaned) < 20:
             return {"route": "discard", "signals": [], "confidence": 0.0}
 
-        # Until an upstream structured memory-value classifier is added,
-        # chat messages default to general memory rather than policy-side linguistic inference.
+        confidence = self.estimate_message_profile_confidence(similarity)
+        normalized_strength = self.normalize_source_strength(source_strength)
+        signals = [f"action:{a}" for a in sorted(action_types) if a != "discard"]
+        if source_strength is not None:
+            signals.append(f"source_strength:{normalized_strength}")
+        if direct_candidate:
+            signals.append("direct_candidate")
+
+        # Chat messages default to general memory. If upstream already supplies
+        # strong structured evidence, skip general and place them directly in candidate.
+        if direct_candidate and confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
+            return {"route": "candidate", "signals": signals, "confidence": confidence}
+        if normalized_strength == "explicit_self_statement" and confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
+            return {"route": "candidate", "signals": signals, "confidence": confidence}
+
         return {
             "route": "general",
-            "signals": [f"action:{a}" for a in sorted(action_types) if a != "discard"],
-            "confidence": self.estimate_message_profile_confidence(similarity),
+            "signals": signals,
+            "confidence": confidence,
         }
 
     def classify_evidence(self, evidence: dict) -> dict:
@@ -77,8 +96,8 @@ class MemoryClassificationPolicy:
         strength = self.normalize_source_strength(evidence.get("source_strength"))
         signals = self._signal_tags_from_evidence(evidence)
 
-        if self.is_direct_confirmable_evidence(evidence):
-            return {"route": "confirmed", "signals": signals}
+        if self.is_candidate_level_evidence(evidence):
+            return {"route": "candidate", "signals": signals}
 
         if strength == "temporary_interest":
             return {"route": "general", "signals": signals}
@@ -97,7 +116,7 @@ class MemoryClassificationPolicy:
         diversity_ok = distinct_source_count >= 2 or distinct_group_count >= 2
 
         if direct_confirm_count > 0 and max_confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
-            return True, "promotable_single_high_value"
+            return True, "promotable_single_high_value_candidate"
 
         if primary_strength == "explicit_self_statement":
             if evidence_count < 2:

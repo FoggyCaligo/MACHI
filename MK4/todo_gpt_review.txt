@@ -1,0 +1,237 @@
+2-4. 구체적인 런타임 문제 후보가 하나 보인다
+
+이건 그냥 철학 문제가 아니라 실제 버그 후보다.
+
+project_analysis/services/project_profile_evidence_service.py 안의 _resolve_candidate_topic()에서:
+
+resolution = self.topic_router.resolve(
+    user_message=routing_text,
+    model=model,
+    use_active_topic=False,
+    persist_active=False,
+)
+
+이렇게 호출하는데,
+현재 memory/services/topic_router.py의 resolve() 시그니처는 내가 본 기준으로:
+
+def resolve(self, user_message: str, model: str | None = None) -> TopicResolution:
+
+이거다.
+
+즉 지금 코드 기준으로는 use_active_topic, persist_active를 안 받는다.
+그러면 이 경로가 실제로 실행될 때 TypeError 날 가능성이 높다.
+
+즉:
+
+py_compile은 통과해도
+실제 실행 경로에서는 깨질 수 있다
+
+이건 우선순위 높다.
+
+2-5. project retrieval은 아직 “검색기”라기보다 “점수 기반 grep 강화판”에 가깝다
+
+project_analysis/retrieval/project_retriever.py는 솔직히 말해서 아직 약하다.
+
+현재 방식은 대략:
+
+토큰 추출
+path bonus
+내용 포함 점수
+상위 chunk 반환
+
+즉 의미 기반 retrieval이라기보다 파일 경로 + 단어 포함 기반 휴리스틱 랭킹이다.
+
+이 구조는 다음에는 잘 작동한다.
+
+파일명 직접 언급
+함수명/클래스명 직접 언급
+“구조”, “리팩토링”, “에러” 같은 큰 카테고리 질문
+
+하지만 다음에는 약하다.
+
+구현 의도 질문
+함수명이 아니라 역할로 묻는 질문
+서로 떨어진 chunk를 종합해야 답이 나오는 질문
+문맥상 연관된 여러 파일을 함께 봐야 하는 질문
+
+즉 project Q&A는 지금 **“읽을 만한 근거 몇 개를 뽑아주는 단계”**까지는 왔는데,
+아직 “프로젝트를 깊게 이해하는 retriever”까지는 아니다.
+
+2-6. response retrieval과 topic routing의 품질 축이 섞여 있다
+
+이 부분도 구조상 애매하다.
+
+topic routing은 임베딩 기반
+project retrieval은 lexical scoring 기반
+profile/summaries 검색은 SQL LIKE 기반
+
+즉 기억 retrieval 계층 전체가 하나의 retrieval 철학으로 통일돼 있지 않다.
+
+현재는 기능별로:
+
+어떤 곳은 임베딩
+어떤 곳은 문자열 포함
+어떤 곳은 최근순 fallback
+
+으로 섞여 있다.
+
+초기 프로토타입에선 괜찮지만,
+이제 이 정도 규모면 슬슬 문제가 된다.
+
+왜냐하면 나중에 사용자는 “왜 어떤 기억은 잘 잡히고, 어떤 기억은 안 잡히지?”를 체감하게 되는데,
+그 원인이 모델 문제가 아니라 retrieval 방식 혼재에서 생기기 때문이다.
+
+
+
+
+
+
+2-7. correction 충돌 판단이 다소 거칠다
+
+_has_conflicting_active_correction() 류 로직은 지금 너무 거칠 가능성이 크다.
+
+현재 구조상 같은 topic 안에 active correction이 있고,
+candidate_content와 “같은 의미”가 아니면 충돌로 보는 식인데,
+이건 문제를 일으킬 수 있다.
+
+왜냐하면 topic 자체를 넓게 잡으려 하고 있기 때문이다.
+
+즉 topic이 넓을수록 한 topic 안에 들어가는 내용 폭이 커지는데,
+그 상태에서 correction 충돌 판단이 거칠면
+실제로는 병존 가능한 두 프로필 내용도 서로 막아버릴 수 있다.
+
+예를 들면 같은 “설명 선호” topic 안에서도
+
+구조적 설명 선호
+감정적 위로도 나중 층위에서 중요
+
+이 둘은 충돌이 아니라 병존인데,
+현재의 단순 의미 비교 방식은 이런 다층 구조를 잘 못 다룰 수 있다.
+
+
+
+2-8. UpdateRetriever와 chat-side extraction은 아직 너무 얕다
+
+memory/retrieval/update_retriever.py는 사실상 규칙 기반 초기 버전이다.
+
+correction 힌트
+state 힌트
+길이 20자 이상이면 new_episode
+
+이 정도다.
+
+즉 현재 일반 채팅에서의 memory extraction은
+네가 구상하는 MK4 철학에 비해 아직 너무 얕고 기계적이다.
+
+Artifact/profile evidence 쪽은 꽤 무겁게 설계했는데,
+일반 채팅 쪽은 아직 간단한 규칙층에 많이 기대고 있다.
+
+그래서 지금 MK4의 중심 축은 사실
+“대화형 memory OS” 전체라기보다
+artifact-driven profile formation 쪽이 더 진화한 상태라고 보는 게 맞다.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1순위: 중복 제거 + 런타임 불일치 제거
+
+가장 먼저 할 건 이거다.
+
+profile_analysis/services/project_profile_evidence_service.py 실제 참조 여부 확인
+안 쓰는 쪽이면 제거
+쓰는 쪽만 남기고 source of truth 단일화
+TopicRouter.resolve() 호출 인자 불일치 수정
+
+이건 미루면 안 된다.
+지금은 기능보다 정합성 확보가 먼저다.
+
+2순위: profile evidence sync를 한 군데로 모아라
+
+현재 project 쪽에도 promotion/sync 로직이 있고,
+ProfileMemorySyncService에도 promotion/sync 로직이 있다.
+
+이건 반드시 하나로 모아야 한다.
+
+내 기준으로는 구조상 이렇게 가는 게 맞다.
+
+extractor는 source별로 달라도 됨
+uploaded text extractor
+project artifact extractor
+하지만
+candidate clustering
+promotability 판단
+correction conflict 확인
+기존 profile linking
+promotion
+
+이건 하나의 sync service가 책임져야 한다.
+
+즉 “추출”과 “승격”을 분리하고,
+승격은 무조건 한 엔진만 거치게 해야 한다.
+
+3순위: chat memory 정책을 artifact evidence 정책과 맞춰라
+
+현재는 일반 채팅 쪽이 너무 직접 profile로 들어간다.
+
+내가 보기엔 앞으로는 이렇게 가는 쪽이 더 안정적이다.
+
+일반 채팅도 가능하면 바로 active profile insert 하지 말고
+내부 candidate/general 단계 한번 거친 뒤
+promotion rule 또는 lightweight confirmation rule을 적용
+
+즉 “채팅이냐 artifact냐”보다
+같은 종류의 기억이면 같은 승격 규칙을 타게 만드는 게 중요하다.
+
+4순위: retrieval 계층 통일
+
+이건 조금 뒤지만 중요하다.
+
+topic routing: 임베딩
+profile recall: 현재는 LIKE 위주
+project retrieval: lexical scoring 위주
+
+이걸 당장 다 임베딩으로 바꾸라는 뜻은 아니고,
+최소한 어떤 데이터는 어떤 retrieval 철학을 쓴다를 정리해야 한다.
+
+지금은 섞여 있어서 디버깅이 어렵다.
+
+5순위: scope 축 도입 여부를 결정
+
+지금 단일 사용자 로컬 프로젝트라면 괜찮다.
+하지만 앞으로도 그럴 건지 결정해야 한다.
+
+만약 정말 영구적으로 “개인용 로컬 단일 사용자”라면 지금 구조도 괜찮다.
+하지만 조금이라도
+
+세션 분리
+대화방 분리
+사용자 분리
+프로젝트별 메모리 분리
+
+를 생각한다면 지금부터 scope 축을 넣어야 한다.
+
+나중에 뒤늦게 넣으면 거의 갈아엎게 된다.
