@@ -30,19 +30,13 @@ class OllamaClient:
 
             if not role:
                 continue
-
             if not content.strip():
                 continue
 
             if role == "system":
                 content = content.replace("<|think|>", "").strip()
 
-            sanitized.append(
-                {
-                    "role": role,
-                    "content": content,
-                }
-            )
+            sanitized.append({"role": role, "content": content})
 
         return sanitized
 
@@ -52,9 +46,7 @@ class OllamaClient:
             "messages": self._sanitize_messages(messages),
             "stream": False,
             "think": False,
-            "options": {
-                "num_predict": self.num_predict,
-            },
+            "options": {"num_predict": self.num_predict},
         }
 
     def _summarize_response(self, data: dict) -> dict:
@@ -115,13 +107,13 @@ class OllamaClient:
             "최종 답변(content)이 비어 있습니다. 원인을 단정할 수 없어 raw 응답 요약을 함께 확인해야 합니다."
         )
 
-    def chat(
+    def chat_with_metadata(
         self,
         messages: list[dict],
         model: str | None = None,
         require_complete: bool = False,
         truncated_notice: str | None = DEFAULT_TRUNCATED_NOTICE,
-    ) -> str:
+    ) -> dict:
         model_name = (model or self.model).strip()
         payload = self._build_payload(messages, model_name=model_name)
 
@@ -140,18 +132,40 @@ class OllamaClient:
         done_reason = str(data.get("done_reason") or "").strip().lower()
 
         if content:
-            if done_reason == "length":
+            if done_reason == "length" and require_complete:
                 summary = self._summarize_response(data)
-                if require_complete:
-                    raise RuntimeError(f"TRUNCATED_REPLY_LENGTH | summary={summary}")
-                if truncated_notice:
-                    return content + truncated_notice
-            return content
+                raise RuntimeError(f"TRUNCATED_REPLY_LENGTH | summary={summary}")
+
+            returned = content
+            if done_reason == "length" and truncated_notice:
+                returned = content + truncated_notice
+
+            return {
+                "content": returned,
+                "raw_content": content,
+                "done_reason": done_reason,
+                "truncated": done_reason == "length",
+                "summary": self._summarize_response(data),
+            }
 
         classification = self._classify_empty_reply(data)
         summary = self._summarize_response(data)
-
         raise RuntimeError(f"{classification} | summary={summary}")
+
+    def chat(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        require_complete: bool = False,
+        truncated_notice: str | None = DEFAULT_TRUNCATED_NOTICE,
+    ) -> str:
+        result = self.chat_with_metadata(
+            messages=messages,
+            model=model,
+            require_complete=require_complete,
+            truncated_notice=truncated_notice,
+        )
+        return str(result.get("content") or "")
 
     @classmethod
     def list_local_models(

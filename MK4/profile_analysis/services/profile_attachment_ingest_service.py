@@ -36,9 +36,9 @@ class ProfileAttachmentIngestService:
         self.source_store = UploadedProfileSourceStore()
         self.evidence_store = UploadedProfileEvidenceStore()
         self.sync_service = ProfileMemorySyncService()
-        self.extract_client = OllamaClient(timeout=90, num_predict=256)
-        self.extract_retry_client = OllamaClient(timeout=90, num_predict=192)
-        self.answer_client = OllamaClient(timeout=120, num_predict=300)
+        self.extract_client = OllamaClient(timeout=120, num_predict=384)
+        self.extract_retry_client = OllamaClient(timeout=120, num_predict=256)
+        self.answer_client = OllamaClient(timeout=180, num_predict=700)
 
     def _normalize_whitespace(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "")).strip()
@@ -96,8 +96,8 @@ class ProfileAttachmentIngestService:
         self,
         filename: str,
         content: str,
-        max_total_chars: int = 1400,
-        max_passages: int = 4,
+        max_total_chars: int = 1800,
+        max_passages: int = 5,
     ) -> tuple[list[dict], dict]:
         passages = self._split_passages(content)
         candidates: list[dict] = []
@@ -134,7 +134,7 @@ class ProfileAttachmentIngestService:
             if len(text) > remaining:
                 if remaining < 180:
                     continue
-                text = text[: max(0, remaining - 3)].rstrip() + "..."
+                text = text[:remaining].rstrip() + "..."
 
             selected.append(
                 {
@@ -170,16 +170,20 @@ class ProfileAttachmentIngestService:
         }
 
     def _compact_extract_user_prompt(self, source_id: str, filename: str, selected_passages: list[dict], selection_meta: dict) -> str:
-        del selection_meta
         passage_blocks = []
-        for item in selected_passages:
+        for idx, item in enumerate(selected_passages, start=1):
             passage_blocks.append(
-                f"[문단 {item['passage_index']}]\n{item['text']}"
+                f"[자료 {idx}]\n"
+                f"source_id: {source_id}\n"
+                f"파일명: {filename}\n"
+                f"문단 번호: {item['passage_index']}\n"
+                f"본문:\n{item['text']}"
             )
 
         return (
-            f"source_id={source_id}\nfile={filename}\n\n"
-            + "\n\n".join(passage_blocks)
+            f"[source]\nsource_id: {source_id}\nfilename: {filename}\n\n"
+            f"[selection]\ncount={selection_meta['selected_passage_count']} chars={selection_meta['selected_chars']} mode={selection_meta['selection_mode']}\n\n"
+            f"[passages]\n" + "\n\n".join(passage_blocks)
         )
 
     def _build_extract_messages(
@@ -187,8 +191,8 @@ class ProfileAttachmentIngestService:
         source_id: str,
         filename: str,
         content: str,
-        max_total_chars: int = 1400,
-        max_passages: int = 4,
+        max_total_chars: int = 1800,
+        max_passages: int = 5,
     ) -> tuple[list[dict], dict]:
         system_prompt = load_prompt_text(PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH)
         selected_passages, selection_meta = self._select_relevant_passages(
@@ -363,39 +367,89 @@ class ProfileAttachmentIngestService:
         extract_result: dict,
         extract_error: str | None = None,
     ) -> list[dict]:
-        del filename, extract_result
         system_prompt = load_prompt_text(PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH)
 
         request_summary = self._summarize_user_request(user_request=user_request, filename=filename)
 
         evidence_lines = []
-        for item in used_evidence[:3]:
+        for item in used_evidence[:4]:
             topic = self._normalize_whitespace(str(item.get("topic") or ""))
             candidate = self._normalize_whitespace(str(item.get("candidate_content") or ""))
+            strength = self._normalize_whitespace(str(item.get("source_strength") or ""))
+            confidence = item.get("confidence")
             if topic and candidate:
-                evidence_lines.append(f"- {topic}: {candidate}")
+                evidence_lines.append(
+                    f"- topic={topic} | candidate={candidate} | strength={strength or '-'} | confidence={confidence}"
+                )
 
         evidence_text = "\n".join(evidence_lines).strip() or "- 강하게 잡힌 evidence 없음"
 
-        if int(sync_result.get("promoted_profiles", 0) or 0) > 0:
-            status = "이번 자료에서 바로 반영된 내용이 있다."
-        elif int(sync_result.get("linked_existing_profiles", 0) or 0) + int(sync_result.get("linked_to_existing_active_profile", 0) or 0) > 0:
-            status = "기존 이해와 이어서 반영된 내용이 있다."
-        elif extract_error:
-            status = "이번 자료는 일부만 반영했고, 추출은 보수적으로 처리했다."
-        else:
-            status = "이번 자료에서 강하게 반영할 근거는 제한적이었다."
+        promoted = int(sync_result.get("promoted_profiles", 0) or 0)
+        linked = int(sync_result.get("linked_existing_profiles", 0) or 0) + int(
+            sync_result.get("linked_to_existing_active_profile", 0) or 0
+        )
+        blocked = int(sync_result.get("blocked_by_correction", 0) or 0) + int(
+            sync_result.get("blocked_by_existing_profile_conflict", 0) or 0
+        )
+        candidate_count = int(extract_result.get("candidate_count", 0) or 0)
+
+        status_summary = (
+            f"candidate_count={candidate_count}, linked={linked}, promoted={promoted}, blocked={blocked}"
+        )
+        if extract_error:
+            status_summary += f", extract_error={extract_error[:120]}"
 
         user_prompt = (
-            f"[요청]\n{request_summary}\n\n"
+            f"[사용자 요청 요지]\n{request_summary}\n\n"
             f"[핵심 evidence]\n{evidence_text}\n\n"
-            f"[반영 상태]\n{status}"
+            f"[반영 상태]\n{status_summary}\n\n"
+            "[답변 지침]\n"
+            "- 자연스럽게 설명할 것\n"
+            "- 존댓말만 사용할 것\n"
+            "- 질문 문장을 거의 그대로 반복하지 말 것\n"
+            "- 필요한 핵심은 충분히 설명하되, 내부 처리 수치나 파일 정보는 길게 나열하지 말 것\n"
+            "- evidence가 거의 없으면 억지로 의미를 부풀리지 말 것"
         )
 
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+
+    def _continue_answer_if_truncated(
+        self,
+        answer_messages: list[dict],
+        first_result: dict,
+        model: str | None = None,
+    ) -> str:
+        first_text = str(first_result.get("raw_content") or first_result.get("content") or "").strip()
+        if not first_text:
+            return ""
+
+        if not bool(first_result.get("truncated")):
+            return first_text
+
+        continuation_messages = list(answer_messages) + [
+            {"role": "assistant", "content": first_text},
+            {
+                "role": "user",
+                "content": "이어서 계속해 주세요. 이미 말한 내용은 반복하지 말고, 남은 핵심만 자연스럽게 마무리해 주세요.",
+            },
+        ]
+
+        try:
+            second_result = self.answer_client.chat_with_metadata(
+                continuation_messages,
+                model=model,
+                require_complete=False,
+                truncated_notice=None,
+            )
+            second_text = str(second_result.get("raw_content") or second_result.get("content") or "").strip()
+            if not second_text:
+                return first_text
+            return (first_text + "\n\n" + second_text).strip()
+        except RuntimeError:
+            return first_text
 
     def ingest_text(
         self,
@@ -434,15 +488,15 @@ class ProfileAttachmentIngestService:
             source_id=source_id,
             filename=filename,
             content=clean_content,
-            max_total_chars=1400,
-            max_passages=4,
+            max_total_chars=1800,
+            max_passages=5,
         )
         retry_messages, retry_selection_meta = self._build_extract_messages(
             source_id=source_id,
             filename=filename,
             content=clean_content,
-            max_total_chars=800,
-            max_passages=2,
+            max_total_chars=1100,
+            max_passages=3,
         )
         answer, extract_error = self._run_extract(
             messages=messages,
@@ -499,7 +553,17 @@ class ProfileAttachmentIngestService:
             extract_result=extract_result,
             extract_error=extract_error,
         )
-        user_answer = self.answer_client.chat(answer_messages, model=model)
+        first_answer_result = self.answer_client.chat_with_metadata(
+            answer_messages,
+            model=model,
+            require_complete=False,
+            truncated_notice=None,
+        )
+        user_answer = self._continue_answer_if_truncated(
+            answer_messages=answer_messages,
+            first_result=first_answer_result,
+            model=model,
+        )
 
         return {
             "answer": user_answer,
