@@ -114,18 +114,34 @@ class ProfileAttachmentIngestService:
 
         return result
 
-
-    def _normalize_whitespace(self, text: str) -> str:
-        return self.passage_selector.normalize_whitespace(text)
-
     def _summarize_user_request(self, user_request: str, filename: str) -> str:
-        request_text = self.passage_selector.normalize_whitespace(user_request)
-        if not request_text:
-            return f"첨부한 '{filename or '텍스트 자료'}'를 바탕으로 사용자에 대한 이해를 시도해 달라는 요청"
-        shortened = request_text[:220].rstrip()
-        if len(request_text) > 220:
+        text = self.passage_selector.normalize_whitespace(user_request)
+        if not text:
+            return "사용자는 첨부한 텍스트가 프로필 이해와 기억 업데이트에 실제로 도움이 되는지 묻고 있다."
+
+        request_lower = text.lower()
+        filename = filename or "첨부 텍스트"
+
+        if ("기억" in text and ("못" in text or "안난" in text or "안 나" in text)) and ("이해" in text or "파악" in text):
+            return (
+                f"사용자는 내가 이전에 공유된 내용을 정확히 떠올리지 못하더라도, 첨부한 '{filename}'를 바탕으로 "
+                "다시 자신에 대한 이해를 시도해줄 수 있는지 묻고 있다."
+            )
+
+        if ("도움" in text or "도움이" in text) and ("이해" in text or "파악" in text):
+            return (
+                f"사용자는 첨부한 '{filename}' 같은 글 묶음이 자신의 성향과 사고 기준을 더 잘 이해하는 데 실제로 도움이 되는지 확인하려 한다."
+            )
+
+        if "업데이트" in request_lower or "기억시스템" in text or "기억 시스템" in text:
+            return (
+                f"사용자는 첨부한 '{filename}'를 기억 시스템의 프로필 근거로 반영해도 되는지, 그리고 이를 바탕으로 자신을 더 입체적으로 이해할 수 있는지 묻고 있다."
+            )
+
+        shortened = text[:180].rstrip()
+        if len(text) > 180:
             shortened += "..."
-        return shortened
+        return f"사용자 요청 요지: {shortened}"
 
     def _build_answer_messages(
         self,
@@ -142,9 +158,9 @@ class ProfileAttachmentIngestService:
 
         evidence_lines = []
         for item in used_evidence[:4]:
-            topic = self._normalize_whitespace(str(item.get("topic") or ""))
-            candidate = self._normalize_whitespace(str(item.get("candidate_content") or ""))
-            strength = self._normalize_whitespace(str(item.get("source_strength") or ""))
+            topic = self.passage_selector.normalize_whitespace(str(item.get("topic") or ""))
+            candidate = self.passage_selector.normalize_whitespace(str(item.get("candidate_content") or ""))
+            strength = self.passage_selector.normalize_whitespace(str(item.get("source_strength") or ""))
             confidence = item.get("confidence")
             if topic and candidate:
                 evidence_lines.append(
@@ -247,14 +263,14 @@ class ProfileAttachmentIngestService:
         self.state_store.set_state('recent_profile_source_filename', filename, source='profile_attachment')
 
         self.evidence_store.delete_by_source(source_id)
-        messages, selection_meta = self._build_extract_messages(
+        user_prompt, selection_meta = self._build_extract_user_prompt(
             source_id=source_id,
             filename=filename,
             content=clean_content,
             max_total_chars=1800,
             max_passages=5,
         )
-        retry_messages, retry_selection_meta = self._build_extract_messages(
+        retry_user_prompt, retry_selection_meta = self._build_extract_user_prompt(
             source_id=source_id,
             filename=filename,
             content=clean_content,
@@ -262,9 +278,9 @@ class ProfileAttachmentIngestService:
             max_passages=3,
         )
         answer, extract_error = self._run_extract(
-            messages=messages,
+            user_prompt=user_prompt,
             model=model,
-            retry_messages=retry_messages,
+            retry_user_prompt=retry_user_prompt,
         )
         if answer:
             candidates = self._extract_json_array(answer)
