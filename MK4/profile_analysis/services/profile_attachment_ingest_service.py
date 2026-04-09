@@ -36,8 +36,8 @@ class ProfileAttachmentIngestService:
         self.source_store = UploadedProfileSourceStore()
         self.evidence_store = UploadedProfileEvidenceStore()
         self.sync_service = ProfileMemorySyncService()
-        self.extract_client = OllamaClient(timeout=150, num_predict=640)
-        self.answer_client = OllamaClient(timeout=150, num_predict=560)
+        self.extract_client = OllamaClient(timeout=300, num_predict=640)
+        self.answer_client = OllamaClient(timeout=300, num_predict=560)
 
     def _normalize_whitespace(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "")).strip()
@@ -325,15 +325,11 @@ class ProfileAttachmentIngestService:
         request_summary = self._summarize_user_request(user_request=user_request, filename=filename)
 
         evidence_lines = []
-        for item in used_evidence[:4]:
+        for item in used_evidence[:3]:
             topic = self._normalize_whitespace(str(item.get("topic") or ""))
             candidate = self._normalize_whitespace(str(item.get("candidate_content") or ""))
-            strength = self._normalize_whitespace(str(item.get("source_strength") or ""))
-            confidence = item.get("confidence")
             if topic and candidate:
-                evidence_lines.append(
-                    f"- topic={topic} | candidate={candidate} | strength={strength or '-'} | confidence={confidence}"
-                )
+                evidence_lines.append(f"- {topic}: {candidate}")
 
         evidence_text = "\n".join(evidence_lines).strip() or "- 강하게 잡힌 evidence 없음"
 
@@ -346,23 +342,21 @@ class ProfileAttachmentIngestService:
         )
         candidate_count = int(extract_result.get("candidate_count", 0) or 0)
 
-        status_summary = (
-            f"candidate_count={candidate_count}, linked={linked}, promoted={promoted}, blocked={blocked}"
-        )
+        if promoted > 0:
+            status_summary = "강한 근거 일부가 실제 프로필 쪽으로 반영됐다."
+        elif linked > 0:
+            status_summary = "기존에 있던 이해와 이어 붙일 수 있는 근거가 잡혔다."
+        elif blocked > 0:
+            status_summary = "근거는 있었지만, 기존 정정이나 충돌 때문에 보수적으로 보류된 부분이 있다."
+        elif candidate_count > 0:
+            status_summary = "근거는 잡혔지만 아직은 더 누적해서 보는 편이 안전하다."
+        else:
+            status_summary = "강하게 잡힌 근거는 많지 않았다."
 
         user_prompt = (
             f"[사용자 요청 요지]\n{request_summary}\n\n"
-            f"[이번 파일 정보]\n"
-            f"- filename: {filename}\n"
-            f"- 문서 수: {extract_result.get('document_count', 0)}\n"
-            f"- 선별 문단 수: {extract_result.get('selected_passage_count', 0)}\n\n"
-            f"[이번 파일에서 잡힌 evidence 요약]\n{evidence_text}\n\n"
-            f"[반영 상태 요약]\n{status_summary}\n\n"
-            "[답변 지침]\n"
-            "- 사용자에게 자연스럽게 설명하되, 내부 통계를 그대로 나열하지 말 것\n"
-            "- 존댓말만 사용할 것\n"
-            "- 질문 문장을 거의 그대로 반복하지 말 것\n"
-            "- evidence가 거의 없으면 억지로 의미를 부풀리지 말 것"
+            f"[핵심 evidence]\n{evidence_text}\n\n"
+            f"[반영 상태]\n{status_summary}\n"
         )
 
         return [

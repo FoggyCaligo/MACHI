@@ -3,7 +3,7 @@ import requests
 from config import OLLAMA_BASE_URL, OLLAMA_DEFAULT_MODEL
 
 
-DEFAULT_TIMEOUT = 150
+DEFAULT_TIMEOUT = 300
 DEFAULT_NUM_PREDICT = 768
 DEFAULT_TRUNCATED_NOTICE = "\n\n[주의: 답변이 길이 제한으로 중간 종료되었을 수 있습니다. 더 짧게 다시 요청해 주세요.]"
 
