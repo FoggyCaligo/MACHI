@@ -60,11 +60,6 @@
 - "~주의", "~학파", "~적 사고"처럼 외부 권위를 붙여 과장하는 것
 - evidence_text 없이 candidate_content만 멋있게 쓰는 것
 
-예시적으로 좋은 방향:
-- 명시적 자기서술이 있으면 explicit_self_statement로 보수적으로 추출
-- 같은 설명 선호나 판단 기준이 여러 구간에서 반복되면 repeated_behavior로 추출
-- 특정 책, 기술, 인물에 대한 일회성 흥미는 temporary_interest로 낮은 confidence 부여
-
 최종 규칙:
 - 출력은 반드시 JSON 배열만.
 - 후보가 빈약하면 적게 뽑는 것이 많이 뽑는 것보다 낫다.
