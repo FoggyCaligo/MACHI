@@ -64,6 +64,37 @@ class PassageSelectionService:
         ranked.sort(key=lambda pair: pair[0], reverse=True)
         return [item for _, item in ranked[:max_docs]]
 
+    def build_head_excerpt_passages(
+        self,
+        *,
+        filename: str,
+        content: str,
+        max_total_chars: int = 3200,
+    ) -> tuple[list[dict], dict]:
+        excerpt = self.normalize_whitespace(content)[:max_total_chars].rstrip()
+        if not excerpt:
+            return [], {
+                "selected_passage_count": 0,
+                "selected_chars": 0,
+                "selection_mode": "none",
+            }
+
+        if len(content) > max_total_chars:
+            excerpt += "..."
+
+        return [
+            {
+                "filename": filename,
+                "passage_index": 1,
+                "score": 0.0,
+                "text": excerpt,
+            }
+        ], {
+            "selected_passage_count": 1,
+            "selected_chars": len(excerpt),
+            "selection_mode": "profile_head_excerpt_direct",
+        }
+
     def select_profile_passages(
         self,
         *,

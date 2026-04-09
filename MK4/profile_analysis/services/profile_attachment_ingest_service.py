@@ -50,14 +50,34 @@ class ProfileAttachmentIngestService:
         source_id: str,
         filename: str,
         content: str,
-        max_total_chars: int = 1800,
-        max_passages: int = 5,
+        max_total_chars: int = 2200,
+        max_passages: int = 6,
     ) -> tuple[str, dict]:
         selected_passages, selection_meta = self.passage_selector.select_profile_passages(
             filename=filename,
             content=content,
             max_total_chars=max_total_chars,
             max_passages=max_passages,
+        )
+        user_prompt = self._compact_extract_user_prompt(
+            source_id=source_id,
+            filename=filename,
+            selected_passages=selected_passages,
+            selection_meta=selection_meta,
+        )
+        return user_prompt, selection_meta
+
+    def _build_head_excerpt_user_prompt(
+        self,
+        source_id: str,
+        filename: str,
+        content: str,
+        max_total_chars: int = 3200,
+    ) -> tuple[str, dict]:
+        selected_passages, selection_meta = self.passage_selector.build_head_excerpt_passages(
+            filename=filename,
+            content=content,
+            max_total_chars=max_total_chars,
         )
         user_prompt = self._compact_extract_user_prompt(
             source_id=source_id,
@@ -83,11 +103,104 @@ class ProfileAttachmentIngestService:
         return result.text, result.error
 
     def _extract_json_array(self, text: str) -> list[dict]:
-        return self.extraction_service.parse_profile_candidates(
+        candidates, _meta = self._extract_json_array_with_meta(text)
+        return candidates
+
+
+    def _extract_json_array_with_meta(self, text: str) -> tuple[list[dict], dict]:
+        return self.extraction_service.parse_profile_candidates_with_meta(
             text,
             normalize_source_strength=self.memory_policy.normalize_source_strength,
             include_source_file_paths=False,
         )
+    
+    def _run_attachment_extract_pipeline(
+        self,
+        *,
+        source_id: str,
+        filename: str,
+        content: str,
+        model: str | None = None,
+    ) -> tuple[list[dict], dict, str | None]:
+        attempts: list[dict] = []
+
+        primary_prompt, primary_selection_meta = self._build_extract_user_prompt(
+            source_id=source_id,
+            filename=filename,
+            content=content,
+            max_total_chars=2200,
+            max_passages=6,
+        )
+        primary_retry_prompt, _ = self._build_extract_user_prompt(
+            source_id=source_id,
+            filename=filename,
+            content=content,
+            max_total_chars=1500,
+            max_passages=4,
+        )
+        primary_answer, primary_error = self._run_extract(
+            user_prompt=primary_prompt,
+            model=model,
+            retry_user_prompt=primary_retry_prompt,
+        )
+        primary_candidates, primary_parse_meta = self._extract_json_array_with_meta(primary_answer)
+        attempts.append(
+            {
+                "attempt": "selected_passages",
+                "selection_mode": primary_selection_meta["selection_mode"],
+                "selected_passage_count": primary_selection_meta["selected_passage_count"],
+                "selected_chars": primary_selection_meta["selected_chars"],
+                "candidate_count": len(primary_candidates),
+                "parse_status": primary_parse_meta.get("parse_status"),
+                "raw_item_count": primary_parse_meta.get("raw_item_count"),
+                "dropped_candidate_count": primary_parse_meta.get("dropped_candidate_count"),
+                "extract_error": primary_error,
+                "answer_preview": (primary_answer or "")[:220],
+            }
+        )
+
+        if primary_candidates:
+            return primary_candidates, {
+                "fallback_used": False,
+                "final_selection_meta": primary_selection_meta,
+                "final_parse_meta": primary_parse_meta,
+                "attempts": attempts,
+            }, primary_error
+
+        fallback_prompt, fallback_selection_meta = self._build_head_excerpt_user_prompt(
+            source_id=source_id,
+            filename=filename,
+            content=content,
+            max_total_chars=3200,
+        )
+        fallback_answer, fallback_error = self._run_extract(
+            user_prompt=fallback_prompt,
+            model=model,
+            retry_user_prompt=None,
+        )
+        fallback_candidates, fallback_parse_meta = self._extract_json_array_with_meta(fallback_answer)
+        attempts.append(
+            {
+                "attempt": "head_excerpt_fallback",
+                "selection_mode": fallback_selection_meta["selection_mode"],
+                "selected_passage_count": fallback_selection_meta["selected_passage_count"],
+                "selected_chars": fallback_selection_meta["selected_chars"],
+                "candidate_count": len(fallback_candidates),
+                "parse_status": fallback_parse_meta.get("parse_status"),
+                "raw_item_count": fallback_parse_meta.get("raw_item_count"),
+                "dropped_candidate_count": fallback_parse_meta.get("dropped_candidate_count"),
+                "extract_error": fallback_error,
+                "answer_preview": (fallback_answer or "")[:220],
+            }
+        )
+
+        final_error = fallback_error or primary_error
+        return fallback_candidates, {
+            "fallback_used": True,
+            "final_selection_meta": fallback_selection_meta,
+            "final_parse_meta": fallback_parse_meta,
+            "attempts": attempts,
+        }, final_error
 
     def _dedupe_evidence(self, evidences: list[dict]) -> list[dict]:
         seen: set[tuple[str, str]] = set()
@@ -242,30 +355,16 @@ class ProfileAttachmentIngestService:
         self.state_store.set_state('recent_profile_source_filename', filename, source='profile_attachment')
 
         self.evidence_store.delete_by_source(source_id)
-        user_prompt, selection_meta = self._build_extract_user_prompt(
+
+        candidates, extract_debug, extract_error = self._run_attachment_extract_pipeline(
             source_id=source_id,
             filename=filename,
             content=clean_content,
-            max_total_chars=1800,
-            max_passages=5,
-        )
-        retry_user_prompt, retry_selection_meta = self._build_extract_user_prompt(
-            source_id=source_id,
-            filename=filename,
-            content=clean_content,
-            max_total_chars=1100,
-            max_passages=3,
-        )
-        answer, extract_error = self._run_extract(
-            user_prompt=user_prompt,
             model=model,
-            retry_user_prompt=retry_user_prompt,
         )
-        if answer:
-            candidates = self._extract_json_array(answer)
-        else:
-            candidates = []
-            selection_meta = retry_selection_meta
+
+        selection_meta = extract_debug["final_selection_meta"]
+        parse_meta = extract_debug["final_parse_meta"]
 
         for candidate in candidates:
             self.evidence_store.add(
@@ -301,6 +400,13 @@ class ProfileAttachmentIngestService:
             "selection_mode": selection_meta["selection_mode"],
             "source_files": [filename],
             "extract_error": extract_error,
+            "fallback_used": bool(extract_debug.get("fallback_used")),
+            "parse_status": parse_meta.get("parse_status"),
+            "raw_item_count": parse_meta.get("raw_item_count", 0),
+            "valid_candidate_count": parse_meta.get("valid_candidate_count", len(candidates)),
+            "dropped_candidate_count": parse_meta.get("dropped_candidate_count", 0),
+            "attempt_count": len(extract_debug.get("attempts", [])),
+            "attempts": extract_debug.get("attempts", []),
         }
 
         answer_messages = self._build_answer_messages(

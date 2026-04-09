@@ -61,35 +61,89 @@ class EvidenceExtractionService:
         except RuntimeError as exc:
             return ExtractionRunResult(text="", error=str(exc), retried=True)
 
-    def parse_json_array(self, text: str) -> list[dict]:
-        raw = (text or "").strip()
-        if not raw:
-            return []
+    def _strip_code_fence(self, raw: str) -> str:
+        if not raw.startswith("```"):
+            return raw
 
-        if raw.startswith("```"):
-            lines = raw.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            raw = "\n".join(lines).strip()
+        lines = raw.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+
+    def parse_json_array_with_meta(self, text: str) -> tuple[list[dict], dict]:
+        original = (text or "").strip()
+        if not original:
+            return [], {
+                "parse_status": "empty_response",
+                "container_type": "none",
+                "raw_item_count": 0,
+                "dict_item_count": 0,
+                "raw_preview": "",
+            }
+
+        raw = self._strip_code_fence(original)
+        parse_target = raw
+        container_type = "array"
 
         start = raw.find("[")
         end = raw.rfind("]")
-        if start == -1 or end == -1 or end < start:
-            return []
-
-        raw = raw[start:end + 1]
+        if start != -1 and end != -1 and end >= start:
+            parse_target = raw[start:end + 1]
+        else:
+            obj_start = raw.find("{")
+            obj_end = raw.rfind("}")
+            if obj_start != -1 and obj_end != -1 and obj_end >= obj_start:
+                parse_target = raw[obj_start:obj_end + 1]
+                container_type = "object"
+            else:
+                return [], {
+                    "parse_status": "json_bracket_not_found",
+                    "container_type": "unknown",
+                    "raw_item_count": 0,
+                    "dict_item_count": 0,
+                    "raw_preview": raw[:240],
+                }
 
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
+            data = json.loads(parse_target)
+        except json.JSONDecodeError as exc:
+            return [], {
+                "parse_status": "json_decode_error",
+                "container_type": container_type,
+                "raw_item_count": 0,
+                "dict_item_count": 0,
+                "parse_error": str(exc),
+                "raw_preview": parse_target[:240],
+            }
+
+        if container_type == "object" and isinstance(data, dict):
+            data = [data]
 
         if not isinstance(data, list):
-            return []
-        return [item for item in data if isinstance(item, dict)]
+            return [], {
+                "parse_status": "decoded_non_list",
+                "container_type": container_type,
+                "raw_item_count": 0,
+                "dict_item_count": 0,
+                "raw_preview": str(data)[:240],
+            }
 
+        items = [item for item in data if isinstance(item, dict)]
+        return items, {
+            "parse_status": "ok",
+            "container_type": container_type,
+            "raw_item_count": len(data),
+            "dict_item_count": len(items),
+            "raw_preview": parse_target[:240],
+        }
+
+    def parse_json_array(self, text: str) -> list[dict]:
+        data, _meta = self.parse_json_array_with_meta(text)
+        return data
+    
     def parse_profile_candidates(
         self,
         text: str,
@@ -97,8 +151,24 @@ class EvidenceExtractionService:
         normalize_source_strength,
         include_source_file_paths: bool = False,
     ) -> list[dict]:
-        data = self.parse_json_array(text)
+        result, _meta = self.parse_profile_candidates_with_meta(
+            text,
+            normalize_source_strength=normalize_source_strength,
+            include_source_file_paths=include_source_file_paths,
+        )
+        return result
+
+
+    def parse_profile_candidates_with_meta(
+        self,
+        text: str,
+        *,
+        normalize_source_strength,
+        include_source_file_paths: bool = False,
+    ) -> tuple[list[dict], dict]:
+        data, meta = self.parse_json_array_with_meta(text)
         result: list[dict] = []
+        dropped_count = 0
 
         for item in data:
             topic = str(item.get("topic") or "").strip()
@@ -112,6 +182,7 @@ class EvidenceExtractionService:
                 confidence = 0.0
 
             if not topic or not candidate_content:
+                dropped_count += 1
                 continue
 
             parsed = {
@@ -130,4 +201,9 @@ class EvidenceExtractionService:
 
             result.append(parsed)
 
-        return result
+        meta = {
+            **meta,
+            "valid_candidate_count": len(result),
+            "dropped_candidate_count": dropped_count,
+        }
+        return result, meta
