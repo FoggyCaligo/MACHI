@@ -16,8 +16,14 @@ PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH = (
 PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH = (
     PROMPTS_DIR / "project_profile_evidence_answer_system_prompt.txt"
 )
+PROJECT_PROFILE_ROUTE_SYSTEM_PROMPT_PATH = (
+    PROMPTS_DIR / "project_profile_route_system_prompt.txt"
+)
 PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH = (
     PROMPTS_DIR / "profile_attachment_answer_system_prompt.txt"
+)
+CHAT_UPDATE_EXTRACT_SYSTEM_PROMPT_PATH = (
+    PROMPTS_DIR / "chat_update_extract_system_prompt.txt"
 )
 
 OLLAMA_BASE_URL = "http://localhost:11434"

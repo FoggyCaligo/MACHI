@@ -1,0 +1,111 @@
+일단 문자열 휴리스틱 등의 하드코딩 들을 전부 걷어내는 작업을 먼저 하고, 그 다음에 일반 채팅 쪽을 다른 부분과 같은 수준으로 올려놓는 작업을 진행하자.
+
+
+이미 방향이 맞는 부분
+topic/project 축 분리
+artifact → evidence → sync 방향
+project에서도 profile evidence를 뽑으려는 구조
+general/candidate/confirmed 계층 의식
+correction 중심 사고
+update-first
+prompt의 사용자 하드코딩 축소
+passage selection의 임베딩 기반 전환 시도
+아직 방향과 구현이 어긋나는 부분
+memory_classification_policy.py에 남아 있는 규칙 기반 신호
+일반 채팅 쪽 extraction의 얕은 규칙 기반 분기
+project retrieval의 lexical scoring 성격
+recent source / response retrieval 쪽의 혼합 구조
+계층 철학은 공통인데 구현이 채널별로 따로 자란 흔적
+
+즉 지금 MK4는 철학은 꽤 선명한데,
+구현은 아직 transition state다.
+
+
+
+1단계: 문자열 휴리스틱/하드코딩 전면 제거
+
+먼저 해야 할 건 “더 똑똑하게 만들기”가 아니라
+잘못된 기반을 걷어내는 것이다.
+
+우선 제거 대상 핵심 파일은 이쪽이다.
+
+memory/policies/memory_classification_policy.py
+memory/policies/extraction_policy.py
+memory/retrieval/update_retriever.py
+project_analysis/retrieval/project_retriever.py
+memory/retrieval/response_retriever.py
+app/api.py
+reply_guard.py
+
+
+
+
+
+
+
+
+
+2단계: 공통 ingress 정책 확정
+
+그 다음엔 채널별로 따로 자란 걸 하나로 묶어야 한다.
+
+공통 정책은 대략 이렇게 가는 게 맞다.
+
+입력:
+
+chat
+attachment
+project artifact
+correction
+
+공통 중간 구조:
+
+source
+evidence
+route
+topic attach/create/keep
+source trace
+confidence
+
+공통 결과:
+
+discard
+general
+candidate
+confirmed
+
+즉 채널은 다르지만 ingress policy는 하나여야 한다.
+
+
+
+
+
+3단계: 일반 채팅 쪽을 artifact 수준으로 끌어올리기
+
+지금 일반 채팅이 약한 이유는,
+애초에 다른 부분보다 뒤늦게 붙었기 때문이다.
+
+그래서 제거 후에는
+
+chat도 evidence-first
+chat도 topic-aware
+chat도 promotion-aware
+구조로 올려야 한다.
+
+즉 일반 채팅만 예외적인 얕은 규칙층으로 남겨두면 안 된다.
+
+
+
+
+
+
+
+4단계: retrieval 전면 의미 기반화
+
+그 다음에 retrieval을 통일해야 한다.
+
+project에서도 의미 기반
+profile에서도 의미 기반
+response context에서도 의미 기반
+
+이렇게 묶어야 시스템 전체가 한 철학으로 간다.

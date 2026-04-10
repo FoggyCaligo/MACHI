@@ -62,6 +62,7 @@ def init_project_tables():
                 end_line INTEGER,
                 content TEXT NOT NULL,
                 summary TEXT,
+                embedding_json TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id),
                 FOREIGN KEY (file_id) REFERENCES project_files(id)
@@ -139,5 +140,7 @@ def init_project_tables():
         _ensure_column(conn, "uploaded_profile_evidence", "applied_to_memory", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "uploaded_profile_evidence", "linked_profile_id", "TEXT")
         _ensure_column(conn, "uploaded_profile_evidence", "linked_correction_id", "TEXT")
+
+        _ensure_column(conn, "project_chunks", "embedding_json", "TEXT")
 
         conn.commit()

@@ -1,13 +1,5 @@
-from pathlib import Path
-
-from config import (
-    PROJECT_REPLY_MAX_CONTINUATIONS,
-    PROJECT_REPLY_NUM_PREDICT,
-    PROJECT_REPLY_TIMEOUT,
-    PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH,
-    PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
-)
 from memory.services.evidence_extraction_service import EvidenceExtractionService
+from memory.services.passage_selection_service import PassageSelectionService
 from memory.services.topic_router import TopicRouter
 from prompts.prompt_loader import load_prompt_text
 from project_analysis.stores.project_file_store import ProjectFileStore
@@ -15,42 +7,21 @@ from project_analysis.stores.project_profile_evidence_store import (
     ProjectProfileEvidenceStore,
 )
 from tools.response_runner import ResponseRunner
+from config import (
+    PROJECT_REPLY_MAX_CONTINUATIONS,
+    PROJECT_REPLY_NUM_PREDICT,
+    PROJECT_REPLY_TIMEOUT,
+    PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH,
+    PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
+)
 
-
-PROFILE_DOC_EXTENSIONS = {".txt", ".md", ".markdown", ".rst"}
-PROFILE_NAME_HINTS = {
-    "readme.md",
-    "readme.txt",
-    "about.md",
-    "profile.md",
-    "notes.md",
-    "blog.md",
-    "blog.txt",
-    "plan.md",
-    "planning.md",
-    "retrospective.md",
-}
-PROFILE_QUESTION_KEYWORDS = {
-    "성향",
-    "프로필",
-    "스타일",
-    "선호",
-    "need",
-    "니즈",
-    "작동 방식",
-    "나에 대해",
-    "어떤 사람",
-    "나답",
-    "습관",
-    "판단 기준",
-    "불편해하는",
-}
 
 class ProjectProfileEvidenceService:
     def __init__(self) -> None:
         self.file_store = ProjectFileStore()
         self.evidence_store = ProjectProfileEvidenceStore()
         self.topic_router = TopicRouter()
+        self.passage_selection_service = PassageSelectionService()
         self.extraction_service = EvidenceExtractionService(
             timeout=120,
             num_predict=384,
@@ -62,32 +33,9 @@ class ProjectProfileEvidenceService:
             max_continuations=PROJECT_REPLY_MAX_CONTINUATIONS,
         )
 
-    def is_profile_question(self, question: str) -> bool:
-        q = (question or "").lower()
-        return any(keyword in q for keyword in PROFILE_QUESTION_KEYWORDS)
-
     def _select_documents(self, project_id: str) -> list[dict]:
         files = self.file_store.list_full_by_project(project_id)
-        selected: list[dict] = []
-
-        for file in files:
-            path = file.get("path") or ""
-            ext = (file.get("ext") or "").lower()
-            name = Path(path).name.lower()
-            content = (file.get("content") or "").strip()
-
-            if not content:
-                continue
-
-            if ext in PROFILE_DOC_EXTENSIONS or name in PROFILE_NAME_HINTS:
-                selected.append(
-                    {
-                        "path": path,
-                        "content": content,
-                    }
-                )
-
-        return selected[:8]
+        return self.passage_selection_service.filter_profile_documents(files, max_docs=8)
 
     def _build_extract_user_prompt(
         self,
@@ -189,7 +137,6 @@ class ProjectProfileEvidenceService:
     def _normalize_text(self, text: str) -> str:
         return " ".join((text or "").strip().lower().split())
 
-
     def extract_and_store(self, project_id: str, model: str | None = None) -> dict:
         documents = self._select_documents(project_id)
         self.evidence_store.delete_by_project(project_id)
@@ -221,7 +168,10 @@ class ProjectProfileEvidenceService:
             model=model,
             require_complete=True,
         )
-        candidates = [self._resolve_candidate_topic(candidate, model=model) for candidate in self._extract_json_array(extract_result.text)]
+        candidates = [
+            self._resolve_candidate_topic(candidate, model=model)
+            for candidate in self._extract_json_array(extract_result.text)
+        ]
 
         for candidate in candidates:
             source_paths = candidate.get("source_file_paths") or []
@@ -245,7 +195,7 @@ class ProjectProfileEvidenceService:
             "source_files": [doc["path"] for doc in documents],
             "candidate_count": len(candidates),
         }
-    
+
     def answer_from_project(
         self,
         project_id: str,
@@ -260,20 +210,18 @@ class ProjectProfileEvidenceService:
         if not evidences:
             return None
 
-        messages = self._build_answer_messages(question=question, evidences=evidences)
-        answer = self.answer_runner.run(messages, model=model).text
-
-        used_evidence = [
-            {
-                "topic": item.get("topic"),
-                "source_file_path": item.get("source_file_path"),
-                "confidence": item.get("confidence"),
-                "source_strength": item.get("source_strength"),
-            }
-            for item in evidences
-        ]
-
+        messages = self._build_answer_messages(question, evidences)
+        answer = self.answer_runner.run(messages=messages, model=model)
         return {
             "answer": answer,
-            "used_profile_evidence": used_evidence,
+            "used_profile_evidence": [
+                {
+                    "topic": evidence.get("topic"),
+                    "topic_id": evidence.get("topic_id"),
+                    "candidate_content": evidence.get("candidate_content"),
+                    "source_file_path": evidence.get("source_file_path"),
+                    "confidence": evidence.get("confidence"),
+                }
+                for evidence in evidences[:8]
+            ],
         }

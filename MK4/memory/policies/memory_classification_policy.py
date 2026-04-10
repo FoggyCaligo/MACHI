@@ -16,14 +16,9 @@ class MemoryClassificationPolicy:
     action types, source strength, and confidence.
     """
 
-    def normalize_text(self, text: str) -> str:
-        return " ".join((text or "").strip().lower().split())
-
     def normalize_source_strength(self, value: str | None) -> str:
         text = str(value or "").strip()
-        if text in SOURCE_STRENGTH_ORDER:
-            return text
-        return "repeated_behavior"
+        return text if text in SOURCE_STRENGTH_ORDER else ""
 
     def _signal_tags_from_evidence(self, evidence: dict) -> list[str]:
         tags: list[str] = []
@@ -50,42 +45,36 @@ class MemoryClassificationPolicy:
 
     def classify_chat_memory(
         self,
-        user_message: str,
         action_types: set[str] | None = None,
         similarity: float = 0.0,
         source_strength: str | None = None,
         direct_candidate: bool = False,
+        confidence: float | None = None,
     ) -> dict:
         action_types = action_types or set()
-        cleaned = (user_message or "").strip()
-        if not cleaned:
+        meaningful_actions = {a for a in action_types if a and a != "discard"}
+        if not meaningful_actions:
             return {"route": "discard", "signals": [], "confidence": 0.0}
 
-        if action_types == {"discard"}:
-            return {"route": "discard", "signals": [], "confidence": 0.0}
-
-        if len(cleaned) < 20:
-            return {"route": "discard", "signals": [], "confidence": 0.0}
-
-        confidence = self.estimate_message_profile_confidence(similarity)
         normalized_strength = self.normalize_source_strength(source_strength)
-        signals = [f"action:{a}" for a in sorted(action_types) if a != "discard"]
-        if source_strength is not None:
+        resolved_confidence = float(confidence) if confidence is not None else self.estimate_message_profile_confidence(similarity)
+        resolved_confidence = min(max(resolved_confidence, 0.0), 1.0)
+
+        signals = [f"action:{a}" for a in sorted(meaningful_actions)]
+        if normalized_strength:
             signals.append(f"source_strength:{normalized_strength}")
         if direct_candidate:
             signals.append("direct_candidate")
 
-        # Chat messages default to general memory. If upstream already supplies
-        # strong structured evidence, skip general and place them directly in candidate.
-        if direct_candidate and confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
-            return {"route": "candidate", "signals": signals, "confidence": confidence}
-        if normalized_strength == "explicit_self_statement" and confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
-            return {"route": "candidate", "signals": signals, "confidence": confidence}
+        if direct_candidate and resolved_confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
+            return {"route": "candidate", "signals": signals, "confidence": resolved_confidence}
+        if normalized_strength == "explicit_self_statement" and resolved_confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
+            return {"route": "candidate", "signals": signals, "confidence": resolved_confidence}
 
         return {
             "route": "general",
             "signals": signals,
-            "confidence": confidence,
+            "confidence": resolved_confidence,
         }
 
     def classify_evidence(self, evidence: dict) -> dict:

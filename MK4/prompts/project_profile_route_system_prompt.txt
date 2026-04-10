@@ -1,0 +1,10 @@
+Decide whether the user's project question should be handled as a user-profile question inferred from project artifacts.
+
+Return JSON only in one of these forms:
+{"route": "profile_question"}
+or
+{"route": "project_question"}
+
+Choose "profile_question" only when the user is asking what the project materials reveal about the user's traits, tendencies, preferences, working style, thinking style, repeated concerns, or personal profile.
+
+Choose "project_question" for all other questions, including implementation questions, code structure questions, bug questions, architecture questions, project status questions, and requests to summarize or review the project itself.

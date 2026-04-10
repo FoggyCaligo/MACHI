@@ -1,9 +1,31 @@
+import json
 import uuid
 from datetime import datetime, timezone
 
 from project_analysis.stores.db import get_conn
+from tools.text_embedding import embed_text
+
 
 class ProjectChunkStore:
+    def _decode_embedding(self, raw: str | None) -> list[float]:
+        if not raw:
+            return []
+        try:
+            values = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(values, list):
+            return []
+        return [float(value) for value in values]
+
+    def _encode_embedding(self, embedding: list[float] | None) -> str:
+        return json.dumps(embedding or [], ensure_ascii=False)
+
+    def _hydrate_row(self, row) -> dict:
+        chunk = dict(row)
+        chunk["embedding"] = self._decode_embedding(chunk.get("embedding_json"))
+        return chunk
+
     def add(
         self,
         project_id: str,
@@ -13,16 +35,18 @@ class ProjectChunkStore:
         end_line: int,
         content: str,
         summary: str | None = None,
+        embedding: list[float] | None = None,
     ) -> dict:
         chunk_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        resolved_embedding = embedding or embed_text(content, kind="passage")
 
         with get_conn() as conn:
             conn.execute(
                 """
                 INSERT INTO project_chunks
-                (id, project_id, file_id, chunk_index, start_line, end_line, content, summary, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, project_id, file_id, chunk_index, start_line, end_line, content, summary, embedding_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     chunk_id,
@@ -33,6 +57,7 @@ class ProjectChunkStore:
                     end_line,
                     content,
                     summary,
+                    self._encode_embedding(resolved_embedding),
                     now,
                 ),
             )
@@ -47,8 +72,22 @@ class ProjectChunkStore:
             "end_line": end_line,
             "content": content,
             "summary": summary,
+            "embedding_json": self._encode_embedding(resolved_embedding),
+            "embedding": resolved_embedding,
             "created_at": now,
         }
+
+    def update_embedding(self, chunk_id: str, embedding: list[float] | None) -> None:
+        with get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE project_chunks
+                SET embedding_json = ?
+                WHERE id = ?
+                """,
+                (self._encode_embedding(embedding), chunk_id),
+            )
+            conn.commit()
 
     def list_by_project(self, project_id: str) -> list[dict]:
         with get_conn() as conn:
@@ -61,7 +100,7 @@ class ProjectChunkStore:
                 (project_id,),
             ).fetchall()
 
-        return [dict(row) for row in rows]
+        return [self._hydrate_row(row) for row in rows]
 
     def list_by_file(self, file_id: str) -> list[dict]:
         with get_conn() as conn:
@@ -74,4 +113,4 @@ class ProjectChunkStore:
                 (file_id,),
             ).fetchall()
 
-        return [dict(row) for row in rows]
+        return [self._hydrate_row(row) for row in rows]
