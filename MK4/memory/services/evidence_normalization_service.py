@@ -10,8 +10,8 @@ from memory.policies.memory_classification_policy import SOURCE_STRENGTH_ORDER
 class EvidenceNormalizationService:
     """Normalize structured evidence/update payloads across channels.
 
-    This layer does not interpret raw language. It only validates and shapes
-    already-structured outputs produced upstream by model-based extractors.
+    This layer does not interpret raw language. It validates and shapes
+    already-structured outputs produced upstream by extractors/resolvers.
     """
 
     ALLOWED_ACTION_TYPES = {
@@ -21,11 +21,10 @@ class EvidenceNormalizationService:
         "new_correction",
         "new_episode",
     }
-    ALLOWED_CHANNELS = {"chat", "uploaded_text", "project_artifact"}
     ALLOWED_ENVELOPE_KINDS = {
         "profile_candidate",
-        "correction_candidate",
         "state_update",
+        "correction_candidate",
         "episode_candidate",
     }
 
@@ -53,14 +52,6 @@ class EvidenceNormalizationService:
 
     @staticmethod
     def bounded_confidence(value: Any, default: float = 0.0) -> float:
-        try:
-            score = float(value)
-        except (TypeError, ValueError):
-            return default
-        return min(max(score, 0.0), 1.0)
-
-    @staticmethod
-    def bounded_importance(value: Any, default: float = 0.5) -> float:
         try:
             score = float(value)
         except (TypeError, ValueError):
@@ -144,7 +135,7 @@ class EvidenceNormalizationService:
         return {
             "summary": summary,
             "raw_ref": raw_ref,
-            "importance": self.bounded_importance(value.get("importance"), default=0.5),
+            "importance": self.bounded_confidence(value.get("importance"), default=0.5),
         }
 
     def normalize_profile_candidate(
@@ -183,126 +174,6 @@ class EvidenceNormalizationService:
 
         return normalized
 
-    def normalize_profile_candidate_envelope(
-        self,
-        value: Any,
-        *,
-        channel: str,
-        include_source_file_paths: bool = False,
-        default_source_file_paths: list[str] | None = None,
-    ) -> dict[str, Any] | None:
-        normalized = self.normalize_profile_candidate(
-            value,
-            include_source_file_paths=include_source_file_paths,
-        )
-        if not normalized:
-            return None
-
-        resolved_channel = channel if channel in self.ALLOWED_CHANNELS else ""
-        if not resolved_channel:
-            return None
-
-        source_file_paths = normalized.get("source_file_paths") or []
-        if not source_file_paths and default_source_file_paths:
-            source_file_paths = [self.clean_text(x) for x in default_source_file_paths if self.clean_text(x)]
-
-        envelope = {
-            "channel": resolved_channel,
-            "kind": "profile_candidate",
-            "topic": normalized.get("topic"),
-            "topic_id": normalized.get("topic_id"),
-            "candidate_content": normalized.get("candidate_content"),
-            "source_strength": normalized.get("source_strength"),
-            "confidence": normalized.get("confidence"),
-            "evidence_text": normalized.get("evidence_text"),
-            "source_file_paths": source_file_paths,
-        }
-        if normalized.get("topic_resolution"):
-            envelope["topic_resolution"] = normalized.get("topic_resolution")
-        return envelope
-
-    def normalize_profile_candidate_envelopes(
-        self,
-        values: Any,
-        *,
-        channel: str,
-        include_source_file_paths: bool = False,
-        default_source_file_paths: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        if not isinstance(values, list):
-            return []
-        envelopes: list[dict[str, Any]] = []
-        for item in values:
-            envelope = self.normalize_profile_candidate_envelope(
-                item,
-                channel=channel,
-                include_source_file_paths=include_source_file_paths,
-                default_source_file_paths=default_source_file_paths,
-            )
-            if envelope:
-                envelopes.append(envelope)
-        return envelopes
-
-    def _normalize_chat_envelope(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-
-        channel = self.clean_text(value.get("channel")) or "chat"
-        kind = self.clean_text(value.get("kind"))
-        if channel not in self.ALLOWED_CHANNELS or channel != "chat":
-            return None
-        if kind not in self.ALLOWED_ENVELOPE_KINDS:
-            return None
-
-        if kind == "profile_candidate":
-            candidate = self.normalize_memory_candidate(
-                {
-                    "content": value.get("content"),
-                    "source_strength": value.get("source_strength"),
-                    "direct_candidate": value.get("direct_candidate"),
-                    "confidence": value.get("confidence"),
-                }
-            )
-            if not candidate:
-                return None
-            return {
-                "channel": "chat",
-                "kind": kind,
-                **candidate,
-            }
-
-        if kind == "correction_candidate":
-            correction = self.normalize_correction_candidate(value)
-            if not correction:
-                return None
-            return {
-                "channel": "chat",
-                "kind": kind,
-                **correction,
-            }
-
-        if kind == "episode_candidate":
-            episode = self.normalize_episode_candidate(value)
-            if not episode:
-                return None
-            return {
-                "channel": "chat",
-                "kind": kind,
-                **episode,
-            }
-
-        if kind == "state_update":
-            states = self.normalize_state_payloads([value])
-            if not states:
-                return None
-            return {
-                "channel": "chat",
-                "kind": kind,
-                **states[0],
-            }
-
-        return None
-
     def normalize_chat_update(self, parsed: dict[str, Any]) -> dict[str, Any]:
         action_types = self.normalize_actions(parsed.get("action_types"))
         state_payloads = self.normalize_state_payloads(parsed.get("state_payloads"))
@@ -333,69 +204,134 @@ class EvidenceNormalizationService:
             "episode_candidate": episode_candidate,
         }
 
-    def normalize_chat_update_bundle(self, parsed: dict[str, Any], *, user_message: str = "") -> dict[str, Any]:
-        if isinstance(parsed, dict) and isinstance(parsed.get("evidence_envelopes"), list):
-            envelopes = [
-                envelope
-                for envelope in (self._normalize_chat_envelope(item) for item in parsed.get("evidence_envelopes") or [])
-                if envelope
-            ]
-            topic_seed = self.clean_text(parsed.get("topic_seed")) or self.clean_text(user_message)
-            return {
-                "channel": "chat",
-                "topic_seed": topic_seed,
-                "evidence_envelopes": envelopes,
-            }
+    def build_evidence_envelope(
+        self,
+        *,
+        channel: str,
+        kind: str,
+        topic: str = "",
+        topic_id: str = "",
+        content: str = "",
+        source_strength: str = "",
+        confidence: float = 0.0,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        kind = self.clean_text(kind)
+        if kind not in self.ALLOWED_ENVELOPE_KINDS:
+            return None
+        envelope = {
+            "channel": self.clean_text(channel),
+            "kind": kind,
+            "topic": self.clean_text(topic),
+            "topic_id": self.clean_text(topic_id),
+            "content": self.clean_text(content),
+            "source_strength": self.normalize_source_strength(source_strength),
+            "confidence": self.bounded_confidence(confidence, default=0.0),
+            "metadata": metadata or {},
+        }
+        if kind in {"profile_candidate", "correction_candidate", "episode_candidate"} and not envelope["content"]:
+            return None
+        return envelope
 
-        normalized = self.normalize_chat_update(parsed if isinstance(parsed, dict) else {})
+    def normalize_chat_update_bundle(self, parsed: dict[str, Any]) -> dict[str, Any]:
+        normalized = self.normalize_chat_update(parsed)
         envelopes: list[dict[str, Any]] = []
+
         memory_candidate = normalized.get("memory_candidate")
-        correction_candidate = normalized.get("correction_candidate")
-        episode_candidate = normalized.get("episode_candidate")
-        state_payloads = normalized.get("state_payloads") or []
-
         if memory_candidate:
-            envelopes.append(
-                {
-                    "channel": "chat",
-                    "kind": "profile_candidate",
-                    **memory_candidate,
-                }
+            env = self.build_evidence_envelope(
+                channel="chat",
+                kind="profile_candidate",
+                content=memory_candidate.get("content") or "",
+                source_strength=memory_candidate.get("source_strength") or "",
+                confidence=memory_candidate.get("confidence") or 0.0,
+                metadata={"direct_candidate": bool(memory_candidate.get("direct_candidate"))},
             )
-        if correction_candidate:
-            envelopes.append(
-                {
-                    "channel": "chat",
-                    "kind": "correction_candidate",
-                    **correction_candidate,
-                }
-            )
-        if episode_candidate:
-            envelopes.append(
-                {
-                    "channel": "chat",
-                    "kind": "episode_candidate",
-                    **episode_candidate,
-                }
-            )
-        for state in state_payloads:
-            envelopes.append(
-                {
-                    "channel": "chat",
-                    "kind": "state_update",
-                    **state,
-                }
-            )
+            if env:
+                envelopes.append(env)
 
-        topic_seed = (
-            (correction_candidate or {}).get("content")
-            or (memory_candidate or {}).get("content")
-            or (episode_candidate or {}).get("summary")
-            or self.clean_text(user_message)
-        )
+        correction_candidate = normalized.get("correction_candidate")
+        if correction_candidate:
+            env = self.build_evidence_envelope(
+                channel="chat",
+                kind="correction_candidate",
+                content=correction_candidate.get("content") or "",
+                confidence=correction_candidate.get("confidence") or 0.0,
+                metadata={"reason": correction_candidate.get("reason") or ""},
+            )
+            if env:
+                envelopes.append(env)
+
+        episode_candidate = normalized.get("episode_candidate")
+        if episode_candidate:
+            env = self.build_evidence_envelope(
+                channel="chat",
+                kind="episode_candidate",
+                content=episode_candidate.get("summary") or "",
+                confidence=episode_candidate.get("importance") or 0.0,
+                metadata={"raw_ref": episode_candidate.get("raw_ref") or ""},
+            )
+            if env:
+                envelopes.append(env)
+
+        for state in normalized.get("state_payloads") or []:
+            env = self.build_evidence_envelope(
+                channel="chat",
+                kind="state_update",
+                content=state.get("value") or "",
+                confidence=state.get("confidence") or 0.0,
+                metadata={
+                    "key": state.get("key") or "",
+                    "source": state.get("source") or "",
+                },
+            )
+            if env:
+                envelopes.append(env)
+
+        topic_seed = ""
+        for env in envelopes:
+            if env.get("content"):
+                topic_seed = self.clean_text(env.get("content"))
+                break
 
         return {
             "channel": "chat",
-            "topic_seed": self.clean_text(topic_seed),
+            "topic_seed": topic_seed,
+            "action_types": normalized.get("action_types") or ["discard"],
             "evidence_envelopes": envelopes,
         }
+
+    def normalize_profile_candidate_envelopes(
+        self,
+        values: Any,
+        *,
+        channel: str,
+        include_source_file_paths: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(values, list):
+            return []
+        envelopes: list[dict[str, Any]] = []
+        for item in values:
+            candidate = self.normalize_profile_candidate(item, include_source_file_paths=include_source_file_paths)
+            if not candidate:
+                continue
+            metadata: dict[str, Any] = {
+                "evidence_text": candidate.get("evidence_text") or "",
+            }
+            if candidate.get("topic_resolution"):
+                metadata["topic_resolution"] = candidate.get("topic_resolution")
+            if candidate.get("source_file_paths"):
+                metadata["source_file_paths"] = candidate.get("source_file_paths")
+            env = self.build_evidence_envelope(
+                channel=channel,
+                kind="profile_candidate",
+                topic=candidate.get("topic") or "",
+                topic_id=candidate.get("topic_id") or "",
+                content=candidate.get("candidate_content") or "",
+                source_strength=candidate.get("source_strength") or "",
+                confidence=candidate.get("confidence") or 0.0,
+                metadata=metadata,
+            )
+            if env:
+                envelopes.append(env)
+        return envelopes

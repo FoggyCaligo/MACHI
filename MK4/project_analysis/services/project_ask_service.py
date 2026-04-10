@@ -1,4 +1,4 @@
-from memory.services.memory_ingress_service import MemoryIngressService
+from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from project_analysis.retrieval.project_retriever import ProjectRetriever
 from project_analysis.review.project_ask_agent import ProjectAskAgent
 from project_analysis.services.project_profile_evidence_service import ProjectProfileEvidenceService
@@ -12,7 +12,7 @@ class ProjectAskService:
         self.ask_agent = ProjectAskAgent()
         self.profile_evidence_service = ProjectProfileEvidenceService()
         self.profile_route_resolver = ProjectProfileRouteResolver()
-        self.memory_ingress_service = MemoryIngressService()
+        self.profile_memory_sync_service = ProfileMemorySyncService()
         self.project_review_store = ProjectReviewStore()
 
     def ask(self, project_id: str, question: str, model: str | None = None) -> dict:
@@ -22,7 +22,7 @@ class ProjectAskService:
         route = self.profile_route_resolver.resolve(question=question, model=model)
         if route == "profile_question":
             profile_extract_result = self.profile_evidence_service.extract_and_store(project_id, model=model)
-            profile_sync_result = self.memory_ingress_service.sync_project(project_id)
+            profile_sync_result = self.profile_memory_sync_service.sync_project(project_id)
 
             profile_result = self.profile_evidence_service.answer_from_project(
                 project_id,

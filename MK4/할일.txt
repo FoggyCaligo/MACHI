@@ -109,3 +109,72 @@ profile에서도 의미 기반
 response context에서도 의미 기반
 
 이렇게 묶어야 시스템 전체가 한 철학으로 간다.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1단계
+
+project_ask_service.py의 if not chunks 제거
+
+이건 철학 위반이라 먼저 빼야 한다.
+
+2단계
+
+EvidenceNormalizationService에 공통 envelope 스키마 추가
+
+예:
+
+channel
+kind
+topic
+topic_id
+content
+source_strength
+confidence
+evidence_text
+source_refs
+3단계
+
+update_retriever.py를
+채널 전용 dict가 아니라 chat bundle 반환으로 변경
+
+4단계
+
+ExtractionPolicy를
+개별 필드 소비가 아니라 envelope bundle 소비로 변경
+
+5단계
+
+attachment/project도
+candidate dict list가 아니라 envelope list를 만들어 ingress에 넘기게 변경
+
+이렇게 해야 비로소
+
+chat
+attachment
+project
+
+가 같은 중간 표현 계층을 쓰게 된다.

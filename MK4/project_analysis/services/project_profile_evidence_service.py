@@ -1,10 +1,13 @@
 from memory.services.evidence_extraction_service import EvidenceExtractionService
-from memory.services.evidence_normalization_service import EvidenceNormalizationService
 from memory.services.passage_selection_service import PassageSelectionService
-from memory.services.memory_ingress_service import MemoryIngressService
 from memory.services.topic_router import TopicRouter
+from memory.services.evidence_normalization_service import EvidenceNormalizationService
+from memory.services.memory_ingress_service import MemoryIngressService
 from prompts.prompt_loader import load_prompt_text
 from project_analysis.stores.project_file_store import ProjectFileStore
+from project_analysis.stores.project_profile_evidence_store import (
+    ProjectProfileEvidenceStore,
+)
 from tools.response_runner import ResponseRunner
 from config import (
     PROJECT_REPLY_MAX_CONTINUATIONS,
@@ -18,8 +21,7 @@ from config import (
 class ProjectProfileEvidenceService:
     def __init__(self) -> None:
         self.file_store = ProjectFileStore()
-        self.memory_ingress_service = MemoryIngressService()
-        self.project_evidence_store = self.memory_ingress_service.project_evidence_store
+        self.evidence_store = ProjectProfileEvidenceStore()
         self.topic_router = TopicRouter()
         self.passage_selection_service = PassageSelectionService()
         self.extraction_service = EvidenceExtractionService(
@@ -27,12 +29,13 @@ class ProjectProfileEvidenceService:
             num_predict=384,
             retry_num_predict=256,
         )
+        self.normalizer = EvidenceNormalizationService()
+        self.memory_ingress = MemoryIngressService()
         self.answer_runner = ResponseRunner(
             timeout=PROJECT_REPLY_TIMEOUT,
             num_predict=PROJECT_REPLY_NUM_PREDICT,
             max_continuations=PROJECT_REPLY_MAX_CONTINUATIONS,
         )
-        self.normalizer = EvidenceNormalizationService()
 
     def _select_documents(self, project_id: str) -> list[dict]:
         files = self.file_store.list_full_by_project(project_id)
@@ -90,16 +93,22 @@ class ProjectProfileEvidenceService:
             {"role": "user", "content": user_prompt},
         ]
 
+    def _normalize_source_strength(self, value: str | None) -> str:
+        normalized = " ".join((value or "").strip().lower().split())
+        if normalized in {"explicit_self_statement", "repeated_behavior", "temporary_interest"}:
+            return normalized
+        return ""
+
     def _extract_json_array(self, text: str) -> list[dict]:
-        raw_candidates = self.extraction_service.parse_json_array(text)
-        result: list[dict] = []
-        for item in raw_candidates:
-            normalized = self.normalizer.normalize_profile_candidate(
-                item,
-                include_source_file_paths=True,
-            )
-            if normalized:
-                result.append(normalized)
+        result = self.extraction_service.parse_profile_candidates(
+            text,
+            normalize_source_strength=self._normalize_source_strength,
+            include_source_file_paths=True,
+        )
+
+        for item in result:
+            item["source_strength"] = self._normalize_source_strength(item.get("source_strength"))
+
         return result
 
     def _resolve_candidate_topic(self, candidate: dict, model: str | None = None) -> dict:
@@ -166,15 +175,15 @@ class ProjectProfileEvidenceService:
             for candidate in self._extract_json_array(extract_result.text)
         ]
 
-        candidate_envelopes = self.normalizer.normalize_profile_candidate_envelopes(
+        evidence_envelopes = self.normalizer.normalize_profile_candidate_envelopes(
             candidates,
             channel="project_artifact",
             include_source_file_paths=True,
         )
-        self.memory_ingress_service.persist_profile_candidate_envelopes(
+        self.memory_ingress.persist_profile_candidate_envelopes(
             channel="project_artifact",
             owner_id=project_id,
-            envelopes=candidate_envelopes,
+            evidence_envelopes=evidence_envelopes,
         )
 
         return {
@@ -182,7 +191,7 @@ class ProjectProfileEvidenceService:
             "document_count": len(documents),
             "source_files": [doc["path"] for doc in documents],
             "candidate_count": len(candidates),
-            "evidence_envelopes": candidate_envelopes,
+            "evidence_envelopes": evidence_envelopes,
         }
 
     def answer_from_project(
@@ -191,18 +200,18 @@ class ProjectProfileEvidenceService:
         question: str,
         model: str | None = None,
     ) -> dict | None:
-        evidences = self.project_evidence_store.list_by_project(project_id)
+        evidences = self.evidence_store.list_by_project(project_id)
         if not evidences:
             self.extract_and_store(project_id, model=model)
-            evidences = self.project_evidence_store.list_by_project(project_id)
+            evidences = self.evidence_store.list_by_project(project_id)
 
         if not evidences:
             return None
 
         messages = self._build_answer_messages(question, evidences)
-        answer = self.answer_runner.run(messages=messages, model=model).text
+        answer = self.answer_runner.run(messages=messages, model=model)
         return {
-            "answer": answer,
+            "answer": answer.text,
             "used_profile_evidence": [
                 {
                     "topic": evidence.get("topic"),

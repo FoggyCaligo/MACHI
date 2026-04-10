@@ -26,56 +26,56 @@ class MemoryIngressService:
         *,
         channel: str,
         owner_id: str,
-        envelopes: list[dict],
-        default_source_file_path: str | None = None,
+        source_file_path: str = "__unknown__",
+        evidence_envelopes: list[dict] | None = None,
     ) -> list[dict]:
-        stored: list[dict] = []
-
+        evidence_envelopes = evidence_envelopes or []
         if channel == "uploaded_text":
             self.uploaded_evidence_store.delete_by_source(owner_id)
-            for envelope in envelopes or []:
-                if str(envelope.get("kind") or "") != "profile_candidate":
+            stored: list[dict] = []
+            for env in evidence_envelopes:
+                if env.get("kind") != "profile_candidate":
                     continue
-                source_file_paths = envelope.get("source_file_paths") or []
-                source_file_path = ", ".join(source_file_paths) if source_file_paths else (default_source_file_path or "__unknown__")
+                meta = env.get("metadata") or {}
                 stored.append(
                     self.uploaded_evidence_store.add(
                         source_id=owner_id,
                         source_file_path=source_file_path,
                         evidence_type="profile_candidate",
-                        topic=envelope.get("topic"),
-                        topic_id=envelope.get("topic_id"),
-                        candidate_content=envelope.get("candidate_content"),
-                        source_strength=envelope.get("source_strength"),
-                        evidence_text=envelope.get("evidence_text"),
-                        confidence=envelope.get("confidence"),
+                        topic=env.get("topic") or "general",
+                        topic_id=env.get("topic_id"),
+                        candidate_content=env.get("content") or "",
+                        source_strength=env.get("source_strength") or "",
+                        evidence_text=meta.get("evidence_text") or "",
+                        confidence=float(env.get("confidence") or 0.0),
                     )
                 )
             return stored
 
         if channel == "project_artifact":
             self.project_evidence_store.delete_by_project(owner_id)
-            for envelope in envelopes or []:
-                if str(envelope.get("kind") or "") != "profile_candidate":
+            stored: list[dict] = []
+            for env in evidence_envelopes:
+                if env.get("kind") != "profile_candidate":
                     continue
-                source_file_paths = envelope.get("source_file_paths") or []
-                source_file_path = ", ".join(source_file_paths) if source_file_paths else (default_source_file_path or "__unknown__")
+                meta = env.get("metadata") or {}
+                source_paths = meta.get("source_file_paths") or []
+                joined_path = ", ".join(source_paths) if source_paths else source_file_path
                 stored.append(
                     self.project_evidence_store.add(
                         project_id=owner_id,
-                        source_file_path=source_file_path,
+                        source_file_path=joined_path,
                         evidence_type="profile_candidate",
-                        topic=envelope.get("topic"),
-                        topic_id=envelope.get("topic_id"),
-                        candidate_content=envelope.get("candidate_content"),
-                        source_strength=envelope.get("source_strength"),
-                        evidence_text=envelope.get("evidence_text"),
-                        confidence=envelope.get("confidence"),
+                        topic=env.get("topic") or "general",
+                        topic_id=env.get("topic_id"),
+                        candidate_content=env.get("content") or "",
+                        source_strength=env.get("source_strength") or "",
+                        evidence_text=meta.get("evidence_text") or "",
+                        confidence=float(env.get("confidence") or 0.0),
                     )
                 )
             return stored
-
-        return stored
+        return []
 
     def persist_uploaded_profile_candidates(
         self,
@@ -85,16 +85,15 @@ class MemoryIngressService:
         candidates: list[dict],
     ) -> list[dict]:
         envelopes = self.normalizer.normalize_profile_candidate_envelopes(
-            candidates,
+            candidates or [],
             channel="uploaded_text",
             include_source_file_paths=False,
-            default_source_file_paths=[filename],
         )
         return self.persist_profile_candidate_envelopes(
             channel="uploaded_text",
             owner_id=source_id,
-            envelopes=envelopes,
-            default_source_file_path=filename,
+            source_file_path=filename,
+            evidence_envelopes=envelopes,
         )
 
     def persist_project_profile_candidates(
@@ -104,14 +103,14 @@ class MemoryIngressService:
         candidates: list[dict],
     ) -> list[dict]:
         envelopes = self.normalizer.normalize_profile_candidate_envelopes(
-            candidates,
+            candidates or [],
             channel="project_artifact",
             include_source_file_paths=True,
         )
         return self.persist_profile_candidate_envelopes(
             channel="project_artifact",
             owner_id=project_id,
-            envelopes=envelopes,
+            evidence_envelopes=envelopes,
         )
 
     def apply_chat_update(

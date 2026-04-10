@@ -10,23 +10,27 @@ from memory.policies.memory_classification_policy import (
     SOURCE_STRENGTH_ORDER,
 )
 from memory.stores.state_store import StateStore
+from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
+from memory.services.memory_ingress_service import MemoryIngressService
+from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from profile_analysis.stores.uploaded_profile_source_store import UploadedProfileSourceStore
 from memory.services.evidence_extraction_service import EvidenceExtractionService
 from memory.services.evidence_normalization_service import EvidenceNormalizationService
-from memory.services.memory_ingress_service import MemoryIngressService
 from memory.services.passage_selection_service import PassageSelectionService
 from prompts.prompt_loader import load_prompt_text
 from tools.response_runner import ResponseRunner
 class ProfileAttachmentIngestService:
     def __init__(self) -> None:
         self.source_store = UploadedProfileSourceStore()
-        self.memory_ingress_service = MemoryIngressService()
+        self.evidence_store = UploadedProfileEvidenceStore()
+        self.sync_service = ProfileMemorySyncService()
         self.state_store = StateStore()
         self.extraction_service = EvidenceExtractionService(timeout=120, num_predict=384, retry_num_predict=256)
         self.answer_runner = ResponseRunner(timeout=ATTACHMENT_REPLY_TIMEOUT, num_predict=ATTACHMENT_REPLY_NUM_PREDICT, max_continuations=ATTACHMENT_REPLY_MAX_CONTINUATIONS)
         self.memory_policy = MemoryClassificationPolicy()
         self.passage_selector = PassageSelectionService()
         self.normalizer = EvidenceNormalizationService()
+        self.memory_ingress = MemoryIngressService()
 
     def _compact_extract_user_prompt(self, source_id: str, filename: str, selected_passages: list[dict], selection_meta: dict) -> str:
         passage_blocks = []
@@ -67,6 +71,26 @@ class ProfileAttachmentIngestService:
         )
         return user_prompt, selection_meta
 
+    def _build_head_excerpt_user_prompt(
+        self,
+        source_id: str,
+        filename: str,
+        content: str,
+        max_total_chars: int = 3200,
+    ) -> tuple[str, dict]:
+        selected_passages, selection_meta = self.passage_selector.build_head_excerpt_passages(
+            filename=filename,
+            content=content,
+            max_total_chars=max_total_chars,
+        )
+        user_prompt = self._compact_extract_user_prompt(
+            source_id=source_id,
+            filename=filename,
+            selected_passages=selected_passages,
+            selection_meta=selection_meta,
+        )
+        return user_prompt, selection_meta
+
     def _run_extract(
         self,
         user_prompt: str,
@@ -88,21 +112,11 @@ class ProfileAttachmentIngestService:
 
 
     def _extract_json_array_with_meta(self, text: str) -> tuple[list[dict], dict]:
-        data, meta = self.extraction_service.parse_json_array_with_meta(text)
-        normalized: list[dict] = []
-        dropped_count = 0
-        for item in data:
-            candidate = self.normalizer.normalize_profile_candidate(item, include_source_file_paths=False)
-            if not candidate:
-                dropped_count += 1
-                continue
-            normalized.append(candidate)
-        meta = {
-            **meta,
-            "valid_candidate_count": len(normalized),
-            "dropped_candidate_count": dropped_count,
-        }
-        return normalized, meta
+        return self.extraction_service.parse_profile_candidates_with_meta(
+            text,
+            normalize_source_strength=self.memory_policy.normalize_source_strength,
+            include_source_file_paths=False,
+        )
     
     def _run_attachment_extract_pipeline(
         self,
@@ -149,12 +163,48 @@ class ProfileAttachmentIngestService:
             }
         )
 
-        return primary_candidates, {
-            "fallback_used": False,
-            "final_selection_meta": primary_selection_meta,
-            "final_parse_meta": primary_parse_meta,
+        if primary_candidates:
+            return primary_candidates, {
+                "fallback_used": False,
+                "final_selection_meta": primary_selection_meta,
+                "final_parse_meta": primary_parse_meta,
+                "attempts": attempts,
+            }, primary_error
+
+        fallback_prompt, fallback_selection_meta = self._build_head_excerpt_user_prompt(
+            source_id=source_id,
+            filename=filename,
+            content=content,
+            max_total_chars=3200,
+        )
+        fallback_answer, fallback_error = self._run_extract(
+            user_prompt=fallback_prompt,
+            model=model,
+            retry_user_prompt=None,
+        )
+        fallback_candidates, fallback_parse_meta = self._extract_json_array_with_meta(fallback_answer)
+        attempts.append(
+            {
+                "attempt": "head_excerpt_fallback",
+                "selection_mode": fallback_selection_meta["selection_mode"],
+                "selected_passage_count": fallback_selection_meta["selected_passage_count"],
+                "selected_chars": fallback_selection_meta["selected_chars"],
+                "candidate_count": len(fallback_candidates),
+                "parse_status": fallback_parse_meta.get("parse_status"),
+                "raw_item_count": fallback_parse_meta.get("raw_item_count"),
+                "dropped_candidate_count": fallback_parse_meta.get("dropped_candidate_count"),
+                "extract_error": fallback_error,
+                "answer_preview": (fallback_answer or "")[:220],
+            }
+        )
+
+        final_error = fallback_error or primary_error
+        return fallback_candidates, {
+            "fallback_used": True,
+            "final_selection_meta": fallback_selection_meta,
+            "final_parse_meta": fallback_parse_meta,
             "attempts": attempts,
-        }, primary_error
+        }, final_error
 
     def _dedupe_evidence(self, evidences: list[dict]) -> list[dict]:
         seen: set[tuple[str, str]] = set()
@@ -302,19 +352,20 @@ class ProfileAttachmentIngestService:
         selection_meta = extract_debug["final_selection_meta"]
         parse_meta = extract_debug["final_parse_meta"]
 
-        candidate_envelopes = self.normalizer.normalize_profile_candidate_envelopes(
+        evidence_envelopes = self.normalizer.normalize_profile_candidate_envelopes(
             candidates,
             channel="uploaded_text",
             include_source_file_paths=False,
-            default_source_file_paths=[filename],
         )
-        stored_evidence = self.memory_ingress_service.persist_profile_candidate_envelopes(
+        self.memory_ingress.persist_profile_candidate_envelopes(
             channel="uploaded_text",
             owner_id=source_id,
-            envelopes=candidate_envelopes,
-            default_source_file_path=filename,
+            source_file_path=filename,
+            evidence_envelopes=evidence_envelopes,
         )
-        sync_result = self.memory_ingress_service.sync_uploaded_source(source_id)
+
+        sync_result = self.memory_ingress.sync_uploaded_source(source_id)
+        stored_evidence = self.evidence_store.list_by_source(source_id)
         used_profile_evidence = [
             {
                 "topic": item.get("topic"),
@@ -342,6 +393,7 @@ class ProfileAttachmentIngestService:
             "dropped_candidate_count": parse_meta.get("dropped_candidate_count", 0),
             "attempt_count": len(extract_debug.get("attempts", [])),
             "attempts": extract_debug.get("attempts", []),
+            "evidence_envelopes": evidence_envelopes,
         }
 
         answer_messages = self._build_answer_messages(
@@ -363,5 +415,4 @@ class ProfileAttachmentIngestService:
             "profile_evidence_extract": extract_result,
             "profile_memory_sync": sync_result,
             "used_profile_evidence": used_profile_evidence,
-            "evidence_envelopes": candidate_envelopes,
         }

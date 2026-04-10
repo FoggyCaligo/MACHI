@@ -31,6 +31,8 @@ def build_project_ask_messages(question: str, chunks: list[dict]) -> list[dict]:
         chunk_blocks.append(block)
 
     evidence_text = "\n\n".join(chunk_blocks).strip()
+    if not evidence_text:
+        evidence_text = "(검색된 직접 근거 코드 없음)"
 
     user_prompt = (
         f"[질문]\n{question}\n\n"
