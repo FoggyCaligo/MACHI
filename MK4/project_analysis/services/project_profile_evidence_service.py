@@ -93,7 +93,7 @@ class ProjectProfileEvidenceService:
         normalized = " ".join((value or "").strip().lower().split())
         if normalized in {"explicit_self_statement", "repeated_behavior", "temporary_interest"}:
             return normalized
-        return "repeated_behavior"
+        return ""
 
     def _extract_json_array(self, text: str) -> list[dict]:
         result = self.extraction_service.parse_profile_candidates(

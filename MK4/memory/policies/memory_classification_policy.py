@@ -20,6 +20,13 @@ class MemoryClassificationPolicy:
         text = str(value or "").strip()
         return text if text in SOURCE_STRENGTH_ORDER else ""
 
+    def _bounded_confidence(self, value: float | None) -> float:
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            score = 0.0
+        return min(max(score, 0.0), 1.0)
+
     def _signal_tags_from_evidence(self, evidence: dict) -> list[str]:
         tags: list[str] = []
         strength = self.normalize_source_strength(evidence.get("source_strength"))
@@ -29,20 +36,6 @@ class MemoryClassificationPolicy:
             tags.append("direct_confirm")
         return tags
 
-    def estimate_message_profile_confidence(self, similarity: float) -> float:
-        base = TOPIC_CONFIRM_MIN_CONFIDENCE
-        if similarity <= 0.0:
-            return base
-        return min(0.95, max(base, base + max(0.0, similarity - 0.7) * 0.2))
-
-    def is_candidate_level_evidence(self, evidence: dict) -> bool:
-        confidence = float(evidence.get("confidence") or 0.0)
-        if confidence < TOPIC_CONFIRM_MIN_CONFIDENCE:
-            return False
-        if bool(evidence.get("direct_confirm")):
-            return True
-        return self.normalize_source_strength(evidence.get("source_strength")) == "explicit_self_statement"
-
     def classify_chat_memory(
         self,
         action_types: set[str] | None = None,
@@ -51,14 +44,14 @@ class MemoryClassificationPolicy:
         direct_candidate: bool = False,
         confidence: float | None = None,
     ) -> dict:
+        _ = similarity  # topic similarity is resolved upstream; policy does not infer from it here.
         action_types = action_types or set()
         meaningful_actions = {a for a in action_types if a and a != "discard"}
         if not meaningful_actions:
             return {"route": "discard", "signals": [], "confidence": 0.0}
 
         normalized_strength = self.normalize_source_strength(source_strength)
-        resolved_confidence = float(confidence) if confidence is not None else self.estimate_message_profile_confidence(similarity)
-        resolved_confidence = min(max(resolved_confidence, 0.0), 1.0)
+        resolved_confidence = self._bounded_confidence(confidence)
 
         signals = [f"action:{a}" for a in sorted(meaningful_actions)]
         if normalized_strength:
@@ -83,15 +76,20 @@ class MemoryClassificationPolicy:
             return {"route": "discard", "signals": []}
 
         strength = self.normalize_source_strength(evidence.get("source_strength"))
+        confidence = self._bounded_confidence(evidence.get("confidence"))
+        direct_confirm = bool(evidence.get("direct_confirm"))
         signals = self._signal_tags_from_evidence(evidence)
 
-        if self.is_candidate_level_evidence(evidence):
+        if direct_confirm and confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
+            return {"route": "confirmed", "signals": signals}
+        if strength == "explicit_self_statement" and confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
             return {"route": "candidate", "signals": signals}
-
+        if strength == "repeated_behavior" and confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
+            return {"route": "candidate", "signals": signals}
         if strength == "temporary_interest":
             return {"route": "general", "signals": signals}
 
-        return {"route": "candidate", "signals": signals}
+        return {"route": "general", "signals": signals}
 
     def is_promotable_cluster(self, cluster: dict) -> tuple[bool, str]:
         evidence_count = int(cluster.get("evidence_count") or 0)

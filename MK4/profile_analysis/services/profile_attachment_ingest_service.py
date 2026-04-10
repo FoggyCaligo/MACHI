@@ -210,7 +210,7 @@ class ProfileAttachmentIngestService:
             evidences,
             key=lambda item: (
                 -float(item.get("confidence") or 0.0),
-                -SOURCE_STRENGTH_ORDER.get(item.get("source_strength") or "repeated_behavior", 0),
+                -SOURCE_STRENGTH_ORDER.get(item.get("source_strength") or "", 0),
                 str(item.get("topic") or ""),
             ),
         )

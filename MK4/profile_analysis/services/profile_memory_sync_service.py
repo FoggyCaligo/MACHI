@@ -124,11 +124,13 @@ class ProfileMemorySyncService:
             confidence_values = cluster["confidence_values"] or [0.0]
             source_strength_counts = cluster["source_strength_counts"]
 
-            primary_strength = "repeated_behavior"
+            primary_strength = ""
             if source_strength_counts.get("explicit_self_statement", 0) > 0:
                 primary_strength = "explicit_self_statement"
             elif source_strength_counts.get("repeated_behavior", 0) > 0:
                 primary_strength = "repeated_behavior"
+            elif source_strength_counts.get("temporary_interest", 0) > 0:
+                primary_strength = "temporary_interest"
 
             result.append(
                 {
