@@ -1,11 +1,10 @@
 from memory.services.evidence_extraction_service import EvidenceExtractionService
+from memory.services.evidence_normalization_service import EvidenceNormalizationService
 from memory.services.passage_selection_service import PassageSelectionService
+from memory.services.memory_ingress_service import MemoryIngressService
 from memory.services.topic_router import TopicRouter
 from prompts.prompt_loader import load_prompt_text
 from project_analysis.stores.project_file_store import ProjectFileStore
-from project_analysis.stores.project_profile_evidence_store import (
-    ProjectProfileEvidenceStore,
-)
 from tools.response_runner import ResponseRunner
 from config import (
     PROJECT_REPLY_MAX_CONTINUATIONS,
@@ -19,7 +18,8 @@ from config import (
 class ProjectProfileEvidenceService:
     def __init__(self) -> None:
         self.file_store = ProjectFileStore()
-        self.evidence_store = ProjectProfileEvidenceStore()
+        self.memory_ingress_service = MemoryIngressService()
+        self.project_evidence_store = self.memory_ingress_service.project_evidence_store
         self.topic_router = TopicRouter()
         self.passage_selection_service = PassageSelectionService()
         self.extraction_service = EvidenceExtractionService(
@@ -32,6 +32,7 @@ class ProjectProfileEvidenceService:
             num_predict=PROJECT_REPLY_NUM_PREDICT,
             max_continuations=PROJECT_REPLY_MAX_CONTINUATIONS,
         )
+        self.normalizer = EvidenceNormalizationService()
 
     def _select_documents(self, project_id: str) -> list[dict]:
         files = self.file_store.list_full_by_project(project_id)
@@ -89,22 +90,16 @@ class ProjectProfileEvidenceService:
             {"role": "user", "content": user_prompt},
         ]
 
-    def _normalize_source_strength(self, value: str | None) -> str:
-        normalized = " ".join((value or "").strip().lower().split())
-        if normalized in {"explicit_self_statement", "repeated_behavior", "temporary_interest"}:
-            return normalized
-        return ""
-
     def _extract_json_array(self, text: str) -> list[dict]:
-        result = self.extraction_service.parse_profile_candidates(
-            text,
-            normalize_source_strength=self._normalize_source_strength,
-            include_source_file_paths=True,
-        )
-
-        for item in result:
-            item["source_strength"] = self._normalize_source_strength(item.get("source_strength"))
-
+        raw_candidates = self.extraction_service.parse_json_array(text)
+        result: list[dict] = []
+        for item in raw_candidates:
+            normalized = self.normalizer.normalize_profile_candidate(
+                item,
+                include_source_file_paths=True,
+            )
+            if normalized:
+                result.append(normalized)
         return result
 
     def _resolve_candidate_topic(self, candidate: dict, model: str | None = None) -> dict:
@@ -139,8 +134,6 @@ class ProjectProfileEvidenceService:
 
     def extract_and_store(self, project_id: str, model: str | None = None) -> dict:
         documents = self._select_documents(project_id)
-        self.evidence_store.delete_by_project(project_id)
-
         if not documents:
             return {
                 "stored": False,
@@ -173,21 +166,10 @@ class ProjectProfileEvidenceService:
             for candidate in self._extract_json_array(extract_result.text)
         ]
 
-        for candidate in candidates:
-            source_paths = candidate.get("source_file_paths") or []
-            source_file_path = ", ".join(source_paths) if source_paths else "__unknown__"
-
-            self.evidence_store.add(
-                project_id=project_id,
-                source_file_path=source_file_path,
-                evidence_type="profile_candidate",
-                topic=candidate["topic"],
-                topic_id=candidate.get("topic_id"),
-                candidate_content=candidate["candidate_content"],
-                source_strength=candidate["source_strength"],
-                evidence_text=candidate["evidence_text"],
-                confidence=candidate["confidence"],
-            )
+        self.memory_ingress_service.persist_project_profile_candidates(
+            project_id=project_id,
+            candidates=candidates,
+        )
 
         return {
             "stored": True,
@@ -202,16 +184,16 @@ class ProjectProfileEvidenceService:
         question: str,
         model: str | None = None,
     ) -> dict | None:
-        evidences = self.evidence_store.list_by_project(project_id)
+        evidences = self.project_evidence_store.list_by_project(project_id)
         if not evidences:
             self.extract_and_store(project_id, model=model)
-            evidences = self.evidence_store.list_by_project(project_id)
+            evidences = self.project_evidence_store.list_by_project(project_id)
 
         if not evidences:
             return None
 
         messages = self._build_answer_messages(question, evidences)
-        answer = self.answer_runner.run(messages=messages, model=model)
+        answer = self.answer_runner.run(messages=messages, model=model).text
         return {
             "answer": answer,
             "used_profile_evidence": [

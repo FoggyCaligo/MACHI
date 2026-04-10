@@ -1,4 +1,5 @@
 from memory.policies.memory_classification_policy import MemoryClassificationPolicy
+from memory.services.evidence_normalization_service import EvidenceNormalizationService
 from memory.services.topic_router import TopicRouter
 
 
@@ -6,13 +7,15 @@ class ExtractionPolicy:
     def __init__(self) -> None:
         self.topic_router = TopicRouter()
         self.memory_policy = MemoryClassificationPolicy()
+        self.normalizer = EvidenceNormalizationService()
 
     def extract(self, user_message: str, reply: str, update_plan: dict, model: str | None = None) -> dict:
-        memory_candidate = update_plan.get("memory_candidate") or {}
-        correction_candidate = update_plan.get("correction_candidate") or {}
-        episode_candidate = update_plan.get("episode_candidate") or {}
-        state_payloads = update_plan.get("state_payloads") or []
-        action_types = set(update_plan.get("action_types") or [])
+        normalized_plan = self.normalizer.normalize_chat_update(update_plan or {})
+        memory_candidate = normalized_plan.get("memory_candidate") or {}
+        correction_candidate = normalized_plan.get("correction_candidate") or {}
+        episode_candidate = normalized_plan.get("episode_candidate") or {}
+        state_payloads = normalized_plan.get("state_payloads") or []
+        action_types = set(normalized_plan.get("action_types") or [])
 
         topic_seed = (
             str(correction_candidate.get("content") or "").strip()
