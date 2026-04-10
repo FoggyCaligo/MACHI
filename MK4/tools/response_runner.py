@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+
 from tools.ollama_client import OllamaClient
 
 
@@ -31,17 +32,6 @@ class ResponseRunner:
         return SequenceMatcher(None, a_tail, b_text).ratio()
 
     @staticmethod
-    def _looks_meta_continuation(text: str) -> bool:
-        stripped = " ".join((text or "").strip().split())
-        bad_prefixes = (
-            "네, 계속하겠습니다",
-            "이어서 말씀드리겠습니다",
-            "계속해서 설명하겠습니다",
-            "앞서 말씀드린",
-        )
-        return any(stripped.startswith(prefix) for prefix in bad_prefixes)
-
-    @staticmethod
     def _merge_without_overlap(prev: str, new: str, max_overlap: int = 160) -> str:
         prev = (prev or "").rstrip()
         new = (new or "").strip()
@@ -66,28 +56,89 @@ class ResponseRunner:
         return (prev + "\n\n" + new).strip()
 
     @staticmethod
-    def _looks_incomplete(text: str) -> bool:
-        stripped = (text or '').rstrip()
-        if not stripped:
-            return False
-        if stripped.endswith('...') or stripped.endswith('…'):
-            return True
-        incomplete_endings = (
-            '라는 것을', '것을', '때문에', '그래서', '다만', '하지만', '즉', '그리고',
-            '있습니다만', '있는데', '있어', '같습니', '같아', '입니다만', '인데',
-            '것 같', '보입니다만', '의미하', '말하자면',
-        )
-        return any(stripped.endswith(token) for token in incomplete_endings)
-
-    @staticmethod
     def _trim_ellipsis(text: str) -> str:
-        stripped = (text or '').rstrip()
-        while stripped.endswith('...') or stripped.endswith('…'):
-            if stripped.endswith('...'):
+        stripped = (text or "").rstrip()
+        while stripped.endswith("...") or stripped.endswith("…"):
+            if stripped.endswith("..."):
                 stripped = stripped[:-3].rstrip()
-            elif stripped.endswith('…'):
+            elif stripped.endswith("…"):
                 stripped = stripped[:-1].rstrip()
         return stripped
+
+    @staticmethod
+    def _find_last_boundary(text: str) -> int:
+        s = (text or "").rstrip()
+        if not s:
+            return -1
+
+        boundaries = []
+        for token in (".", "!", "?", "\n"):
+            idx = s.rfind(token)
+            if idx != -1:
+                boundaries.append(idx)
+
+        return max(boundaries) if boundaries else -1
+
+    @classmethod
+    def _extract_continuation_context(
+        cls,
+        text: str,
+        *,
+        max_completed_chars: int = 420,
+        max_tail_chars: int = 180,
+    ) -> tuple[str, str]:
+        s = (text or "").strip()
+        if not s:
+            return "", ""
+
+        boundary = cls._find_last_boundary(s)
+        if boundary == -1:
+            completed = ""
+            tail = s[-max_tail_chars:]
+        else:
+            completed = s[: boundary + 1].strip()
+            tail = s[boundary + 1 :].strip()
+
+        if len(completed) > max_completed_chars:
+            completed = completed[-max_completed_chars:].lstrip()
+
+        if len(tail) > max_tail_chars:
+            tail = tail[-max_tail_chars:].lstrip()
+
+        return completed, tail
+
+    @classmethod
+    def _build_continuation_prompt(
+        cls,
+        text: str,
+        fallback_prompt: str | None = None,
+    ) -> str:
+        completed, tail = cls._extract_continuation_context(text)
+
+        completed_block = completed or "(완결된 직전 문장 없음)"
+        tail_block = tail or "(잘린 꼬리 없음)"
+
+        if fallback_prompt:
+            base_instruction = fallback_prompt.strip()
+        else:
+            base_instruction = (
+                "직전 assistant 답변은 이미 사용자에게 보여졌습니다. "
+                "반복하거나 다시 요약하지 말고, 마지막 지점 바로 다음부터만 이어 쓰세요. "
+                "새로운 내용만 이어서 쓰고, 완결된 문장으로 마무리하세요."
+            )
+
+        return (
+            f"{base_instruction}\n\n"
+            f"[이미 말한 마지막 완결 구간]\n{completed_block}\n\n"
+            f"[직전 답변의 마지막 꼬리]\n{tail_block}\n\n"
+            f"[규칙]\n"
+            f"1. 위 두 블록의 내용을 다시 반복하지 마세요.\n"
+            f"2. 꼬리가 비어 있지 않다면 그 바로 다음부터만 이어 쓰세요.\n"
+            f"3. 새로운 내용만 이어서 쓰고, 완결된 문장으로 끝내세요."
+        )
+    
+
+
 
     def run(
         self,
@@ -95,29 +146,27 @@ class ResponseRunner:
         model: str | None = None,
         continuation_prompt: str | None = None,
     ) -> ResponseRunResult:
-        continuation_prompt = continuation_prompt or (
-            "직전 답변의 마지막 문장 바로 다음부터 이어서 쓰세요. "
-            "이미 쓴 문장을 반복하거나 요약하지 마세요. "
-            "\"네, 계속하겠습니다\" 같은 메타 문장을 쓰지 마세요. "
-            "새로운 내용만 1~3문장으로 이어 쓰고, 줄임표 없이 완결된 문장으로 끝내세요."
-        )
+
         result = self.client.chat_with_metadata(
             messages,
             model=model,
             require_complete=False,
             truncated_notice=None,
         )
-        text = str(result.get('raw_content') or result.get('content') or '').strip()
-        truncated = bool(result.get('truncated'))
+        text = str(result.get("raw_content") or result.get("content") or "").strip()
+        truncated = bool(result.get("truncated"))
         count = 0
 
-        while count < self.max_continuations and text:
-            if not truncated and not self._looks_incomplete(text):
-                break
+        while count < self.max_continuations and text and truncated:
+            
+            resolved_continuation_prompt = self._build_continuation_prompt(
+                text=text,
+                fallback_prompt=continuation_prompt,
+            )
 
             continuation_messages = list(messages) + [
                 {'role': 'assistant', 'content': text},
-                {'role': 'user', 'content': continuation_prompt},
+                {'role': 'user', 'content': resolved_continuation_prompt},
             ]
 
             try:
@@ -130,20 +179,26 @@ class ResponseRunner:
             except RuntimeError:
                 break
 
-            next_text = str(next_result.get('raw_content') or next_result.get('content') or '').strip()
+            next_text = str(next_result.get("raw_content") or next_result.get("content") or "").strip()
             if not next_text:
                 break
 
             trimmed_text = self._trim_ellipsis(text)
-            if self._looks_meta_continuation(next_text):
-                break
+
+            # 언어 특화 휴리스틱 대신, 실제 중복/반복만 억제
             if self._tail_similarity(trimmed_text, next_text) >= 0.72:
                 break
+
             merged = self._merge_without_overlap(trimmed_text, next_text)
             if merged == trimmed_text:
                 break
+
             text = merged
-            truncated = bool(next_result.get('truncated'))
+            truncated = bool(next_result.get("truncated"))
             count += 1
 
-        return ResponseRunResult(text=text, truncated=truncated, continuation_count=count)
+        return ResponseRunResult(
+            text=text,
+            truncated=truncated,
+            continuation_count=count,
+        )
