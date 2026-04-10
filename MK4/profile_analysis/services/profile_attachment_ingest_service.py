@@ -302,10 +302,17 @@ class ProfileAttachmentIngestService:
         selection_meta = extract_debug["final_selection_meta"]
         parse_meta = extract_debug["final_parse_meta"]
 
-        stored_evidence = self.memory_ingress_service.persist_uploaded_profile_candidates(
-            source_id=source_id,
-            filename=filename,
-            candidates=candidates,
+        candidate_envelopes = self.normalizer.normalize_profile_candidate_envelopes(
+            candidates,
+            channel="uploaded_text",
+            include_source_file_paths=False,
+            default_source_file_paths=[filename],
+        )
+        stored_evidence = self.memory_ingress_service.persist_profile_candidate_envelopes(
+            channel="uploaded_text",
+            owner_id=source_id,
+            envelopes=candidate_envelopes,
+            default_source_file_path=filename,
         )
         sync_result = self.memory_ingress_service.sync_uploaded_source(source_id)
         used_profile_evidence = [
@@ -356,4 +363,5 @@ class ProfileAttachmentIngestService:
             "profile_evidence_extract": extract_result,
             "profile_memory_sync": sync_result,
             "used_profile_evidence": used_profile_evidence,
+            "evidence_envelopes": candidate_envelopes,
         }

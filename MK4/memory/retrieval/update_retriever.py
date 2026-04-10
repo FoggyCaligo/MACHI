@@ -35,12 +35,10 @@ class UpdateRetriever:
             )
         except Exception:
             return {
-                "action_types": ["discard"],
-                "state_payloads": [],
-                "memory_candidate": None,
-                "correction_candidate": None,
-                "episode_candidate": None,
+                "channel": "chat",
+                "topic_seed": str(user_message or "").strip(),
+                "evidence_envelopes": [],
             }
 
         parsed = self.normalizer.extract_json_object(raw)
-        return self.normalizer.normalize_chat_update(parsed)
+        return self.normalizer.normalize_chat_update_bundle(parsed, user_message=user_message)

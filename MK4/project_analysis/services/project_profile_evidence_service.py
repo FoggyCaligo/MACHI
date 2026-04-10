@@ -166,9 +166,15 @@ class ProjectProfileEvidenceService:
             for candidate in self._extract_json_array(extract_result.text)
         ]
 
-        self.memory_ingress_service.persist_project_profile_candidates(
-            project_id=project_id,
-            candidates=candidates,
+        candidate_envelopes = self.normalizer.normalize_profile_candidate_envelopes(
+            candidates,
+            channel="project_artifact",
+            include_source_file_paths=True,
+        )
+        self.memory_ingress_service.persist_profile_candidate_envelopes(
+            channel="project_artifact",
+            owner_id=project_id,
+            envelopes=candidate_envelopes,
         )
 
         return {
@@ -176,6 +182,7 @@ class ProjectProfileEvidenceService:
             "document_count": len(documents),
             "source_files": [doc["path"] for doc in documents],
             "candidate_count": len(candidates),
+            "evidence_envelopes": candidate_envelopes,
         }
 
     def answer_from_project(

@@ -10,19 +10,9 @@ class ExtractionPolicy:
         self.normalizer = EvidenceNormalizationService()
 
     def extract(self, user_message: str, reply: str, update_plan: dict, model: str | None = None) -> dict:
-        normalized_plan = self.normalizer.normalize_chat_update(update_plan or {})
-        memory_candidate = normalized_plan.get("memory_candidate") or {}
-        correction_candidate = normalized_plan.get("correction_candidate") or {}
-        episode_candidate = normalized_plan.get("episode_candidate") or {}
-        state_payloads = normalized_plan.get("state_payloads") or []
-        action_types = set(normalized_plan.get("action_types") or [])
-
-        topic_seed = (
-            str(correction_candidate.get("content") or "").strip()
-            or str(memory_candidate.get("content") or "").strip()
-            or str(episode_candidate.get("summary") or "").strip()
-            or str(user_message or "").strip()
-        )
+        bundle = self.normalizer.normalize_chat_update_bundle(update_plan or {}, user_message=user_message)
+        envelopes = bundle.get("evidence_envelopes") or []
+        topic_seed = str(bundle.get("topic_seed") or "").strip() or str(user_message or "").strip()
 
         topic_resolution = self.topic_router.resolve(
             user_message=topic_seed,
@@ -48,54 +38,67 @@ class ExtractionPolicy:
             },
         }
 
-        if correction_candidate:
-            result["corrections"].append(
-                {
-                    "topic_id": topic_id,
-                    "topic": topic,
-                    "content": correction_candidate.get("content", ""),
-                    "reason": correction_candidate.get("reason", "user_explicit_correction"),
-                    "source": "user_explicit",
-                    "confidence": correction_candidate.get("confidence", 0.7),
-                }
-            )
+        for envelope in envelopes:
+            kind = str(envelope.get("kind") or "").strip()
 
-        if memory_candidate:
-            classification = self.memory_policy.classify_chat_memory(
-                action_types=action_types,
-                similarity=topic_resolution.similarity,
-                source_strength=memory_candidate.get("source_strength"),
-                direct_candidate=bool(memory_candidate.get("direct_candidate")),
-                confidence=memory_candidate.get("confidence"),
-            )
-            route = classification.get("route")
-            # NOTE:
-            # Chat-side separate general/candidate stores do not exist yet.
-            # Until that layer is added, only candidate-level chat memory is
-            # written into profiles to avoid leaking general memory into the
-            # default injected profile surface.
-            if route == "candidate":
-                result["profiles"].append(
+            if kind == "correction_candidate":
+                result["corrections"].append(
                     {
                         "topic_id": topic_id,
                         "topic": topic,
-                        "content": memory_candidate.get("content", ""),
-                        "source": "user_explicit_candidate",
-                        "confidence": classification.get("confidence", memory_candidate.get("confidence", 0.0)),
-                        "signals": classification.get("signals", []),
-                        "memory_classification": route,
+                        "content": envelope.get("content", ""),
+                        "reason": envelope.get("reason", "user_explicit_correction"),
+                        "source": "user_explicit",
+                        "confidence": envelope.get("confidence", 0.7),
                     }
                 )
+                continue
 
-        for payload in state_payloads:
-            result["states"].append(
-                {
-                    "key": payload.get("key", ""),
-                    "value": payload.get("value", ""),
-                    "source": payload.get("source", "user_explicit"),
-                    "confidence": payload.get("confidence", 0.6),
-                }
-            )
+            if kind == "profile_candidate":
+                classification = self.memory_policy.classify_chat_memory(
+                    action_types={"profile_candidate"},
+                    similarity=topic_resolution.similarity,
+                    source_strength=envelope.get("source_strength"),
+                    direct_candidate=bool(envelope.get("direct_candidate")),
+                    confidence=envelope.get("confidence"),
+                )
+                if classification.get("route") == "candidate":
+                    result["profiles"].append(
+                        {
+                            "topic_id": topic_id,
+                            "topic": topic,
+                            "content": envelope.get("content", ""),
+                            "source": "user_explicit_candidate",
+                            "confidence": classification.get("confidence", envelope.get("confidence", 0.0)),
+                            "signals": classification.get("signals", []),
+                            "memory_classification": classification.get("route"),
+                        }
+                    )
+                continue
+
+            if kind == "state_update":
+                result["states"].append(
+                    {
+                        "key": envelope.get("key", ""),
+                        "value": envelope.get("value", ""),
+                        "source": envelope.get("source", "user_explicit"),
+                        "confidence": envelope.get("confidence", 0.6),
+                    }
+                )
+                continue
+
+            if kind == "episode_candidate":
+                result["episodes"].append(
+                    {
+                        "topic_id": topic_id,
+                        "topic": topic,
+                        "summary": envelope.get("summary", ""),
+                        "raw_ref": envelope.get("raw_ref"),
+                        "importance": envelope.get("importance", 0.5),
+                        "memory_classification": "episode_candidate",
+                    }
+                )
+                continue
 
         result["states"].append(
             {
@@ -112,23 +115,11 @@ class ExtractionPolicy:
             }
         )
 
-        if episode_candidate:
-            result["episodes"].append(
-                {
-                    "topic_id": topic_id,
-                    "topic": topic,
-                    "summary": episode_candidate.get("summary", ""),
-                    "raw_ref": episode_candidate.get("raw_ref"),
-                    "importance": episode_candidate.get("importance", 0.5),
-                    "memory_classification": "episode_candidate",
-                }
-            )
-
         if (
             not result["profiles"]
             and not result["corrections"]
             and not result["episodes"]
-            and not state_payloads
+            and not any((str(e.get("kind") or "") == "state_update") for e in envelopes)
         ):
             cleaned = str(user_message or "").strip()
             if cleaned:
