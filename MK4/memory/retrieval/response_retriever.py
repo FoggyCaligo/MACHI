@@ -87,14 +87,69 @@ class ResponseRetriever:
 
         return filtered
 
-    def retrieve(self, user_message: str) -> dict:
-        profiles = self.profile_store.search(user_message, limit=2, include_general=False)
-        if not profiles:
-            profiles = self.profile_store.get_active_profiles(exclude_general=True)[:2]
+    def _dedupe_rows(self, rows: list[dict], *, limit: int) -> list[dict]:
+        deduped: list[dict] = []
+        seen_ids: set[str] = set()
+        seen_content_keys: set[tuple[str, str, str]] = set()
 
-        corrections = self.correction_store.search(user_message, limit=1)
-        summaries = self.summary_store.search(user_message, limit=1)
+        for row in rows:
+            row_id = str(row.get("id") or "").strip()
+            if row_id:
+                if row_id in seen_ids:
+                    continue
+                seen_ids.add(row_id)
+            else:
+                content_key = (
+                    str(row.get("topic_id") or "").strip(),
+                    str(row.get("topic") or row.get("topic_summary") or row.get("topic_name") or "").strip(),
+                    str(row.get("content") or row.get("summary") or row.get("value") or "").strip(),
+                )
+                if content_key in seen_content_keys:
+                    continue
+                seen_content_keys.add(content_key)
+
+            deduped.append(row)
+            if len(deduped) >= limit:
+                break
+
+        return deduped
+
+    def _merge_ranked_rows(self, primary: list[dict], contextual: list[dict], *, limit: int) -> list[dict]:
+        return self._dedupe_rows([*primary, *contextual], limit=limit)
+
+    def _load_active_topic_context(self) -> dict:
+        topic_id = self.state_store.get_active_topic_id()
+        if not topic_id:
+            return {
+                "profiles": [],
+                "corrections": [],
+                "summaries": [],
+            }
+
+        profile = self.profile_store.get_active_by_topic(topic_id=topic_id)
+        corrections = self.correction_store.list_active_by_topic(topic_id=topic_id, limit=1)
+        summary = self.summary_store.get_by_topic(topic_id=topic_id)
+
+        return {
+            "profiles": [profile] if profile else [],
+            "corrections": corrections,
+            "summaries": [summary] if summary else [],
+        }
+
+    def retrieve(self, user_message: str) -> dict:
+        searched_profiles = self.profile_store.search(user_message, limit=2, include_general=False)
+        searched_corrections = self.correction_store.search(user_message, limit=1)
+        searched_summaries = self.summary_store.search(user_message, limit=1)
         episodes = self.episode_store.find_relevant(user_message, limit=2)
+
+        active_topic_context = self._load_active_topic_context()
+        contextual_profiles = active_topic_context["profiles"]
+        contextual_corrections = active_topic_context["corrections"]
+        contextual_summaries = active_topic_context["summaries"]
+
+        profiles = self._merge_ranked_rows(searched_profiles, contextual_profiles, limit=2)
+        corrections = self._merge_ranked_rows(searched_corrections, contextual_corrections, limit=1)
+        summaries = self._merge_ranked_rows(searched_summaries, contextual_summaries, limit=1)
 
         raw_recent_messages = self.raw_message_store.recent(limit=10)
         recent_messages = self._filter_recent_messages(

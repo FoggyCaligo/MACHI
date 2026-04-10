@@ -64,37 +64,6 @@ class PassageSelectionService:
         ranked.sort(key=lambda pair: pair[0], reverse=True)
         return [item for _, item in ranked[:max_docs]]
 
-    def build_head_excerpt_passages(
-        self,
-        *,
-        filename: str,
-        content: str,
-        max_total_chars: int = 3200,
-    ) -> tuple[list[dict], dict]:
-        excerpt = self.normalize_whitespace(content)[:max_total_chars].rstrip()
-        if not excerpt:
-            return [], {
-                "selected_passage_count": 0,
-                "selected_chars": 0,
-                "selection_mode": "none",
-            }
-
-        if len(content) > max_total_chars:
-            excerpt += "..."
-
-        return [
-            {
-                "filename": filename,
-                "passage_index": 1,
-                "score": 0.0,
-                "text": excerpt,
-            }
-        ], {
-            "selected_passage_count": 1,
-            "selected_chars": len(excerpt),
-            "selection_mode": "profile_head_excerpt_direct",
-        }
-
     def select_profile_passages(
         self,
         *,
@@ -110,7 +79,6 @@ class PassageSelectionService:
             max_total_chars=max_total_chars,
             max_passages=max_passages,
             selection_mode="profile_passage_embedding_similarity",
-            fallback_mode="fallback_head_excerpt",
         )
 
     def select_followup_passages(
@@ -132,7 +100,6 @@ class PassageSelectionService:
             max_total_chars=max_total_chars,
             max_passages=max_passages,
             selection_mode="followup_passage_embedding_similarity",
-            fallback_mode="recent_source_head_excerpt",
         )
 
     def select_profile_passages_across_documents(
@@ -215,11 +182,14 @@ class PassageSelectionService:
         max_total_chars: int,
         max_passages: int,
         selection_mode: str,
-        fallback_mode: str,
     ) -> tuple[list[dict], dict]:
         passages = self.split_passages(content)
         if not passages:
-            return self._fallback_excerpt(content, filename, fallback_mode)
+            return [], {
+                "selected_passage_count": 0,
+                "selected_chars": 0,
+                "selection_mode": "none",
+            }
 
         query_embedding = embed_text(query, kind="query")
         passage_embeddings = embed_texts(passages, kind="passage")
@@ -237,9 +207,6 @@ class PassageSelectionService:
             max_total_chars=max_total_chars,
             max_passages=max_passages,
             selection_mode=selection_mode,
-            fallback_mode=fallback_mode,
-            fallback_content=content,
-            fallback_filename=filename,
         )
 
     def _select_ranked_candidates(
@@ -249,9 +216,6 @@ class PassageSelectionService:
         max_total_chars: int,
         max_passages: int,
         selection_mode: str,
-        fallback_mode: str,
-        fallback_content: str,
-        fallback_filename: str,
     ) -> tuple[list[dict], dict]:
         selected: list[dict] = []
         total_chars = 0
@@ -270,7 +234,11 @@ class PassageSelectionService:
                 "selected_chars": total_chars,
                 "selection_mode": selection_mode,
             }
-        return self._fallback_excerpt(fallback_content, fallback_filename, fallback_mode)
+        return [], {
+            "selected_passage_count": 0,
+            "selected_chars": 0,
+            "selection_mode": "none",
+        }
 
     def _truncate_to_budget(self, text: str, remaining: int) -> str | None:
         if remaining <= 120:
@@ -281,25 +249,3 @@ class PassageSelectionService:
             return None
         return text[:remaining].rstrip() + "..."
 
-    def _fallback_excerpt(self, content: str, filename: str, mode: str) -> tuple[list[dict], dict]:
-        excerpt = self.normalize_whitespace(content)[:1200].rstrip()
-        if not excerpt:
-            return [], {
-                "selected_passage_count": 0,
-                "selected_chars": 0,
-                "selection_mode": "none",
-            }
-        if len(content) > 1200:
-            excerpt += "..."
-        return [
-            {
-                "filename": filename,
-                "passage_index": 1,
-                "score": 0.0,
-                "text": excerpt,
-            }
-        ], {
-            "selected_passage_count": 1,
-            "selected_chars": len(excerpt),
-            "selection_mode": mode,
-        }

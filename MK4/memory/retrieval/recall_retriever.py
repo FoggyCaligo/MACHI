@@ -83,58 +83,6 @@ class RecallRetriever:
 
         return trace
 
-    def _fallback_raw_expansions(
-        self,
-        query: str,
-        episodes: list[dict],
-        corrections: list[dict],
-        profiles: list[dict],
-        summaries: list[dict],
-    ) -> list[dict]:
-        expansions: list[dict] = []
-        seen_anchor_ids: set[str] = set()
-
-        candidates: list[tuple[str, str]] = []
-
-        for episode in episodes:
-            if episode.get("raw_ref"):
-                candidates.append(("episode.raw_ref", str(episode["raw_ref"])))
-            if episode.get("summary"):
-                candidates.append(("episode.summary", str(episode["summary"])))
-
-        for correction in corrections:
-            if correction.get("content"):
-                candidates.append(("correction.content", str(correction["content"])))
-
-        for profile in profiles:
-            if profile.get("content"):
-                candidates.append(("profile.content", str(profile["content"])))
-
-        for summary in summaries:
-            if summary.get("content"):
-                candidates.append(("summary.content", str(summary["content"])))
-
-        for match_basis, text in candidates:
-            hits = self.raw_message_store.find_context_by_anchor_text(
-                anchor_text=text,
-                limit=1,
-                before=2,
-                after=2,
-                match_type="anchor_fallback",
-            )
-            for hit in hits:
-                anchor_id = str(hit.get("anchor_message", {}).get("id") or "")
-                if not anchor_id or anchor_id in seen_anchor_ids:
-                    continue
-                seen_anchor_ids.add(anchor_id)
-                hit["match_basis"] = match_basis
-                hit["query"] = query
-                expansions.append(hit)
-                if len(expansions) >= 3:
-                    return expansions
-
-        return expansions
-
     def retrieve(self, query: str) -> dict:
         episodes = self.episode_store.find_relevant(query, limit=3)
         corrections = self.correction_store.search(query, limit=3)
@@ -161,15 +109,6 @@ class RecallRetriever:
             before=2,
             after=2,
         )
-
-        if not raw_expansions and found:
-            raw_expansions = self._fallback_raw_expansions(
-                query=query,
-                episodes=episodes,
-                corrections=corrections,
-                profiles=profiles,
-                summaries=summaries,
-            )
 
         raw_available = bool(raw_expansions)
 

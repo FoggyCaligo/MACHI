@@ -3,13 +3,9 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Iterable
 
-import hashlib
 import math
 
 from config import TOPIC_EMBEDDING_MODEL
-
-
-FALLBACK_DIMENSION = 256
 
 
 class EmbeddingDependencyError(RuntimeError):
@@ -42,24 +38,6 @@ def _prepare_text(text: str, kind: str) -> str:
     return f"{prefix}{normalized}"
 
 
-def _normalize_vector(vector: list[float]) -> list[float]:
-    norm = math.sqrt(sum(v * v for v in vector))
-    if norm == 0.0:
-        return vector
-    return [v / norm for v in vector]
-
-
-def _fallback_embed_single(text: str) -> list[float]:
-    vector = [0.0] * FALLBACK_DIMENSION
-    for token in text.split():
-        digest = hashlib.sha256(token.encode("utf-8")).digest()
-        bucket = int.from_bytes(digest[:4], "big") % FALLBACK_DIMENSION
-        sign = 1.0 if digest[4] % 2 == 0 else -1.0
-        weight = 1.0 + (digest[5] / 255.0)
-        vector[bucket] += sign * weight
-    return _normalize_vector(vector)
-
-
 def embed_text(text: str, *, kind: str = "query") -> list[float]:
     prepared = _prepare_text(text, kind)
     if not prepared:
@@ -73,8 +51,12 @@ def embed_text(text: str, *, kind: str = "query") -> list[float]:
             convert_to_numpy=True,
         )
         return [float(x) for x in vector.tolist()]
-    except Exception:
-        return _fallback_embed_single(prepared)
+    except EmbeddingDependencyError:
+        raise
+    except Exception as exc:
+        raise EmbeddingDependencyError(
+            f"임베딩 계산에 실패했습니다: {TOPIC_EMBEDDING_MODEL}"
+        ) from exc
 
 
 def embed_texts(texts: Iterable[str], *, kind: str = "passage") -> list[list[float]]:
@@ -94,8 +76,12 @@ def embed_texts(texts: Iterable[str], *, kind: str = "passage") -> list[list[flo
         for idx, vector in zip(non_empty_indexes, vectors.tolist()):
             result[idx] = [float(x) for x in vector]
         return result
-    except Exception:
-        return [(_fallback_embed_single(text) if text else []) for text in prepared]
+    except EmbeddingDependencyError:
+        raise
+    except Exception as exc:
+        raise EmbeddingDependencyError(
+            f"임베딩 계산에 실패했습니다: {TOPIC_EMBEDDING_MODEL}"
+        ) from exc
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:

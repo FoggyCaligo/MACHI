@@ -20,24 +20,9 @@ from tools.text_embedding import cosine_similarity, embed_text
 TOPIC_SYSTEM_PROMPT = (
     "사용자 발화의 현재 대주제를 한국어 두 문장으로 요약하라. "
     "세부 사례나 고유명사에 매몰되지 말고, 앞으로 비슷한 대화를 묶을 수 있는 넓은 주제로 작성하라. "
+    "사용자 발화를 거의 반복하지 말고, 상위 의미 축으로 정리하라. "
     "두 문장만 출력하라. 번호, 따옴표, 코드블록, 불릿을 쓰지 마라."
 )
-
-TOPIC_BROADEN_SYSTEM_PROMPT = (
-    "주제 요약을 더 넓은 대분류로 다듬어라. "
-    "사람 이름, 파일명, 모델명, 날짜, 버전, 특정 사건명, 개별 예시, 세부 구현명은 빼고 "
-    "나중에 비슷한 대화를 묶을 수 있는 상위 주제로 다시 써라. "
-    "한국어 두 문장만 출력하라. 번호, 따옴표, 불릿, 코드블록을 쓰지 마라."
-)
-
-SPECIFIC_SUMMARY_PATTERNS = [
-    re.compile(r"https?://", re.IGNORECASE),
-    re.compile(r"\b[a-z0-9_\-]+\.(py|md|txt|json|yaml|yml|csv|ipynb)\b", re.IGNORECASE),
-    re.compile(r"\b[a-z]+\d+(?:\.\d+)*(?::[a-z0-9]+)?\b", re.IGNORECASE),
-    re.compile(r"\d{2,}"),
-    re.compile(r"[`/\\]"),
-    re.compile(r"\[[^\]]+\]|\([^\)]+\)"),
-]
 
 
 @dataclass
@@ -66,15 +51,8 @@ class TopicRouter:
             return text[:180].strip()
         return " ".join(sentences[:2])[:180].strip()
 
-    def _fallback_topic_summary(self, user_message: str) -> str:
-        text = " ".join((user_message or "").strip().split())
-        if not text:
-            return "general"
-        sentences = re.split(r"(?<=[.!?。！？])\s+", text)
-        sentences = [s.strip() for s in sentences if s.strip()]
-        if sentences:
-            return " ".join(sentences[:2])[:180].strip()
-        return text[:180].strip()
+    def _safe_default_summary(self) -> str:
+        return "general"
 
     def _generate_topic_summary(self, user_message: str, model: str | None = None) -> str:
         client = OllamaClient(timeout=TOPIC_ROUTER_TIMEOUT, num_predict=TOPIC_ROUTER_NUM_PREDICT)
@@ -89,72 +67,13 @@ class TopicRouter:
                 truncated_notice="",
             )
             summary = self._normalize_summary(content)
-            return summary or self._fallback_topic_summary(user_message)
+            return summary or self._safe_default_summary()
         except Exception:
-            return self._fallback_topic_summary(user_message)
+            return self._safe_default_summary()
 
-    def _contains_specific_markers(self, summary: str) -> bool:
-        return any(pattern.search(summary or "") for pattern in SPECIFIC_SUMMARY_PATTERNS)
-
-    def _content_overlap_ratio(self, summary: str, user_message: str) -> float:
-        summary_tokens = [
-            token for token in re.findall(r"[가-힣A-Za-z0-9_\-]+", summary.lower()) if len(token) >= 2
-        ]
-        if not summary_tokens:
-            return 0.0
-        message_tokens = set(
-            token for token in re.findall(r"[가-힣A-Za-z0-9_\-]+", user_message.lower()) if len(token) >= 2
-        )
-        if not message_tokens:
-            return 0.0
-        overlap = sum(1 for token in summary_tokens if token in message_tokens)
-        return overlap / max(len(summary_tokens), 1)
-
-    def _needs_broadening(self, summary: str, user_message: str) -> bool:
+    def _postprocess_topic_summary(self, summary: str) -> str:
         normalized = self._normalize_summary(summary)
-        if not normalized or normalized.lower() == "general":
-            return False
-        if len(normalized) >= 120:
-            return True
-        if self._contains_specific_markers(normalized):
-            return True
-        if self._content_overlap_ratio(normalized, user_message) >= 0.8 and len(normalized) >= 60:
-            return True
-        return False
-
-    def _broaden_topic_summary(self, summary: str, user_message: str, model: str | None = None) -> str:
-        client = OllamaClient(timeout=TOPIC_ROUTER_TIMEOUT, num_predict=max(48, TOPIC_ROUTER_NUM_PREDICT // 2))
-        try:
-            content = client.chat(
-                [
-                    {"role": "system", "content": TOPIC_BROADEN_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"[원문 발화]\n{user_message[:700]}\n\n"
-                            f"[현재 주제 요약]\n{summary[:220]}"
-                        ),
-                    },
-                ],
-                model=model,
-                require_complete=False,
-                truncated_notice="",
-            )
-            return self._normalize_summary(content)
-        except Exception:
-            return ""
-
-    def _postprocess_topic_summary(self, summary: str, user_message: str, model: str | None = None) -> str:
-        normalized = self._normalize_summary(summary)
-        if not normalized:
-            return self._fallback_topic_summary(user_message)
-
-        if self._needs_broadening(normalized, user_message):
-            broadened = self._broaden_topic_summary(normalized, user_message, model=model)
-            if broadened:
-                normalized = broadened
-
-        return self._normalize_summary(normalized) or self._fallback_topic_summary(user_message)
+        return normalized or self._safe_default_summary()
 
     def _active_topic_similarity(self, user_message: str, topic: dict) -> float:
         query_embedding = embed_text(user_message, kind="query")
@@ -232,7 +151,7 @@ class TopicRouter:
                 )
 
         new_summary = self._generate_topic_summary(cleaned, model=model)
-        new_summary = self._postprocess_topic_summary(new_summary, cleaned, model=model)
+        new_summary = self._postprocess_topic_summary(new_summary)
 
         summary_matches = self.topic_store.find_similar_topics(
             text=new_summary,

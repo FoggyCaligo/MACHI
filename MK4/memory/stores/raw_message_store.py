@@ -237,7 +237,7 @@ class RawMessageStore:
         limit: int = 2,
         before: int = 2,
         after: int = 2,
-        match_type: str = "anchor_fallback",
+        match_type: str = "anchor_lookup",
     ):
         if not (anchor_text or "").strip():
             return []
