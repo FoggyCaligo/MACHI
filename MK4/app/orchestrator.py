@@ -1,7 +1,7 @@
 from app.agent import Agent
 from memory.retrieval.response_retriever import ResponseRetriever
 from memory.retrieval.recall_retriever import RecallRetriever
-from memory.retrieval.update_retriever import UpdateRetriever
+from memory.services.chat_evidence_service import ChatEvidenceService
 from memory.services.memory_ingress_service import MemoryIngressService
 from memory.stores.raw_message_store import RawMessageStore
 
@@ -11,7 +11,7 @@ class Orchestrator:
         self.agent = Agent()
         self.response_retriever = ResponseRetriever()
         self.recall_retriever = RecallRetriever()
-        self.update_retriever = UpdateRetriever()
+        self.chat_evidence_service = ChatEvidenceService()
         self.memory_ingress_service = MemoryIngressService()
         self.raw_message_store = RawMessageStore()
 
@@ -23,18 +23,24 @@ class Orchestrator:
         if not reply:
             raise RuntimeError("Model returned empty reply")
         self.raw_message_store.add(role="assistant", content=reply)
-        update_plan = self.update_retriever.classify(user_message=user_message, reply=reply, model=model)
-        extracted = self.memory_ingress_service.apply_chat_update(
+
+        update_bundle = self.chat_evidence_service.extract(
             user_message=user_message,
             reply=reply,
-            update_plan=update_plan,
+            model=model,
+        )
+        apply_result = self.memory_ingress_service.apply_chat_update(
+            user_message=user_message,
+            reply=reply,
+            update_bundle=update_bundle,
             model=model,
         )
 
         return {
             "reply": reply,
             "context_used": context,
-            "update_plan": update_plan,
+            "update_plan": update_bundle,
+            "memory_apply": apply_result,
         }
 
     def handle_recall(self, query: str) -> dict:

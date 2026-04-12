@@ -249,3 +249,34 @@ class PassageSelectionService:
             return None
         return text[:remaining].rstrip() + "..."
 
+    def build_head_excerpt_passages(
+        self,
+        *,
+        filename: str,
+        content: str,
+        max_total_chars: int = 3200,
+        max_passages: int = 8,
+    ) -> tuple[list[dict], dict]:
+        passages = self.split_passages(content)
+        if not passages:
+            return [], {
+                "selected_passage_count": 0,
+                "selected_chars": 0,
+                "selection_mode": "none",
+            }
+
+        candidates = [
+            {
+                "filename": filename,
+                "passage_index": index,
+                "text": passage,
+            }
+            for index, passage in enumerate(passages, start=1)
+        ]
+
+        return self._select_ranked_candidates(
+            candidates,
+            max_total_chars=max_total_chars,
+            max_passages=max_passages,
+            selection_mode="head_excerpt",
+        )

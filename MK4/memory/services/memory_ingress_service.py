@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from memory.policies.conflict_policy import ConflictPolicy
 from memory.policies.extraction_policy import ExtractionPolicy
 from memory.policies.retention_policy import RetentionPolicy
 from memory.services.evidence_normalization_service import EvidenceNormalizationService
-from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
+from memory.services.memory_apply_service import MemoryApplyService
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
 
@@ -14,9 +13,8 @@ class MemoryIngressService:
 
     def __init__(self) -> None:
         self.extraction_policy = ExtractionPolicy()
-        self.conflict_policy = ConflictPolicy()
         self.retention_policy = RetentionPolicy()
-        self.profile_memory_sync_service = ProfileMemorySyncService()
+        self.memory_apply_service = MemoryApplyService()
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
         self.project_evidence_store = ProjectProfileEvidenceStore()
         self.normalizer = EvidenceNormalizationService()
@@ -118,25 +116,28 @@ class MemoryIngressService:
         *,
         user_message: str,
         reply: str,
-        update_plan: dict,
+        update_bundle: dict,
         model: str | None = None,
     ) -> dict:
         extracted = self.extraction_policy.extract(
             user_message=user_message,
             reply=reply,
-            update_plan=update_plan,
+            update_bundle=update_bundle,
             model=model,
         )
-        self.conflict_policy.apply(extracted)
+        apply_result = self.memory_apply_service.apply_extracted(extracted)
         self.retention_policy.run()
-        return extracted
+        return {
+            "extracted": extracted,
+            "apply_result": apply_result,
+        }
 
     def sync_uploaded_source(self, source_id: str) -> dict:
-        result = self.profile_memory_sync_service.sync_uploaded_source(source_id)
+        result = self.memory_apply_service.sync_uploaded_source(source_id)
         self.retention_policy.run()
         return result
 
     def sync_project(self, project_id: str) -> dict:
-        result = self.profile_memory_sync_service.sync_project(project_id)
+        result = self.memory_apply_service.sync_project(project_id)
         self.retention_policy.run()
         return result

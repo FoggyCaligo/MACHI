@@ -10,7 +10,6 @@ from memory.policies.memory_classification_policy import (
     SOURCE_STRENGTH_ORDER,
 )
 from memory.stores.state_store import StateStore
-from profile_analysis.services.profile_memory_sync_service import ProfileMemorySyncService
 from memory.services.memory_ingress_service import MemoryIngressService
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from profile_analysis.stores.uploaded_profile_source_store import UploadedProfileSourceStore
@@ -23,7 +22,6 @@ class ProfileAttachmentIngestService:
     def __init__(self) -> None:
         self.source_store = UploadedProfileSourceStore()
         self.evidence_store = UploadedProfileEvidenceStore()
-        self.sync_service = ProfileMemorySyncService()
         self.state_store = StateStore()
         self.extraction_service = EvidenceExtractionService(timeout=120, num_predict=384, retry_num_predict=256)
         self.answer_runner = ResponseRunner(timeout=ATTACHMENT_REPLY_TIMEOUT, num_predict=ATTACHMENT_REPLY_NUM_PREDICT, max_continuations=ATTACHMENT_REPLY_MAX_CONTINUATIONS)

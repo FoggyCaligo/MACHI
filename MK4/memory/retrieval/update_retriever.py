@@ -34,6 +34,13 @@ SELF_MODEL_MARKERS = (
 
 
 class UpdateRetriever:
+    """Heuristic fallback extractor for chat memory bundles.
+
+    The primary path should use ChatEvidenceService (model-based structured
+    extraction). This class exists only as a resilient fallback when the model
+    extractor fails or returns unparsable output.
+    """
+
     def __init__(self) -> None:
         self.normalizer = EvidenceNormalizationService()
 
@@ -74,8 +81,8 @@ class UpdateRetriever:
             return "temporary_interest"
         return None
 
-    def classify(self, user_message: str, reply: str, model: str | None = None) -> dict:
-        del reply, model  # reserved for future model-based extractor integration
+    def fallback_bundle(self, user_message: str, reply: str, model: str | None = None) -> dict:
+        del reply, model
 
         cleaned = self._normalize(user_message)
         lowered = cleaned.lower()
@@ -112,17 +119,6 @@ class UpdateRetriever:
         if not actions:
             actions.append({"type": "discard"})
 
-        if any(action.get("type") == "new_correction" for action in actions):
-            message_kind = "correction"
-        elif direct_candidate:
-            message_kind = "self_statement"
-        elif is_question_or_request:
-            message_kind = "question_or_request"
-        elif has_state_hint:
-            message_kind = "state_statement"
-        else:
-            message_kind = "statement"
-
         parsed = {
             "action_types": [action.get("type") for action in actions if action.get("type")],
             "state_payloads": state_payloads,
@@ -147,13 +143,16 @@ class UpdateRetriever:
         bundle.update(
             {
                 "actions": actions,
-                "message_kind": message_kind,
                 "source_strength": source_strength,
                 "direct_candidate": direct_candidate,
                 "should_create_episode": should_create_episode,
                 "state_payloads": state_payloads,
                 "memory_text": cleaned,
                 "is_question_or_request": is_question_or_request,
+                "extractor": "heuristic_fallback",
             }
         )
         return bundle
+
+    def classify(self, user_message: str, reply: str, model: str | None = None) -> dict:
+        return self.fallback_bundle(user_message=user_message, reply=reply, model=model)

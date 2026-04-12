@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from memory.policies.memory_classification_policy import MemoryClassificationPolicy
-from memory.services.evidence_normalization_service import EvidenceNormalizationService
 from memory.services.topic_router import TopicRouter
 
 
@@ -9,49 +8,11 @@ class ExtractionPolicy:
     def __init__(self) -> None:
         self.topic_router = TopicRouter()
         self.memory_policy = MemoryClassificationPolicy()
-        self.normalizer = EvidenceNormalizationService()
 
-    def _legacy_bundle_from_update_plan(self, user_message: str, update_plan: dict) -> dict:
-        parsed = {
-            "action_types": [a.get("type") for a in update_plan.get("actions", []) if isinstance(a, dict)],
-            "state_payloads": update_plan.get("state_payloads"),
-            "memory_candidate": {
-                "content": update_plan.get("memory_text") or user_message,
-                "source_strength": update_plan.get("source_strength"),
-                "direct_candidate": bool(update_plan.get("direct_candidate")),
-                "confidence": 0.8 if bool(update_plan.get("direct_candidate")) else 0.0,
-            }
-            if (update_plan.get("memory_text") or user_message) and update_plan.get("source_strength")
-            else None,
-            "correction_candidate": {
-                "content": update_plan.get("memory_text") or user_message,
-                "reason": "explicit_correction_or_conflict_candidate",
-                "confidence": 0.8,
-            }
-            if any((a.get("type") == "new_correction") for a in update_plan.get("actions", []) if isinstance(a, dict))
-            else None,
-            "episode_candidate": {
-                "summary": str(update_plan.get("memory_text") or user_message)[:300],
-                "raw_ref": update_plan.get("memory_text") or user_message,
-                "importance": 0.4,
-            }
-            if bool(update_plan.get("should_create_episode")) and (update_plan.get("memory_text") or user_message)
-            else None,
-        }
-        bundle = self.normalizer.normalize_chat_update_bundle(parsed)
-        bundle.update({
-            "actions": update_plan.get("actions", []),
-            "memory_text": str(update_plan.get("memory_text") or user_message or "").strip(),
-            "source_strength": update_plan.get("source_strength"),
-            "direct_candidate": bool(update_plan.get("direct_candidate")),
-            "should_create_episode": bool(update_plan.get("should_create_episode")),
-        })
-        return bundle
-
-    def extract(self, user_message: str, reply: str, update_plan: dict, model: str | None = None) -> dict:
+    def extract(self, user_message: str, reply: str, update_bundle: dict, model: str | None = None) -> dict:
         del reply
 
-        bundle = update_plan if update_plan.get("evidence_envelopes") is not None else self._legacy_bundle_from_update_plan(user_message, update_plan)
+        bundle = update_bundle or {}
         evidence_envelopes = bundle.get("evidence_envelopes") or []
         topic_seed = str(bundle.get("topic_seed") or user_message or "").strip()
 
@@ -89,13 +50,13 @@ class ExtractionPolicy:
             if kind == "profile_candidate" and content:
                 direct_candidate = bool(metadata.get("direct_candidate"))
                 classification = self.memory_policy.classify_chat_memory(
-                    user_message=content,
                     action_types=action_types,
                     similarity=topic_resolution.similarity,
                     source_strength=envelope.get("source_strength"),
                     direct_candidate=direct_candidate,
+                    confidence=envelope.get("confidence"),
                 )
-                if self.memory_policy.should_store_chat_profile(classification):
+                if classification["route"] == "candidate":
                     result["profiles"].append(
                         {
                             "topic_id": topic_id,
