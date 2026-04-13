@@ -285,6 +285,7 @@ class MemoryApplyService:
             self.chat_evidence_store.add(
                 source_message_id=source_message_id,
                 response_message_id=response_message_id,
+                evidence_type="profile_candidate",
                 evidence_text=candidate.get("evidence_text") or "",
                 confidence=candidate.get("confidence"),
                 topic=candidate.get("topic"),

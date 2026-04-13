@@ -3,7 +3,7 @@ from __future__ import annotations
 from memory.policies.extraction_policy import ExtractionPolicy
 from memory.services.evidence_normalization_service import EvidenceNormalizationService
 from memory.services.memory_apply_service import MemoryApplyService
-from memory.services.retention_policy import RetentionPolicy
+from memory.policies.retention_policy import RetentionPolicy
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
 

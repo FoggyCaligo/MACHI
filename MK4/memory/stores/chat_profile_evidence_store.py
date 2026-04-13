@@ -28,6 +28,7 @@ class ChatProfileEvidenceStore:
         *,
         source_message_id: str | None,
         response_message_id: str | None,
+        evidence_type: str | None = None,
         evidence_text: str,
         confidence: float | None = None,
         topic: str | None = None,
@@ -47,6 +48,7 @@ class ChatProfileEvidenceStore:
                     id,
                     source_message_id,
                     response_message_id,
+                    evidence_type,
                     topic,
                     topic_id,
                     candidate_content,
@@ -58,12 +60,13 @@ class ChatProfileEvidenceStore:
                     linked_profile_id,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
                 """,
                 (
                     evidence_id,
                     source_message_id,
                     response_message_id,
+                    evidence_type or "profile_candidate",
                     resolved_topic,
                     resolved_topic_id,
                     candidate_content,
@@ -79,6 +82,7 @@ class ChatProfileEvidenceStore:
             "id": evidence_id,
             "source_message_id": source_message_id,
             "response_message_id": response_message_id,
+            "evidence_type": evidence_type or "profile_candidate",
             "topic": resolved_topic,
             "topic_id": resolved_topic_id,
             "candidate_content": candidate_content,
