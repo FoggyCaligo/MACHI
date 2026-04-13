@@ -5,7 +5,6 @@ python-multipart
 pydantic
 sentence-transformers
 numpy
-sqlite-vec
 beautifulsoup4
 chardet
 lxml

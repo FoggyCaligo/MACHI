@@ -1,19 +1,20 @@
 import sqlite3
-
-import sqlite_vec
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from config import DATA_DIR, DB_PATH
 
 
-def get_conn() -> sqlite3.Connection:
+@contextmanager
+def get_conn() -> Iterator[sqlite3.Connection]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
     conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _get_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -25,44 +26,6 @@ def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, 
     existing = _get_columns(conn, table_name)
     if column_name not in existing:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
-
-
-def _get_vec_dimension(conn: sqlite3.Connection) -> int | None:
-    """기존 vec_project_chunks 테이블의 벡터 차원 수를 읽어온다."""
-    try:
-        row = conn.execute(
-            "SELECT vector_extract(embedding) FROM vec_project_chunks LIMIT 1"
-        ).fetchone()
-        if row and row[0]:
-            import json
-            vals = json.loads(row[0])
-            return len(vals)
-    except Exception:
-        pass
-    return None
-
-
-def _ensure_vec_table(conn: sqlite3.Connection) -> None:
-    """
-    vec_project_chunks 가상 테이블을 생성한다.
-    - 이미 존재하면 건드리지 않는다.
-    - 차원 수는 multilingual-e5-small 기준 384.
-    """
-    existing = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_project_chunks'"
-    ).fetchone()
-    if existing:
-        return
-
-    conn.execute(
-        """
-        CREATE VIRTUAL TABLE vec_project_chunks
-        USING vec0(
-            chunk_id TEXT PRIMARY KEY,
-            embedding float[384]
-        )
-        """
-    )
 
 
 def init_project_tables() -> None:
@@ -189,8 +152,5 @@ def init_project_tables() -> None:
         _ensure_column(conn, "uploaded_profile_evidence", "memory_tier", "TEXT")
 
         _ensure_column(conn, "project_chunks", "embedding_json", "TEXT")
-
-        # sqlite-vec 가상 테이블
-        _ensure_vec_table(conn)
 
         conn.commit()

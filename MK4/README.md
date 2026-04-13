@@ -258,7 +258,7 @@ ZIP 업로드 시:
 - Python
 - FastAPI
 - Uvicorn
-- SQLite + `sqlite-vec`
+- SQLite
 - Ollama
 - `sentence-transformers`
 - NumPy

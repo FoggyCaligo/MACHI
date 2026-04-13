@@ -1,15 +1,9 @@
 import json
-import struct
 import uuid
 from datetime import datetime, timezone
 
 from project_analysis.stores.db import get_conn
 from tools.text_embedding import embed_text
-
-
-def _encode_vec(embedding: list[float]) -> bytes:
-    """sqlite-vec에 넣을 float32 바이너리로 변환."""
-    return struct.pack(f"{len(embedding)}f", *embedding)
 
 
 class ProjectChunkStore:
@@ -68,17 +62,6 @@ class ProjectChunkStore:
                     now,
                 ),
             )
-
-            # vec 가상 테이블에도 동시 write
-            if resolved_embedding:
-                try:
-                    conn.execute(
-                        "INSERT INTO vec_project_chunks (chunk_id, embedding) VALUES (?, ?)",
-                        (chunk_id, _encode_vec(resolved_embedding)),
-                    )
-                except Exception as exc:
-                    print(f"[CHUNK_STORE][WARN] vec insert failed for {chunk_id}: {exc}", flush=True)
-
             conn.commit()
 
         return {
@@ -101,25 +84,6 @@ class ProjectChunkStore:
                 "UPDATE project_chunks SET embedding_json = ? WHERE id = ?",
                 (self._encode_embedding(embedding), chunk_id),
             )
-            if embedding:
-                try:
-                    # upsert: 이미 있으면 UPDATE, 없으면 INSERT
-                    existing = conn.execute(
-                        "SELECT chunk_id FROM vec_project_chunks WHERE chunk_id = ?",
-                        (chunk_id,),
-                    ).fetchone()
-                    if existing:
-                        conn.execute(
-                            "UPDATE vec_project_chunks SET embedding = ? WHERE chunk_id = ?",
-                            (_encode_vec(embedding), chunk_id),
-                        )
-                    else:
-                        conn.execute(
-                            "INSERT INTO vec_project_chunks (chunk_id, embedding) VALUES (?, ?)",
-                            (chunk_id, _encode_vec(embedding)),
-                        )
-                except Exception as exc:
-                    print(f"[CHUNK_STORE][WARN] vec update failed for {chunk_id}: {exc}", flush=True)
             conn.commit()
 
     def list_by_project(self, project_id: str) -> list[dict]:
