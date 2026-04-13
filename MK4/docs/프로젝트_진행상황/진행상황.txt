@@ -68,6 +68,13 @@ MK4_진행상황_정리
     - tool 호출 여부도 surface pattern이 아니라 모델 판단에 맡기는 방향으로 복귀
 35. 루트 `README.md`와 `MK1~MK3` 문서를 재검토해 MK4의 역할을 상위 맥락에서 재정리
     - MK4는 MACHI 전체 비전 중 evidence-first / revisable memory substrate를 구현하는 현재 작업 축이라는 해석을 문서 원칙에 반영
+36. `sqlite-vec` 의존성을 project 경로에서 완전 제거하고, project retrieval을 순수 SQLite + Python cosine 방식으로 단순화
+    - `project_analysis` DB 레이어에서 vec extension load / vec table 생성 / vec insert / vec search를 제거
+    - chunk embedding은 `embedding_json`만 유지하고, retrieval은 Python cosine 유사도만 사용
+    - `requirements.txt`에서 `sqlite-vec` 제거, 관련 회귀 테스트 추가
+37. 외부 라이브러리 사용 원칙을 장기 유지보수성 기준으로 재정렬
+    - Python 버전 상한으로 문제를 덮기보다, 장기적으로 발목을 잡는 의존성은 걷어내는 방향 채택
+    - chunking도 자체 구현으로 교체했고, 앞으로도 구조적으로 단순한 기능은 가능한 한 내장/자체 코드 우선
 
 ==================================================
 <미완 또는 부족>
