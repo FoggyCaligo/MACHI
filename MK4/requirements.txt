@@ -5,3 +5,5 @@ python-multipart
 pydantic
 sentence-transformers
 numpy
+sqlite-vec
+langchain-text-splitters

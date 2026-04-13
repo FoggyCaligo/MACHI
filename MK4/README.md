@@ -241,6 +241,8 @@ ollama --version
 ```bash
 ollama pull qwen2.5:3b
 ollama pull gemma3:1b
+ollama pull llama3.2:3b
+ollama pull gemma3:4b
 ```
 
 ### 6-3. 서버 실행

@@ -72,7 +72,7 @@ class ProjectIngestService:
             )
             stored_file_count += 1
 
-            chunks = chunk_text_by_lines(content)
+            chunks = chunk_text_by_lines(content, file_ext=file_path.suffix.lower())
             stored_chunk_count += len(chunks)
 
             for chunk in chunks:
