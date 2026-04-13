@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from typing import Any
-
 from config import TOPIC_CONFIRM_MIN_CONFIDENCE
 
 
@@ -17,16 +13,14 @@ class MemoryClassificationPolicy:
 
     This layer should not interpret raw language with regex/keyword heuristics.
     Upstream components are responsible for producing structured signals such as
-    action types, source strength, confidence, and direct-confirm flags.
+    action types, source strength, confidence, and direct confirmation.
     """
 
-    def normalize_source_strength(self, value: str | None) -> str:
+    def normalize_source_strength(self, value: object | None) -> str:
         text = str(value or "").strip()
         return text if text in SOURCE_STRENGTH_ORDER else ""
 
-    def _bounded_confidence(self, value: Any) -> float:
-        if value is None:
-            return 0.0
+    def _bounded_confidence(self, value: object | None) -> float:
         try:
             score = float(value)
         except (TypeError, ValueError):
@@ -40,9 +34,6 @@ class MemoryClassificationPolicy:
             tags.append(f"source_strength:{strength}")
         if bool(evidence.get("direct_confirm")):
             tags.append("direct_confirm")
-        tier = str(evidence.get("memory_tier") or "").strip()
-        if tier:
-            tags.append(f"memory_tier:{tier}")
         return tags
 
     def classify_chat_memory(
@@ -50,9 +41,8 @@ class MemoryClassificationPolicy:
         action_types: set[str] | None = None,
         similarity: float = 0.0,
         source_strength: str | None = None,
-        direct_candidate: bool = False,
         direct_confirm: bool = False,
-        confidence: Any = None,
+        confidence: object | None = None,
     ) -> dict:
         _ = similarity
         action_types = action_types or set()
@@ -66,33 +56,31 @@ class MemoryClassificationPolicy:
         signals = [f"action:{a}" for a in sorted(meaningful_actions)]
         if normalized_strength:
             signals.append(f"source_strength:{normalized_strength}")
-        if direct_candidate:
-            signals.append("direct_candidate")
         if direct_confirm:
             signals.append("direct_confirm")
 
         if direct_confirm and resolved_confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
             return {"route": "confirmed", "signals": signals, "confidence": resolved_confidence}
-        if direct_candidate and resolved_confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
-            return {"route": "candidate", "signals": signals, "confidence": resolved_confidence}
         if normalized_strength == "explicit_self_statement" and resolved_confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
             return {"route": "candidate", "signals": signals, "confidence": resolved_confidence}
+        if normalized_strength == "repeated_behavior" and resolved_confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
+            return {"route": "candidate", "signals": signals, "confidence": resolved_confidence}
 
-        return {"route": "general", "signals": signals, "confidence": resolved_confidence}
+        return {
+            "route": "general",
+            "signals": signals,
+            "confidence": resolved_confidence,
+        }
 
     def classify_evidence(self, evidence: dict) -> dict:
-        candidate_content = str(evidence.get("candidate_content") or evidence.get("content") or "").strip()
+        candidate_content = str(evidence.get("candidate_content") or "").strip()
         if not candidate_content:
             return {"route": "discard", "signals": []}
-
-        persisted_tier = str(evidence.get("memory_tier") or "").strip()
-        signals = self._signal_tags_from_evidence(evidence)
-        if persisted_tier in {"general", "candidate", "confirmed"}:
-            return {"route": persisted_tier, "signals": signals}
 
         strength = self.normalize_source_strength(evidence.get("source_strength"))
         confidence = self._bounded_confidence(evidence.get("confidence"))
         direct_confirm = bool(evidence.get("direct_confirm"))
+        signals = self._signal_tags_from_evidence(evidence)
 
         if direct_confirm and confidence >= TOPIC_CONFIRM_MIN_CONFIDENCE:
             return {"route": "confirmed", "signals": signals}
@@ -109,8 +97,8 @@ class MemoryClassificationPolicy:
         evidence_count = int(cluster.get("evidence_count") or 0)
         distinct_group_count = int(cluster.get("distinct_group_count") or cluster.get("distinct_project_count") or 0)
         distinct_source_count = int(cluster.get("distinct_source_count") or 0)
-        avg_confidence = self._bounded_confidence(cluster.get("avg_confidence"))
-        max_confidence = self._bounded_confidence(cluster.get("max_confidence"))
+        avg_confidence = float(cluster.get("avg_confidence") or 0.0)
+        max_confidence = float(cluster.get("max_confidence") or 0.0)
         primary_strength = self.normalize_source_strength(cluster.get("primary_strength"))
         direct_confirm_count = int(cluster.get("direct_confirm_count") or 0)
 
@@ -137,7 +125,7 @@ class MemoryClassificationPolicy:
         return True, "promotable_repeated"
 
     def promotion_confidence(self, cluster: dict) -> float:
-        avg_confidence = self._bounded_confidence(cluster.get("avg_confidence"))
+        avg_confidence = float(cluster.get("avg_confidence") or 0.0)
         evidence_count = int(cluster.get("evidence_count") or 0)
         primary_strength = self.normalize_source_strength(cluster.get("primary_strength"))
         direct_confirm_count = int(cluster.get("direct_confirm_count") or 0)

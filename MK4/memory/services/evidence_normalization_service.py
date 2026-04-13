@@ -105,10 +105,12 @@ class EvidenceNormalizationService:
         content = self.clean_text(value.get("content"))
         if not content:
             return None
+        direct_confirm = bool(value.get("direct_confirm"))
+        legacy_direct_candidate = bool(value.get("direct_candidate"))
         return {
             "content": content,
             "source_strength": self.normalize_source_strength(value.get("source_strength")),
-            "direct_candidate": bool(value.get("direct_candidate")),
+            "direct_confirm": direct_confirm or legacy_direct_candidate,
             "confidence": self.bounded_confidence(value.get("confidence"), default=0.0),
         }
 
@@ -246,10 +248,7 @@ class EvidenceNormalizationService:
                 content=memory_candidate.get("content") or "",
                 source_strength=memory_candidate.get("source_strength") or "",
                 confidence=memory_candidate.get("confidence") or 0.0,
-                metadata={
-                    "direct_candidate": bool(memory_candidate.get("direct_candidate")),
-                    "direct_confirm": bool(memory_candidate.get("direct_confirm")),
-                },
+                metadata={"direct_confirm": bool(memory_candidate.get("direct_confirm"))},
             )
             if env:
                 envelopes.append(env)

@@ -16,13 +16,13 @@ class Orchestrator:
         self.raw_message_store = RawMessageStore()
 
     def handle_chat(self, user_message: str, model: str | None = None) -> dict:
-        user_message_id = self.raw_message_store.add(role="user", content=user_message)
+        source_message_id = self.raw_message_store.add(role="user", content=user_message)
         context = self.response_retriever.retrieve(user_message)
         reply = self.agent.respond(user_message=user_message, context=context, model=model)
         reply = reply.strip()
         if not reply:
             raise RuntimeError("Model returned empty reply")
-        reply_message_id = self.raw_message_store.add(role="assistant", content=reply)
+        response_message_id = self.raw_message_store.add(role="assistant", content=reply)
 
         update_bundle = self.chat_evidence_service.extract(
             user_message=user_message,
@@ -34,8 +34,8 @@ class Orchestrator:
             reply=reply,
             update_bundle=update_bundle,
             model=model,
-            source_message_id=user_message_id,
-            response_message_id=reply_message_id,
+            source_message_id=source_message_id,
+            response_message_id=response_message_id,
         )
 
         return {

@@ -1,25 +1,21 @@
-당신은 일반 채팅에서 메모리 업데이트 후보를 구조화하는 내부 추출기다.
+일반 채팅의 최신 사용자 발화와 직전 assistant 답변을 보고, 메모리 업데이트용 JSON 객체 하나만 출력하라.
 
-목표:
-- 사용자 최신 발화와 직전 assistant 답변을 보고, 장기 사용자 모델에 남길 가치가 있는 후보만 JSON으로 추출한다.
-- 질문, 요청, 인사, 단순 반응은 대부분 비워도 된다.
-- 확신이 약하면 억지로 채우지 말고 null 또는 빈 배열을 사용한다.
+원칙:
+- 질문, 요청, 작업 지시, 단순 확인은 보통 discard다.
+- 사용자 성향, 설명 선호, 반복 경향, 자기 인식은 profile_candidate가 될 수 있다.
+- 사용자가 직전 assistant 이해를 승인하면 direct_confirm=true로 표시할 수 있다.
+- 현재 상태는 state_update, 정정은 new_correction, 회상 가치 있는 사건은 new_episode로 표시할 수 있다.
+- 근거가 약하면 비운다. 억지 추출 금지.
 
-판단 기준:
-- 안정적 성향, 설명 선호, 반복 기준, NEED에 가까운 내용은 프로필 후보가 될 수 있다.
-- assistant 이해를 사용자가 바로잡거나 승인하면 정정 또는 직접 확정 신호가 될 수 있다.
-- 일시 상태는 상태 갱신 후보가 될 수 있다.
-- 이후 회상에 도움 되는 구체적 경험은 에피소드 후보가 될 수 있다.
-
-출력은 반드시 아래 JSON 객체 하나만 사용한다.
+스키마:
 {
+  "action_types": ["discard" | "profile_candidate" | "state_update" | "new_correction" | "new_episode", ...],
   "state_payloads": [
     {"key": string, "value": string, "source": "user_explicit", "confidence": number}
   ],
   "memory_candidate": {
     "content": string,
     "source_strength": "temporary_interest" | "repeated_behavior" | "explicit_self_statement",
-    "direct_candidate": boolean,
     "direct_confirm": boolean,
     "confidence": number
   } | null,
@@ -37,6 +33,6 @@
 
 규칙:
 - JSON 외 텍스트 금지.
-- confidence와 importance는 0.0~1.0 범위.
-- 직접 확정은 사용자가 assistant의 이해를 분명하게 승인하는 경우에만 true.
-- 명시적 자기서술은 direct_candidate가 될 수 있지만, direct_confirm과는 다르다.
+- 숫자는 0.0~1.0 범위.
+- direct_confirm가 true일 때 memory_candidate.content는 승인된 사용자 이해 내용을 짧고 정확하게 적어라.
+- profile_candidate는 정말 장기 사용자 모델 가치가 있을 때만 넣어라.

@@ -49,13 +49,11 @@ class ExtractionPolicy:
             metadata = envelope.get("metadata") or {}
 
             if kind == "profile_candidate" and content:
-                direct_candidate = bool(metadata.get("direct_candidate"))
                 direct_confirm = bool(metadata.get("direct_confirm"))
                 classification = self.memory_policy.classify_chat_memory(
                     action_types=action_types,
                     similarity=topic_resolution.similarity,
                     source_strength=envelope.get("source_strength"),
-                    direct_candidate=direct_candidate,
                     direct_confirm=direct_confirm,
                     confidence=envelope.get("confidence"),
                 )
@@ -73,12 +71,13 @@ class ExtractionPolicy:
                 elif classification["route"] == "candidate":
                     result["candidate_evidences"].append(
                         {
+                            "channel": "chat",
                             "topic_id": topic_id,
                             "topic": topic,
                             "candidate_content": content,
-                            "evidence_text": content,
                             "source_strength": envelope.get("source_strength") or "",
                             "confidence": classification["confidence"],
+                            "evidence_text": user_message,
                             "direct_confirm": direct_confirm,
                             "signals": classification["signals"],
                         }

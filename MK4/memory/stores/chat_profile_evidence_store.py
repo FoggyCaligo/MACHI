@@ -28,7 +28,6 @@ class ChatProfileEvidenceStore:
         *,
         source_message_id: str | None,
         response_message_id: str | None,
-        evidence_type: str,
         evidence_text: str,
         confidence: float | None = None,
         topic: str | None = None,
@@ -36,7 +35,6 @@ class ChatProfileEvidenceStore:
         candidate_content: str | None = None,
         source_strength: str | None = None,
         direct_confirm: bool = False,
-        applied_to_memory: int = 1,
     ) -> dict:
         evidence_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -49,7 +47,6 @@ class ChatProfileEvidenceStore:
                     id,
                     source_message_id,
                     response_message_id,
-                    evidence_type,
                     topic,
                     topic_id,
                     candidate_content,
@@ -59,16 +56,14 @@ class ChatProfileEvidenceStore:
                     direct_confirm,
                     applied_to_memory,
                     linked_profile_id,
-                    linked_correction_id,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
                 """,
                 (
                     evidence_id,
                     source_message_id,
                     response_message_id,
-                    evidence_type,
                     resolved_topic,
                     resolved_topic_id,
                     candidate_content,
@@ -76,7 +71,6 @@ class ChatProfileEvidenceStore:
                     evidence_text,
                     confidence,
                     1 if direct_confirm else 0,
-                    int(applied_to_memory),
                     now,
                 ),
             )
@@ -85,7 +79,6 @@ class ChatProfileEvidenceStore:
             "id": evidence_id,
             "source_message_id": source_message_id,
             "response_message_id": response_message_id,
-            "evidence_type": evidence_type,
             "topic": resolved_topic,
             "topic_id": resolved_topic_id,
             "candidate_content": candidate_content,
@@ -93,9 +86,8 @@ class ChatProfileEvidenceStore:
             "evidence_text": evidence_text,
             "confidence": confidence,
             "direct_confirm": 1 if direct_confirm else 0,
-            "applied_to_memory": int(applied_to_memory),
+            "applied_to_memory": 0,
             "linked_profile_id": None,
-            "linked_correction_id": None,
             "created_at": now,
         }
 
@@ -105,9 +97,9 @@ class ChatProfileEvidenceStore:
                 """
                 SELECT *
                 FROM chat_profile_evidence
-                WHERE evidence_type = 'profile_candidate'
-                  AND candidate_content IS NOT NULL
+                WHERE candidate_content IS NOT NULL
                   AND (topic_id IS NOT NULL OR topic IS NOT NULL)
+                  AND (linked_profile_id IS NULL OR linked_profile_id = '')
                 ORDER BY created_at ASC
                 """
             ).fetchall()
@@ -117,18 +109,16 @@ class ChatProfileEvidenceStore:
         self,
         evidence_id: str,
         linked_profile_id: str | None = None,
-        linked_correction_id: str | None = None,
     ) -> None:
         with connection_context() as conn:
             conn.execute(
                 """
                 UPDATE chat_profile_evidence
                 SET applied_to_memory = 1,
-                    linked_profile_id = COALESCE(?, linked_profile_id),
-                    linked_correction_id = COALESCE(?, linked_correction_id)
+                    linked_profile_id = COALESCE(?, linked_profile_id)
                 WHERE id = ?
                 """,
-                (linked_profile_id, linked_correction_id, evidence_id),
+                (linked_profile_id, evidence_id),
             )
 
     def link_profile_for_candidate(
@@ -145,8 +135,7 @@ class ChatProfileEvidenceStore:
                     UPDATE chat_profile_evidence
                     SET linked_profile_id = ?,
                         applied_to_memory = 1
-                    WHERE evidence_type = 'profile_candidate'
-                      AND topic_id = ?
+                    WHERE topic_id = ?
                       AND candidate_content = ?
                       AND (linked_profile_id IS NULL OR linked_profile_id = '')
                     """,
@@ -158,8 +147,7 @@ class ChatProfileEvidenceStore:
                     UPDATE chat_profile_evidence
                     SET linked_profile_id = ?,
                         applied_to_memory = 1
-                    WHERE evidence_type = 'profile_candidate'
-                      AND topic = ?
+                    WHERE topic = ?
                       AND candidate_content = ?
                       AND (linked_profile_id IS NULL OR linked_profile_id = '')
                     """,

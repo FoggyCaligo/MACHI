@@ -109,7 +109,6 @@ CREATE TABLE IF NOT EXISTS chat_profile_evidence (
     id TEXT PRIMARY KEY,
     source_message_id TEXT,
     response_message_id TEXT,
-    evidence_type TEXT NOT NULL,
     topic TEXT,
     topic_id TEXT,
     candidate_content TEXT,
@@ -119,18 +118,16 @@ CREATE TABLE IF NOT EXISTS chat_profile_evidence (
     direct_confirm INTEGER NOT NULL DEFAULT 0,
     applied_to_memory INTEGER NOT NULL DEFAULT 0,
     linked_profile_id TEXT,
-    linked_correction_id TEXT,
     created_at TEXT NOT NULL,
-    FOREIGN KEY (topic_id) REFERENCES topics(id),
     FOREIGN KEY (source_message_id) REFERENCES raw_messages(id),
     FOREIGN KEY (response_message_id) REFERENCES raw_messages(id),
-    FOREIGN KEY (linked_profile_id) REFERENCES profiles(id),
-    FOREIGN KEY (linked_correction_id) REFERENCES corrections(id)
+    FOREIGN KEY (topic_id) REFERENCES topics(id),
+    FOREIGN KEY (linked_profile_id) REFERENCES profiles(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_chat_profile_evidence_topic_id ON chat_profile_evidence(topic_id);
-CREATE INDEX IF NOT EXISTS idx_chat_profile_evidence_created_at ON chat_profile_evidence(created_at ASC);
-CREATE INDEX IF NOT EXISTS idx_chat_profile_evidence_candidate ON chat_profile_evidence(candidate_content);
+CREATE INDEX IF NOT EXISTS idx_chat_profile_evidence_created_at ON chat_profile_evidence(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_profile_evidence_topic_id ON chat_profile_evidence(topic_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_profile_evidence_candidate ON chat_profile_evidence(candidate_content, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS raw_messages (
     id TEXT PRIMARY KEY,

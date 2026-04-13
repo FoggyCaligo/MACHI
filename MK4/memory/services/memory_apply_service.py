@@ -4,6 +4,7 @@ from memory.policies.memory_classification_policy import (
     MemoryClassificationPolicy,
     SOURCE_STRENGTH_ORDER,
 )
+from memory.stores.chat_profile_evidence_store import ChatProfileEvidenceStore
 from memory.stores.correction_store import CorrectionStore
 from memory.stores.episode_store import EpisodeStore
 from memory.stores.profile_store import ProfileStore
@@ -32,6 +33,7 @@ class MemoryApplyService:
         self.memory_policy = MemoryClassificationPolicy()
         self.project_evidence_store = ProjectProfileEvidenceStore()
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
+        self.chat_evidence_store = ChatProfileEvidenceStore()
 
     def _normalize_text(self, text: str) -> str:
         return " ".join((text or "").strip().lower().split())
@@ -198,6 +200,12 @@ class MemoryApplyService:
             copied["group_id"] = copied.get("source_id")
             result.append(copied)
 
+        for item in self.chat_evidence_store.list_candidate_evidence():
+            copied = dict(item)
+            copied["group_id"] = copied.get("source_message_id")
+            copied["source_file_path"] = ""
+            result.append(copied)
+
         return result
 
     def _link_profile_for_candidate_across_stores(
@@ -220,19 +228,35 @@ class MemoryApplyService:
             candidate_content=candidate_content,
             profile_id=profile_id,
         )
+        linked += self.chat_evidence_store.link_profile_for_candidate(
+            topic_id=topic_id,
+            topic=topic,
+            candidate_content=candidate_content,
+            profile_id=profile_id,
+        )
         return linked
 
     def _rebuild_touched_topics(self, touched_topics: set[tuple[str | None, str]]) -> None:
         for topic_id, topic in touched_topics:
             self.profile_rebuilder.rebuild_topic(topic=topic, topic_id=topic_id)
 
-    def apply_extracted(self, extracted: dict) -> dict:
+    def apply_extracted(
+        self,
+        extracted: dict,
+        *,
+        source_message_id: str | None = None,
+        response_message_id: str | None = None,
+    ) -> dict:
         touched_topics: set[tuple[str | None, str]] = set()
         applied = {
             "states": 0,
             "profiles": 0,
             "episodes": 0,
             "corrections": 0,
+            "stored_chat_candidates": 0,
+            "promoted_profiles": 0,
+            "linked_existing_profiles": 0,
+            "pending_candidates": 0,
             "rebuilt_topics": 0,
         }
 
@@ -256,6 +280,20 @@ class MemoryApplyService:
             )
             touched_topics.add((topic_id, topic))
             applied["profiles"] += 1
+
+        for candidate in extracted.get("candidate_evidences", []):
+            self.chat_evidence_store.add(
+                source_message_id=source_message_id,
+                response_message_id=response_message_id,
+                evidence_text=candidate.get("evidence_text") or "",
+                confidence=candidate.get("confidence"),
+                topic=candidate.get("topic"),
+                topic_id=candidate.get("topic_id"),
+                candidate_content=candidate.get("candidate_content"),
+                source_strength=candidate.get("source_strength"),
+                direct_confirm=bool(candidate.get("direct_confirm")),
+            )
+            applied["stored_chat_candidates"] += 1
 
         for episode in extracted.get("episodes", []):
             topic = episode.get("topic") or episode.get("topic_summary") or "general"
@@ -289,7 +327,11 @@ class MemoryApplyService:
             applied["corrections"] += 1
 
         self._rebuild_touched_topics(touched_topics)
-        applied["rebuilt_topics"] = len(touched_topics)
+        promotion_result = self._promote_confirmed_profiles()
+        applied["promoted_profiles"] = promotion_result["promoted_profiles"]
+        applied["linked_existing_profiles"] = promotion_result["linked_existing_profiles"]
+        applied["pending_candidates"] = promotion_result["pending_candidates"]
+        applied["rebuilt_topics"] = len(touched_topics) + promotion_result["rebuilt_topics"]
         return applied
 
     def _promote_confirmed_profiles(self) -> dict:
@@ -366,10 +408,6 @@ class MemoryApplyService:
         processed = 0
         linked_to_existing_active_profile = 0
         skipped = 0
-        inserted_confirmed_profiles = 0
-        blocked_by_correction = 0
-        blocked_by_existing_profile_conflict = 0
-        touched_topics: set[tuple[str | None, str]] = set()
 
         for evidence in evidences:
             topic_id = str(evidence.get("topic_id") or "").strip() or None
@@ -383,9 +421,7 @@ class MemoryApplyService:
                 continue
 
             classification = self.memory_policy.classify_evidence(evidence)
-            route = str(classification.get("route") or "general")
-
-            if route == "general":
+            if classification["route"] == "general":
                 evidence_store.mark_applied(evidence["id"])
                 skipped += 1
                 processed += 1
@@ -401,50 +437,22 @@ class MemoryApplyService:
                 processed += 1
                 continue
 
-            if route == "confirmed":
-                if self._has_conflicting_active_correction(candidate_content, topic=topic, topic_id=topic_id):
-                    evidence_store.mark_applied(evidence["id"])
-                    blocked_by_correction += 1
-                    processed += 1
-                    continue
-
-                if active_profile:
-                    evidence_store.mark_applied(evidence["id"])
-                    blocked_by_existing_profile_conflict += 1
-                    processed += 1
-                    continue
-
-                new_profile_id = self.profile_store.insert_profile(
-                    topic=topic,
-                    topic_id=topic_id,
-                    content=candidate_content,
-                    source=f"artifact_direct_confirm:{evidence.get('source_strength') or 'unknown'}",
-                    confidence=float(evidence.get("confidence") or 0.0),
-                )
-                evidence_store.mark_applied(evidence["id"], linked_profile_id=new_profile_id)
-                inserted_confirmed_profiles += 1
-                touched_topics.add((topic_id, topic))
-                processed += 1
-                continue
-
             evidence_store.mark_applied(evidence["id"])
             processed += 1
 
-        self._rebuild_touched_topics(touched_topics)
         promotion_result = self._promote_confirmed_profiles()
 
         return {
             "processed": processed,
-            "inserted_profiles": inserted_confirmed_profiles + promotion_result["promoted_profiles"],
+            "inserted_profiles": promotion_result["promoted_profiles"],
             "added_corrections": 0,
             "linked_to_existing_active_profile": linked_to_existing_active_profile,
             "promoted_profiles": promotion_result["promoted_profiles"],
-            "direct_confirmed_profiles": inserted_confirmed_profiles,
             "linked_existing_profiles": promotion_result["linked_existing_profiles"],
-            "blocked_by_correction": blocked_by_correction + promotion_result["blocked_by_correction"],
-            "blocked_by_existing_profile_conflict": blocked_by_existing_profile_conflict + promotion_result["blocked_by_existing_profile_conflict"],
+            "blocked_by_correction": promotion_result["blocked_by_correction"],
+            "blocked_by_existing_profile_conflict": promotion_result["blocked_by_existing_profile_conflict"],
             "pending_candidates": promotion_result["pending_candidates"],
-            "rebuilt_topics": len(touched_topics) + promotion_result["rebuilt_topics"],
+            "rebuilt_topics": promotion_result["rebuilt_topics"],
             "skipped": skipped,
         }
 

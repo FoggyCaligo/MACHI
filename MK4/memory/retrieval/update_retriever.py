@@ -4,12 +4,12 @@ from memory.services.evidence_normalization_service import EvidenceNormalization
 
 
 class UpdateRetriever:
-    """Minimal non-semantic fallback for chat memory bundles.
+    """Fallback extractor that preserves failure visibility without heuristics.
 
-    This class intentionally does not interpret raw language with hardcoded
-    keyword lists or regex rules. When the model-based extractor fails, we fall
-    back to a safe no-op bundle instead of inventing memory updates through
-    heuristic guesses.
+    This fallback intentionally does not perform keyword matching, string rules,
+    or implicit language interpretation. When the model extractor fails, the
+    system should surface the failure clearly instead of silently fabricating a
+    memory update from hardcoded rules.
     """
 
     def __init__(self) -> None:
@@ -25,7 +25,13 @@ class UpdateRetriever:
             "episode_candidate": None,
         }
         bundle = self.normalizer.normalize_chat_update_bundle(parsed)
-        bundle["fallback_mode"] = "safe_noop"
+        bundle.update(
+            {
+                "actions": [{"type": "discard"}],
+                "extractor": "no_op_fallback",
+                "extract_error": "chat_extractor_failed",
+            }
+        )
         return bundle
 
     def classify(self, user_message: str, reply: str, model: str | None = None) -> dict:
