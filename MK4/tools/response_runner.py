@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from typing import Any
 
 from tools.ollama_client import OllamaClient
 
@@ -11,6 +12,8 @@ class ResponseRunResult:
     text: str
     truncated: bool
     continuation_count: int
+    message: dict[str, Any] | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class ResponseRunner:
@@ -140,6 +143,7 @@ class ResponseRunner:
         messages: list[dict],
         model: str | None = None,
         continuation_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ResponseRunResult:
 
         result = self.client.chat_with_metadata(
@@ -147,9 +151,20 @@ class ResponseRunner:
             model=model,
             require_complete=False,
             truncated_notice=None,
+            tools=tools,
         )
         text = str(result.get("raw_content") or result.get("content") or "").strip()
         truncated = bool(result.get("truncated"))
+        tool_calls = result.get("tool_calls") or []
+        message = result.get("message")
+        if tool_calls:
+            return ResponseRunResult(
+                text=text,
+                truncated=truncated,
+                continuation_count=0,
+                message=message,
+                tool_calls=tool_calls,
+            )
         count = 0
 
         while count < self.max_continuations and text and truncated:
@@ -196,4 +211,6 @@ class ResponseRunner:
             text=text,
             truncated=truncated,
             continuation_count=count,
+            message=message if isinstance(message, dict) else None,
+            tool_calls=[],
         )

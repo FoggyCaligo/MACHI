@@ -3,19 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import requests
-
 from config import (
     GENERAL_REPLY_MAX_CONTINUATIONS,
     GENERAL_REPLY_NUM_PREDICT,
     GENERAL_REPLY_TIMEOUT,
-    OLLAMA_BASE_URL,
-    OLLAMA_DEFAULT_MODEL,
 )
 from prompts.response_builder import build_messages
 from tools.reply_guard import build_guard_context
-from tools.response_runner import ResponseRunner
-from tools.trusted_search import trusted_search
+from tools.response_runner import ResponseRunResult, ResponseRunner
 
 
 def tool_schema() -> list[dict[str, Any]]:
@@ -48,35 +43,12 @@ def tool_schema() -> list[dict[str, Any]]:
     ]
 
 
-TOOL_IMPL = {
-    "trusted_search": trusted_search,
-}
+def _call_tool(func_name: str, func_args: dict[str, Any]) -> Any:
+    if func_name == "trusted_search":
+        from tools.trusted_search import trusted_search
 
-
-def call_ollama(messages, tools=None, model=None):
-    payload = {
-        "model": model or OLLAMA_DEFAULT_MODEL,
-        "messages": messages,
-        "stream": False,
-    }
-
-    if tools:
-        payload["tools"] = tools
-
-    try:
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json=payload,
-            timeout=300,  # 5분 타임아웃
-        )
-    except requests.exceptions.Timeout as exc:
-        model_name = str(payload.get("model") or OLLAMA_DEFAULT_MODEL)
-        raise RuntimeError(
-            f"OLLAMA_TIMEOUT: 모델 '{model_name}' 응답이 300초 안에 오지 않았습니다."
-        ) from exc
-
-    resp.raise_for_status()
-    return resp.json()
+        return trusted_search(**func_args)
+    raise KeyError(f"Unknown tool: {func_name}")
 
 
 class Agent:
@@ -94,54 +66,69 @@ class Agent:
 
     def respond(self, user_message: str, context: dict, model: str | None = None) -> str:
         messages = self._build_messages(user_message=user_message, context=context)
-        tool_result = self._respond_with_optional_tools(messages, model=model)
-        if tool_result:
-            return tool_result
-
-        result = self.runner.run(messages, model=model)
-        return result.text
-
-    def _respond_with_optional_tools(self, messages: list[dict], model: str | None = None) -> str | None:
-        """모델이 tool 호출을 선택하면 tool을 실행하고, 아니면 일반 응답 경로로 넘긴다."""
-        tools = tool_schema()
 
         try:
-            response = call_ollama(messages, tools=tools, model=model)
-            message = response.get("message") or {}
-            tool_calls = message.get("tool_calls") or []
-            if tool_calls:
-                tool_results = []
+            initial_result = self.runner.run(messages=messages, model=model, tools=tool_schema())
+        except Exception as exc:
+            print(f"[AGENT] Tool decision pass failed: {exc}")
+            return self.runner.run(messages=messages, model=model).text
 
-                for tool_call in tool_calls:
-                    func_name = tool_call["function"]["name"]
-                    func_args = json.loads(tool_call["function"]["arguments"])
+        if not initial_result.tool_calls:
+            return initial_result.text
 
-                    if func_name in TOOL_IMPL:
-                        try:
-                            result = TOOL_IMPL[func_name](**func_args)
-                            tool_results.append(f"[{func_name} 결과]\n{json.dumps(result, ensure_ascii=False, indent=2)}")
-                        except Exception as e:
-                            tool_results.append(f"[{func_name} 오류]\n{str(e)}")
+        try:
+            final_result = self._respond_with_tool_calls(
+                messages=messages,
+                initial_result=initial_result,
+                model=model,
+            )
+            return final_result.text
+        except Exception as exc:
+            print(f"[AGENT] Tool execution failed: {exc}")
+            return self.runner.run(messages=messages, model=model).text
 
-                if tool_results:
-                    followup_messages = list(messages) + [
-                        message,
-                        {
-                            "role": "tool",
-                            "content": "\n\n".join(tool_results),
-                        },
-                    ]
-                    final_response = call_ollama(followup_messages, model=model)
-                    final_message = final_response.get("message") or {}
-                    final_content = str(final_message.get("content") or "").strip()
-                    return final_content or None
+    def _respond_with_tool_calls(
+        self,
+        *,
+        messages: list[dict],
+        initial_result: ResponseRunResult,
+        model: str | None = None,
+    ) -> ResponseRunResult:
+        tool_messages: list[dict[str, Any]] = []
 
-                return None
+        for tool_call in initial_result.tool_calls or []:
+            function = tool_call.get("function") or {}
+            func_name = str(function.get("name") or "").strip()
+            raw_args = function.get("arguments")
+            tool_call_id = str(tool_call.get("id") or "").strip()
+            if isinstance(raw_args, str):
+                func_args = json.loads(raw_args or "{}")
+            elif isinstance(raw_args, dict):
+                func_args = raw_args
+            else:
+                func_args = {}
 
-            return None
+            try:
+                result = _call_tool(func_name, func_args)
+                content = json.dumps(result, ensure_ascii=False, indent=2)
+            except Exception as exc:
+                content = json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2)
 
-        except Exception as e:
-            print(f"[AGENT] Tool 사용 실패: {e}")
-            return None
+            tool_message: dict[str, Any] = {
+                "role": "tool",
+                "content": content,
+            }
+            if func_name:
+                tool_message["name"] = func_name
+            if tool_call_id:
+                tool_message["tool_call_id"] = tool_call_id
+            tool_messages.append(tool_message)
 
-        return None
+        if not tool_messages:
+            return self.runner.run(messages=messages, model=model)
+
+        followup_messages = list(messages)
+        if initial_result.message:
+            followup_messages.append(initial_result.message)
+        followup_messages.extend(tool_messages)
+        return self.runner.run(messages=followup_messages, model=model)

@@ -1,3 +1,5 @@
+from typing import Any
+
 import requests
 
 from config import OLLAMA_BASE_URL, OLLAMA_DEFAULT_MODEL, GENERAL_REPLY_NUM_PREDICT
@@ -27,27 +29,50 @@ class OllamaClient:
         for msg in messages:
             role = (msg.get("role") or "").strip()
             content = str(msg.get("content") or "")
+            tool_calls = msg.get("tool_calls") or []
+            name = str(msg.get("name") or "").strip()
+            tool_call_id = str(msg.get("tool_call_id") or "").strip()
 
             if not role:
-                continue
-            if not content.strip():
                 continue
 
             if role == "system":
                 content = content.replace("<|think|>", "").strip()
 
-            sanitized.append({"role": role, "content": content})
+            if not content.strip() and not tool_calls:
+                continue
+
+            sanitized_msg: dict[str, Any] = {"role": role}
+            if content.strip():
+                sanitized_msg["content"] = content
+            if tool_calls:
+                sanitized_msg["tool_calls"] = tool_calls
+            if name:
+                sanitized_msg["name"] = name
+            if tool_call_id:
+                sanitized_msg["tool_call_id"] = tool_call_id
+
+            sanitized.append(sanitized_msg)
 
         return sanitized
 
-    def _build_payload(self, messages: list[dict], model_name: str) -> dict:
-        return {
+    def _build_payload(
+        self,
+        messages: list[dict],
+        model_name: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict:
+        payload = {
             "model": model_name,
             "messages": self._sanitize_messages(messages),
             "stream": False,
             "think": False,
             "options": {"num_predict": self.num_predict},
         }
+        if tools:
+            payload["tools"] = tools
+        return payload
 
     def _summarize_response(self, data: dict) -> dict:
         message = data.get("message") or {}
@@ -113,9 +138,10 @@ class OllamaClient:
         model: str | None = None,
         require_complete: bool = False,
         truncated_notice: str | None = DEFAULT_TRUNCATED_NOTICE,
+        tools: list[dict[str, Any]] | None = None,
     ) -> dict:
         model_name = (model or self.model).strip()
-        payload = self._build_payload(messages, model_name=model_name)
+        payload = self._build_payload(messages, model_name=model_name, tools=tools)
 
         try:
             resp = requests.post(
@@ -134,7 +160,19 @@ class OllamaClient:
         data = resp.json()
         message = data.get("message") or {}
         content = (message.get("content") or "").strip()
+        tool_calls = message.get("tool_calls") or []
         done_reason = str(data.get("done_reason") or "").strip().lower()
+
+        if tool_calls:
+            return {
+                "content": content,
+                "raw_content": content,
+                "done_reason": done_reason,
+                "truncated": done_reason == "length",
+                "summary": self._summarize_response(data),
+                "message": message,
+                "tool_calls": tool_calls,
+            }
 
         if content:
             if done_reason == "length" and require_complete:
@@ -151,6 +189,8 @@ class OllamaClient:
                 "done_reason": done_reason,
                 "truncated": done_reason == "length",
                 "summary": self._summarize_response(data),
+                "message": message,
+                "tool_calls": tool_calls,
             }
 
         classification = self._classify_empty_reply(data)
@@ -163,12 +203,14 @@ class OllamaClient:
         model: str | None = None,
         require_complete: bool = False,
         truncated_notice: str | None = DEFAULT_TRUNCATED_NOTICE,
+        tools: list[dict[str, Any]] | None = None,
     ) -> str:
         result = self.chat_with_metadata(
             messages=messages,
             model=model,
             require_complete=require_complete,
             truncated_notice=truncated_notice,
+            tools=tools,
         )
         return str(result.get("content") or "")
 
