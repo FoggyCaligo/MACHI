@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import time
 
+from config import (
+    PROFILE_REPLACEMENT_SCORE_TOLERANCE,
+    PROFILE_SEMANTIC_CLUSTER_THRESHOLD,
+    PROFILE_SEMANTIC_MATCH_THRESHOLD,
+)
 from memory.policies.memory_classification_policy import MemoryClassificationPolicy, SOURCE_STRENGTH_ORDER
 from memory.stores.chat_profile_evidence_store import ChatProfileEvidenceStore
 from memory.stores.correction_store import CorrectionStore
@@ -12,6 +17,7 @@ from memory.stores.topic_store import TopicStore
 from memory.summarization.profile_rebuilder import ProfileRebuilder
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
+from tools.text_embedding import cosine_similarity, embed_text
 
 
 def _log(message: str) -> None:
@@ -32,16 +38,34 @@ class MemoryApplyService:
         self.project_evidence_store = ProjectProfileEvidenceStore()
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
         self.chat_evidence_store = ChatProfileEvidenceStore()
+        self._embedding_cache: dict[str, list[float]] = {}
 
     def _normalize_text(self, text: str) -> str:
-        return " ".join((text or "").strip().lower().split())
+        return " ".join((text or "").strip().split())
 
-    def _same_meaning(self, a: str, b: str) -> bool:
-        na = self._normalize_text(a)
-        nb = self._normalize_text(b)
-        if not na or not nb:
+    def _content_embedding(self, text: str) -> list[float]:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return []
+        if normalized not in self._embedding_cache:
+            self._embedding_cache[normalized] = embed_text(normalized, kind="passage")
+        return self._embedding_cache[normalized]
+
+    def _semantic_similarity(self, a: str, b: str) -> float:
+        left = self._content_embedding(a)
+        right = self._content_embedding(b)
+        return cosine_similarity(left, right)
+
+    def _same_meaning(
+        self,
+        a: str,
+        b: str,
+        *,
+        threshold: float = PROFILE_SEMANTIC_MATCH_THRESHOLD,
+    ) -> bool:
+        if not self._normalize_text(a) or not self._normalize_text(b):
             return False
-        return na == nb or na in nb or nb in na
+        return self._semantic_similarity(a, b) >= threshold
 
     def _topic_label(self, topic: str | None, topic_id: str | None) -> str:
         if topic:
@@ -52,23 +76,14 @@ class MemoryApplyService:
                 return str(topic_row.get("summary") or topic_row.get("name") or "general").strip() or "general"
         return "general"
 
-    def _load_topic_corrections(self, topic: str | None = None, topic_id: str | None = None) -> list[dict]:
-        if hasattr(self.correction_store, "list_active_by_topic"):
-            return self.correction_store.list_active_by_topic(topic=topic, topic_id=topic_id, limit=5)
-        if hasattr(self.correction_store, "search"):
-            query = topic or self._topic_label(topic, topic_id)
-            rows = self.correction_store.search(query, limit=5)
-            filtered: list[dict] = []
-            for row in rows:
-                status = str(row.get("status") or "").lower()
-                if not status or status == "active":
-                    filtered.append(row)
-            return filtered
-        return []
-
     def _has_conflicting_active_correction(self, candidate_content: str, topic: str | None = None, topic_id: str | None = None) -> bool:
-        active_corrections = self._load_topic_corrections(topic=topic, topic_id=topic_id)
+        del topic, topic_id
+        active_corrections = self.correction_store.list_active(limit=20)
         for correction in active_corrections:
+            correction_content = str(correction.get("content") or "").strip()
+            if correction_content and self._same_meaning(correction_content, candidate_content):
+                return True
+
             supersedes_profile_id = str(correction.get("supersedes_profile_id") or "").strip()
             if not supersedes_profile_id:
                 continue
@@ -111,7 +126,7 @@ class MemoryApplyService:
         return str(new_profile_id), True
 
     def _build_candidate_clusters(self, evidences: list[dict]) -> list[dict]:
-        clusters: dict[tuple[str, str], dict] = {}
+        clusters: list[dict] = []
 
         for evidence in evidences:
             topic_id = str(evidence.get("topic_id") or "").strip() or None
@@ -124,13 +139,26 @@ class MemoryApplyService:
                 continue
 
             topic_key = topic_id or self._normalize_text(topic)
-            key = (topic_key, self._normalize_text(candidate_content))
-            if key not in clusters:
-                clusters[key] = {
+            matched_cluster = None
+            best_similarity = 0.0
+            for cluster in clusters:
+                if cluster["topic_key"] != topic_key:
+                    continue
+                similarity = self._semantic_similarity(candidate_content, cluster["representative_content"])
+                if similarity >= PROFILE_SEMANTIC_CLUSTER_THRESHOLD and similarity > best_similarity:
+                    matched_cluster = cluster
+                    best_similarity = similarity
+
+            if matched_cluster is None:
+                matched_cluster = {
+                    "topic_key": topic_key,
                     "topic": topic,
                     "topic_id": topic_id,
                     "candidate_content": candidate_content,
+                    "representative_content": candidate_content,
+                    "representative_confidence": float(evidence.get("confidence") or 0.0),
                     "evidence_ids": [],
+                    "evidence_rows": [],
                     "group_ids": set(),
                     "source_paths": set(),
                     "confidence_values": [],
@@ -143,13 +171,16 @@ class MemoryApplyService:
                     "linked_profile_ids": set(),
                     "direct_confirm_count": 0,
                     "channels": set(),
+                    "similarity_values": [],
                 }
+                clusters.append(matched_cluster)
 
-            cluster = clusters[key]
+            cluster = matched_cluster
             if not cluster.get("topic_id") and topic_id:
                 cluster["topic_id"] = topic_id
             cluster["topic"] = self._topic_label(cluster.get("topic"), cluster.get("topic_id"))
             cluster["evidence_ids"].append(str(evidence.get("id") or ""))
+            cluster["evidence_rows"].append(evidence)
             cluster["group_ids"].add(str(evidence.get("group_id") or ""))
             cluster["source_paths"].add(str(evidence.get("source_file_path") or evidence.get("source_message_id") or ""))
             cluster["confidence_values"].append(float(evidence.get("confidence") or 0.0))
@@ -162,9 +193,14 @@ class MemoryApplyService:
             linked_profile_id = str(evidence.get("linked_profile_id") or "").strip()
             if linked_profile_id:
                 cluster["linked_profile_ids"].add(linked_profile_id)
+            cluster["similarity_values"].append(best_similarity or 1.0)
+            confidence = float(evidence.get("confidence") or 0.0)
+            if confidence >= float(cluster.get("representative_confidence") or 0.0):
+                cluster["representative_confidence"] = confidence
+                cluster["representative_content"] = candidate_content
 
         result: list[dict] = []
-        for cluster in clusters.values():
+        for cluster in clusters:
             confidence_values = cluster["confidence_values"] or [0.0]
             source_strength_counts = cluster["source_strength_counts"]
             primary_strength = ""
@@ -179,8 +215,9 @@ class MemoryApplyService:
                 {
                     "topic": cluster["topic"],
                     "topic_id": cluster.get("topic_id"),
-                    "candidate_content": cluster["candidate_content"],
+                    "candidate_content": cluster["representative_content"],
                     "evidence_ids": cluster["evidence_ids"],
+                    "evidence_rows": cluster["evidence_rows"],
                     "evidence_count": len(cluster["evidence_ids"]),
                     "distinct_group_count": len([x for x in cluster["group_ids"] if x]),
                     "distinct_source_count": len([x for x in cluster["source_paths"] if x]),
@@ -214,24 +251,38 @@ class MemoryApplyService:
             copied = dict(item)
             copied["group_id"] = copied.get("project_id")
             copied["channel"] = "project_artifact"
+            copied["store_kind"] = "project_artifact"
             result.append(copied)
         for item in self.uploaded_evidence_store.list_profile_evidence():
             copied = dict(item)
             copied["group_id"] = copied.get("source_id")
             copied["channel"] = "uploaded_text"
+            copied["store_kind"] = "uploaded_text"
             result.append(copied)
         for item in self.chat_evidence_store.list_profile_evidence():
             copied = dict(item)
             copied["group_id"] = copied.get("source_message_id") or copied.get("response_message_id")
             copied["channel"] = "chat"
+            copied["store_kind"] = "chat"
             result.append(copied)
         return result
 
-    def _link_profile_for_candidate_across_stores(self, *, candidate_content: str, profile_id: str, topic_id: str | None = None, topic: str | None = None) -> int:
+    def _link_profile_for_evidence_rows(self, *, evidence_rows: list[dict], profile_id: str) -> int:
         linked = 0
-        linked += self.project_evidence_store.link_profile_for_candidate(topic_id=topic_id, topic=topic, candidate_content=candidate_content, profile_id=profile_id)
-        linked += self.uploaded_evidence_store.link_profile_for_candidate(topic_id=topic_id, topic=topic, candidate_content=candidate_content, profile_id=profile_id)
-        linked += self.chat_evidence_store.link_profile_for_candidate(topic_id=topic_id, topic=topic, candidate_content=candidate_content, profile_id=profile_id)
+        for evidence in evidence_rows:
+            evidence_id = str(evidence.get("id") or "").strip()
+            store_kind = str(evidence.get("store_kind") or "").strip()
+            if not evidence_id or not store_kind:
+                continue
+            if store_kind == "project_artifact":
+                self.project_evidence_store.mark_applied(evidence_id, linked_profile_id=profile_id)
+            elif store_kind == "uploaded_text":
+                self.uploaded_evidence_store.mark_applied(evidence_id, linked_profile_id=profile_id)
+            elif store_kind == "chat":
+                self.chat_evidence_store.mark_applied(evidence_id, linked_profile_id=profile_id)
+            else:
+                continue
+            linked += 1
         return linked
 
     def _source_strength_from_profile_source(self, source: str | None) -> str:
@@ -343,16 +394,11 @@ class MemoryApplyService:
             if float(cluster.get("max_confidence") or 0.0) >= float(active_support.get("max_confidence") or 0.0) - 0.10:
                 return True, "replace_with_direct_confirm"
 
-        active_strength = SOURCE_STRENGTH_ORDER.get(str(active_support.get("primary_strength") or ""), 0)
-        candidate_strength = SOURCE_STRENGTH_ORDER.get(str(cluster.get("primary_strength") or ""), 0)
-        if candidate_strength > active_strength:
-            enough_support = int(cluster.get("distinct_group_count") or 0) >= max(int(active_support.get("distinct_group_count") or 0), 1)
-            enough_confidence = float(cluster.get("avg_confidence") or 0.0) >= float(active_support.get("avg_confidence") or 0.0) - 0.05
-            if enough_support and enough_confidence:
-                return True, "replace_with_stronger_signal_type"
+        if float(cluster.get("max_confidence") or 0.0) >= float(active_support.get("max_confidence") or 0.0) + 0.03:
+            return True, "replace_with_higher_confidence"
 
-        if candidate_score >= active_score + 0.12:
-            return True, "replace_with_stronger_cluster"
+        if candidate_score + PROFILE_REPLACEMENT_SCORE_TOLERANCE >= active_score:
+            return True, "replace_with_fresh_stronger_or_equal_cluster"
 
         return False, "existing_profile_still_stronger"
 
@@ -523,11 +569,9 @@ class MemoryApplyService:
             if active_profile:
                 active_content = str(active_profile.get("content") or "").strip()
                 if self._same_meaning(active_content, candidate_content):
-                    linked_count = self._link_profile_for_candidate_across_stores(
-                        candidate_content=candidate_content,
+                    linked_count = self._link_profile_for_evidence_rows(
+                        evidence_rows=cluster.get("evidence_rows") or [],
                         profile_id=active_profile["id"],
-                        topic_id=active_profile.get("topic_id") or topic_id,
-                        topic=topic,
                     )
                     if linked_count > 0:
                         linked_existing_profiles += 1
@@ -546,11 +590,9 @@ class MemoryApplyService:
                 source=f"evidence_promotion:{cluster['primary_strength'] or 'mixed'}",
                 confidence=self.memory_policy.promotion_confidence(cluster),
             )
-            self._link_profile_for_candidate_across_stores(
-                candidate_content=candidate_content,
+            self._link_profile_for_evidence_rows(
+                evidence_rows=cluster.get("evidence_rows") or [],
                 profile_id=new_profile_id,
-                topic_id=topic_id,
-                topic=topic,
             )
             promoted_profiles += 1
             promoted_topics.add((topic_id, topic))

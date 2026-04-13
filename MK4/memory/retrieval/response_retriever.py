@@ -136,6 +136,9 @@ class ResponseRetriever:
             "summaries": [summary] if summary else [],
         }
 
+    def _load_recent_global_corrections(self, limit: int = 2) -> list[dict]:
+        return self.correction_store.list_active(limit=limit)
+
     def retrieve(self, user_message: str) -> dict:
         searched_profiles = self.profile_store.search(user_message, limit=2, include_general=False)
         searched_corrections = self.correction_store.search(user_message, limit=1)
@@ -146,9 +149,14 @@ class ResponseRetriever:
         contextual_profiles = active_topic_context["profiles"]
         contextual_corrections = active_topic_context["corrections"]
         contextual_summaries = active_topic_context["summaries"]
+        recent_global_corrections = self._load_recent_global_corrections(limit=2)
 
         profiles = self._merge_ranked_rows(searched_profiles, contextual_profiles, limit=2)
-        corrections = self._merge_ranked_rows(searched_corrections, contextual_corrections, limit=1)
+        corrections = self._merge_ranked_rows(
+            searched_corrections,
+            [*contextual_corrections, *recent_global_corrections],
+            limit=2,
+        )
         summaries = self._merge_ranked_rows(searched_summaries, contextual_summaries, limit=1)
 
         raw_recent_messages = self.raw_message_store.recent(limit=10)

@@ -130,7 +130,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     system_prompt = load_prompt_text(SYSTEM_PROMPT_PATH)
 
     profiles = context.get("profiles", [])[:2]
-    corrections = context.get("corrections", [])[:1]
+    corrections = context.get("corrections", [])[:2]
     summaries = context.get("summaries", [])[:1]
     episodes = context.get("episodes", [])[:2]
     states = context.get("states", [])[:2]

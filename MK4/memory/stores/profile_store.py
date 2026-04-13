@@ -1,6 +1,7 @@
 import uuid
 from typing import Any
 
+from config import PROFILE_HISTORY_KEEP_SUPERSEDED
 from memory.db import connection_context, utc_now
 from memory.stores.topic_store import TopicStore
 
@@ -59,7 +60,7 @@ class ProfileStore:
             rows = conn.execute(query).fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_history(self, topic: str | None = None, topic_id: str | None = None, limit: int = 2) -> list[dict[str, Any]]:
+    def get_recent_history(self, topic: str | None = None, topic_id: str | None = None, limit: int = 1) -> list[dict[str, Any]]:
         resolved_topic_id = self._resolve_topic_id(topic=topic, topic_id=topic_id, create_if_missing=False)
         clause, values = self._build_topic_clause(resolved_topic_id)
         with connection_context() as conn:
@@ -108,10 +109,19 @@ class ProfileStore:
                 """,
                 (new_id, resolved_topic_id, content, confidence, source, version_no, now, now),
             )
-        self.trim_history(topic=topic, topic_id=resolved_topic_id, keep_superseded=2)
+        self.trim_history(
+            topic=topic,
+            topic_id=resolved_topic_id,
+            keep_superseded=PROFILE_HISTORY_KEEP_SUPERSEDED,
+        )
         return new_id
 
-    def trim_history(self, topic: str | None = None, topic_id: str | None = None, keep_superseded: int = 2):
+    def trim_history(
+        self,
+        topic: str | None = None,
+        topic_id: str | None = None,
+        keep_superseded: int = PROFILE_HISTORY_KEEP_SUPERSEDED,
+    ):
         resolved_topic_id = self._resolve_topic_id(topic=topic, topic_id=topic_id, create_if_missing=False)
         clause, values = self._build_topic_clause(resolved_topic_id)
         with connection_context() as conn:
