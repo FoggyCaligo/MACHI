@@ -84,8 +84,18 @@ def _normalize_optional(value: str | None) -> str | None:
         return None
     return value
 
+
 def _resolve_model_name(model: str | None) -> str:
     return (model or OLLAMA_DEFAULT_MODEL).strip()
+
+
+def _http_error_from_exception(exc: Exception) -> HTTPException:
+    detail = str(exc)
+    if detail.startswith("OLLAMA_TIMEOUT:"):
+        friendly = detail.split(":", 1)[1].strip() or "로컬 Ollama 응답 시간이 초과되었습니다."
+        return HTTPException(status_code=504, detail=friendly)
+    return HTTPException(status_code=500, detail=detail)
+
 
 @app.post("/chat")
 async def chat(
@@ -132,7 +142,7 @@ async def chat(
     except Exception as exc:
         elapsed = time.perf_counter() - started_at
         _log(f"/chat error | elapsed={elapsed:.2f}s | error={exc}")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise _http_error_from_exception(exc) from exc
     
 @app.get("/recall")
 def recall(query: str):
@@ -145,4 +155,4 @@ def recall(query: str):
     except Exception as exc:
         elapsed = time.perf_counter() - started_at
         _log(f"/recall error | elapsed={elapsed:.2f}s | error={exc}")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise _http_error_from_exception(exc) from exc

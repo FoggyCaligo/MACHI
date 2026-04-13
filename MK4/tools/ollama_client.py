@@ -117,11 +117,16 @@ class OllamaClient:
         model_name = (model or self.model).strip()
         payload = self._build_payload(messages, model_name=model_name)
 
-        resp = requests.post(
-            f"{self.base_url}/api/chat",
-            json=payload,
-            timeout=self.timeout,
-        )
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=self.timeout,
+            )
+        except requests.exceptions.Timeout as exc:
+            raise RuntimeError(
+                f"OLLAMA_TIMEOUT: 모델 '{model_name}' 응답이 {self.timeout}초 안에 오지 않았습니다."
+            ) from exc
 
         if resp.status_code >= 400:
             raise RuntimeError(f"Ollama error {resp.status_code}: {resp.text}")
@@ -173,10 +178,15 @@ class OllamaClient:
         base_url: str = OLLAMA_BASE_URL,
         timeout: int = 10,
     ) -> list[dict]:
-        resp = requests.get(
-            f"{base_url.rstrip('/')}/api/tags",
-            timeout=timeout,
-        )
+        try:
+            resp = requests.get(
+                f"{base_url.rstrip('/')}/api/tags",
+                timeout=timeout,
+            )
+        except requests.exceptions.Timeout as exc:
+            raise RuntimeError(
+                f"OLLAMA_TIMEOUT: 로컬 모델 목록 응답이 {timeout}초 안에 오지 않았습니다."
+            ) from exc
 
         if resp.status_code >= 400:
             raise RuntimeError(f"Ollama tags error {resp.status_code}: {resp.text}")
