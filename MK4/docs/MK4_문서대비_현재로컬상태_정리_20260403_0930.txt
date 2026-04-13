@@ -1,0 +1,114 @@
+MK4_문서대비_현재로컬상태_정리.txt
+
+기준
+- 비교 대상 문서: 다음_작업.txt
+- 비교 기준 코드: 사용자가 업로드한 최신 로컬 MK4.zip
+- 정리 방식: 문서 내 중복 항목은 의미 기준으로 하나로 합친 뒤 분류
+- 분류 기준:
+  - <완료된것>: 현재 로컬 코드에서 이미 반영되어 있다고 볼 수 있는 것
+  - <아직 안됐거나 부족한것>: 미구현, 부분 구현, 방향은 들어왔지만 아직 부족한 것
+
+==================================================
+<완료된것>
+==================================================
+
+1. ZIP 기준이 아니라 현재 작업본 기준으로 이어가는 구조
+2. UI에서 모델 선택 가능 + /models API와 /chat 모델 전달 경로 연결
+3. 텍스트 첨부 프로필 요청을 preview-first가 아니라 update-first로 처리
+4. ProfileAttachmentIngestService 기반의 source → evidence → sync → answer 흐름
+5. 첨부 텍스트 최종 답변을 모델 생성으로 처리
+6. 질문 원문 복사 억제를 위한 요약 경로 1차 반영
+7. Ollama done_reason == length 감지
+8. system prompt를 사용자 하드코딩보다 운영 원칙 중심으로 정리
+9. prompt 안의 사용자 개인 정보 하드코딩 축소 + memory/correction 중심 방향
+10. project/profile 관련 prompt 외부화
+11. reply_guard.py의 완성형 매크로 응답 제거
+12. 기본 general 비주입 + 90일 TTL 방향
+13. topic 분류를 문자열 규칙에서 topic router 중심으로 상당 부분 이동
+14. topic decision 스키마의 핵심 뼈대
+15. active topic 유지 판별 + existing topic attach + 새 topic 생성
+16. topic store / summary persistence
+17. project retrieval이 더 이상 단순 lexical scoring만은 아님
+18. TopicRouter.resolve() 호출 인자 불일치 문제 해결
+19. troubleshooting 문서화 진행
+20. request orchestration 분리 1차 반영
+
+==================================================
+<아직 안됐거나 부족한것>
+==================================================
+
+1. 첨부 텍스트 답변 말투 자연화
+2. 존댓말/반말 혼용 안정화
+3. 작은 모델에서 인칭 기준 안정화
+4. 일반 대화 경로와 첨부 텍스트 경로의 톤 차이 축소
+5. 프롬프트 추가 경량화
+6. 설계 의도와 실제 코드의 전체 정합성 점검
+7. memory DB 오염 레코드 실제 삭제/상태 재확인
+8. uploaded profile evidence가 비는 원인 확인
+9. profile evidence가 너무 쉽게 candidate_count=0 되는 문제 점검
+10. 긴 채팅 누적 시 느려지는 문제를 줄이는 구조
+11. 새 채팅으로 넘길 자동 handoff 요약 흐름
+12. README와 실제 동작 최종 일치
+13. requirements.txt 정리
+14. trusted_search 실제 구현
+15. correction 적용 2차 고도화
+16. topic 수준 재구성 강화
+17. 새 topic 생성 제약/후처리 강화
+18. artifact / profile attachment 경로를 topic router 철학에 더 깊게 맞추기
+19. 일반 / 후보 / 확정 경계를 전 채널에서 통일
+20. 채팅에서 후보 → 확정 승격 경로
+21. 채팅의 직접 확정 경로
+22. 공통 ingress contract 완전 통일
+23. 공통 envelope 스키마 완전 통일
+24. 문자열 휴리스틱 / 하드코딩 전면 제거
+25. 일반 채팅 extraction을 artifact 수준으로 끌어올리기
+26. retrieval 계층 철학 통일
+27. response retrieval의 의미 기반화
+28. recent source / DB / 과거 대화 lookup layer
+29. scope 축 도입 여부 결정
+30. source별 승격 의미론 완전 제거
+31. project profile source 선택의 완전한 의미 기반화
+32. 실제 속도/품질 측정 루프
+33. general 보존/검색 정책 미세조정
+34. 코드 전용 모델 분리 같은 2단계 최적화
+
+==================================================
+문서와 현재 코드가 엇갈리는 대표 사례
+==================================================
+
+1. "topic 분류는 아직 규칙 기반"
+- 현재 로컬 코드 기준으로는 과거 상태에 가깝다.
+- 지금은 TopicRouter 중심이고, 임베딩 기반 keep/attach/create가 들어와 있다.
+
+2. "project retrieval은 lexical scoring 기반"
+- 이것도 현재 로컬 코드 기준으로는 과거 상태에 가깝다.
+- 지금은 임베딩 기반 검색으로 바뀌어 있다.
+
+3. "TopicRouter.resolve 인자 불일치"
+- 현재 로컬에서는 이미 해결된 상태다.
+
+4. "profile evidence는 아직 candidate까지만 반영"
+- 현재 코드와 완전히 일치하지 않는다.
+- 일부 경로에서는 confirmed까지 가는 조건부 승격이 이미 들어가 있다.
+- 다만 채팅 경로는 아직 부족하다.
+
+==================================================
+최종 요약
+==================================================
+
+지금 MK4는
+- topic / project 축 분리
+- artifact → evidence → sync
+- 운영 원칙 중심 prompt
+- 공통 ingress/apply 뼈대
+
+까지는 꽤 많이 왔다.
+
+실제로 남은 핵심은
+- 하드코딩 제거
+- 일반 채팅을 첨부/프로젝트 수준으로 끌어올리기
+- 일반 / 후보 / 확정 경계 통일
+- retrieval 철학 통일
+- 속도/측정/lookup 구조 만들기
+
+이 다섯 축이라고 보는 게 가장 정확하다.
