@@ -11,7 +11,6 @@ from config import (
     GENERAL_REPLY_TIMEOUT,
     OLLAMA_BASE_URL,
     OLLAMA_DEFAULT_MODEL,
-    settings,
 )
 from prompts.response_builder import build_messages
 from tools.reply_guard import build_guard_context
@@ -103,14 +102,12 @@ class Agent:
         return result.text
 
     def _respond_with_optional_tools(self, messages: list[dict], model: str | None = None) -> str | None:
-        """모델이 tool 호출을 선택하면 tool을 실행하고, 아니면 단일 응답을 그대로 사용한다."""
+        """모델이 tool 호출을 선택하면 tool을 실행하고, 아니면 일반 응답 경로로 넘긴다."""
         tools = tool_schema()
 
         try:
             response = call_ollama(messages, tools=tools, model=model)
             message = response.get("message") or {}
-            content = str(message.get("content") or "").strip()
-
             tool_calls = message.get("tool_calls") or []
             if tool_calls:
                 tool_results = []
@@ -141,7 +138,7 @@ class Agent:
 
                 return None
 
-            return content or None
+            return None
 
         except Exception as e:
             print(f"[AGENT] Tool 사용 실패: {e}")

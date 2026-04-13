@@ -19,14 +19,50 @@ class AgentTimeoutBehaviorTests(unittest.TestCase):
         self.assertEqual(agent.runner.client.num_predict, GENERAL_REPLY_NUM_PREDICT)
         self.assertEqual(agent.runner.max_continuations, GENERAL_REPLY_MAX_CONTINUATIONS)
 
-    def test_plain_tool_enabled_response_is_used_without_runner_fallback(self) -> None:
+    def test_no_tool_call_falls_back_to_runner(self) -> None:
         agent = Agent()
 
         with patch("app.agent.call_ollama", return_value={"message": {"content": "plain response"}}):
-            with patch.object(agent.runner, "run", side_effect=AssertionError("runner should not be called")):
+            with patch.object(
+                agent.runner,
+                "run",
+                return_value=ResponseRunResult(
+                    text="runner response",
+                    truncated=False,
+                    continuation_count=0,
+                ),
+            ):
                 result = agent.respond("안녕? 나에 대해 기억하고 있니?", {})
 
-        self.assertEqual(result, "plain response")
+        self.assertEqual(result, "runner response")
+
+    def test_tool_call_response_bypasses_runner(self) -> None:
+        agent = Agent()
+
+        first_response = {
+            "message": {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "trusted_search",
+                            "arguments": "{\"query\": \"latest python docs\"}",
+                        }
+                    }
+                ]
+            }
+        }
+        second_response = {
+            "message": {
+                "content": "tool-backed response",
+            }
+        }
+
+        with patch("app.agent.call_ollama", side_effect=[first_response, second_response]):
+            with patch.dict("app.agent.TOOL_IMPL", {"trusted_search": lambda **_kwargs: {"results": []}}):
+                with patch.object(agent.runner, "run", side_effect=AssertionError("runner should not be called")):
+                    result = agent.respond("최신 문서 알려줘", {})
+
+        self.assertEqual(result, "tool-backed response")
 
     def test_tool_failure_falls_back_to_runner(self) -> None:
         agent = Agent()
