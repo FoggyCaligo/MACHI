@@ -1,0 +1,86 @@
+MK4_진행상황_정리
+
+기준
+- 정리 기준일: 2026-04-13
+- 코드 기준: 현재 로컬 MK4
+- 참고 문서: `todo.md`, `MK4_handoff_20260413.md`, `troubleshooting_updated_MK4.md`, `MK4_프로젝트_핵심원칙.md`
+- 정리 원칙:
+  - 프로젝트 전체에 흩어져 있던 TODO와 진행 메모를 현재 코드 기준으로 다시 분류
+  - 과거 문서에 "아직 안 됨"으로 남아 있어도, 현재 코드에 반영된 것은 `<완료된것>`으로 이동
+  - "완료"는 최종 완성이 아니라, 현재 코드에 구조가 실제로 들어와 있고 기본 동작이 살아 있는 상태를 뜻함
+
+==================================================
+<완료된것>
+==================================================
+
+1. 작업 기준을 ZIP 스냅샷이 아니라 최신 로컬 MK4 1개 기준으로 이어가는 원칙 정리
+2. `app/api.py` + `request_orchestrator.py` 기준으로 일반 채팅 / 텍스트 첨부 / ZIP artifact / project 질문 경로 분리
+3. UI에서 Ollama 모델 선택 가능 + `/models` API + `/chat` 모델 전달 경로 연결
+4. system prompt 및 project/profile 관련 prompt 외부화와 1차 경량화
+5. topic은 의미 축, `project_id`는 출처 축으로 분리하는 구조 정착
+6. `topics` 테이블, `topic_id`, summary, embedding, usage_count를 갖는 topic 객체 구조 1차 반영
+7. `TopicRouter` 기반 active topic 유지 / 기존 topic attach / 새 topic create 흐름 반영
+8. topic 유사도 판단을 문자열 규칙보다 임베딩 기반으로 옮기는 방향 반영
+9. `general`을 기본 주입하지 않는 방향과 TTL(90일) 정책 1차 반영
+10. 텍스트 첨부 라우팅을 문자열 규칙보다 모델 판단 기반으로 1차 전환
+11. 첨부 텍스트 프로필 갱신을 preview-first가 아니라 update-first로 전환
+12. `ProfileAttachmentIngestService` 기준 source 저장 -> passage selection -> evidence extract -> store -> sync -> answer 흐름 반영
+13. `PassageSelectionService` 공용화 및 문자열 점수표 중심 구조에서 임베딩 기반 selection으로 1차 전환
+14. ZIP artifact ingest 시 file/chunk 저장, project 단위 index, project retrieval 기반을 갖춘 구조 반영
+15. project artifact에서 profile evidence를 추출하고 memory sync까지 이어지는 흐름 반영
+16. `EvidenceNormalizationService`, `MemoryIngressService`, `MemoryApplyService` 중심의 공통 ingress/apply 뼈대 반영
+17. 일반 채팅에서 model-first evidence extraction을 수행하고, 실패 시 추정 대신 discard no-op fallback으로 처리하는 구조 반영
+18. chat extraction prompt에서 직전 assistant 답변 전체를 입력 재료로 쓰지 않고 latest user message 중심으로 추출하는 방향 반영
+19. `conversation_summary`를 우선 topic seed로 쓰고, 없을 때만 envelope content로 내려가는 구조 반영
+20. `general / candidate / confirmed` 분기 정책을 코드 차원에서 갖추고, chat evidence에 `memory_tier`를 저장하는 구조 반영
+21. direct confirm, evidence pool 기반 promotion, 채널 간 evidence pool 결합 승격의 1차 구조 반영
+22. chat / uploaded_text / project_artifact evidence를 공통 promotion 대상으로 모으는 구조 반영
+23. `ResponseRunner` 공용화 및 `done_reason == length` 감지, continuation 처리 1차 반영
+24. 첨부 답변에서 질문 원문 복사 억제를 위한 요청 요약 경로 1차 반영
+25. `reply_guard.py`의 완성형 매크로 응답 제거
+26. `app/api.py` 및 일부 경로의 블로그/글/화자/직전 파일 기반 문자열 트리거 제거
+27. 중복된 언어 신호 상수와 일부 공통 로직을 공용 파일로 모으는 1차 정리
+28. troubleshooting / handoff / todo 문서화를 진행해 구조 변경 이유와 후속 과제를 추적 가능한 상태로 만든 것
+
+==================================================
+<미완 또는 부족>
+==================================================
+
+1. 일반 채팅 품질을 첨부 텍스트 / project artifact 수준의 기억 처리 품질까지 끌어올리기
+2. `general / candidate / confirmed`의 의미론을 전 채널에서 더 엄밀하고 동일하게 맞추기
+3. chat 경로의 `general`이 저장은 되더라도, 이후 승격 / 재사용 / 검색까지 포함한 전체 의미론을 더 안정화하기
+4. recent source / DB / 과거 대화를 모델이 필요할 때만 찾는 source lookup layer 설계 및 구현
+5. recent source를 최근 3개 유지 + 사용자 발화 4턴 미사용 시 후보 제외 정책으로 실제 운영 구조에 반영
+6. `reply_guard.py`에 남아 있는 구조 판단 역할을 더 축소하고 source lookup layer와의 책임 경계 재정리
+7. `app/api.py`와 상위 orchestration에서 recent source를 질문마다 자동 검사하지 않는 방향으로 재설계
+8. artifact / profile attachment 경로를 topic router 철학에 더 깊게 맞추기
+9. artifact 경로에 맞는 topic create-or-attach 정책을 더 세분화하기
+10. 새 topic 생성 제약을 프롬프트 수준을 넘어 후처리 단계까지 강화하기
+11. correction 기반 재구성을 profile 수준에서 topic 수준 merge / split / rebuild까지 확장하기
+12. candidate -> confirmed 승격 기준을 더 안정화하고, 충돌 / correction / 출처 강도 반영을 더 정교화하기
+13. retrieval 철학을 장기적으로 더 통일하기
+14. `response_retriever`를 포함한 일반 채팅 retrieval 품질과 신뢰도를 더 높이기
+15. recent conversation을 raw transcript보다 요약 중심으로 더 일관되게 넘기는 구조 정리
+16. retrieval budget 2차 축소와 context compaction / handoff 구조 설계
+17. 새 채팅으로 넘길 자동 handoff 요약 흐름 만들기
+18. 일반 채팅 답변 경로의 짧음 / `...` / 반복 / 얼버무림 / 모르는 걸 모른다고 못 하는 문제를 재현 테스트하며 수정
+19. `ResponseRunner`와 프론트 렌더링 경로를 함께 점검해서 continuation이 UI에서 실제로 정상 동작하는지 검증
+20. 텍스트 첨부 후 follow-up 질문에서, 직전 source를 자동 병합하지 않고도 필요 시 참조 가능한 구조 설계
+21. `memory_classification_policy.py`를 더 순수한 정책층으로 다듬고, 남은 임시 문턱값 의존을 재검토
+22. memory DB 오염 레코드의 실제 상태를 다시 점검하고, 현재 차단 로직이 충분한지 검증
+23. uploaded profile evidence가 비거나 `candidate_count=0`이 되는 케이스를 재점검
+24. 남아 있는 하드코딩 / 매크로 응답 / 도메인 특정 문자열 의존 / 중복 상수 / 레거시 참조를 전체 파일 기준으로 재탐색
+25. 중복된 기능 / 변수 / 함수 / wrapper / 미사용 파일을 전수 조사해서 정리
+26. `project_analysis/services/project_profile_evidence_service.py`와 다른 유사 서비스 파일들의 실제 역할 중복 여부를 확정
+27. 실제 속도/품질 측정 루프(응답시간, topic 유지율, attach 정확도, general 누적량, confirmed 승격 빈도) 추가
+28. 톤, 화자 일관성, 첨부 답변 자연스러움, 존댓말 안정화 같은 응답 품질 이슈를 계속 다듬기
+29. `trusted_search`의 실제 구현 필요 여부와 우선순위를 다시 평가
+30. `README.md`를 현재 코드 기준으로 다시 작성
+
+==================================================
+최종 메모
+==================================================
+
+- 현재 MK4는 문서상 과거 TODO보다 실제 코드가 더 앞서간 부분이 많다.
+- 특히 topic 객체화, topic router, update-first 첨부 처리, 공통 ingress/apply, promotion 뼈대, project/profile 결합 흐름은 이미 코드에 살아 있다.
+- 지금부터의 핵심은 "뼈대 만들기"보다, 일반 채팅 품질 고도화, tier 의미론 통일, retrieval 통일, source lookup, correction 확장, 측정 루프 구축 쪽이다.
