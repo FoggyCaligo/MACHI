@@ -1,3 +1,297 @@
+2-4. 구체적인 런타임 문제 후보가 하나 보인다
+
+이건 그냥 철학 문제가 아니라 실제 버그 후보다.
+
+project_analysis/services/project_profile_evidence_service.py 안의 _resolve_candidate_topic()에서:
+
+resolution = self.topic_router.resolve(
+    user_message=routing_text,
+    model=model,
+    use_active_topic=False,
+    persist_active=False,
+)
+
+이렇게 호출하는데,
+현재 memory/services/topic_router.py의 resolve() 시그니처는 내가 본 기준으로:
+
+def resolve(self, user_message: str, model: str | None = None) -> TopicResolution:
+
+이거다.
+
+즉 지금 코드 기준으로는 use_active_topic, persist_active를 안 받는다.
+그러면 이 경로가 실제로 실행될 때 TypeError 날 가능성이 높다.
+
+즉:
+
+py_compile은 통과해도
+실제 실행 경로에서는 깨질 수 있다
+
+이건 우선순위 높다.
+
+2-5. project retrieval은 아직 “검색기”라기보다 “점수 기반 grep 강화판”에 가깝다
+
+project_analysis/retrieval/project_retriever.py는 솔직히 말해서 아직 약하다.
+
+현재 방식은 대략:
+
+토큰 추출
+path bonus
+내용 포함 점수
+상위 chunk 반환
+
+즉 의미 기반 retrieval이라기보다 파일 경로 + 단어 포함 기반 휴리스틱 랭킹이다.
+
+이 구조는 다음에는 잘 작동한다.
+
+파일명 직접 언급
+함수명/클래스명 직접 언급
+“구조”, “리팩토링”, “에러” 같은 큰 카테고리 질문
+
+하지만 다음에는 약하다.
+
+구현 의도 질문
+함수명이 아니라 역할로 묻는 질문
+서로 떨어진 chunk를 종합해야 답이 나오는 질문
+문맥상 연관된 여러 파일을 함께 봐야 하는 질문
+
+즉 project Q&A는 지금 **“읽을 만한 근거 몇 개를 뽑아주는 단계”**까지는 왔는데,
+아직 “프로젝트를 깊게 이해하는 retriever”까지는 아니다.
+
+2-6. response retrieval과 topic routing의 품질 축이 섞여 있다
+
+이 부분도 구조상 애매하다.
+
+topic routing은 임베딩 기반
+project retrieval은 lexical scoring 기반
+profile/summaries 검색은 SQL LIKE 기반
+
+즉 기억 retrieval 계층 전체가 하나의 retrieval 철학으로 통일돼 있지 않다.
+
+현재는 기능별로:
+
+어떤 곳은 임베딩
+어떤 곳은 문자열 포함
+어떤 곳은 최근순 fallback
+
+으로 섞여 있다.
+
+초기 프로토타입에선 괜찮지만,
+이제 이 정도 규모면 슬슬 문제가 된다.
+
+왜냐하면 나중에 사용자는 “왜 어떤 기억은 잘 잡히고, 어떤 기억은 안 잡히지?”를 체감하게 되는데,
+그 원인이 모델 문제가 아니라 retrieval 방식 혼재에서 생기기 때문이다.
+
+
+
+
+
+
+2-7. correction 충돌 판단이 다소 거칠다
+
+_has_conflicting_active_correction() 류 로직은 지금 너무 거칠 가능성이 크다.
+
+현재 구조상 같은 topic 안에 active correction이 있고,
+candidate_content와 “같은 의미”가 아니면 충돌로 보는 식인데,
+이건 문제를 일으킬 수 있다.
+
+왜냐하면 topic 자체를 넓게 잡으려 하고 있기 때문이다.
+
+즉 topic이 넓을수록 한 topic 안에 들어가는 내용 폭이 커지는데,
+그 상태에서 correction 충돌 판단이 거칠면
+실제로는 병존 가능한 두 프로필 내용도 서로 막아버릴 수 있다.
+
+예를 들면 같은 “설명 선호” topic 안에서도
+
+구조적 설명 선호
+감정적 위로도 나중 층위에서 중요
+
+이 둘은 충돌이 아니라 병존인데,
+현재의 단순 의미 비교 방식은 이런 다층 구조를 잘 못 다룰 수 있다.
+
+
+
+2-8. UpdateRetriever와 chat-side extraction은 아직 너무 얕다
+
+memory/retrieval/update_retriever.py는 사실상 규칙 기반 초기 버전이다.
+
+correction 힌트
+state 힌트
+길이 20자 이상이면 new_episode
+
+이 정도다.
+
+즉 현재 일반 채팅에서의 memory extraction은
+네가 구상하는 MK4 철학에 비해 아직 너무 얕고 기계적이다.
+
+Artifact/profile evidence 쪽은 꽤 무겁게 설계했는데,
+일반 채팅 쪽은 아직 간단한 규칙층에 많이 기대고 있다.
+
+그래서 지금 MK4의 중심 축은 사실
+“대화형 memory OS” 전체라기보다
+artifact-driven profile formation 쪽이 더 진화한 상태라고 보는 게 맞다.
+
+
+
+
+
+
+
+
+//////////////////////////////////////////////////////
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1순위: 중복 제거 + 런타임 불일치 제거
+
+가장 먼저 할 건 이거다.
+
+profile_analysis/services/project_profile_evidence_service.py 실제 참조 여부 확인
+안 쓰는 쪽이면 제거
+쓰는 쪽만 남기고 source of truth 단일화
+TopicRouter.resolve() 호출 인자 불일치 수정
+
+이건 미루면 안 된다.
+지금은 기능보다 정합성 확보가 먼저다.
+
+2순위: profile evidence sync를 한 군데로 모아라
+
+현재 project 쪽에도 promotion/sync 로직이 있고,
+ProfileMemorySyncService에도 promotion/sync 로직이 있다.
+
+이건 반드시 하나로 모아야 한다.
+
+내 기준으로는 구조상 이렇게 가는 게 맞다.
+
+extractor는 source별로 달라도 됨
+uploaded text extractor
+project artifact extractor
+하지만
+candidate clustering
+promotability 판단
+correction conflict 확인
+기존 profile linking
+promotion
+
+이건 하나의 sync service가 책임져야 한다.
+
+즉 “추출”과 “승격”을 분리하고,
+승격은 무조건 한 엔진만 거치게 해야 한다.
+
+3순위: chat memory 정책을 artifact evidence 정책과 맞춰라
+
+현재는 일반 채팅 쪽이 너무 직접 profile로 들어간다.
+
+내가 보기엔 앞으로는 이렇게 가는 쪽이 더 안정적이다.
+
+일반 채팅도 가능하면 바로 active profile insert 하지 말고
+내부 candidate/general 단계 한번 거친 뒤
+promotion rule 또는 lightweight confirmation rule을 적용
+
+즉 “채팅이냐 artifact냐”보다
+같은 종류의 기억이면 같은 승격 규칙을 타게 만드는 게 중요하다.
+
+4순위: retrieval 계층 통일
+
+이건 조금 뒤지만 중요하다.
+
+topic routing: 임베딩
+profile recall: 현재는 LIKE 위주
+project retrieval: lexical scoring 위주
+
+이걸 당장 다 임베딩으로 바꾸라는 뜻은 아니고,
+최소한 어떤 데이터는 어떤 retrieval 철학을 쓴다를 정리해야 한다.
+
+지금은 섞여 있어서 디버깅이 어렵다.
+
+5순위: scope 축 도입 여부를 결정
+
+지금 단일 사용자 로컬 프로젝트라면 괜찮다.
+하지만 앞으로도 그럴 건지 결정해야 한다.
+
+만약 정말 영구적으로 “개인용 로컬 단일 사용자”라면 지금 구조도 괜찮다.
+하지만 조금이라도
+
+세션 분리
+대화방 분리
+사용자 분리
+프로젝트별 메모리 분리
+
+를 생각한다면 지금부터 scope 축을 넣어야 한다.
+
+나중에 뒤늦게 넣으면 거의 갈아엎게 된다.
+
+
+
+
+//////////////////////////////////////////////
+
+
+
+
+
+
+
+
+
+
+
+실제 작업 순서를 더 짧게 압축하면
+1. 중복 제거
+profile_analysis/services/project_profile_evidence_service.py
+삭제 또는 legacy 표시
+2. topic router 인터페이스 정리
+memory/services/topic_router.py
+use_active_topic, persist_active 지원
+3. project evidence 승격 로직 제거
+project_analysis/services/project_profile_evidence_service.py
+extract/answer만 남기기
+4. project sync 중앙화
+profile_analysis/services/profile_memory_sync_service.py
+여기만 promotion의 source of truth로 사용
+
+
+5. project orchestrators thin화
+project_analysis/services/project_ingest_service.py
+project_analysis/services/project_ask_service.py
+6. request orchestration 분리
+app/api.py 얇게
+상위 request orchestrator 도입
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//////////////////////////////////////////////////////
+
+
 일단 문자열 휴리스틱 등의 하드코딩 들을 전부 걷어내는 작업을 먼저 하고, 그 다음에 일반 채팅 쪽을 다른 부분과 같은 수준으로 올려놓는 작업을 진행하자.
 
 
@@ -127,6 +421,611 @@ response context에서도 의미 기반
 
 
 
+
+
+//////////////////////////////////////////////////////////
+
+
+
+
+
+1단계
+
+project_ask_service.py의 if not chunks 제거
+
+이건 철학 위반이라 먼저 빼야 한다.
+
+2단계
+
+EvidenceNormalizationService에 공통 envelope 스키마 추가
+
+예:
+
+channel
+kind
+topic
+topic_id
+content
+source_strength
+confidence
+evidence_text
+source_refs
+3단계
+
+update_retriever.py를
+채널 전용 dict가 아니라 chat bundle 반환으로 변경
+
+4단계
+
+ExtractionPolicy를
+개별 필드 소비가 아니라 envelope bundle 소비로 변경
+
+5단계
+
+attachment/project도
+candidate dict list가 아니라 envelope list를 만들어 ingress에 넘기게 변경
+
+이렇게 해야 비로소
+
+chat
+attachment
+project
+
+가 같은 중간 표현 계층을 쓰게 된다.
+
+
+
+
+
+
+
+
+
+
+
+
+
+///////////////////////////////////
+
+
+
+
+
+
+제거 대상 파일별 휴리스틱 목록 + 제거 후 남겨야 할 책임
+
+이제 본론으로 갈게.
+지금 단계에서 “무엇을 없애고, 무엇만 남겨야 하는지”를 파일별로 정리하면 이렇다.
+
+1) project_analysis/services/project_profile_evidence_service.py
+지금 하는 일
+project 파일 중 profile 관련 문서를 선택
+그 문서들에서 evidence 추출
+evidence 저장
+project 기반 profile 답변 생성
+지금 제거해야 할 것
+PROFILE_DOC_EXTENSIONS
+PROFILE_NAME_HINTS
+PROFILE_QUESTION_KEYWORDS
+is_profile_question()의 키워드 포함 판정
+_select_documents()의 확장자/파일명 힌트 기반 선택
+왜 제거해야 하나
+
+이 파일은 지금
+“어떤 문서가 profile source인가”
+“이 질문이 project profile 질문인가”
+를 문자열로 판단하고 있다.
+
+이건 project 축의 핵심 판단이므로
+인지 핵심부에 해당한다.
+따라서 문자열 휴리스틱으로 두면 안 된다.
+
+제거 후 남겨야 할 책임
+
+이 서비스는 앞으로 딱 이것만 맡아야 한다.
+
+project 쪽 profile extraction orchestration
+이미 선택된 source들을 받아 extractor 호출
+evidence 저장
+evidence 기반 answer 생성
+
+즉 이 파일은 판별기가 아니라 오케스트레이터가 되어야 한다.
+
+앞으로 들어와야 할 대체물
+“project profile question인지”를 판단하는 의미 기반 intent resolver
+“project 내 어떤 파일/문서가 profile extraction source인지”를 고르는 의미 기반 source selector
+2) project_analysis/retrieval/project_retriever.py
+지금 하는 일
+project chunk 검색
+지금 제거해야 할 것
+_tokenize()
+stopword 제거
+_path_bonus()
+_score_chunk()
+질문 유형별 path 가산점
+파일 경로/토큰 포함 기반 랭킹
+왜 제거해야 하나
+
+여긴 지금 완전히 문자열 기반 grep 강화판이다.
+질문 의미를 이해하지 않고,
+토큰 포함 여부와 파일명/path에 점수를 주고 있다.
+
+이건 네가 금지한 “문자열 휴리스틱 중심 retrieval”의 대표 사례다.
+
+제거 후 남겨야 할 책임
+project chunk 집합을 받아
+의미 기반으로 관련 chunk를 반환하는 것
+
+즉 책임은 유지하되, 판단 방식만 바꿔야 한다.
+
+앞으로 들어와야 할 대체물
+chunk embedding 저장
+query embedding과 chunk embedding의 similarity 검색
+필요하면 file-level summary embedding + chunk-level embedding 2단 구조
+3) memory/retrieval/update_retriever.py
+지금 하는 일
+일반 채팅에서 update plan 비슷한 걸 만든다
+지금 제거해야 할 것
+correction 키워드 감지
+STATE_HINTS
+길이 20자 이상이면 new_episode
+문자열 포함으로 state/action 분류
+왜 제거해야 하나
+
+이 파일은 현재 일반 채팅 memory 추출의 핵심 진입점인데,
+거의 전부가 문자열 규칙이다.
+
+즉 일반 채팅 memory의 핵심 해석기가
+지금 가장 휴리스틱 덩어리인 상태다.
+
+제거 후 남겨야 할 책임
+
+이 파일은 앞으로
+
+raw user message
+assistant reply
+현재 topic/context
+
+를 바탕으로
+구조화된 update plan을 반환하는 역할만 해야 한다.
+
+즉 남겨야 할 책임은:
+
+action types
+state payload
+memory candidate
+correction candidate
+episode candidate
+를 구조화하는 것
+
+하지만 그 판단은 규칙이 아니라
+모델 기반 structured extraction이어야 한다.
+
+앞으로 들어와야 할 대체물
+chat evidence extractor
+structured JSON 출력
+upstream model call 결과를 정책층으로 넘김
+4) memory/policies/extraction_policy.py
+지금 하는 일
+update plan을 받아 실제 profile/correction/episode/state 쓰기용 구조를 만든다
+지금 제거해야 할 것
+STATE_RULES
+_is_explicit_correction()의 correction token 검사
+len(cleaned) >= 20 episode 생성
+classification["route"] == "confirmed" 같은 현재 불일치성 전제
+raw user_message를 직접 해석하는 부분
+왜 제거해야 하나
+
+이 파일은 원래 정책층이어야 하는데,
+지금 일부는 여전히 언어 해석기처럼 작동한다.
+
+그건 역할이 틀렸다.
+
+제거 후 남겨야 할 책임
+
+이 파일은 앞으로 딱 이것만 해야 한다.
+
+upstream이 준 structured update plan을 소비
+topic attach/create 유지
+각 route를
+discard
+general
+candidate
+confirmed
+로 정리
+어떤 store write가 필요한지 결정
+
+즉 이 파일은 해석하지 말고 배치만 해야 한다.
+
+5) memory/policies/memory_classification_policy.py
+지금 하는 일
+chat/evidence route 판단
+promotion 판단
+지금 제거해야 할 것
+len(cleaned) < 20 discard
+explicit_self_statement면 candidate 같은 과도한 단일 규칙
+입력이 비어 있지 않으면 default repeated_behavior로 보정하는 식의 암묵적 추정
+structured signal이 부족한데도 route를 억지로 정하는 fallback
+왜 제거해야 하나
+
+이 파일은 원래 네 말대로 정책층이어야 한다.
+그러려면 “무슨 의미인가”를 추정하면 안 된다.
+
+제거 후 남겨야 할 책임
+upstream이 준 structured signals를 받아
+route/promotion/threshold만 결정
+
+즉 여기선 허용되는 건:
+
+confidence threshold
+diversity 조건
+evidence count
+distinct source count
+direct_confirm 여부
+source_strength enum
+
+같은 구조화된 정책 입력이다.
+
+중요한 점
+
+여기서 source_strength 자체를 쓰는 건 허용 가능하다.
+단, 그 값은 여기서 추론하면 안 되고
+upstream extractor가 의미 기반으로 이미 결정해서 넘겨준 값이어야 한다.
+
+6) memory/retrieval/response_retriever.py
+지금 하는 일
+응답 생성용 context assemble
+지금 제거해야 할 것
+
+이 파일은 다른 파일들보다 휴리스틱이 심하진 않다.
+다만 조심해야 할 건:
+
+profile_store.search(user_message, ...)
+correction_store.search(user_message, ...)
+summary_store.search(user_message, ...)
+episode_store.find_relevant(user_message, ...)
+
+이 backend가 문자열 기반이면,
+실질적으로 여기도 문자열 retrieval이다.
+
+남겨야 할 책임
+
+이 파일은 계속
+
+profiles
+corrections
+summaries
+episodes
+states
+recent_messages
+를 모아서 context로 만드는 역할만 하면 된다.
+
+즉 여기 자체는 context assembler로 두고,
+실제 relevance 판단은 store/retriever 하위층에서 의미 기반으로 바뀌어야 한다.
+
+7) tools/reply_guard.py
+지금 상태
+
+이 파일은 이미 많이 정리됐다.
+현재는 문자열 휴리스틱으로 답을 찍어내는 수준은 아니다.
+
+제거해야 할 것
+
+현재 기준으로는 꼭 먼저 걷어낼 건 많지 않다.
+
+남겨야 할 책임
+direct source 있는지
+project scope인지
+recent source 있는지
+같은 구조적 guard context만 만드는 것
+
+즉 지금처럼 “판단 보조용 구조 정보”까지만 남기는 게 맞다.
+
+8) app/api.py
+지금 상태
+
+여긴 지금 문자열 해석 문제는 거의 없다.
+
+남겨야 할 책임
+입출력 수신
+upload / project_id / model 전달
+request orchestrator 연결
+
+즉 API는 계속 얇게 두는 게 맞다.
+
+우선 제거 순서
+
+내 기준 우선순위는 이거다.
+
+1차 제거 대상
+
+가장 먼저 걷어내야 하는 곳
+
+project_analysis/retrieval/project_retriever.py
+memory/retrieval/update_retriever.py
+memory/policies/extraction_policy.py
+project_analysis/services/project_profile_evidence_service.py 안의 profile question/file selection 문자열 판별
+
+이 네 군데가 가장 크다.
+
+2차 제거 대상
+
+그 다음 정리할 곳
+
+memory/policies/memory_classification_policy.py
+memory/retrieval/response_retriever.py 하위 search backend
+
+
+
+
+
+
+/////////////////////////////////////////////////
+
+
+
+
+
+
+
+
+
+
+
+
+
+실제 작업 순서 제안
+
+내 추천 순서는 이거다.
+
+1단계
+
+project_analysis/retrieval/project_retriever.py
+
+이유:
+
+가장 노골적인 문자열 기반 retrieval이라
+제거 기준을 세우기 쉽다
+2단계
+
+memory/retrieval/update_retriever.py
+
+이유:
+
+일반 채팅 경로가 지금 가장 오염되어 있는 입구이기 때문
+3단계
+
+memory/policies/extraction_policy.py
+
+이유:
+
+2단계에서 structured input이 비면
+이쪽도 바로 policy-only로 줄여야 하기 때문
+4단계
+
+project_analysis/services/project_profile_evidence_service.py
+
+이유:
+
+project profile question / source 선택의 문자열 판별 제거
+5단계
+
+memory/policies/memory_classification_policy.py
+
+이유:
+
+여기까지 오고 나서야 route/promotion 정책을 다시 얇게 정리할 수 있음
+6단계
+
+response_retriever.py와 각 store search backend
+
+이유:
+
+retrieval 통일은 마지막에 정리하는 게 안정적
+
+
+
+
+
+////////////////////////////////////
+
+
+
+
+
+
+
+이번 배치의 중요한 한계
+
+여기는 꼭 솔직히 말할게.
+
+지금 구조엔 chat-side separate general/candidate store가 아직 없다.
+그래서 이번 배치에서는 candidate-level chat memory만 profile로 쓰고,
+general은 아직 독립 저장층으로 구현하지 않았다.
+
+이건 의도적이다.
+
+왜냐하면 지금 general까지 기존 profiles 테이블에 그냥 넣어버리면
+네가 원하지 않는 방식으로 기본 주입 surface에 섞여 들어갈 위험이 크기 때문이다.
+
+즉 지금은:
+
+잘못 저장해서 오염시키는 것
+보다
+일단 candidate만 저장하는 것
+
+을 택했다.
+
+그래서 이 단계는 휴리스틱 제거 + 잘못된 저장 방지까지이고,
+general/candidate/confirmed를 진짜 계층으로 만드는 건 다음 단계다.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+///////////////////////////////
+
+
+
+
+
+
+
+
+
+일단 문자열 휴리스틱 등의 하드코딩 들을 전부 걷어내는 작업을 먼저 하고, 그 다음에 일반 채팅 쪽을 다른 부분과 같은 수준으로 올려놓는 작업을 진행하자.
+
+
+이미 방향이 맞는 부분
+topic/project 축 분리
+artifact → evidence → sync 방향
+project에서도 profile evidence를 뽑으려는 구조
+general/candidate/confirmed 계층 의식
+correction 중심 사고
+update-first
+prompt의 사용자 하드코딩 축소
+passage selection의 임베딩 기반 전환 시도
+아직 방향과 구현이 어긋나는 부분
+memory_classification_policy.py에 남아 있는 규칙 기반 신호
+일반 채팅 쪽 extraction의 얕은 규칙 기반 분기
+project retrieval의 lexical scoring 성격
+recent source / response retrieval 쪽의 혼합 구조
+계층 철학은 공통인데 구현이 채널별로 따로 자란 흔적
+
+즉 지금 MK4는 철학은 꽤 선명한데,
+구현은 아직 transition state다.
+
+
+
+1단계: 문자열 휴리스틱/하드코딩 전면 제거
+
+먼저 해야 할 건 “더 똑똑하게 만들기”가 아니라
+잘못된 기반을 걷어내는 것이다.
+
+우선 제거 대상 핵심 파일은 이쪽이다.
+
+memory/policies/memory_classification_policy.py
+memory/policies/extraction_policy.py
+memory/retrieval/update_retriever.py
+project_analysis/retrieval/project_retriever.py
+memory/retrieval/response_retriever.py
+app/api.py
+reply_guard.py
+
+
+
+
+
+
+
+
+2단계: 공통 ingress 정책 확정
+
+그 다음엔 채널별로 따로 자란 걸 하나로 묶어야 한다.
+
+공통 정책은 대략 이렇게 가는 게 맞다.
+
+입력:
+
+chat
+attachment
+project artifact
+correction
+
+공통 중간 구조:
+
+source
+evidence
+route
+topic attach/create/keep
+source trace
+confidence
+
+공통 결과:
+
+discard
+general
+candidate
+confirmed
+
+즉 채널은 다르지만 ingress policy는 하나여야 한다.
+
+
+
+
+
+3단계: 일반 채팅 쪽을 artifact 수준으로 끌어올리기
+
+지금 일반 채팅이 약한 이유는,
+애초에 다른 부분보다 뒤늦게 붙었기 때문이다.
+
+그래서 제거 후에는
+
+chat도 evidence-first
+chat도 topic-aware
+chat도 promotion-aware
+구조로 올려야 한다.
+
+즉 일반 채팅만 예외적인 얕은 규칙층으로 남겨두면 안 된다.
+
+
+
+
+
+
+
+4단계: retrieval 전면 의미 기반화
+
+그 다음에 retrieval을 통일해야 한다.
+
+project에서도 의미 기반
+profile에서도 의미 기반
+response context에서도 의미 기반
+
+이렇게 묶어야 시스템 전체가 한 철학으로 간다.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+////////////////////////////
 
 
 

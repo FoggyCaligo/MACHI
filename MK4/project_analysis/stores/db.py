@@ -132,6 +132,8 @@ def init_project_tables():
         _ensure_column(conn, "project_profile_evidence", "applied_to_memory", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "project_profile_evidence", "linked_profile_id", "TEXT")
         _ensure_column(conn, "project_profile_evidence", "linked_correction_id", "TEXT")
+        _ensure_column(conn, "project_profile_evidence", "direct_confirm", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "project_profile_evidence", "memory_tier", "TEXT")
 
         _ensure_column(conn, "uploaded_profile_evidence", "topic", "TEXT")
         _ensure_column(conn, "uploaded_profile_evidence", "topic_id", "TEXT")
@@ -140,6 +142,8 @@ def init_project_tables():
         _ensure_column(conn, "uploaded_profile_evidence", "applied_to_memory", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "uploaded_profile_evidence", "linked_profile_id", "TEXT")
         _ensure_column(conn, "uploaded_profile_evidence", "linked_correction_id", "TEXT")
+        _ensure_column(conn, "uploaded_profile_evidence", "direct_confirm", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "uploaded_profile_evidence", "memory_tier", "TEXT")
 
         _ensure_column(conn, "project_chunks", "embedding_json", "TEXT")
 

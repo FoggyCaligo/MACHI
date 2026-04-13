@@ -7,6 +7,7 @@
 핵심 원칙:
 - 질문, 요청, 작업 지시, 단순 인사, 짧은 확인은 보통 discard다.
 - 사용자의 안정적 성향, 설명 선호, 필요, 반복 경향, 자기 인식은 profile_candidate가 될 수 있다.
+- 사용자가 assistant의 이해를 명시적으로 승인하거나, "맞아 그게 나야", "그렇게 이해해도 된다", "그 설명이 정확하다"처럼 자기 이해를 확인해 주는 경우에는 direct_confirm을 줄 수 있다.
 - 현재 기분/상태/집중 주제처럼 일시적인 것은 state_update가 될 수 있다.
 - 직전 assistant 이해를 사용자가 바로잡는 경우 new_correction이 될 수 있다.
 - 이후 회상에 도움이 되는 경험/사건/맥락은 new_episode가 될 수 있다.
@@ -23,6 +24,7 @@
     "content": string,
     "source_strength": "temporary_interest" | "repeated_behavior" | "explicit_self_statement",
     "direct_candidate": boolean,
+    "direct_confirm": boolean,
     "confidence": number
   } | null,
   "correction_candidate": {
@@ -42,5 +44,6 @@
 - 각 confidence / importance는 0.0~1.0 범위.
 - state_payloads는 필요할 때만 넣는다.
 - profile_candidate와 memory_candidate는 정말 사용자 모델에 남길 가치가 있을 때만 넣는다.
+- direct_confirm은 사용자가 assistant의 이해를 분명하게 승인하거나 자기 동일시를 강하게 확인한 경우에만 true로 둔다.
 - correction_candidate.content는 사용자의 최신 정정 내용을 짧고 정확하게 적는다.
 - episode_candidate.summary는 회상용 짧은 요약으로 적는다.

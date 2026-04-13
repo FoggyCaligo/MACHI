@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from memory.policies.extraction_policy import ExtractionPolicy
+from memory.policies.memory_classification_policy import MemoryClassificationPolicy
 from memory.policies.retention_policy import RetentionPolicy
 from memory.services.evidence_normalization_service import EvidenceNormalizationService
 from memory.services.memory_apply_service import MemoryApplyService
@@ -13,11 +14,23 @@ class MemoryIngressService:
 
     def __init__(self) -> None:
         self.extraction_policy = ExtractionPolicy()
+        self.memory_policy = MemoryClassificationPolicy()
         self.retention_policy = RetentionPolicy()
         self.memory_apply_service = MemoryApplyService()
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
         self.project_evidence_store = ProjectProfileEvidenceStore()
         self.normalizer = EvidenceNormalizationService()
+
+    def _classify_profile_envelope(self, env: dict) -> str:
+        classification = self.memory_policy.classify_evidence(
+            {
+                "candidate_content": env.get("content") or "",
+                "source_strength": env.get("source_strength") or "",
+                "confidence": env.get("confidence") or 0.0,
+                "direct_confirm": bool((env.get("metadata") or {}).get("direct_confirm")),
+            }
+        )
+        return str(classification.get("route") or "general")
 
     def persist_profile_candidate_envelopes(
         self,
@@ -44,6 +57,8 @@ class MemoryIngressService:
                         topic_id=env.get("topic_id"),
                         candidate_content=env.get("content") or "",
                         source_strength=env.get("source_strength") or "",
+                        direct_confirm=bool(meta.get("direct_confirm")),
+                        memory_tier=self._classify_profile_envelope(env),
                         evidence_text=meta.get("evidence_text") or "",
                         confidence=float(env.get("confidence") or 0.0),
                     )
@@ -68,6 +83,8 @@ class MemoryIngressService:
                         topic_id=env.get("topic_id"),
                         candidate_content=env.get("content") or "",
                         source_strength=env.get("source_strength") or "",
+                        direct_confirm=bool(meta.get("direct_confirm")),
+                        memory_tier=self._classify_profile_envelope(env),
                         evidence_text=meta.get("evidence_text") or "",
                         confidence=float(env.get("confidence") or 0.0),
                     )

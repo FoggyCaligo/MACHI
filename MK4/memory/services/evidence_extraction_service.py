@@ -191,6 +191,7 @@ class EvidenceExtractionService:
                 "source_strength": source_strength,
                 "confidence": max(0.0, min(confidence, 1.0)),
                 "evidence_text": evidence_text,
+                "direct_confirm": bool(item.get("direct_confirm")),
             }
 
             if include_source_file_paths:

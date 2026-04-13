@@ -366,6 +366,10 @@ class MemoryApplyService:
         processed = 0
         linked_to_existing_active_profile = 0
         skipped = 0
+        inserted_confirmed_profiles = 0
+        blocked_by_correction = 0
+        blocked_by_existing_profile_conflict = 0
+        touched_topics: set[tuple[str | None, str]] = set()
 
         for evidence in evidences:
             topic_id = str(evidence.get("topic_id") or "").strip() or None
@@ -379,7 +383,9 @@ class MemoryApplyService:
                 continue
 
             classification = self.memory_policy.classify_evidence(evidence)
-            if classification["route"] == "general":
+            route = str(classification.get("route") or "general")
+
+            if route == "general":
                 evidence_store.mark_applied(evidence["id"])
                 skipped += 1
                 processed += 1
@@ -395,22 +401,50 @@ class MemoryApplyService:
                 processed += 1
                 continue
 
+            if route == "confirmed":
+                if self._has_conflicting_active_correction(candidate_content, topic=topic, topic_id=topic_id):
+                    evidence_store.mark_applied(evidence["id"])
+                    blocked_by_correction += 1
+                    processed += 1
+                    continue
+
+                if active_profile:
+                    evidence_store.mark_applied(evidence["id"])
+                    blocked_by_existing_profile_conflict += 1
+                    processed += 1
+                    continue
+
+                new_profile_id = self.profile_store.insert_profile(
+                    topic=topic,
+                    topic_id=topic_id,
+                    content=candidate_content,
+                    source=f"artifact_direct_confirm:{evidence.get('source_strength') or 'unknown'}",
+                    confidence=float(evidence.get("confidence") or 0.0),
+                )
+                evidence_store.mark_applied(evidence["id"], linked_profile_id=new_profile_id)
+                inserted_confirmed_profiles += 1
+                touched_topics.add((topic_id, topic))
+                processed += 1
+                continue
+
             evidence_store.mark_applied(evidence["id"])
             processed += 1
 
+        self._rebuild_touched_topics(touched_topics)
         promotion_result = self._promote_confirmed_profiles()
 
         return {
             "processed": processed,
-            "inserted_profiles": promotion_result["promoted_profiles"],
+            "inserted_profiles": inserted_confirmed_profiles + promotion_result["promoted_profiles"],
             "added_corrections": 0,
             "linked_to_existing_active_profile": linked_to_existing_active_profile,
             "promoted_profiles": promotion_result["promoted_profiles"],
+            "direct_confirmed_profiles": inserted_confirmed_profiles,
             "linked_existing_profiles": promotion_result["linked_existing_profiles"],
-            "blocked_by_correction": promotion_result["blocked_by_correction"],
-            "blocked_by_existing_profile_conflict": promotion_result["blocked_by_existing_profile_conflict"],
+            "blocked_by_correction": blocked_by_correction + promotion_result["blocked_by_correction"],
+            "blocked_by_existing_profile_conflict": blocked_by_existing_profile_conflict + promotion_result["blocked_by_existing_profile_conflict"],
             "pending_candidates": promotion_result["pending_candidates"],
-            "rebuilt_topics": promotion_result["rebuilt_topics"],
+            "rebuilt_topics": len(touched_topics) + promotion_result["rebuilt_topics"],
             "skipped": skipped,
         }
 

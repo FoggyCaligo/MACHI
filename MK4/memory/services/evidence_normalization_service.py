@@ -159,6 +159,7 @@ class EvidenceNormalizationService:
             "source_strength": self.normalize_source_strength(value.get("source_strength")),
             "confidence": self.bounded_confidence(value.get("confidence"), default=0.0),
             "evidence_text": evidence_text,
+            "direct_confirm": bool(value.get("direct_confirm")),
         }
 
         if include_source_file_paths:
@@ -245,7 +246,10 @@ class EvidenceNormalizationService:
                 content=memory_candidate.get("content") or "",
                 source_strength=memory_candidate.get("source_strength") or "",
                 confidence=memory_candidate.get("confidence") or 0.0,
-                metadata={"direct_candidate": bool(memory_candidate.get("direct_candidate"))},
+                metadata={
+                    "direct_candidate": bool(memory_candidate.get("direct_candidate")),
+                    "direct_confirm": bool(memory_candidate.get("direct_confirm")),
+                },
             )
             if env:
                 envelopes.append(env)
@@ -317,6 +321,7 @@ class EvidenceNormalizationService:
                 continue
             metadata: dict[str, Any] = {
                 "evidence_text": candidate.get("evidence_text") or "",
+                "direct_confirm": bool(candidate.get("direct_confirm")),
             }
             if candidate.get("topic_resolution"):
                 metadata["topic_resolution"] = candidate.get("topic_resolution")
