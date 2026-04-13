@@ -15,6 +15,23 @@ MK4는 답변을 잘하는 챗봇보다,
 - prompt로 성격을 강하게 박는 것이 아니라, memory-driven personalization을 지향한다.
 - 일반 채팅, 첨부 텍스트, ZIP artifact, project 입력은 모두 evidence-first로 다뤄야 한다.
 
+MACHI 전체 맥락에서 보면, MK4는 독립된 챗봇 프로젝트가 아니라
+**개인 전용 Cognitive Partner / 개인 인지 시스템 비전에서 memory substrate를 구현하는 현재 작업 축**이다.
+
+즉 MK4는:
+- MK1의 Cognitive Partner / 구조 학습 / 자아-세계-기억 분리 문제의식
+- MK2의 운영 규칙 / 승인 / 거버넌스 문제의식
+- MK3의 local agent / trusted search / light memory 프로토타입
+
+위에 이어지는 단계이며,
+현재는 특히 **evidence-first / correction-first / revisable memory**를 실제 구조와 코드로 구현하는 역할을 맡는다.
+
+또한 상위 MACHI 철학과 연결되는 다음 원칙을 항상 같이 본다.
+- structure before comfort
+- verification before performance
+- memory is revisable
+- the user remains the decision owner
+
 ## 2. 구조 철학
 
 ### 2-1. topic과 project_id는 다른 축이다
@@ -82,11 +99,18 @@ assistant 발화는 허용된다면:
 ### 4-2. 문자열 의미 해석 하드코딩 금지
 - 특정 키워드 포함 여부로 사용자 성향, 정정, 선호, NEED를 해석하지 않는다.
 - 규칙 기반 키워드 매칭, 임의의 의미 추정용 문자열 비교는 레거시로 본다.
+- route 결정, tool 사용 여부, 사용자 이해, correction 의도 판별을 문자열 if문으로 처리하지 않는다.
+- "임시 우회"라는 이유로 surface pattern 휴리스틱을 의미 판단 계층에 다시 넣지 않는다.
 
 ### 4-3. 실패 숨기기 금지
 - 오류는 오류처럼 드러나야 한다.
 - fallback으로 실패를 감추지 않는다.
 - 지금 단계에서는 하드코딩된 임시 보정보다, 명확한 실패가 낫다.
+
+### 4-4. 보조 레이어가 본체 계약을 우회하면 안 된다
+- tool, guard, fallback, helper는 응답 생성 본체를 대체하지 않는다.
+- 일반 응답 경로의 timeout / truncation / continuation / honesty 계약은 공용 runner 위에서 유지한다.
+- 보조 레이어는 필요할 때만 개입하고, no-op일 때는 본체 경로를 그대로 통과시킨다.
 
 ## 5. 프롬프트 철학
 

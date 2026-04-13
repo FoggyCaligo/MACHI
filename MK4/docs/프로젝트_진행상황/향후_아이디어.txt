@@ -2,3 +2,8 @@
 apply 단계에서 더 능동적으로 충돌을 감지하고 기존 티어를 강등(demote)시키는 흐름이 강화되면 더 좋음.
 
 추천 순서: gemma3:4b 먼저 → 너무 느리면 qwen2.5:3b
+
+추가 아이디어
+- 새 Python 버전 대응은 interpreter 상한을 먼저 거는 것보다, 문제 의존성을 제거하거나 내부 구현으로 치환하는 쪽을 우선 원칙으로 삼기
+- tool / guard / helper는 편의 계층이지 본체가 아니므로, 일반 응답 계약(`ResponseRunner` / `OllamaClient`)을 우회하지 않는 회귀 테스트를 계속 유지하기
+- MK4 문서에는 앞으로도 "독립 챗봇" 관점보다 "MACHI의 memory substrate" 관점을 계속 유지해서, 구현 디테일이 철학을 거꾸로 끌고 가지 않게 하기

@@ -47,6 +47,27 @@ MK4_진행상황_정리
     - ProfileRebuilder에서 profile 정정만 rebuild에 반영
     - chat_update_extract_system_prompt에 target_kind 필드 추가
     - 메모리 노이즈 필터 강화 (시스템 프롬프트, 정책 echo 차단)
+30. `project_analysis/injest/chunker.py`를 내부 구현으로 교체하고 `langchain-text-splitters` 제거
+    - 확장자별 구분자 맵과 `1200 chars / 200 overlap` 정책은 유지
+    - 구분자 우선 + hard cut fallback 청커를 내부 구현으로 전환
+    - `tests/test_chunker.py`로 separator / fallback / overlap / line number / wrapper 호환 테스트 추가
+31. Python 메타데이터를 `>=3.13` 기준으로 완화하고 기본 개발 버전은 `.python-version`으로 3.13 유지
+    - `pyproject.toml`에 최소 지원 버전 명시
+    - 상한 `<3.14` 제거
+    - README에 기본 개발 버전과 메타데이터 상한 분리 원칙 반영
+32. 일반 응답 timeout 설정을 `GENERAL_REPLY_*` 계약으로 재정렬
+    - `Agent`가 하드코드 `45초 / 512 / 3회`가 아니라 config 값을 사용하도록 수정
+    - Ollama timeout을 `OLLAMA_TIMEOUT: ...` 형태로 표준화
+    - API에서 timeout을 500이 아니라 504로 매핑
+33. tool 경로가 일반 응답 경로를 우회하지 않도록 수정
+    - tool은 실제 `tool_calls`가 발생했을 때만 결과를 사용
+    - tool이 없거나 실패하면 일반 응답은 `ResponseRunner` 계약 위에서 계속 생성
+    - 관련 회귀 테스트를 `tests/test_agent_timeout_behavior.py`에 추가
+34. 사용자 입력 문자열 비교 기반 휴리스틱 재도입을 제거하고 금지 원칙 재확인
+    - 일반 질문/최신 질문을 키워드로 분기하던 임시 로직 제거
+    - tool 호출 여부도 surface pattern이 아니라 모델 판단에 맡기는 방향으로 복귀
+35. 루트 `README.md`와 `MK1~MK3` 문서를 재검토해 MK4의 역할을 상위 맥락에서 재정리
+    - MK4는 MACHI 전체 비전 중 evidence-first / revisable memory substrate를 구현하는 현재 작업 축이라는 해석을 문서 원칙에 반영
 
 ==================================================
 <미완 또는 부족>
@@ -75,7 +96,7 @@ MK4_진행상황_정리
 21. `memory_classification_policy.py`를 더 순수한 정책층으로 다듬고, 남은 임시 문턱값 의존을 재검토
 22. memory DB 오염 레코드의 실제 상태를 다시 점검하고, 현재 차단 로직이 충분한지 검증
 23. uploaded profile evidence가 비거나 `candidate_count=0`이 되는 케이스를 재점검
-24. 남아 있는 하드코딩 / 매크로 응답 / 도메인 특정 문자열 의존 / 중복 상수 / 레거시 참조를 전체 파일 기준으로 재탐색
+24. 남아 있는 하드코딩 / 매크로 응답 / 도메인 특정 문자열 의존 / 응답 경로 우회 브리지 / 중복 상수 / 레거시 참조를 전체 파일 기준으로 재탐색
 25. 중복된 기능 / 변수 / 함수 / wrapper / 미사용 파일을 전수 조사해서 정리
 26. `project_analysis/services/project_profile_evidence_service.py`와 다른 유사 서비스 파일들의 실제 역할 중복 여부를 확정
 27. 실제 속도/품질 측정 루프(응답시간, topic 유지율, attach 정확도, general 누적량, confirmed 승격 빈도) 추가
@@ -90,4 +111,6 @@ MK4_진행상황_정리
 
 - 현재 MK4는 문서상 과거 TODO보다 실제 코드가 더 앞서간 부분이 많다.
 - 특히 topic 객체화, topic router, update-first 첨부 처리, 공통 ingress/apply, promotion 뼈대, project/profile 결합 흐름은 이미 코드에 살아 있다.
+- 최근 정리로, MK4는 MACHI 전체 비전 중 "memory substrate"를 실제 코드와 운영 원칙으로 구현하는 축이라는 해석이 더 선명해졌다.
+- 이번 수정으로 langchain 의존 청커, 일반 응답 timeout 하드코드, 문자열 기반 tool 휴리스틱 같은 방향성 위반 요소를 다시 걷어냈다.
 - 지금부터의 핵심은 "뼈대 만들기"보다, 일반 채팅 품질 고도화, tier 의미론 통일, retrieval 통일, source lookup, correction 확장, 측정 루프 구축 쪽이다.
