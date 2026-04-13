@@ -23,6 +23,11 @@ class EvidenceNormalizationService:
         "correction_candidate",
         "episode_candidate",
     }
+    ALLOWED_CORRECTION_TARGET_KINDS = {
+        "profile",
+        "topic_fact",
+        "response_behavior",
+    }
 
     @staticmethod
     def clean_text(value: Any) -> str:
@@ -63,6 +68,10 @@ class EvidenceNormalizationService:
     def normalize_memory_tier(value: Any) -> str:
         text = str(value or "").strip().lower()
         return text if text in {"general", "candidate", "confirmed"} else ""
+
+    def normalize_correction_target_kind(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return text if text in self.ALLOWED_CORRECTION_TARGET_KINDS else ""
 
     def normalize_actions(self, value: Any) -> list[str]:
         if not isinstance(value, list):
@@ -124,6 +133,7 @@ class EvidenceNormalizationService:
         return {
             "content": content,
             "reason": reason,
+            "target_kind": self.normalize_correction_target_kind(value.get("target_kind")),
             "confidence": self.bounded_confidence(value.get("confidence"), default=0.7),
         }
 
@@ -270,7 +280,10 @@ class EvidenceNormalizationService:
                 kind="correction_candidate",
                 content=correction_candidate.get("content") or "",
                 confidence=correction_candidate.get("confidence") or 0.0,
-                metadata={"reason": correction_candidate.get("reason") or ""},
+                metadata={
+                    "reason": correction_candidate.get("reason") or "",
+                    "target_kind": correction_candidate.get("target_kind") or "",
+                },
             )
             if env:
                 envelopes.append(env)

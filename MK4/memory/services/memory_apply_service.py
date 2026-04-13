@@ -76,10 +76,26 @@ class MemoryApplyService:
                 return str(topic_row.get("summary") or topic_row.get("name") or "general").strip() or "general"
         return "general"
 
+    def _correction_target_kind_from_reason(self, reason: str | None) -> str:
+        text = str(reason or "").strip()
+        prefix, has_separator, _rest = text.partition(":")
+        if has_separator and prefix in {"profile", "topic_fact", "response_behavior"}:
+            return prefix
+        return "topic_fact"
+
+    def _encode_correction_reason(self, *, reason: str | None, target_kind: str | None) -> str:
+        reason_text = str(reason or "").strip() or "explicit_correction"
+        normalized_kind = str(target_kind or "").strip().lower()
+        if normalized_kind not in {"profile", "topic_fact", "response_behavior"}:
+            normalized_kind = "topic_fact"
+        return f"{normalized_kind}:{reason_text}"
+
     def _has_conflicting_active_correction(self, candidate_content: str, topic: str | None = None, topic_id: str | None = None) -> bool:
         del topic, topic_id
         active_corrections = self.correction_store.list_active(limit=20)
         for correction in active_corrections:
+            if self._correction_target_kind_from_reason(correction.get("reason")) != "profile":
+                continue
             correction_content = str(correction.get("content") or "").strip()
             if correction_content and self._same_meaning(correction_content, candidate_content):
                 return True
@@ -493,15 +509,21 @@ class MemoryApplyService:
         for correction in extracted.get("corrections", []):
             topic = correction.get("topic") or correction.get("topic_summary") or "general"
             topic_id = correction.get("topic_id")
-            active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
+            target_kind = str(correction.get("target_kind") or "").strip().lower() or "topic_fact"
+            active_profile = None
             supersedes_profile_id = None
-            if active_profile and str(active_profile.get("content") or "").strip() != str(correction["content"] or "").strip():
-                supersedes_profile_id = active_profile["id"]
+            if target_kind == "profile":
+                active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
+                if active_profile and str(active_profile.get("content") or "").strip() != str(correction["content"] or "").strip():
+                    supersedes_profile_id = active_profile["id"]
             self.correction_store.add_correction(
                 topic=topic,
                 topic_id=topic_id,
                 content=correction["content"],
-                reason=correction.get("reason", "explicit_correction"),
+                reason=self._encode_correction_reason(
+                    reason=correction.get("reason", "explicit_correction"),
+                    target_kind=target_kind,
+                ),
                 source=correction.get("source", "user_explicit"),
                 supersedes_profile_id=supersedes_profile_id,
             )

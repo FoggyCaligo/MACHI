@@ -147,6 +147,7 @@ class ExtractionPolicy:
                         "topic": topic,
                         "content": content,
                         "reason": metadata.get("reason") or "explicit_correction_or_conflict_candidate",
+                        "target_kind": metadata.get("target_kind") or "",
                         "source": "user_explicit",
                     }
                 )

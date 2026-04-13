@@ -167,24 +167,6 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
 
     memory_lines: list[str] = []
 
-    if profiles:
-        section_lines: list[str] = []
-        for p in profiles:
-            topic = _topic_label(p)
-            content = _pick_memory_text(
-                p,
-                preferred_keys=["content", "value", "summary"],
-                max_len=180,
-            )
-            if _should_skip_memory_item(p, content):
-                continue
-            line = _normalize_memory_line(topic, content)
-            if line:
-                section_lines.append(line)
-        if section_lines:
-            memory_lines.append("[사용자 프로필]")
-            memory_lines.extend(section_lines)
-
     if corrections:
         section_lines = []
         for c in corrections:
@@ -201,6 +183,24 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
                 section_lines.append(line)
         if section_lines:
             memory_lines.append("[최근 정정]")
+            memory_lines.extend(section_lines)
+
+    if profiles:
+        section_lines: list[str] = []
+        for p in profiles:
+            topic = _topic_label(p)
+            content = _pick_memory_text(
+                p,
+                preferred_keys=["content", "value", "summary"],
+                max_len=180,
+            )
+            if _should_skip_memory_item(p, content):
+                continue
+            line = _normalize_memory_line(topic, content)
+            if line:
+                section_lines.append(line)
+        if section_lines:
+            memory_lines.append("[사용자 프로필]")
             memory_lines.extend(section_lines)
 
     if states:

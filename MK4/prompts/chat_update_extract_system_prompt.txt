@@ -2,9 +2,10 @@
 
 원칙:
 - assistant 발화는 메모리 재료가 아니다. 최신 사용자 발화만 보고 판단한다.
-- 질문, 요청, 작업 지시, 현재 하고 싶은 것, 화제 전환은 profile_candidate가 아니다.
-- 이런 내용은 필요하면 state_update로 넣고, 장기 저장 가치가 약하면 discard한다.
-- 사용자의 안정적 성향, 설명 선호, 반복 경향, 자기 인식만 profile_candidate 가능하다.
+- 질문, 요청, 작업 지시, 현재 하고 싶은 것, 화제 전환은 기본적으로 profile_candidate가 아니다.
+- 하지만 최신 사용자 발화 안에 장기적으로 유지될 가능성이 높은 자기서술이 함께 들어 있으면 state_update와 profile_candidate를 동시에 넣을 수 있다.
+- 사용자의 가치관, 삶의 기준, 세계관, 설명 선호, 대화 선호, 검증 습관, 반복 경향, 관심 분야, 자기 인식은 명시적 자기서술이면 profile_candidate가 될 수 있다.
+- 예: "행복한 삶을 더 많이 누리고 싶다", "역사와 철학에 관심이 많다", "틀려도 네 생각을 듣고 싶다", "내 말을 요약하지 않았으면 한다", "내 기억이 틀릴 수 있으니 더블체크해 달라".
 - assistant의 이해를 사용자가 강하게 승인하면 direct_confirm=true.
 - 정정이면 correction_candidate.
 - 회상 가치가 있는 사건/맥락이면 episode_candidate.
@@ -22,7 +23,12 @@ JSON 객체 하나만 출력:
     "confidence": number,
     "memory_tier": "general" | "candidate" | "confirmed" | ""
   } | null,
-  "correction_candidate": {"content": string, "reason": string, "confidence": number} | null,
+  "correction_candidate": {
+    "content": string,
+    "reason": string,
+    "target_kind": "profile" | "topic_fact" | "response_behavior" | "",
+    "confidence": number
+  } | null,
   "episode_candidate": {"summary": string, "raw_ref": string, "importance": number} | null
 }
 
@@ -31,6 +37,12 @@ JSON 객체 하나만 출력:
 - 질문, 요청, 작업 지시, 현재 목표, 화제 전환을 state_update로 넣을 때는 key를 current_request, current_goal, current_topic_focus 같은 현재 상태용 키로 사용한다.
 - profile_candidate는 정말 장기 사용자 모델에 남길 가치가 있을 때만 넣는다.
 - 단순 질문, 단순 요청, 일회성 화제 진입은 profile_candidate로 넣지 않는다.
+- 그러나 최신 발화 안의 명시적 자기서술은 profile_candidate를 적극적으로 고려한다.
+- "나는/내가/난 ...", "나는 ...에 관심이 많다", "나는 ...을 중요하게 생각한다", "앞으로는 ... 방식의 답변을 원한다", "내가 틀릴 수 있으니 검증해 달라" 같은 문장은 profile_candidate가 될 수 있다.
+- 사용자가 assistant의 설명 자체를 정정하면 correction_candidate.target_kind는 "topic_fact"다.
+- 사용자가 사용자 모델 자체를 정정하면 correction_candidate.target_kind는 "profile"이다.
+- 사용자가 답변 방식이나 대화 태도를 바로잡으면 correction_candidate.target_kind는 "response_behavior"다.
+- 사용자의 답변 방식 선호가 장기적 성향처럼 보이면 correction_candidate만 넣지 말고 profile_candidate도 함께 고려한다.
 - JSON 외 텍스트 금지.
 - confidence / importance는 0.0~1.0.
 - direct_confirm는 사용자가 assistant의 이해를 명시적으로 승인한 경우에만 true.

@@ -11,12 +11,24 @@ class ProfileRebuilder:
         self.summary_store = SummaryStore()
         self.topic_store = TopicStore()
 
+    def _correction_target_kind(self, reason: str | None) -> str:
+        text = str(reason or "").strip()
+        prefix, has_separator, _rest = text.partition(":")
+        if has_separator and prefix in {"profile", "topic_fact", "response_behavior"}:
+            return prefix
+        return "topic_fact"
+
     def rebuild_topic(self, topic: str | None = None, topic_id: str | None = None) -> None:
         active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
         corrections = self.correction_store.list_active_by_topic(topic=topic, topic_id=topic_id, limit=5)
 
-        if corrections:
-            latest = corrections[0]
+        latest_profile_correction = next(
+            (item for item in corrections if self._correction_target_kind(item.get("reason")) == "profile"),
+            None,
+        )
+
+        if latest_profile_correction:
+            latest = latest_profile_correction
             new_content = latest['content']
             source = 'rebuilt_from_correction'
             resolved_topic_id = latest.get('topic_id') or topic_id
