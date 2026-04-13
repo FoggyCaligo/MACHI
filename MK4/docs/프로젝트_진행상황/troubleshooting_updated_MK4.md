@@ -915,7 +915,46 @@ MK4에서 외부 라이브러리는 기능 확장의 상징이 아니라, 장기
 
 ---
 
-## 26. 최종 요약
+## 26. 일반 채팅 extractor가 한 턴 신호를 너무 적게 담고 파싱 실패에 약하던 문제 (2026-04-14)
+
+### 문제
+일반 채팅 memory extractor에는 두 가지 구조적 한계가 남아 있었다.
+
+- 한 턴에서 `memory_candidate`, `correction_candidate`, `episode_candidate`를 사실상 각각 1개씩만 담는 구조였다.
+- extractor 입력이 거의 `latest_user_message` 하나에만 의존하고 있었다.
+- 응답이 fenced JSON이거나 앞뒤에 잡텍스트가 섞이면 parse 실패 후 no-op fallback으로 빠질 가능성이 있었다.
+
+### 왜 문제가 되었는가
+일반 채팅은 실제로 가장 많은 장기 신호가 드러나는 채널인데, 이 구조에서는 중요한 신호가 쉽게 흘러버린다.
+
+- 한 메시지 안에 가치관, 관심사, 답변 선호, 정정, 회상 가치가 동시에 들어와도 일부만 남고 나머지는 버려질 수 있다.
+- repeated_behavior는 직전 몇 턴의 사용자 발화 흐름이 있어야 보이는데, 최신 한 문장만 보면 탐지가 약해진다.
+- parse 실패가 잦으면 fallback은 안전하지만, 일반 채팅 memory 품질은 계속 낮게 유지된다.
+
+### 방향 수정
+일반 채팅 extractor는 "하나의 메시지에서 여러 장기 신호를 구조적으로 담는 쪽"으로 확장했다.
+
+- `memory_candidates / correction_candidates / episode_candidates` 배열을 수용하도록 정규화 계층 확장
+- singular 필드는 그대로 남겨 기존 형식과의 호환성 유지
+- extractor prompt에 `recent_user_messages`를 추가해 user-only 반복 문맥 반영
+- fenced JSON과 잡텍스트가 섞인 응답도 더 잘 복구하도록 JSON 추출 강화
+- 관련 회귀를 `tests/test_chat_update_pipeline.py`로 고정
+
+### 핵심 교훈
+일반 채팅 품질은 "답변 톤"보다 먼저 "무엇을 구조적으로 건져내는가"에서 갈린다.
+
+즉 MK4에서 일반 채팅을 강화한다는 것은:
+
+- 말투를 더 많이 제어하는 것이 아니라
+- 한 턴의 의미 신호를 더 덜 잃게 만들고
+- 사용자 발화 연속성을 더 잘 반영하고
+- fallback으로 버려지는 비율을 낮추는 것
+
+에 가깝다.
+
+---
+
+## 27. 최종 요약
 
 지금까지 MK4에서 가장 큰 전환은 아래 여덟 가지다.
 

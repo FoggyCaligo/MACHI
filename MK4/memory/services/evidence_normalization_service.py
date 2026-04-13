@@ -43,6 +43,24 @@ class EvidenceNormalizationService:
         except json.JSONDecodeError:
             pass
 
+        fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if fenced_match:
+            try:
+                return json.loads(fenced_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        decoder = json.JSONDecoder()
+        for idx, ch in enumerate(raw):
+            if ch != "{":
+                continue
+            try:
+                parsed, _end = decoder.raw_decode(raw[idx:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not match:
             return {}
@@ -150,6 +168,22 @@ class EvidenceNormalizationService:
             "importance": self.bounded_confidence(value.get("importance"), default=0.5),
         }
 
+    def _normalize_candidate_list(
+        self,
+        values: Any,
+        *,
+        item_normalizer,
+    ) -> list[dict[str, Any]]:
+        if values is None:
+            return []
+        raw_items = values if isinstance(values, list) else [values]
+        normalized: list[dict[str, Any]] = []
+        for item in raw_items:
+            candidate = item_normalizer(item)
+            if candidate:
+                normalized.append(candidate)
+        return normalized
+
     def normalize_profile_candidate(
         self,
         value: Any,
@@ -191,15 +225,24 @@ class EvidenceNormalizationService:
     def normalize_chat_update(self, parsed: dict[str, Any]) -> dict[str, Any]:
         action_types = self.normalize_actions(parsed.get("action_types"))
         state_payloads = self.normalize_state_payloads(parsed.get("state_payloads"))
-        memory_candidate = self.normalize_memory_candidate(parsed.get("memory_candidate"))
-        correction_candidate = self.normalize_correction_candidate(parsed.get("correction_candidate"))
-        episode_candidate = self.normalize_episode_candidate(parsed.get("episode_candidate"))
+        memory_candidates = self._normalize_candidate_list(
+            parsed.get("memory_candidates") or parsed.get("memory_candidate"),
+            item_normalizer=self.normalize_memory_candidate,
+        )
+        correction_candidates = self._normalize_candidate_list(
+            parsed.get("correction_candidates") or parsed.get("correction_candidate"),
+            item_normalizer=self.normalize_correction_candidate,
+        )
+        episode_candidates = self._normalize_candidate_list(
+            parsed.get("episode_candidates") or parsed.get("episode_candidate"),
+            item_normalizer=self.normalize_episode_candidate,
+        )
 
-        if memory_candidate and "profile_candidate" not in action_types:
+        if memory_candidates and "profile_candidate" not in action_types:
             action_types.append("profile_candidate")
-        if correction_candidate and "new_correction" not in action_types:
+        if correction_candidates and "new_correction" not in action_types:
             action_types.append("new_correction")
-        if episode_candidate and "new_episode" not in action_types:
+        if episode_candidates and "new_episode" not in action_types:
             action_types.append("new_episode")
         if state_payloads and "state_update" not in action_types:
             action_types.append("state_update")
@@ -217,9 +260,12 @@ class EvidenceNormalizationService:
         return {
             "action_types": action_types,
             "state_payloads": state_payloads,
-            "memory_candidate": memory_candidate,
-            "correction_candidate": correction_candidate,
-            "episode_candidate": episode_candidate,
+            "memory_candidates": memory_candidates,
+            "correction_candidates": correction_candidates,
+            "episode_candidates": episode_candidates,
+            "memory_candidate": memory_candidates[0] if memory_candidates else None,
+            "correction_candidate": correction_candidates[0] if correction_candidates else None,
+            "episode_candidate": episode_candidates[0] if episode_candidates else None,
             "conversation_summary": conversation_summary,
         }
 
@@ -256,8 +302,7 @@ class EvidenceNormalizationService:
         normalized = self.normalize_chat_update(parsed)
         envelopes: list[dict[str, Any]] = []
 
-        memory_candidate = normalized.get("memory_candidate")
-        if memory_candidate:
+        for memory_candidate in normalized.get("memory_candidates") or []:
             env = self.build_evidence_envelope(
                 channel="chat",
                 kind="profile_candidate",
@@ -273,8 +318,7 @@ class EvidenceNormalizationService:
             if env:
                 envelopes.append(env)
 
-        correction_candidate = normalized.get("correction_candidate")
-        if correction_candidate:
+        for correction_candidate in normalized.get("correction_candidates") or []:
             env = self.build_evidence_envelope(
                 channel="chat",
                 kind="correction_candidate",
@@ -288,8 +332,7 @@ class EvidenceNormalizationService:
             if env:
                 envelopes.append(env)
 
-        episode_candidate = normalized.get("episode_candidate")
-        if episode_candidate:
+        for episode_candidate in normalized.get("episode_candidates") or []:
             env = self.build_evidence_envelope(
                 channel="chat",
                 kind="episode_candidate",

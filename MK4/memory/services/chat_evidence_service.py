@@ -6,6 +6,7 @@ from config import CHAT_UPDATE_EXTRACT_SYSTEM_PROMPT_PATH, EXTRACT_NUM_PREDICT, 
 from memory.retrieval.update_retriever import UpdateRetriever
 from memory.services.evidence_extraction_service import EvidenceExtractionService
 from memory.services.evidence_normalization_service import EvidenceNormalizationService
+from memory.stores.raw_message_store import RawMessageStore
 
 
 def _log(message: str) -> None:
@@ -19,10 +20,51 @@ class ChatEvidenceService:
         self.extraction_service = EvidenceExtractionService(timeout=90, num_predict=EXTRACT_NUM_PREDICT, retry_num_predict=EXTRACT_RETRY_NUM_PREDICT)
         self.normalizer = EvidenceNormalizationService()
         self.fallback_retriever = UpdateRetriever()
+        self.raw_message_store = RawMessageStore()
+
+    def _clean_text(self, text: str | None, max_len: int = 220) -> str:
+        if not text:
+            return ""
+        cleaned = " ".join(str(text).strip().split())
+        if len(cleaned) > max_len:
+            return cleaned[:max_len].rstrip() + "..."
+        return cleaned
+
+    def _recent_user_messages(self, user_message: str, keep: int = 3) -> list[str]:
+        recent_rows = self.raw_message_store.recent(limit=12)
+        current_user = self._clean_text(user_message, max_len=220)
+        skipped_current = False
+        collected: list[str] = []
+
+        for row in reversed(recent_rows):
+            if row.get("role") != "user":
+                continue
+
+            content = self._clean_text(row.get("content"), max_len=220)
+            if not content:
+                continue
+
+            if not skipped_current and current_user and content == current_user:
+                skipped_current = True
+                continue
+
+            collected.append(content)
+            if len(collected) >= keep:
+                break
+
+        collected.reverse()
+        return collected
 
     def _build_user_prompt(self, user_message: str) -> str:
-        cleaned_user = " ".join((user_message or "").strip().split())
-        return "[latest_user_message]\n" + cleaned_user
+        cleaned_user = self._clean_text(user_message, max_len=800)
+        parts: list[str] = []
+
+        recent_user_messages = self._recent_user_messages(user_message)
+        if recent_user_messages:
+            parts.append("[recent_user_messages]\n" + "\n".join(f"- {item}" for item in recent_user_messages))
+
+        parts.append("[latest_user_message]\n" + cleaned_user)
+        return "\n\n".join(parts)
 
     def extract(self, *, user_message: str, reply: str, model: str | None = None) -> dict:
         started_at = time.perf_counter()
