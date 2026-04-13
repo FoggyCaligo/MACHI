@@ -23,10 +23,10 @@ def _log(message: str) -> None:
 
 
 TOPIC_SYSTEM_PROMPT = (
-    "사용자 발화의 현재 대주제를 한국어 두 문장으로 요약하라. "
-    "세부 사례나 고유명사에 매몰되지 말고, 앞으로 비슷한 대화를 묶을 수 있는 넓은 주제로 작성하라. "
-    "사용자 발화를 거의 반복하지 말고, 상위 의미 축으로 정리하라. "
-    "두 문장만 출력하라. 번호, 따옴표, 코드블록, 불릿을 쓰지 마라."
+    "사용자 발화의 현재 대주제를 한국어 긴 명사구 하나로만 요약하라. "
+    "완전한 문장으로 쓰지 마라. 종결어미, 마침표, 이유 설명, 번호, 따옴표, 코드블록, 불릿을 금지한다. "
+    "세부 사례나 고유명사를 그대로 반복하지 말고, 앞으로 비슷한 대화를 묶을 수 있는 재사용 가능한 상위 주제로 작성하라. "
+    "반드시 긴 명사구 한 줄만 출력하라."
 )
 
 
@@ -49,12 +49,13 @@ class TopicRouter:
         text = " ".join((text or "").strip().split())
         if not text:
             return ""
+
         text = text.replace("\n", " ").strip(' "\'')
-        sentences = re.split(r"(?<=[.!?。！？])\s+", text)
-        sentences = [s.strip() for s in sentences if s.strip()]
-        if not sentences:
-            return text[:180].strip()
-        return " ".join(sentences[:2])[:180].strip()
+        text = re.sub(r"[.!?。！？]+$", "", text).strip()
+        text = re.sub(r"\s*[-–—:]\s*.*$", "", text).strip()
+        text = re.sub(r"\s*\([^)]*\)\s*$", "", text).strip()
+
+        return text[:80].strip()
 
     def _safe_default_summary(self) -> str:
         return "general"

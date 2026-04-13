@@ -2,8 +2,9 @@
 
 원칙:
 - assistant 발화는 메모리 재료가 아니다. 최신 사용자 발화만 보고 판단한다.
-- 질문, 요청, 인사, 잡담은 보통 discard.
-- 사용자의 안정적 성향, 설명 선호, 반복 경향, 자기 인식은 profile_candidate 가능.
+- 질문, 요청, 작업 지시, 현재 하고 싶은 것, 화제 전환은 profile_candidate가 아니다.
+- 이런 내용은 필요하면 state_update로 넣고, 장기 저장 가치가 약하면 discard한다.
+- 사용자의 안정적 성향, 설명 선호, 반복 경향, 자기 인식만 profile_candidate 가능하다.
 - assistant의 이해를 사용자가 강하게 승인하면 direct_confirm=true.
 - 정정이면 correction_candidate.
 - 회상 가치가 있는 사건/맥락이면 episode_candidate.
@@ -27,8 +28,10 @@ JSON 객체 하나만 출력:
 
 규칙:
 - current_conversation_summary는 최신 사용자 발화의 핵심을 topic seed 용도로 1문장으로 요약한다.
+- 질문, 요청, 작업 지시, 현재 목표, 화제 전환을 state_update로 넣을 때는 key를 current_request, current_goal, current_topic_focus 같은 현재 상태용 키로 사용한다.
+- profile_candidate는 정말 장기 사용자 모델에 남길 가치가 있을 때만 넣는다.
+- 단순 질문, 단순 요청, 일회성 화제 진입은 profile_candidate로 넣지 않는다.
 - JSON 외 텍스트 금지.
 - confidence / importance는 0.0~1.0.
-- profile_candidate는 정말 남길 가치가 있을 때만 넣는다.
 - direct_confirm는 사용자가 assistant의 이해를 명시적으로 승인한 경우에만 true.
 - memory_tier는 확실할 때만 채우고, 애매하면 빈 문자열로 둔다.

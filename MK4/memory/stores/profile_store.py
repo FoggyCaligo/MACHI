@@ -39,6 +39,17 @@ class ProfileStore:
             ).fetchone()
             return dict(row) if row else None
 
+
+    def get_profile_by_id(self, profile_id: str) -> dict[str, Any] | None:
+        if not profile_id:
+            return None
+        with connection_context() as conn:
+            row = conn.execute(
+                f"{self._base_select()} WHERE p.id = ? LIMIT 1",
+                (profile_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
     def get_active_profiles(self, exclude_general: bool = False) -> list[dict[str, Any]]:
         query = f"{self._base_select()} WHERE p.status = 'active'"
         if exclude_general:

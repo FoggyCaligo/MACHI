@@ -69,10 +69,16 @@ class MemoryApplyService:
     def _has_conflicting_active_correction(self, candidate_content: str, topic: str | None = None, topic_id: str | None = None) -> bool:
         active_corrections = self._load_topic_corrections(topic=topic, topic_id=topic_id)
         for correction in active_corrections:
-            correction_content = str(correction.get("content") or "").strip()
-            if not correction_content:
+            supersedes_profile_id = str(correction.get("supersedes_profile_id") or "").strip()
+            if not supersedes_profile_id:
                 continue
-            if not self._same_meaning(correction_content, candidate_content):
+
+            superseded_profile = self.profile_store.get_profile_by_id(supersedes_profile_id)
+            if not superseded_profile:
+                continue
+
+            superseded_content = str(superseded_profile.get("content") or "").strip()
+            if superseded_content and self._same_meaning(superseded_content, candidate_content):
                 return True
         return False
 
