@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+import math
 from functools import lru_cache
 from typing import Iterable
 
-import math
-
 from config import TOPIC_EMBEDDING_MODEL
+
+
+# sentence_transformers 내부의 BertModel LOAD REPORT 경고 억제
+# ("embeddings.position_ids | UNEXPECTED" 등 모델 로드 시 발생하는 무해한 경고)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 
 
 class EmbeddingDependencyError(RuntimeError):
@@ -22,6 +27,14 @@ def _load_model():
         ) from exc
 
     try:
+        # local_files_only=True: 캐시된 모델만 사용, HF Hub 체크 생략
+        return SentenceTransformer(TOPIC_EMBEDDING_MODEL, local_files_only=True)
+    except Exception:
+        pass
+
+    # 캐시가 없는 최초 실행 등 예외 상황에만 Hub에서 다운로드
+    try:
+        from sentence_transformers import SentenceTransformer
         return SentenceTransformer(TOPIC_EMBEDDING_MODEL)
     except Exception as exc:
         raise EmbeddingDependencyError(
@@ -33,7 +46,6 @@ def _prepare_text(text: str, kind: str) -> str:
     normalized = " ".join((text or "").strip().split())
     if not normalized:
         return ""
-
     prefix = "query: " if kind == "query" else "passage: "
     return f"{prefix}{normalized}"
 
@@ -42,7 +54,6 @@ def embed_text(text: str, *, kind: str = "query") -> list[float]:
     prepared = _prepare_text(text, kind)
     if not prepared:
         return []
-
     try:
         model = _load_model()
         vector = model.encode(
@@ -64,7 +75,6 @@ def embed_texts(texts: Iterable[str], *, kind: str = "passage") -> list[list[flo
     non_empty_indexes = [idx for idx, text in enumerate(prepared) if text]
     if not non_empty_indexes:
         return [[] for _ in prepared]
-
     try:
         model = _load_model()
         vectors = model.encode(
@@ -87,7 +97,6 @@ def embed_texts(texts: Iterable[str], *, kind: str = "passage") -> list[list[flo
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0
-
     dot = sum(a * b for a, b in zip(left, right))
     left_norm = math.sqrt(sum(a * a for a in left))
     right_norm = math.sqrt(sum(b * b for b in right))
