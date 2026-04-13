@@ -44,6 +44,9 @@ def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    #WAL 모드 설정
+    conn.execute("PRAGMA journal_mode = WAL")   # ← 추가
+    conn.execute("PRAGMA busy_timeout = 5000")  # ← 추가 (ms 단위, 5초 대기)
     return conn
 
 

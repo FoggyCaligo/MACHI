@@ -71,10 +71,16 @@ class RequestOrchestrator:
         if not content:
             raise HTTPException(status_code=400, detail="첨부 파일 내용이 비어 있습니다.")
 
-        max_chars = 2800
+        max_chars = 5000
         truncated = False
         if len(content) > max_chars:
-            content = content[:max_chars].rstrip() + "\n..."
+            truncated_raw = content[:max_chars]
+            # 마지막 완전한 줄까지만 자르기
+            last_newline = truncated_raw.rfind("\n")
+            if last_newline > max_chars // 2:  # 너무 앞에서 잘리면 그냥 원본 사용
+                content = truncated_raw[:last_newline].rstrip() + "\n..."
+            else:
+                content = truncated_raw.rstrip() + "\n..."
             truncated = True
 
         merged = (
