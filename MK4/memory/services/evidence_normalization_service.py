@@ -8,11 +8,7 @@ from memory.policies.memory_classification_policy import SOURCE_STRENGTH_ORDER
 
 
 class EvidenceNormalizationService:
-    """Normalize structured evidence/update payloads across channels.
-
-    This layer does not interpret raw language. It validates and shapes
-    already-structured outputs produced upstream by extractors/resolvers.
-    """
+    """Normalize structured evidence/update payloads across channels."""
 
     ALLOWED_ACTION_TYPES = {
         "discard",
@@ -63,10 +59,14 @@ class EvidenceNormalizationService:
         text = str(value or "").strip()
         return text if text in SOURCE_STRENGTH_ORDER else ""
 
+    @staticmethod
+    def normalize_memory_tier(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return text if text in {"general", "candidate", "confirmed"} else ""
+
     def normalize_actions(self, value: Any) -> list[str]:
         if not isinstance(value, list):
             return ["discard"]
-
         normalized: list[str] = []
         seen: set[str] = set()
         for item in value:
@@ -80,7 +80,6 @@ class EvidenceNormalizationService:
     def normalize_state_payloads(self, value: Any) -> list[dict[str, Any]]:
         if not isinstance(value, list):
             return []
-
         normalized: list[dict[str, Any]] = []
         for item in value:
             if not isinstance(item, dict):
@@ -106,12 +105,13 @@ class EvidenceNormalizationService:
         if not content:
             return None
         direct_confirm = bool(value.get("direct_confirm"))
-        legacy_direct_candidate = bool(value.get("direct_candidate"))
         return {
             "content": content,
             "source_strength": self.normalize_source_strength(value.get("source_strength")),
-            "direct_confirm": direct_confirm or legacy_direct_candidate,
+            "direct_candidate": bool(value.get("direct_candidate")) or direct_confirm,
+            "direct_confirm": direct_confirm,
             "confidence": self.bounded_confidence(value.get("confidence"), default=0.0),
+            "memory_tier": self.normalize_memory_tier(value.get("memory_tier")),
         }
 
     def normalize_correction_candidate(self, value: Any) -> dict[str, Any] | None:
@@ -162,6 +162,7 @@ class EvidenceNormalizationService:
             "confidence": self.bounded_confidence(value.get("confidence"), default=0.0),
             "evidence_text": evidence_text,
             "direct_confirm": bool(value.get("direct_confirm")),
+            "memory_tier": self.normalize_memory_tier(value.get("memory_tier")),
         }
 
         if include_source_file_paths:
@@ -248,7 +249,11 @@ class EvidenceNormalizationService:
                 content=memory_candidate.get("content") or "",
                 source_strength=memory_candidate.get("source_strength") or "",
                 confidence=memory_candidate.get("confidence") or 0.0,
-                metadata={"direct_confirm": bool(memory_candidate.get("direct_confirm"))},
+                metadata={
+                    "direct_candidate": bool(memory_candidate.get("direct_candidate")),
+                    "direct_confirm": bool(memory_candidate.get("direct_confirm")),
+                    "memory_tier": memory_candidate.get("memory_tier") or "",
+                },
             )
             if env:
                 envelopes.append(env)
@@ -321,6 +326,7 @@ class EvidenceNormalizationService:
             metadata: dict[str, Any] = {
                 "evidence_text": candidate.get("evidence_text") or "",
                 "direct_confirm": bool(candidate.get("direct_confirm")),
+                "memory_tier": candidate.get("memory_tier") or "",
             }
             if candidate.get("topic_resolution"):
                 metadata["topic_resolution"] = candidate.get("topic_resolution")

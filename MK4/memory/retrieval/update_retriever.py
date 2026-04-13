@@ -4,12 +4,10 @@ from memory.services.evidence_normalization_service import EvidenceNormalization
 
 
 class UpdateRetriever:
-    """Fallback extractor that preserves failure visibility without heuristics.
+    """Safe no-op fallback for chat extraction failures.
 
-    This fallback intentionally does not perform keyword matching, string rules,
-    or implicit language interpretation. When the model extractor fails, the
-    system should surface the failure clearly instead of silently fabricating a
-    memory update from hardcoded rules.
+    If model-based chat extraction fails, do not guess meaning with string
+    heuristics. Return a discard bundle so failures stay visible.
     """
 
     def __init__(self) -> None:
@@ -17,19 +15,19 @@ class UpdateRetriever:
 
     def fallback_bundle(self, user_message: str, reply: str, model: str | None = None) -> dict:
         del user_message, reply, model
-        parsed = {
-            "action_types": ["discard"],
-            "state_payloads": [],
-            "memory_candidate": None,
-            "correction_candidate": None,
-            "episode_candidate": None,
-        }
-        bundle = self.normalizer.normalize_chat_update_bundle(parsed)
+        bundle = self.normalizer.normalize_chat_update_bundle(
+            {
+                "action_types": ["discard"],
+                "state_payloads": [],
+                "memory_candidate": None,
+                "correction_candidate": None,
+                "episode_candidate": None,
+            }
+        )
         bundle.update(
             {
-                "actions": [{"type": "discard"}],
-                "extractor": "no_op_fallback",
-                "extract_error": "chat_extractor_failed",
+                "extractor": "noop_fallback",
+                "fallback_reason": "model_extract_failed",
             }
         )
         return bundle

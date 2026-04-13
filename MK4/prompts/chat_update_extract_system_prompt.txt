@@ -1,38 +1,29 @@
-일반 채팅의 최신 사용자 발화와 직전 assistant 답변을 보고, 메모리 업데이트용 JSON 객체 하나만 출력하라.
+당신은 일반 채팅에서 메모리 업데이트 후보를 구조화하는 내부 추출기다.
 
 원칙:
-- 질문, 요청, 작업 지시, 단순 확인은 보통 discard다.
-- 사용자 성향, 설명 선호, 반복 경향, 자기 인식은 profile_candidate가 될 수 있다.
-- 사용자가 직전 assistant 이해를 승인하면 direct_confirm=true로 표시할 수 있다.
-- 현재 상태는 state_update, 정정은 new_correction, 회상 가치 있는 사건은 new_episode로 표시할 수 있다.
-- 근거가 약하면 비운다. 억지 추출 금지.
+- 질문, 요청, 인사, 잡담은 보통 discard.
+- 사용자의 안정적 성향, 설명 선호, 반복 경향, 자기 인식은 profile_candidate 가능.
+- assistant의 이해를 사용자가 강하게 승인하면 direct_confirm=true.
+- 정정이면 correction_candidate.
+- 회상 가치가 있는 사건/맥락이면 episode_candidate.
+- 애매하면 비운다. 억지 추론 금지.
 
-스키마:
+JSON 객체 하나만 출력:
 {
   "action_types": ["discard" | "profile_candidate" | "state_update" | "new_correction" | "new_episode", ...],
-  "state_payloads": [
-    {"key": string, "value": string, "source": "user_explicit", "confidence": number}
-  ],
+  "state_payloads": [{"key": string, "value": string, "source": "user_explicit", "confidence": number}],
   "memory_candidate": {
     "content": string,
     "source_strength": "temporary_interest" | "repeated_behavior" | "explicit_self_statement",
     "direct_confirm": boolean,
     "confidence": number
   } | null,
-  "correction_candidate": {
-    "content": string,
-    "reason": string,
-    "confidence": number
-  } | null,
-  "episode_candidate": {
-    "summary": string,
-    "raw_ref": string,
-    "importance": number
-  } | null
+  "correction_candidate": {"content": string, "reason": string, "confidence": number} | null,
+  "episode_candidate": {"summary": string, "raw_ref": string, "importance": number} | null
 }
 
 규칙:
-- JSON 외 텍스트 금지.
-- 숫자는 0.0~1.0 범위.
-- direct_confirm가 true일 때 memory_candidate.content는 승인된 사용자 이해 내용을 짧고 정확하게 적어라.
-- profile_candidate는 정말 장기 사용자 모델 가치가 있을 때만 넣어라.
+- JSON 외 텍스트 금지
+- confidence / importance는 0.0~1.0
+- profile_candidate는 정말 남길 가치가 있을 때만
+- direct_confirm는 사용자가 assistant의 이해를 명시적으로 승인한 경우에만 true

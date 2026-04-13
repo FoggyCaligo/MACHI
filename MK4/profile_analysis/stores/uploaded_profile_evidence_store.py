@@ -34,6 +34,8 @@ class UploadedProfileEvidenceStore:
         topic_id: str | None = None,
         candidate_content: str | None = None,
         source_strength: str | None = None,
+        direct_confirm: bool = False,
+        memory_tier: str | None = None,
     ) -> dict:
         evidence_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -56,9 +58,11 @@ class UploadedProfileEvidenceStore:
                     applied_to_memory,
                     linked_profile_id,
                     linked_correction_id,
+                    direct_confirm,
+                    memory_tier,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?)
                 """,
                 (
                     evidence_id,
@@ -71,6 +75,8 @@ class UploadedProfileEvidenceStore:
                     source_strength,
                     evidence_text,
                     confidence,
+                    1 if direct_confirm else 0,
+                    memory_tier,
                     now,
                 ),
             )
@@ -90,15 +96,14 @@ class UploadedProfileEvidenceStore:
             "applied_to_memory": 0,
             "linked_profile_id": None,
             "linked_correction_id": None,
+            "direct_confirm": 1 if direct_confirm else 0,
+            "memory_tier": memory_tier,
             "created_at": now,
         }
 
     def delete_by_source(self, source_id: str) -> None:
         with get_conn() as conn:
-            conn.execute(
-                "DELETE FROM uploaded_profile_evidence WHERE source_id = ?",
-                (source_id,),
-            )
+            conn.execute("DELETE FROM uploaded_profile_evidence WHERE source_id = ?", (source_id,))
             conn.commit()
 
     def list_by_source(self, source_id: str) -> list[dict]:
@@ -112,7 +117,6 @@ class UploadedProfileEvidenceStore:
                 """,
                 (source_id,),
             ).fetchall()
-
         return [dict(row) for row in rows]
 
     def list_unapplied_by_source(self, source_id: str) -> list[dict]:
@@ -127,10 +131,9 @@ class UploadedProfileEvidenceStore:
                 """,
                 (source_id,),
             ).fetchall()
-
         return [dict(row) for row in rows]
 
-    def list_candidate_evidence(self) -> list[dict]:
+    def list_profile_evidence(self) -> list[dict]:
         with get_conn() as conn:
             rows = conn.execute(
                 """
@@ -142,8 +145,10 @@ class UploadedProfileEvidenceStore:
                 ORDER BY created_at ASC
                 """
             ).fetchall()
-
         return [dict(row) for row in rows]
+
+    def list_candidate_evidence(self) -> list[dict]:
+        return self.list_profile_evidence()
 
     def mark_applied(
         self,

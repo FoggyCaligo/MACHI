@@ -15,6 +15,8 @@ class ExtractionPolicy:
         bundle = update_bundle or {}
         evidence_envelopes = bundle.get("evidence_envelopes") or []
         topic_seed = str(bundle.get("topic_seed") or user_message or "").strip()
+        source_message_id = bundle.get("source_message_id")
+        response_message_id = bundle.get("response_message_id")
 
         topic_resolution = self.topic_router.resolve(
             user_message=topic_seed,
@@ -27,7 +29,7 @@ class ExtractionPolicy:
 
         result = {
             "profiles": [],
-            "candidate_evidences": [],
+            "profile_evidences": [],
             "corrections": [],
             "episodes": [],
             "states": [],
@@ -49,15 +51,36 @@ class ExtractionPolicy:
             metadata = envelope.get("metadata") or {}
 
             if kind == "profile_candidate" and content:
-                direct_confirm = bool(metadata.get("direct_confirm"))
                 classification = self.memory_policy.classify_chat_memory(
                     action_types=action_types,
                     similarity=topic_resolution.similarity,
                     source_strength=envelope.get("source_strength"),
-                    direct_confirm=direct_confirm,
+                    direct_candidate=bool(metadata.get("direct_candidate")),
+                    direct_confirm=bool(metadata.get("direct_confirm")),
                     confidence=envelope.get("confidence"),
+                    memory_tier=metadata.get("memory_tier"),
                 )
-                if classification["route"] == "confirmed":
+                route = classification["route"]
+                if route == "discard":
+                    result["discarded"].append(content)
+                    continue
+
+                evidence = {
+                    "channel": "chat",
+                    "topic_id": topic_id,
+                    "topic": topic,
+                    "candidate_content": content,
+                    "source_strength": envelope.get("source_strength") or "",
+                    "confidence": classification["confidence"],
+                    "signals": classification["signals"],
+                    "memory_tier": route,
+                    "direct_confirm": bool(metadata.get("direct_confirm")),
+                    "evidence_text": user_message,
+                    "source_message_id": source_message_id,
+                    "response_message_id": response_message_id,
+                }
+                result["profile_evidences"].append(evidence)
+                if route == "confirmed":
                     result["profiles"].append(
                         {
                             "topic_id": topic_id,
@@ -68,22 +91,6 @@ class ExtractionPolicy:
                             "signals": classification["signals"],
                         }
                     )
-                elif classification["route"] == "candidate":
-                    result["candidate_evidences"].append(
-                        {
-                            "channel": "chat",
-                            "topic_id": topic_id,
-                            "topic": topic,
-                            "candidate_content": content,
-                            "source_strength": envelope.get("source_strength") or "",
-                            "confidence": classification["confidence"],
-                            "evidence_text": user_message,
-                            "direct_confirm": direct_confirm,
-                            "signals": classification["signals"],
-                        }
-                    )
-                else:
-                    result["discarded"].append(content)
             elif kind == "correction_candidate" and content:
                 result["corrections"].append(
                     {
@@ -106,16 +113,24 @@ class ExtractionPolicy:
                     }
                 )
             elif kind == "state_update":
-                key = str(metadata.get("key") or "").strip()
-                if key and content:
+                state_key = str(metadata.get("key") or "").strip()
+                state_value = content
+                if state_key and state_value:
                     result["states"].append(
                         {
-                            "key": key,
-                            "value": content,
+                            "key": state_key,
+                            "value": state_value,
                             "source": metadata.get("source") or "user_explicit",
                         }
                     )
 
-        result["states"].append({"key": "active_topic_id", "value": topic_id or "", "source": "topic_router"})
-        result["states"].append({"key": "active_topic_summary", "value": topic, "source": "topic_router"})
+        if topic_id:
+            result["states"].append(
+                {
+                    "key": "active_topic_id",
+                    "value": topic_id,
+                    "source": "topic_router",
+                }
+            )
+
         return result

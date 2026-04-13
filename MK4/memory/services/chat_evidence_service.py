@@ -7,7 +7,7 @@ from memory.services.evidence_normalization_service import EvidenceNormalization
 
 
 class ChatEvidenceService:
-    """Model-first chat memory extractor with heuristic fallback."""
+    """Model-first chat memory extractor with safe no-op fallback."""
 
     def __init__(self) -> None:
         self.extraction_service = EvidenceExtractionService(timeout=90, num_predict=320, retry_num_predict=224)
@@ -41,7 +41,7 @@ class ChatEvidenceService:
                 reply=reply,
                 model=model,
             )
-            fallback["extractor"] = "heuristic_fallback"
+            fallback["extractor"] = "noop_fallback"
             fallback["extract_error"] = str(exc)
             return fallback
 
@@ -52,7 +52,7 @@ class ChatEvidenceService:
                 reply=reply,
                 model=model,
             )
-            fallback["extractor"] = "heuristic_fallback"
+            fallback["extractor"] = "noop_fallback"
             fallback["extract_error"] = run.error or "parse_failed"
             return fallback
 
