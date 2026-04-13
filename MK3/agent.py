@@ -82,7 +82,7 @@ def call_ollama(messages, tools=None):
     resp = requests.post(
         f"{settings.ollama_base_url}/api/chat",
         json=payload,
-        timeout=180
+        timeout=settings.ollama_timeout_seconds,
     )
 
     print("=== OLLAMA REQUEST PAYLOAD ===")

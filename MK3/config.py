@@ -11,7 +11,7 @@ load_dotenv()
 class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "gemma4:26b-a4b-it-q4_K_M")
-    ollama_timeout_seconds: int = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
+    ollama_timeout_seconds: int = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
     ollama_context_length: int = int(os.getenv("OLLAMA_CONTEXT_LENGTH", "32768"))
 
     ollama_api_key: str = os.getenv("OLLAMA_API_KEY", "")

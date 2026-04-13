@@ -115,9 +115,6 @@ class ResponseRunner:
     ) -> str:
         completed, tail = cls._extract_continuation_context(text)
 
-        completed_block = completed or "(완결된 직전 문장 없음)"
-        tail_block = tail or "(잘린 꼬리 없음)"
-
         if fallback_prompt:
             base_instruction = fallback_prompt.strip()
         else:
@@ -127,17 +124,27 @@ class ResponseRunner:
                 "새로운 내용만 이어서 쓰고, 완결된 문장으로 마무리하세요."
             )
 
-        return (
-            f"{base_instruction}\n\n"
-            f"[이미 말한 마지막 완결 구간]\n{completed_block}\n\n"
-            f"[직전 답변의 마지막 꼬리]\n{tail_block}\n\n"
-            f"[규칙]\n"
-            f"1. 위 두 블록의 내용을 다시 반복하지 마세요.\n"
-            f"2. 꼬리가 비어 있지 않다면 그 바로 다음부터만 이어 쓰세요.\n"
-            f"3. 새로운 내용만 이어서 쓰고, 완결된 문장으로 끝내세요."
+        parts = [base_instruction]
+        if completed:
+            parts.append(f"이미 말한 마지막 완결 구간:
+{completed}")
+        if tail:
+            parts.append(f"직전 답변의 마지막 꼬리:
+{tail}")
+        parts.append(
+            "규칙:
+"
+            "- 위 내용을 다시 반복하지 마세요.
+"
+            "- 꼬리가 있다면 그 바로 다음부터만 이어 쓰세요.
+"
+            "- 예시 문장, 괄호 설명, 안내문을 출력하지 마세요.
+"
+            "- 새로운 내용만 이어서 쓰고, 완결된 문장으로 끝내세요."
         )
-    
+        return "
 
+".join(parts)
 
 
     def run(
