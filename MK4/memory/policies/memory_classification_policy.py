@@ -86,9 +86,7 @@ class MemoryClassificationPolicy:
             return {"route": "confirmed", "signals": signals, "confidence": resolved_confidence}
         if normalized_strength and resolved_confidence >= MIN_SIGNAL_CONFIDENCE:
             return {"route": "candidate", "signals": signals, "confidence": resolved_confidence}
-        if resolved_confidence > 0.0:
-            return {"route": "general", "signals": signals, "confidence": resolved_confidence}
-        return {"route": "discard", "signals": signals, "confidence": resolved_confidence}
+        return {"route": "general", "signals": signals, "confidence": resolved_confidence}
 
     def classify_evidence(self, evidence: dict) -> dict:
         candidate_content = str(evidence.get("candidate_content") or "").strip()

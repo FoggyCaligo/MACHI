@@ -99,6 +99,33 @@ def _normalize_memory_line(label: str, text: str) -> str:
     return f"- {label}: {cleaned}" if label else f"- {cleaned}"
 
 
+def _summarize_recent_messages(recent_messages: list[dict], *, max_sentences: int = 5, max_chars: int = 520) -> str:
+    if not recent_messages:
+        return ""
+
+    chunks: list[str] = []
+    for message in recent_messages[-max_sentences:]:
+        role = message.get("role")
+        content = _clean_text(message.get("content"), max_len=95)
+        if not content:
+            continue
+
+        if role == "user":
+            sentence = f"사용자는 {content}"
+        else:
+            sentence = f"assistant는 {content}라고 답했다"
+
+        chunks.append(sentence.rstrip(" .") + ".")
+
+    if not chunks:
+        return ""
+
+    summary = " ".join(chunks)
+    if len(summary) > max_chars:
+        summary = summary[:max_chars].rstrip() + "..."
+    return summary
+
+
 def build_messages(user_message: str, context: dict) -> list[dict]:
     system_prompt = load_prompt_text(SYSTEM_PROMPT_PATH)
 
@@ -197,13 +224,10 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
             memory_lines.append("[관련 에피소드]")
             memory_lines.extend(section_lines)
 
-    if recent_messages:
-        memory_lines.append("[최근 대화]")
-        for m in recent_messages:
-            role = "사용자" if m.get("role") == "user" else "AI"
-            content = _clean_text(m.get("content"), max_len=120)
-            if content:
-                memory_lines.append(f"- {role}: {content}")
+    recent_summary = _summarize_recent_messages(recent_messages)
+    if recent_summary:
+        memory_lines.append("[최근 대화 요약]")
+        memory_lines.append(recent_summary)
 
     memory_text = "\n".join(memory_lines).strip()
 
@@ -215,6 +239,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
             f"- 참고 기억 안의 '사용자', '당신', '이 사용자' 같은 표현을 현재 대화의 인칭으로 기계적으로 복사하지 마라.\n"
             f"- 현재 턴의 명시적 진술과 정정이 과거 기억보다 우선한다.\n"
             f"- 특정 과거 source를 현재 턴에서 실제로 다시 보지 않았다면 기억한다고 가장하지 마라.\n"
+            f"- 최근 대화 요약은 참고용이다. 그 문장을 다시 풀어쓰거나 대화를 다시 낭독하지 마라.\n"
             f"- 질문이 예/아니오형이면 먼저 직접 대답하고, 필요할 때만 짧게 이유를 덧붙여라.\n\n"
             f"[현재 사용자 요청]\n"
             f"{_clean_text(user_message, max_len=1000)}"

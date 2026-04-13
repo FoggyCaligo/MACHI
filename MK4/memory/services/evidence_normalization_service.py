@@ -200,12 +200,17 @@ class EvidenceNormalizationService:
         else:
             action_types = ["discard"]
 
+        conversation_summary = self.clean_text(
+            parsed.get("current_conversation_summary") or parsed.get("conversation_summary")
+        )
+
         return {
             "action_types": action_types,
             "state_payloads": state_payloads,
             "memory_candidate": memory_candidate,
             "correction_candidate": correction_candidate,
             "episode_candidate": episode_candidate,
+            "conversation_summary": conversation_summary,
         }
 
     def build_evidence_envelope(
@@ -296,15 +301,17 @@ class EvidenceNormalizationService:
             if env:
                 envelopes.append(env)
 
-        topic_seed = ""
-        for env in envelopes:
-            if env.get("content"):
-                topic_seed = self.clean_text(env.get("content"))
-                break
+        topic_seed = self.clean_text(normalized.get("conversation_summary"))
+        if not topic_seed:
+            for env in envelopes:
+                if env.get("content"):
+                    topic_seed = self.clean_text(env.get("content"))
+                    break
 
         return {
             "channel": "chat",
             "topic_seed": topic_seed,
+            "conversation_summary": normalized.get("conversation_summary") or "",
             "action_types": normalized.get("action_types") or ["discard"],
             "evidence_envelopes": envelopes,
         }

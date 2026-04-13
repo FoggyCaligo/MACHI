@@ -14,18 +14,13 @@ class ChatEvidenceService:
         self.normalizer = EvidenceNormalizationService()
         self.fallback_retriever = UpdateRetriever()
 
-    def _build_user_prompt(self, user_message: str, reply: str) -> str:
+    def _build_user_prompt(self, user_message: str) -> str:
         cleaned_user = " ".join((user_message or "").strip().split())
-        cleaned_reply = " ".join((reply or "").strip().split())
-        return (
-            "[latest_user_message]\n"
-            f"{cleaned_user}\n\n"
-            "[assistant_reply]\n"
-            f"{cleaned_reply}"
-        )
+        return "[latest_user_message]\n" + cleaned_user
 
     def extract(self, *, user_message: str, reply: str, model: str | None = None) -> dict:
-        user_prompt = self._build_user_prompt(user_message=user_message, reply=reply)
+        reply_for_fallback = reply
+        user_prompt = self._build_user_prompt(user_message=user_message)
         run = None
         try:
             run = self.extraction_service.run_extract(
@@ -38,7 +33,7 @@ class ChatEvidenceService:
         except Exception as exc:  # network / local model failures should fall back safely
             fallback = self.fallback_retriever.fallback_bundle(
                 user_message=user_message,
-                reply=reply,
+                reply=reply_for_fallback,
                 model=model,
             )
             fallback["extractor"] = "noop_fallback"
@@ -49,7 +44,7 @@ class ChatEvidenceService:
         if not parsed:
             fallback = self.fallback_retriever.fallback_bundle(
                 user_message=user_message,
-                reply=reply,
+                reply=reply_for_fallback,
                 model=model,
             )
             fallback["extractor"] = "noop_fallback"
