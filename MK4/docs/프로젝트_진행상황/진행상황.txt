@@ -41,6 +41,12 @@ MK4_진행상황_정리
 26. `app/api.py` 및 일부 경로의 블로그/글/화자/직전 파일 기반 문자열 트리거 제거
 27. 중복된 언어 신호 상수와 일부 공통 로직을 공용 파일로 모으는 1차 정리
 28. troubleshooting / handoff / todo 문서화를 진행해 구조 변경 이유와 후속 과제를 추적 가능한 상태로 만든 것
+29. **Correction target kind 분류 체계 도입 (2026-04-13)**
+    - Correction을 profile / topic_fact / response_behavior 3가지로 분류
+    - reason 필드에 "target_kind:reason_text" 형식으로 저장
+    - ProfileRebuilder에서 profile 정정만 rebuild에 반영
+    - chat_update_extract_system_prompt에 target_kind 필드 추가
+    - 메모리 노이즈 필터 강화 (시스템 프롬프트, 정책 echo 차단)
 
 ==================================================
 <미완 또는 부족>

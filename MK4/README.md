@@ -99,6 +99,45 @@ MK4는 크게 세 계층으로 볼 수 있습니다.
 - `candidate`: 승격 후보
 - `confirmed`: 현재 모델이 보고 있는 사용자상
 
+### 3-3. Correction 분류 체계 (2026-04-13 강화)
+
+**Correction은 대상에 따라 3가지로 분류**:
+
+```
+profile: 사용자 모델 자체 재정정
+  예) "내가 말한 취향이 틀렸다", "나는 그런 사람이 아니다"
+  영향: profile rebuild에 반영, profile 정정으로 이전 정보 무효화
+
+topic_fact: 설명/정보 정정
+  예) "그건 틀렸어", "그건 이렇게 작동해", "이건 다르다"
+  영향: correction store에 보관되지만 profile rebuild에는 미포함
+         다음 회상 시 conflict 판단에 사용
+
+response_behavior: 답변 방식/태도 정정
+  예) "이렇게 답하지 말아줄래?", "더 짧게 답해줄 수 있어?", "이 방식은 싫어"
+  영향: memory에만 보관, response_behavior 후보로 저장되지 않음
+        향후 응답 스타일 추출용 자료로만 유지
+```
+
+각 correction은 reason 필드에 `"target_kind:reason_text"` 형식으로 저장되어,
+나중에 policy를 적용할 때 구분됨.
+
+### 3-4. Evidence 흐름
+
+```
+입력 (채팅 / 첨부 / artifact / 정정)
+  ↓
+Evidence 추출 (model 기반, 규칙 제외)
+  ↓
+Tier 배정 (general / candidate / confirmed)
+  ↓
+Store 저장 (profile / correction / episode / state)
+  ↓
+Conflict 판단 (기존 correction 확인)
+  ↓
+다음 턴 반영 (retrieval / response building / profile reconstruction)
+```
+
 `confirmed`도 절대 진실이 아니라, **현재 시점의 가설적 사용자상**입니다.
 
 ### 3-3. 두 개의 축
@@ -358,6 +397,137 @@ MK4를 수정할 때는 아래 원칙을 강하게 유지합니다.
 - correction이 오면 과거 profile도 다시 깨질 수 있어야 하기
 - prompt 하드코딩보다 memory 구조를 우선하기
 - 최신 로컬 기준본 위에서만 순차적으로 작업하기
+
+---
+
+## 13. 2026-04-13 저녁 개선사항
+
+### 13-1. Correction Target Kind 분류 체계 도입
+
+**문제**: 기존 code에서 correction을 일괄적으로 처리했으나, 정정이 **어떤 대상을 정정하는지** 명확히 구분할 필요가 있었습니다.
+
+**해결책**: Correction을 아래 3가지로 분류
+
+#### 1) `profile` - 사용자 모델 정정
+- 사용자가 자신의 특성, 취향, 가치관을 정정하는 경우
+- 예: "내가 그렇게 생각하지 않아", "그건 내 성향이 아니야"
+- **동작**: Profile rebuild에 **직접 반영**, 기존 profile 무효화
+- **코드**: `MemoryApplyService._has_conflicting_active_correction()` 에서 `target_kind == "profile"` 검사
+
+#### 2) `topic_fact` - 설명/정보 정정
+- 사용자가 assistant의 설명이나 정보 오류를 지적하는 경우
+- 예: "그건 틀렸어", "이건 다르게 작동해", "이건 사실이 아니야"
+- **동작**: Correction store에 보관되지만 profile rebuild에는 **미포함**
+- **다음 회상 시**: conflict 판단 시 참고, 같은 topic에 다시 profile을 형성하려 할 때 추가 근거로 사용
+- **코드**: `ProfileRebuilder.rebuild_topic()` 에서 profile correction만 필터링 사용
+
+#### 3) `response_behavior` - 답변 방식/태도 정정
+- 사용자가 답변 스타일이나 대화 태도를 정정하는 경우
+- 예: "이렇게 길게 답하지 마", "더 존댓말로 해줄 수 있어?", "이 방식은 싫어"
+- **동작**: Memory에만 저장되며, 향후 **응답 스타일** 정책 학습의 근거로만 사용
+- **코드**: Correction store에 저장되지만, profile이나 topic rebuild에는 미반영
+
+### 13-2. 구현 상세
+
+#### `EvidenceNormalizationService`
+```python
+ALLOWED_CORRECTION_TARGET_KINDS = {
+    "profile",
+    "topic_fact", 
+    "response_behavior",
+}
+
+def normalize_correction_target_kind(self, value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in self.ALLOWED_CORRECTION_TARGET_KINDS else ""
+```
+- Extraction prompt에서 받은 `target_kind`를 검증, 허용된 값만 통과
+
+#### `MemoryApplyService`
+```python
+def _correction_target_kind_from_reason(self, reason: str | None) -> str:
+    text = str(reason or "").strip()
+    prefix, has_separator, _rest = text.partition(":")
+    if has_separator and prefix in {"profile", "topic_fact", "response_behavior"}:
+        return prefix
+    return "topic_fact"
+
+def _encode_correction_reason(self, *, reason: str | None, target_kind: str | None) -> str:
+    # reason을 "target_kind:reason_text" 형식으로 저장
+```
+- Correction의 reason 필드에 `"target_kind:reason_text"` 형식으로 저장
+- 나중에 policy 적용 시 parsing해서 처리
+
+#### `ProfileRebuilder`
+```python
+latest_profile_correction = next(
+    (item for item in corrections if self._correction_target_kind(item.get("reason")) == "profile"),
+    None,
+)
+if latest_profile_correction:
+    # profile rebuild에 사용
+```
+- 모든 correction을 저장하되, **profile 정정만** 실제 rebuild에 사용
+
+### 13-3. Chat Update Extraction Prompt 강화
+
+`chat_update_extract_system_prompt.txt`에 `target_kind` 필드 추가:
+
+```json
+{
+  "correction_candidate": {
+    "content": string,
+    "reason": string,
+    "target_kind": "profile" | "topic_fact" | "response_behavior" | "",
+    "confidence": number
+  } | null
+}
+```
+
+**프롬프트 가이드**:
+- "사용자가 assistant의 설명 자체를 정정하면 → `target_kind: "topic_fact"`"
+- "사용자가 사용자 모델 자체를 정정하면 → `target_kind: "profile"`"
+- "사용자가 답변 방식이나 대화 태도를 바로잡으면 → `target_kind: "response_behavior"`"
+
+### 13-4. 메모리 노이즈 필터 강화
+
+`response_builder.py`에 더 정교한 시스템 프롬프트 및 정책 echo 감지:
+
+```python
+MEMORY_NOISE_PATTERNS = (
+    "당신은 특정 사용자를 장기적으로 보조하는 개인 ai 어시스턴트다",
+    "이 시스템 프롬프트는",
+    "최종 운영 지시",
+    # ...
+)
+
+POLICY_ECHO_PATTERNS = (
+    "현재 턴의 명시적 진술",
+    "최신 correction",
+    "기계적으로 복사하지",
+    # ...
+)
+```
+
+- System prompt 문장이 profile에 들어가는 것을 더 강하게 차단
+- Assistant가 자신의 정책을 반복하는 것도 차단
+
+### 13-5. 왜 이 개선이 중요한가
+
+1. **Correction 의도의 명확화**: "틀렸어"라는 정정이 정보 오류인지, 자기 모델 정정인지, 태도 불만인지 명확히 구분
+
+2. **Profile 무결성 강화**: Profile rebuild 시 자신의 취향/특성 정정만 반영, 사실 오류 정정으로 인한 profile 오염 방지
+
+3. **다층적 정정 처리**: 같은 "correction" 타입이지만, 각각 다른 메모리 계층에 영향을 주도록 설계
+
+4. **향후 확장성**: response_behavior 정정을 모아두면, 향후 "사용자의 선호 응답 방식" 학습 가능
+
+### 13-6. 다음 단계
+
+- `general` tier의 promotion 조건에서 `topic_fact` 정정도 참고하기
+- Conflict detection 로직을 `topic_fact` 정정까지 확장하기
+- Response behavior 정정을 바탕으로 응답 스타일 가이드 자동 생성 고려
+- Message/embedding 캐시 및 성능 최적화
 
 ---
 
