@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from memory.db import connection_context
+import time
+
 from memory.policies.memory_classification_policy import MemoryClassificationPolicy, SOURCE_STRENGTH_ORDER
 from memory.stores.chat_profile_evidence_store import ChatProfileEvidenceStore
 from memory.stores.correction_store import CorrectionStore
@@ -11,12 +12,10 @@ from memory.stores.topic_store import TopicStore
 from memory.summarization.profile_rebuilder import ProfileRebuilder
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
-from tools.text_embedding import cosine_similarity, embed_text
 
 
-SEMANTIC_EQUIVALENCE_THRESHOLD = 0.86
-SEMANTIC_RELATED_THRESHOLD = 0.72
-SEMANTIC_ALIGNMENT_MARGIN = 0.05
+def _log(message: str) -> None:
+    print(f"[MEMORY] {message}", flush=True)
 
 
 class MemoryApplyService:
@@ -33,70 +32,16 @@ class MemoryApplyService:
         self.project_evidence_store = ProjectProfileEvidenceStore()
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
         self.chat_evidence_store = ChatProfileEvidenceStore()
-        self._embedding_cache: dict[str, list[float]] = {}
 
     def _normalize_text(self, text: str) -> str:
         return " ".join((text or "").strip().lower().split())
 
-    def _embedding_for_text(self, text: str) -> list[float]:
-        normalized = self._normalize_text(text)
-        if not normalized:
-            return []
-        cached = self._embedding_cache.get(normalized)
-        if cached is not None:
-            return cached
-        embedding = embed_text(normalized, kind="passage")
-        self._embedding_cache[normalized] = embedding
-        return embedding
-
-    def _semantic_similarity(self, left: str, right: str) -> float:
-        left_embedding = self._embedding_for_text(left)
-        right_embedding = self._embedding_for_text(right)
-        if not left_embedding or not right_embedding:
-            return 0.0
-        return cosine_similarity(left_embedding, right_embedding)
-
-    def _is_semantically_equivalent(self, left: str, right: str) -> bool:
-        return self._semantic_similarity(left, right) >= SEMANTIC_EQUIVALENCE_THRESHOLD
-
-    def _fetch_profile_by_id(self, profile_id: str | None) -> dict | None:
-        resolved_id = str(profile_id or "").strip()
-        if not resolved_id:
-            return None
-        with connection_context() as conn:
-            row = conn.execute(
-                "SELECT p.*, t.name AS topic_name, t.summary AS topic_summary "
-                "FROM profiles p LEFT JOIN topics t ON p.topic_id = t.id WHERE p.id = ? LIMIT 1",
-                (resolved_id,),
-            ).fetchone()
-            return dict(row) if row else None
-
-    def _correction_conflicts_with_candidate(self, correction: dict, candidate_content: str) -> bool:
-        correction_content = str(correction.get("content") or "").strip()
-        if not correction_content:
+    def _same_meaning(self, a: str, b: str) -> bool:
+        na = self._normalize_text(a)
+        nb = self._normalize_text(b)
+        if not na or not nb:
             return False
-        if self._is_semantically_equivalent(correction_content, candidate_content):
-            return False
-
-        superseded_profile = self._fetch_profile_by_id(correction.get("supersedes_profile_id"))
-        if not superseded_profile:
-            return False
-
-        superseded_content = str(superseded_profile.get("content") or "").strip()
-        if not superseded_content:
-            return False
-
-        candidate_to_superseded = self._semantic_similarity(candidate_content, superseded_content)
-        candidate_to_correction = self._semantic_similarity(candidate_content, correction_content)
-        same_claim_family = max(candidate_to_superseded, candidate_to_correction) >= SEMANTIC_RELATED_THRESHOLD
-        aligns_with_superseded = candidate_to_superseded >= SEMANTIC_EQUIVALENCE_THRESHOLD - SEMANTIC_ALIGNMENT_MARGIN
-        correction_is_closer = candidate_to_correction >= candidate_to_superseded - SEMANTIC_ALIGNMENT_MARGIN
-
-        if not same_claim_family:
-            return False
-        if aligns_with_superseded and not correction_is_closer:
-            return True
-        return False
+        return na == nb or na in nb or nb in na
 
     def _topic_label(self, topic: str | None, topic_id: str | None) -> str:
         if topic:
@@ -124,7 +69,10 @@ class MemoryApplyService:
     def _has_conflicting_active_correction(self, candidate_content: str, topic: str | None = None, topic_id: str | None = None) -> bool:
         active_corrections = self._load_topic_corrections(topic=topic, topic_id=topic_id)
         for correction in active_corrections:
-            if self._correction_conflicts_with_candidate(correction, candidate_content):
+            correction_content = str(correction.get("content") or "").strip()
+            if not correction_content:
+                continue
+            if not self._same_meaning(correction_content, candidate_content):
                 return True
         return False
 
@@ -145,7 +93,7 @@ class MemoryApplyService:
 
     def _insert_or_link_confirmed_profile(self, *, topic: str, topic_id: str | None, content: str, source: str, confidence: float) -> tuple[str, bool]:
         active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
-        if active_profile and self._is_semantically_equivalent(str(active_profile.get("content") or ""), content):
+        if active_profile and self._same_meaning(str(active_profile.get("content") or ""), content):
             return str(active_profile["id"]), False
         new_profile_id = self.profile_store.insert_profile(
             topic=topic,
@@ -284,7 +232,18 @@ class MemoryApplyService:
         for topic_id, topic in touched_topics:
             self.profile_rebuilder.rebuild_topic(topic=topic, topic_id=topic_id)
 
+    def _empty_promotion_result(self) -> dict:
+        return {
+            "promoted_profiles": 0,
+            "linked_existing_profiles": 0,
+            "blocked_by_correction": 0,
+            "blocked_by_existing_profile_conflict": 0,
+            "pending_candidates": 0,
+            "promoted_topics": set(),
+        }
+
     def apply_extracted(self, extracted: dict) -> dict:
+        started_at = time.perf_counter()
         touched_topics: set[tuple[str | None, str]] = set()
         applied = {
             "states": 0,
@@ -295,6 +254,7 @@ class MemoryApplyService:
             "rebuilt_topics": 0,
         }
 
+        t0 = time.perf_counter()
         for state in extracted.get("states", []):
             key = state["key"]
             value = state.get("value", "")
@@ -302,7 +262,9 @@ class MemoryApplyService:
                 continue
             self.state_store.set_state(key, value, state.get("source", "user_explicit"))
             applied["states"] += 1
+        states_elapsed = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         for profile in extracted.get("profiles", []):
             topic = profile.get("topic") or profile.get("topic_summary") or "general"
             topic_id = profile.get("topic_id")
@@ -315,7 +277,9 @@ class MemoryApplyService:
             )
             touched_topics.add((topic_id, topic))
             applied["profiles"] += 1
+        profiles_elapsed = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         for evidence in extracted.get("profile_evidences", []):
             stored = self._store_chat_profile_evidence(evidence)
             applied["stored_profile_evidence"] += 1
@@ -333,7 +297,9 @@ class MemoryApplyService:
                 if inserted:
                     touched_topics.add((topic_id, topic))
                     applied["profiles"] += 1
+        evidence_elapsed = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         for episode in extracted.get("episodes", []):
             topic = episode.get("topic") or episode.get("topic_summary") or "general"
             topic_id = episode.get("topic_id")
@@ -346,13 +312,15 @@ class MemoryApplyService:
             )
             touched_topics.add((topic_id, topic))
             applied["episodes"] += 1
+        episodes_elapsed = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         for correction in extracted.get("corrections", []):
             topic = correction.get("topic") or correction.get("topic_summary") or "general"
             topic_id = correction.get("topic_id")
             active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
             supersedes_profile_id = None
-            if active_profile and not self._is_semantically_equivalent(str(active_profile.get("content") or ""), str(correction["content"] or "")):
+            if active_profile and str(active_profile.get("content") or "").strip() != str(correction["content"] or "").strip():
                 supersedes_profile_id = active_profile["id"]
             self.correction_store.add_correction(
                 topic=topic,
@@ -364,19 +332,40 @@ class MemoryApplyService:
             )
             touched_topics.add((topic_id, topic))
             applied["corrections"] += 1
+        corrections_elapsed = time.perf_counter() - t0
 
-        promotion_result = self._promote_profiles_from_evidence_pool()
+        should_run_promotion = bool(extracted.get("profile_evidences"))
+        if should_run_promotion:
+            t0 = time.perf_counter()
+            promotion_result = self._promote_profiles_from_evidence_pool()
+            promotion_elapsed = time.perf_counter() - t0
+        else:
+            promotion_result = self._empty_promotion_result()
+            promotion_elapsed = 0.0
         for topic_key in promotion_result.pop("promoted_topics", set()):
             touched_topics.add(topic_key)
 
+        t0 = time.perf_counter()
         self._rebuild_touched_topics(touched_topics)
+        rebuild_elapsed = time.perf_counter() - t0
         applied["rebuilt_topics"] = len(touched_topics)
         applied.update(promotion_result)
+
+        total_elapsed = time.perf_counter() - started_at
+        _log(
+            "memory_apply apply_extracted | "            f"states={states_elapsed:.2f}s | profiles={profiles_elapsed:.2f}s | "            f"evidence={evidence_elapsed:.2f}s | episodes={episodes_elapsed:.2f}s | "            f"corrections={corrections_elapsed:.2f}s | promotion={promotion_elapsed:.2f}s | "            f"rebuild={rebuild_elapsed:.2f}s | total={total_elapsed:.2f}s"        )
         return applied
 
     def _promote_profiles_from_evidence_pool(self) -> dict:
+        started_at = time.perf_counter()
+
+        t0 = time.perf_counter()
         evidences = self._list_all_profile_evidence()
+        list_elapsed = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         clusters = self._build_candidate_clusters(evidences)
+        cluster_elapsed = time.perf_counter() - t0
 
         promoted_profiles = 0
         linked_existing_profiles = 0
@@ -385,6 +374,7 @@ class MemoryApplyService:
         pending_candidates = 0
         promoted_topics: set[tuple[str | None, str]] = set()
 
+        t0 = time.perf_counter()
         for cluster in clusters:
             topic_id = cluster.get("topic_id")
             topic = cluster["topic"]
@@ -401,7 +391,7 @@ class MemoryApplyService:
             active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
             if active_profile:
                 active_content = str(active_profile.get("content") or "").strip()
-                if self._is_semantically_equivalent(active_content, candidate_content):
+                if self._same_meaning(active_content, candidate_content):
                     linked_count = self._link_profile_for_candidate_across_stores(
                         candidate_content=candidate_content,
                         profile_id=active_profile["id"],
@@ -429,7 +419,11 @@ class MemoryApplyService:
             )
             promoted_profiles += 1
             promoted_topics.add((topic_id, topic))
+        loop_elapsed = time.perf_counter() - t0
 
+        total_elapsed = time.perf_counter() - started_at
+        _log(
+            "memory_apply promote_pool | "            f"list_evidence={list_elapsed:.2f}s | build_clusters={cluster_elapsed:.2f}s | "            f"loop={loop_elapsed:.2f}s | evidences={len(evidences)} | clusters={len(clusters)} | total={total_elapsed:.2f}s"        )
         return {
             "promoted_profiles": promoted_profiles,
             "linked_existing_profiles": linked_existing_profiles,
@@ -483,7 +477,7 @@ class MemoryApplyService:
                 continue
 
             active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
-            if active_profile and self._is_semantically_equivalent(active_profile.get("content", ""), candidate_content):
+            if active_profile and self._same_meaning(active_profile.get("content", ""), candidate_content):
                 evidence_store.mark_applied(evidence["id"], linked_profile_id=active_profile["id"])
                 linked_to_existing_active_profile += 1
                 processed += 1

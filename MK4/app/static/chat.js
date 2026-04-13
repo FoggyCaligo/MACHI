@@ -13,7 +13,7 @@ const refreshModelsBtn = document.getElementById("refreshModelsBtn");
 const clearModelBtn = document.getElementById("clearModelBtn");
 const modelBadgeEl = document.getElementById("modelBadge");
 
-const REQUEST_TIMEOUT_MS = 180000;
+const REQUEST_TIMEOUT_MS = 300000;
 const PROJECT_ID_STORAGE_KEY = "mk4_project_id";
 const MODEL_STORAGE_KEY = "mk4_selected_model";
 

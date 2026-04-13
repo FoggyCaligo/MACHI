@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from memory.policies.extraction_policy import ExtractionPolicy
 from memory.policies.memory_classification_policy import MemoryClassificationPolicy
 from memory.policies.retention_policy import RetentionPolicy
@@ -7,6 +9,10 @@ from memory.services.evidence_normalization_service import EvidenceNormalization
 from memory.services.memory_apply_service import MemoryApplyService
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
+
+
+def _log(message: str) -> None:
+    print(f"[MEMORY] {message}", flush=True)
 
 
 class MemoryIngressService:
@@ -141,17 +147,35 @@ class MemoryIngressService:
         source_message_id: str | None = None,
         response_message_id: str | None = None,
     ) -> dict:
+        started_at = time.perf_counter()
         bundle = dict(update_bundle or {})
         bundle["source_message_id"] = source_message_id
         bundle["response_message_id"] = response_message_id
+
+        t0 = time.perf_counter()
         extracted = self.extraction_policy.extract(
             user_message=user_message,
             reply=reply,
             update_bundle=bundle,
             model=model,
         )
+        extraction_policy_elapsed = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         apply_result = self.memory_apply_service.apply_extracted(extracted)
+        apply_elapsed = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         self.retention_policy.run()
+        retention_elapsed = time.perf_counter() - t0
+
+        total_elapsed = time.perf_counter() - started_at
+        _log(
+            "memory_ingress apply_chat_update | "
+            f"extraction_policy={extraction_policy_elapsed:.2f}s | "
+            f"apply={apply_elapsed:.2f}s | retention={retention_elapsed:.2f}s | "
+            f"total={total_elapsed:.2f}s"
+        )
         return {
             "extracted": extracted,
             "apply_result": apply_result,

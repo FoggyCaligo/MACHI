@@ -11,7 +11,7 @@ SOURCE_STRENGTH_ORDER = {
 MIN_SIGNAL_CONFIDENCE = 0.25
 SINGLE_HIGH_VALUE_PROMOTION_CONFIDENCE = 0.9
 REPEAT_PROMOTION_MIN_AVG_CONFIDENCE = 0.35
-PROMOTION_MIN_DISTINCT_GROUP_COUNT = 2
+PROMOTION_MIN_EVIDENCE_COUNT = 2
 
 
 class MemoryClassificationPolicy:
@@ -120,7 +120,7 @@ class MemoryClassificationPolicy:
             return True, "promotable_confirmed_tier"
         if max_confidence >= SINGLE_HIGH_VALUE_PROMOTION_CONFIDENCE:
             return True, "promotable_single_high_confidence"
-        if distinct_group_count >= PROMOTION_MIN_DISTINCT_GROUP_COUNT and avg_confidence >= REPEAT_PROMOTION_MIN_AVG_CONFIDENCE:
+        if distinct_group_count >= PROMOTION_MIN_EVIDENCE_COUNT and avg_confidence >= REPEAT_PROMOTION_MIN_AVG_CONFIDENCE:
             return True, "promotable_repeated_signal"
         return False, "not_enough_signal"
 
@@ -132,7 +132,7 @@ class MemoryClassificationPolicy:
         confirmed_count = int(cluster.get("confirmed_count") or 0)
 
         boosted = max(avg_confidence, max_confidence)
-        if distinct_group_count >= PROMOTION_MIN_DISTINCT_GROUP_COUNT:
+        if distinct_group_count >= PROMOTION_MIN_EVIDENCE_COUNT:
             boosted += 0.05
         if direct_confirm_count > 0 or confirmed_count > 0:
             boosted = max(boosted, TOPIC_CONFIRM_MIN_CONFIDENCE)

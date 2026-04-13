@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 
 from config import (
@@ -15,6 +16,10 @@ from memory.stores.state_store import StateStore
 from memory.stores.topic_store import TopicStore
 from tools.ollama_client import OllamaClient
 from tools.text_embedding import cosine_similarity, embed_text
+
+
+def _log(message: str) -> None:
+    print(f"[MEMORY] {message}", flush=True)
 
 
 TOPIC_SYSTEM_PROMPT = (
@@ -98,22 +103,31 @@ class TopicRouter:
         use_active_topic: bool = True,
         persist_active: bool = True,
     ) -> TopicResolution:
+        started_at = time.perf_counter()
         cleaned = " ".join((user_message or "").strip().split())
         if not cleaned:
             return TopicResolution("general", None, "general", "general", 0.0, False)
 
         active_topic_id = self.state_store.get_active_topic_id() if use_active_topic else None
 
+        active_check_elapsed = 0.0
         if use_active_topic and active_topic_id:
+            t0 = time.perf_counter()
             active_topic = self.topic_store.get_topic(active_topic_id)
             if active_topic:
                 similarity = self._active_topic_similarity(cleaned, active_topic)
+                active_check_elapsed = time.perf_counter() - t0
                 if similarity >= KEEP_ACTIVE_THRESHOLD:
                     self.topic_store.mark_used(active_topic_id)
                     self._persist_active_topic(
                         active_topic_id,
                         active_topic.get("summary") or active_topic.get("name") or "",
                         persist_active=persist_active,
+                    )
+                    total_elapsed = time.perf_counter() - started_at
+                    _log(
+                        "topic_router resolve | decision=keep_active | "
+                        f"active_check={active_check_elapsed:.2f}s | total={total_elapsed:.2f}s"
                     )
                     return TopicResolution(
                         decision="keep_active",
@@ -123,13 +137,17 @@ class TopicRouter:
                         similarity=similarity,
                         used_active_topic=True,
                     )
+            else:
+                active_check_elapsed = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         similar_topics = self.topic_store.find_similar_topics(
             text=cleaned,
             limit=TOPIC_SIMILARITY_CANDIDATE_LIMIT,
             min_similarity=ATTACH_EXISTING_THRESHOLD,
             exclude_topic_id=active_topic_id if use_active_topic else None,
         )
+        similar_search_elapsed = time.perf_counter() - t0
         if similar_topics:
             best = similar_topics[0]
             topic_id = str(best.get("id") or "").strip() or None
@@ -141,6 +159,11 @@ class TopicRouter:
                     summary,
                     persist_active=persist_active,
                 )
+                total_elapsed = time.perf_counter() - started_at
+                _log(
+                    "topic_router resolve | decision=attach_existing_from_message | "
+                    f"active_check={active_check_elapsed:.2f}s | similar_search={similar_search_elapsed:.2f}s | total={total_elapsed:.2f}s"
+                )
                 return TopicResolution(
                     decision="attach_existing",
                     topic_id=topic_id,
@@ -150,15 +173,19 @@ class TopicRouter:
                     used_active_topic=False,
                 )
 
+        t0 = time.perf_counter()
         new_summary = self._generate_topic_summary(cleaned, model=model)
         new_summary = self._postprocess_topic_summary(new_summary)
+        generation_elapsed = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         summary_matches = self.topic_store.find_similar_topics(
             text=new_summary,
             limit=3,
             min_similarity=ATTACH_EXISTING_THRESHOLD,
             exclude_topic_id=active_topic_id if use_active_topic else None,
         )
+        summary_search_elapsed = time.perf_counter() - t0
         if summary_matches:
             best = summary_matches[0]
             topic_id = str(best.get("id") or "").strip() or None
@@ -170,6 +197,12 @@ class TopicRouter:
                     summary,
                     persist_active=persist_active,
                 )
+                total_elapsed = time.perf_counter() - started_at
+                _log(
+                    "topic_router resolve | decision=attach_existing_from_summary | "
+                    f"active_check={active_check_elapsed:.2f}s | similar_search={similar_search_elapsed:.2f}s | "
+                    f"generate_summary={generation_elapsed:.2f}s | summary_search={summary_search_elapsed:.2f}s | total={total_elapsed:.2f}s"
+                )
                 return TopicResolution(
                     decision="attach_existing",
                     topic_id=topic_id,
@@ -179,6 +212,7 @@ class TopicRouter:
                     used_active_topic=False,
                 )
 
+        t0 = time.perf_counter()
         topic_id = self.topic_store.create_topic(
             name=new_summary,
             summary=new_summary,
@@ -190,6 +224,13 @@ class TopicRouter:
             topic_id,
             new_summary,
             persist_active=persist_active,
+        )
+        create_elapsed = time.perf_counter() - t0
+        total_elapsed = time.perf_counter() - started_at
+        _log(
+            "topic_router resolve | decision=create_new | "
+            f"active_check={active_check_elapsed:.2f}s | similar_search={similar_search_elapsed:.2f}s | "
+            f"generate_summary={generation_elapsed:.2f}s | summary_search={summary_search_elapsed:.2f}s | create={create_elapsed:.2f}s | total={total_elapsed:.2f}s"
         )
         return TopicResolution(
             decision="create_new",
