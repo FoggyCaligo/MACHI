@@ -234,6 +234,128 @@ class MemoryApplyService:
         linked += self.chat_evidence_store.link_profile_for_candidate(topic_id=topic_id, topic=topic, candidate_content=candidate_content, profile_id=profile_id)
         return linked
 
+    def _source_strength_from_profile_source(self, source: str | None) -> str:
+        text = str(source or "").strip()
+        if text.startswith("evidence_promotion:"):
+            candidate = text.split(":", 1)[1].strip()
+            return self.memory_policy.normalize_source_strength(candidate)
+        if text.startswith("direct_confirm:") or text == "chat_direct_confirm":
+            return "explicit_self_statement"
+        return ""
+
+    def _build_profile_support_index(self, evidences: list[dict]) -> dict[str, dict]:
+        grouped: dict[str, dict] = {}
+
+        for evidence in evidences:
+            profile_id = str(evidence.get("linked_profile_id") or "").strip()
+            if not profile_id:
+                continue
+
+            row = grouped.setdefault(
+                profile_id,
+                {
+                    "group_ids": set(),
+                    "confidence_values": [],
+                    "source_strength_counts": {
+                        "explicit_self_statement": 0,
+                        "repeated_behavior": 0,
+                        "temporary_interest": 0,
+                    },
+                    "direct_confirm_count": 0,
+                    "confirmed_count": 0,
+                    "evidence_count": 0,
+                },
+            )
+            row["group_ids"].add(str(evidence.get("group_id") or ""))
+            row["confidence_values"].append(float(evidence.get("confidence") or 0.0))
+            row["evidence_count"] += 1
+
+            strength = self.memory_policy.normalize_source_strength(evidence.get("source_strength"))
+            if strength:
+                row["source_strength_counts"][strength] = row["source_strength_counts"].get(strength, 0) + 1
+
+            tier = self.memory_policy.normalize_memory_tier(evidence.get("memory_tier"))
+            if tier == "confirmed":
+                row["confirmed_count"] += 1
+            if bool(evidence.get("direct_confirm")):
+                row["direct_confirm_count"] += 1
+
+        result: dict[str, dict] = {}
+        for profile_id, row in grouped.items():
+            confidence_values = row["confidence_values"] or [0.0]
+            source_strength_counts = row["source_strength_counts"]
+            primary_strength = ""
+            if source_strength_counts.get("explicit_self_statement", 0) > 0:
+                primary_strength = "explicit_self_statement"
+            elif source_strength_counts.get("repeated_behavior", 0) > 0:
+                primary_strength = "repeated_behavior"
+            elif source_strength_counts.get("temporary_interest", 0) > 0:
+                primary_strength = "temporary_interest"
+
+            result[profile_id] = {
+                "distinct_group_count": len([x for x in row["group_ids"] if x]),
+                "avg_confidence": sum(confidence_values) / len(confidence_values),
+                "max_confidence": max(confidence_values),
+                "primary_strength": primary_strength,
+                "direct_confirm_count": row["direct_confirm_count"],
+                "confirmed_count": row["confirmed_count"],
+                "evidence_count": row["evidence_count"],
+            }
+        return result
+
+    def _profile_support_snapshot(self, active_profile: dict, support_index: dict[str, dict]) -> dict:
+        profile_id = str(active_profile.get("id") or "").strip()
+        if profile_id and profile_id in support_index:
+            return dict(support_index[profile_id])
+
+        source = str(active_profile.get("source") or "").strip()
+        direct_confirm = 1 if source.startswith("direct_confirm:") or source == "chat_direct_confirm" else 0
+        confidence = float(active_profile.get("confidence") or 0.0)
+        return {
+            "distinct_group_count": 1,
+            "avg_confidence": confidence,
+            "max_confidence": confidence,
+            "primary_strength": self._source_strength_from_profile_source(source),
+            "direct_confirm_count": direct_confirm,
+            "confirmed_count": direct_confirm,
+            "evidence_count": 1,
+        }
+
+    def _support_score(self, snapshot: dict) -> float:
+        score = max(float(snapshot.get("avg_confidence") or 0.0), float(snapshot.get("max_confidence") or 0.0))
+        score += 0.08 * min(int(snapshot.get("distinct_group_count") or 0), 3)
+        score += 0.03 * min(max(int(snapshot.get("evidence_count") or 0) - 1, 0), 3)
+        score += 0.08 * SOURCE_STRENGTH_ORDER.get(str(snapshot.get("primary_strength") or ""), 0)
+        if int(snapshot.get("confirmed_count") or 0) > 0:
+            score += 0.20
+        if int(snapshot.get("direct_confirm_count") or 0) > 0:
+            score += 0.25
+        return score
+
+    def _should_replace_active_profile(self, active_profile: dict, cluster: dict, support_index: dict[str, dict]) -> tuple[bool, str]:
+        active_support = self._profile_support_snapshot(active_profile, support_index)
+        candidate_score = self._support_score(cluster)
+        active_score = self._support_score(active_support)
+
+        active_direct_confirm = int(active_support.get("direct_confirm_count") or 0)
+        candidate_direct_confirm = int(cluster.get("direct_confirm_count") or 0)
+        if candidate_direct_confirm > active_direct_confirm:
+            if float(cluster.get("max_confidence") or 0.0) >= float(active_support.get("max_confidence") or 0.0) - 0.10:
+                return True, "replace_with_direct_confirm"
+
+        active_strength = SOURCE_STRENGTH_ORDER.get(str(active_support.get("primary_strength") or ""), 0)
+        candidate_strength = SOURCE_STRENGTH_ORDER.get(str(cluster.get("primary_strength") or ""), 0)
+        if candidate_strength > active_strength:
+            enough_support = int(cluster.get("distinct_group_count") or 0) >= max(int(active_support.get("distinct_group_count") or 0), 1)
+            enough_confidence = float(cluster.get("avg_confidence") or 0.0) >= float(active_support.get("avg_confidence") or 0.0) - 0.05
+            if enough_support and enough_confidence:
+                return True, "replace_with_stronger_signal_type"
+
+        if candidate_score >= active_score + 0.12:
+            return True, "replace_with_stronger_cluster"
+
+        return False, "existing_profile_still_stronger"
+
     def _rebuild_touched_topics(self, touched_topics: set[tuple[str | None, str]]) -> None:
         for topic_id, topic in touched_topics:
             self.profile_rebuilder.rebuild_topic(topic=topic, topic_id=topic_id)
@@ -241,6 +363,7 @@ class MemoryApplyService:
     def _empty_promotion_result(self) -> dict:
         return {
             "promoted_profiles": 0,
+            "replaced_active_profiles": 0,
             "linked_existing_profiles": 0,
             "blocked_by_correction": 0,
             "blocked_by_existing_profile_conflict": 0,
@@ -371,9 +494,11 @@ class MemoryApplyService:
 
         t0 = time.perf_counter()
         clusters = self._build_candidate_clusters(evidences)
+        support_index = self._build_profile_support_index(evidences)
         cluster_elapsed = time.perf_counter() - t0
 
         promoted_profiles = 0
+        replaced_active_profiles = 0
         linked_existing_profiles = 0
         blocked_by_correction = 0
         blocked_by_existing_profile_conflict = 0
@@ -407,8 +532,12 @@ class MemoryApplyService:
                     if linked_count > 0:
                         linked_existing_profiles += 1
                     continue
-                blocked_by_existing_profile_conflict += 1
-                continue
+
+                should_replace, _replace_reason = self._should_replace_active_profile(active_profile, cluster, support_index)
+                if not should_replace:
+                    blocked_by_existing_profile_conflict += 1
+                    continue
+                replaced_active_profiles += 1
 
             new_profile_id = self.profile_store.insert_profile(
                 topic=topic,
@@ -432,6 +561,7 @@ class MemoryApplyService:
             "memory_apply promote_pool | "            f"list_evidence={list_elapsed:.2f}s | build_clusters={cluster_elapsed:.2f}s | "            f"loop={loop_elapsed:.2f}s | evidences={len(evidences)} | clusters={len(clusters)} | total={total_elapsed:.2f}s"        )
         return {
             "promoted_profiles": promoted_profiles,
+            "replaced_active_profiles": replaced_active_profiles,
             "linked_existing_profiles": linked_existing_profiles,
             "blocked_by_correction": blocked_by_correction,
             "blocked_by_existing_profile_conflict": blocked_by_existing_profile_conflict,
@@ -503,6 +633,7 @@ class MemoryApplyService:
             "added_corrections": 0,
             "linked_to_existing_active_profile": linked_to_existing_active_profile + direct_confirm_linked,
             "promoted_profiles": promotion_result["promoted_profiles"],
+            "replaced_active_profiles": promotion_result["replaced_active_profiles"],
             "linked_existing_profiles": promotion_result["linked_existing_profiles"],
             "blocked_by_correction": promotion_result["blocked_by_correction"],
             "blocked_by_existing_profile_conflict": promotion_result["blocked_by_existing_profile_conflict"],
