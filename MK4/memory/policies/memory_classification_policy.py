@@ -11,7 +11,7 @@ SOURCE_STRENGTH_ORDER = {
 MIN_SIGNAL_CONFIDENCE = 0.25
 SINGLE_HIGH_VALUE_PROMOTION_CONFIDENCE = 0.9
 REPEAT_PROMOTION_MIN_AVG_CONFIDENCE = 0.35
-PROMOTION_MIN_EVIDENCE_COUNT = 2
+PROMOTION_MIN_DISTINCT_GROUP_COUNT = 2
 
 
 class MemoryClassificationPolicy:
@@ -108,7 +108,7 @@ class MemoryClassificationPolicy:
         return {"route": "general", "signals": signals}
 
     def is_promotable_cluster(self, cluster: dict) -> tuple[bool, str]:
-        evidence_count = int(cluster.get("evidence_count") or 0)
+        distinct_group_count = int(cluster.get("distinct_group_count") or 0)
         avg_confidence = self._bounded_confidence(cluster.get("avg_confidence"))
         max_confidence = self._bounded_confidence(cluster.get("max_confidence"))
         direct_confirm_count = int(cluster.get("direct_confirm_count") or 0)
@@ -120,19 +120,19 @@ class MemoryClassificationPolicy:
             return True, "promotable_confirmed_tier"
         if max_confidence >= SINGLE_HIGH_VALUE_PROMOTION_CONFIDENCE:
             return True, "promotable_single_high_confidence"
-        if evidence_count >= PROMOTION_MIN_EVIDENCE_COUNT and avg_confidence >= REPEAT_PROMOTION_MIN_AVG_CONFIDENCE:
+        if distinct_group_count >= PROMOTION_MIN_DISTINCT_GROUP_COUNT and avg_confidence >= REPEAT_PROMOTION_MIN_AVG_CONFIDENCE:
             return True, "promotable_repeated_signal"
         return False, "not_enough_signal"
 
     def promotion_confidence(self, cluster: dict) -> float:
         avg_confidence = self._bounded_confidence(cluster.get("avg_confidence"))
         max_confidence = self._bounded_confidence(cluster.get("max_confidence"))
-        evidence_count = int(cluster.get("evidence_count") or 0)
+        distinct_group_count = int(cluster.get("distinct_group_count") or 0)
         direct_confirm_count = int(cluster.get("direct_confirm_count") or 0)
         confirmed_count = int(cluster.get("confirmed_count") or 0)
 
         boosted = max(avg_confidence, max_confidence)
-        if evidence_count >= PROMOTION_MIN_EVIDENCE_COUNT:
+        if distinct_group_count >= PROMOTION_MIN_DISTINCT_GROUP_COUNT:
             boosted += 0.05
         if direct_confirm_count > 0 or confirmed_count > 0:
             boosted = max(boosted, TOPIC_CONFIRM_MIN_CONFIDENCE)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from memory.db import connection_context
 from memory.policies.memory_classification_policy import MemoryClassificationPolicy, SOURCE_STRENGTH_ORDER
 from memory.stores.chat_profile_evidence_store import ChatProfileEvidenceStore
 from memory.stores.correction_store import CorrectionStore
@@ -10,6 +11,12 @@ from memory.stores.topic_store import TopicStore
 from memory.summarization.profile_rebuilder import ProfileRebuilder
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
+from tools.text_embedding import cosine_similarity, embed_text
+
+
+SEMANTIC_EQUIVALENCE_THRESHOLD = 0.86
+SEMANTIC_RELATED_THRESHOLD = 0.72
+SEMANTIC_ALIGNMENT_MARGIN = 0.05
 
 
 class MemoryApplyService:
@@ -26,16 +33,70 @@ class MemoryApplyService:
         self.project_evidence_store = ProjectProfileEvidenceStore()
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
         self.chat_evidence_store = ChatProfileEvidenceStore()
+        self._embedding_cache: dict[str, list[float]] = {}
 
     def _normalize_text(self, text: str) -> str:
         return " ".join((text or "").strip().lower().split())
 
-    def _same_meaning(self, a: str, b: str) -> bool:
-        na = self._normalize_text(a)
-        nb = self._normalize_text(b)
-        if not na or not nb:
+    def _embedding_for_text(self, text: str) -> list[float]:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return []
+        cached = self._embedding_cache.get(normalized)
+        if cached is not None:
+            return cached
+        embedding = embed_text(normalized, kind="passage")
+        self._embedding_cache[normalized] = embedding
+        return embedding
+
+    def _semantic_similarity(self, left: str, right: str) -> float:
+        left_embedding = self._embedding_for_text(left)
+        right_embedding = self._embedding_for_text(right)
+        if not left_embedding or not right_embedding:
+            return 0.0
+        return cosine_similarity(left_embedding, right_embedding)
+
+    def _is_semantically_equivalent(self, left: str, right: str) -> bool:
+        return self._semantic_similarity(left, right) >= SEMANTIC_EQUIVALENCE_THRESHOLD
+
+    def _fetch_profile_by_id(self, profile_id: str | None) -> dict | None:
+        resolved_id = str(profile_id or "").strip()
+        if not resolved_id:
+            return None
+        with connection_context() as conn:
+            row = conn.execute(
+                "SELECT p.*, t.name AS topic_name, t.summary AS topic_summary "
+                "FROM profiles p LEFT JOIN topics t ON p.topic_id = t.id WHERE p.id = ? LIMIT 1",
+                (resolved_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def _correction_conflicts_with_candidate(self, correction: dict, candidate_content: str) -> bool:
+        correction_content = str(correction.get("content") or "").strip()
+        if not correction_content:
             return False
-        return na == nb or na in nb or nb in na
+        if self._is_semantically_equivalent(correction_content, candidate_content):
+            return False
+
+        superseded_profile = self._fetch_profile_by_id(correction.get("supersedes_profile_id"))
+        if not superseded_profile:
+            return False
+
+        superseded_content = str(superseded_profile.get("content") or "").strip()
+        if not superseded_content:
+            return False
+
+        candidate_to_superseded = self._semantic_similarity(candidate_content, superseded_content)
+        candidate_to_correction = self._semantic_similarity(candidate_content, correction_content)
+        same_claim_family = max(candidate_to_superseded, candidate_to_correction) >= SEMANTIC_RELATED_THRESHOLD
+        aligns_with_superseded = candidate_to_superseded >= SEMANTIC_EQUIVALENCE_THRESHOLD - SEMANTIC_ALIGNMENT_MARGIN
+        correction_is_closer = candidate_to_correction >= candidate_to_superseded - SEMANTIC_ALIGNMENT_MARGIN
+
+        if not same_claim_family:
+            return False
+        if aligns_with_superseded and not correction_is_closer:
+            return True
+        return False
 
     def _topic_label(self, topic: str | None, topic_id: str | None) -> str:
         if topic:
@@ -63,10 +124,7 @@ class MemoryApplyService:
     def _has_conflicting_active_correction(self, candidate_content: str, topic: str | None = None, topic_id: str | None = None) -> bool:
         active_corrections = self._load_topic_corrections(topic=topic, topic_id=topic_id)
         for correction in active_corrections:
-            correction_content = str(correction.get("content") or "").strip()
-            if not correction_content:
-                continue
-            if not self._same_meaning(correction_content, candidate_content):
+            if self._correction_conflicts_with_candidate(correction, candidate_content):
                 return True
         return False
 
@@ -87,7 +145,7 @@ class MemoryApplyService:
 
     def _insert_or_link_confirmed_profile(self, *, topic: str, topic_id: str | None, content: str, source: str, confidence: float) -> tuple[str, bool]:
         active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
-        if active_profile and self._same_meaning(str(active_profile.get("content") or ""), content):
+        if active_profile and self._is_semantically_equivalent(str(active_profile.get("content") or ""), content):
             return str(active_profile["id"]), False
         new_profile_id = self.profile_store.insert_profile(
             topic=topic,
@@ -188,6 +246,7 @@ class MemoryApplyService:
             key=lambda item: (
                 -item["confirmed_count"],
                 -SOURCE_STRENGTH_ORDER.get(item["primary_strength"], 0),
+                -item["distinct_group_count"],
                 -item["evidence_count"],
                 -item["avg_confidence"],
                 item["topic"],
@@ -293,7 +352,7 @@ class MemoryApplyService:
             topic_id = correction.get("topic_id")
             active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
             supersedes_profile_id = None
-            if active_profile and str(active_profile.get("content") or "").strip() != str(correction["content"] or "").strip():
+            if active_profile and not self._is_semantically_equivalent(str(active_profile.get("content") or ""), str(correction["content"] or "")):
                 supersedes_profile_id = active_profile["id"]
             self.correction_store.add_correction(
                 topic=topic,
@@ -342,7 +401,7 @@ class MemoryApplyService:
             active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
             if active_profile:
                 active_content = str(active_profile.get("content") or "").strip()
-                if self._same_meaning(active_content, candidate_content):
+                if self._is_semantically_equivalent(active_content, candidate_content):
                     linked_count = self._link_profile_for_candidate_across_stores(
                         candidate_content=candidate_content,
                         profile_id=active_profile["id"],
@@ -424,7 +483,7 @@ class MemoryApplyService:
                 continue
 
             active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
-            if active_profile and self._same_meaning(active_profile.get("content", ""), candidate_content):
+            if active_profile and self._is_semantically_equivalent(active_profile.get("content", ""), candidate_content):
                 evidence_store.mark_applied(evidence["id"], linked_profile_id=active_profile["id"])
                 linked_to_existing_active_profile += 1
                 processed += 1
