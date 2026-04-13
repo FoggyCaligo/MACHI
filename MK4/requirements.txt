@@ -7,3 +7,7 @@ sentence-transformers
 numpy
 sqlite-vec
 langchain-text-splitters
+beautifulsoup4
+chardet
+lxml
+python-dotenv

@@ -1,4 +1,9 @@
 from pathlib import Path
+import os
+from dataclasses import dataclass
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -30,6 +35,12 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_DEFAULT_MODEL = "qwen2.5:3b"
 OLLAMA_MODEL = OLLAMA_DEFAULT_MODEL
 
+# Trusted Search 설정
+OLLAMA_API_KEY = ""  # 환경변수에서 읽어올 예정
+OLLAMA_WEB_SEARCH_URL = "https://ollama.com/api/web_search"
+INTERNET_SEARCH_ENABLED = True
+MAX_SEARCH_RESULTS = 8
+
 TOPIC_EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 KEEP_ACTIVE_THRESHOLD = 0.73
 ATTACH_EXISTING_THRESHOLD = 0.78
@@ -48,6 +59,17 @@ TOPIC_CONFIRM_MIN_CONFIDENCE = 0.75
 
 # 라우팅 분류 (텍스트/프로젝트 경로 판단)
 ROUTE_CLASSIFY_NUM_PREDICT = 96
+
+
+@dataclass(frozen=True)
+class Settings:
+    ollama_api_key: str = os.getenv("OLLAMA_API_KEY", "")
+    ollama_web_search_url: str = os.getenv("OLLAMA_WEB_SEARCH_URL", "https://ollama.com/api/web_search")
+    internet_search_enabled: bool = os.getenv("INTERNET_SEARCH_ENABLED", "true").lower() == "true"
+    max_search_results: int = int(os.getenv("MAX_SEARCH_RESULTS", "8"))
+
+
+settings = Settings()
 
 # Evidence 추출 (JSON 구조 생성)
 EXTRACT_NUM_PREDICT = 384

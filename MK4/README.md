@@ -310,13 +310,13 @@ ollama pull gemma3:4b
 ### 7-3. 서버 실행
 
 ```bash
-python -m uvicorn app.api:app --reload
+python -m uvicorn app.api:app --reload --host 127.0.0.1 --port 8001
 ```
 
 브라우저:
 
 ```text
-http://127.0.0.1:8000/ui
+http://127.0.0.1:8001/ui
 ```
 
 ---
