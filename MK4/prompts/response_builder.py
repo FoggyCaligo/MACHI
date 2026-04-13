@@ -12,6 +12,15 @@ MEMORY_NOISE_PATTERNS = (
     "어시스턴트는",
 )
 
+POLICY_ECHO_PATTERNS = (
+    "현재 턴의 명시적 진술",
+    "최신 correction",
+    "기계적으로 복사하지",
+    "기억한다고 가장하지",
+    "예/아니오형이면 먼저 직접 대답",
+    "과거 memory의 인칭",
+)
+
 GENERIC_NOISE_KEYS = {
     "response_style",
     "current_mood",
@@ -47,6 +56,20 @@ def _looks_like_system_prompt_text(text: str | None) -> bool:
     return False
 
 
+def _looks_like_policy_echo(text: str | None) -> bool:
+    if not text:
+        return False
+
+    lowered = " ".join(str(text).strip().lower().split())
+    if not lowered:
+        return False
+
+    for pattern in POLICY_ECHO_PATTERNS:
+        if pattern in lowered:
+            return True
+    return False
+
+
 def _topic_label(item: dict) -> str:
     return _clean_text(
         item.get("topic_summary") or item.get("topic_name") or item.get("topic") or item.get("key") or item.get("title"),
@@ -61,6 +84,9 @@ def _should_skip_memory_item(item: dict, candidate_text: str) -> bool:
         return True
 
     if _looks_like_system_prompt_text(candidate_text):
+        return True
+
+    if _looks_like_policy_echo(candidate_text):
         return True
 
     return False
@@ -108,6 +134,9 @@ def _summarize_recent_messages(recent_messages: list[dict], *, max_sentences: in
         role = message.get("role")
         content = _clean_text(message.get("content"), max_len=95)
         if not content:
+            continue
+
+        if role == "assistant" and (_looks_like_system_prompt_text(content) or _looks_like_policy_echo(content)):
             continue
 
         if role == "user":
@@ -235,12 +264,6 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
         user_content = (
             f"[참고 기억]\n"
             f"{memory_text}\n\n"
-            f"[주의]\n"
-            f"- 참고 기억 안의 '사용자', '당신', '이 사용자' 같은 표현을 현재 대화의 인칭으로 기계적으로 복사하지 마라.\n"
-            f"- 현재 턴의 명시적 진술과 정정이 과거 기억보다 우선한다.\n"
-            f"- 특정 과거 source를 현재 턴에서 실제로 다시 보지 않았다면 기억한다고 가장하지 마라.\n"
-            f"- 최근 대화 요약은 참고용이다. 그 문장을 다시 풀어쓰거나 대화를 다시 낭독하지 마라.\n"
-            f"- 질문이 예/아니오형이면 먼저 직접 대답하고, 필요할 때만 짧게 이유를 덧붙여라.\n\n"
             f"[현재 사용자 요청]\n"
             f"{_clean_text(user_message, max_len=1000)}"
         )

@@ -25,7 +25,7 @@ class ProfileAttachmentIngestService:
         self.source_store = UploadedProfileSourceStore()
         self.evidence_store = UploadedProfileEvidenceStore()
         self.state_store = StateStore()
-        self.extraction_service = EvidenceExtractionService(timeout=120, num_predict=EXTRACT_NUM_PREDICT, retry_num_predict=EXTRACT_RETRY_NUM_PREDICT)
+        self.extraction_service = EvidenceExtractionService(timeout=100, num_predict=EXTRACT_NUM_PREDICT, retry_num_predict=EXTRACT_RETRY_NUM_PREDICT)
         self.answer_runner = ResponseRunner(timeout=ATTACHMENT_REPLY_TIMEOUT, num_predict=ATTACHMENT_REPLY_NUM_PREDICT, max_continuations=ATTACHMENT_REPLY_MAX_CONTINUATIONS)
         self.memory_policy = MemoryClassificationPolicy()
         self.passage_selector = PassageSelectionService()
