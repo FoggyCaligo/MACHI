@@ -15,6 +15,8 @@ from config import (
     PROJECT_REPLY_TIMEOUT,
     PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH,
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
+    EXTRACT_NUM_PREDICT,
+    EXTRACT_RETRY_NUM_PREDICT,
 )
 
 
@@ -26,8 +28,8 @@ class ProjectProfileEvidenceService:
         self.passage_selection_service = PassageSelectionService()
         self.extraction_service = EvidenceExtractionService(
             timeout=120,
-            num_predict=384,
-            retry_num_predict=256,
+            num_predict=EXTRACT_NUM_PREDICT,
+            retry_num_predict=EXTRACT_RETRY_NUM_PREDICT,
         )
         self.normalizer = EvidenceNormalizationService()
         self.memory_ingress = MemoryIngressService()

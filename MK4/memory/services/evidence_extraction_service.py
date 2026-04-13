@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from tools.ollama_client import OllamaClient
 from prompts.prompt_loader import load_prompt_text
+from config import EXTRACT_NUM_PREDICT, EXTRACT_RETRY_NUM_PREDICT
 
 
 @dataclass
@@ -15,7 +16,7 @@ class ExtractionRunResult:
 
 
 class EvidenceExtractionService:
-    def __init__(self, timeout: int = 120, num_predict: int = 256, retry_num_predict: int = 192) -> None:
+    def __init__(self, timeout: int = 120, num_predict: int = EXTRACT_NUM_PREDICT, retry_num_predict: int = EXTRACT_RETRY_NUM_PREDICT) -> None:
         self.client = OllamaClient(timeout=timeout, num_predict=num_predict)
         self.retry_client = OllamaClient(timeout=timeout, num_predict=retry_num_predict)
 

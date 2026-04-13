@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import re
 
-from config import OLLAMA_DEFAULT_MODEL
+from config import OLLAMA_DEFAULT_MODEL, ROUTE_CLASSIFY_NUM_PREDICT
 from tools.ollama_client import OllamaClient
 
 
 class TextAttachmentRouteResolver:
     def __init__(self) -> None:
-        self.client = OllamaClient(timeout=45, num_predict=64)
+        self.client = OllamaClient(timeout=45, num_predict=ROUTE_CLASSIFY_NUM_PREDICT)
 
     def _excerpt(self, content: str, max_chars: int = 800) -> str:
         compact = re.sub(r"\s+", " ", (content or "")).strip()
