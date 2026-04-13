@@ -1,78 +1,107 @@
-from pathlib import Path
-
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-# 언어별 구분자 매핑
 _LANG_SEPARATORS: dict[str, list[str]] = {
-    ".py":   ["\nclass ", "\ndef ", "\n\n", "\n", " ", ""],
-    ".js":   ["\nfunction ", "\nclass ", "\nconst ", "\n\n", "\n", " ", ""],
-    ".ts":   ["\nfunction ", "\nclass ", "\nconst ", "\ninterface ", "\n\n", "\n", " ", ""],
-    ".jsx":  ["\nfunction ", "\nclass ", "\nconst ", "\n\n", "\n", " ", ""],
-    ".tsx":  ["\nfunction ", "\nclass ", "\nconst ", "\ninterface ", "\n\n", "\n", " ", ""],
-    ".sql":  ["\n-- ", "\nCREATE ", "\nSELECT ", "\n\n", "\n", " ", ""],
-    ".md":   ["\n## ", "\n### ", "\n\n", "\n", " ", ""],
+    ".py": ["\nclass ", "\ndef ", "\n\n", "\n", " ", ""],
+    ".js": ["\nfunction ", "\nclass ", "\nconst ", "\n\n", "\n", " ", ""],
+    ".ts": ["\nfunction ", "\nclass ", "\nconst ", "\ninterface ", "\n\n", "\n", " ", ""],
+    ".jsx": ["\nfunction ", "\nclass ", "\nconst ", "\n\n", "\n", " ", ""],
+    ".tsx": ["\nfunction ", "\nclass ", "\nconst ", "\ninterface ", "\n\n", "\n", " ", ""],
+    ".sql": ["\n-- ", "\nCREATE ", "\nSELECT ", "\n\n", "\n", " ", ""],
+    ".md": ["\n## ", "\n### ", "\n\n", "\n", " ", ""],
     ".html": ["\n<", "\n\n", "\n", " ", ""],
 }
 _DEFAULT_SEPARATORS = ["\n\n", "\n", " ", ""]
 
-_CHUNK_SIZE    = 1200   # characters
-_CHUNK_OVERLAP = 200    # characters
+_CHUNK_SIZE = 1200
+_CHUNK_OVERLAP = 200
+_MIN_SEPARATOR_SPLIT_DISTANCE = _CHUNK_OVERLAP + 1
 
 
-def chunk_text(content: str, file_ext: str = "") -> list[dict]:
-    """
-    RecursiveCharacterTextSplitter 기반 청킹.
-    반환값은 기존 chunk_text_by_lines()와 동일한 스키마:
-      { chunk_index, start_line, end_line, content }
-    """
-    if not content:
+def _separator_cut_index(text: str, *, start: int, hard_end: int, separators: list[str]) -> int:
+    search_start = min(start + 1, len(text))
+    min_cut = start + _MIN_SEPARATOR_SPLIT_DISTANCE
+
+    for separator in separators:
+        if not separator:
+            continue
+        cut = text.rfind(separator, search_start, hard_end + 1)
+        if cut < min_cut:
+            continue
+        return cut
+
+    return hard_end
+
+
+def _split_text(text: str, *, separators: list[str]) -> list[str]:
+    if not text:
         return []
 
-    separators = _LANG_SEPARATORS.get(file_ext.lower(), _DEFAULT_SEPARATORS)
+    chunks: list[str] = []
+    start = 0
+    text_len = len(text)
 
-    splitter = RecursiveCharacterTextSplitter(
-        separators=separators,
-        chunk_size=_CHUNK_SIZE,
-        chunk_overlap=_CHUNK_OVERLAP,
-        length_function=len,
-        is_separator_regex=False,
-    )
+    while start < text_len:
+        hard_end = min(start + _CHUNK_SIZE, text_len)
+        if hard_end >= text_len:
+            final_chunk = text[start:text_len]
+            if final_chunk:
+                chunks.append(final_chunk)
+            break
 
-    raw_chunks = splitter.split_text(content)
-    if not raw_chunks:
-        return []
+        end = _separator_cut_index(text, start=start, hard_end=hard_end, separators=separators)
+        if end <= start:
+            end = hard_end
 
-    # start_line / end_line 계산
-    # content 전체에서 각 chunk text의 위치를 찾아 줄 번호로 변환
+        chunk = text[start:end]
+        if not chunk:
+            end = hard_end
+            chunk = text[start:end]
+
+        chunks.append(chunk)
+
+        next_start = max(end - _CHUNK_OVERLAP, start + 1)
+        if next_start <= start:
+            next_start = start + 1
+        start = next_start
+
+    return chunks
+
+
+def _build_chunk_rows(content: str, raw_chunks: list[str]) -> list[dict]:
     result: list[dict] = []
     search_start = 0
 
     for idx, chunk_text_val in enumerate(raw_chunks):
         pos = content.find(chunk_text_val, search_start)
         if pos == -1:
-            # fallback: overlap 때문에 못 찾는 경우 처음부터 재탐색
             pos = content.find(chunk_text_val)
+
         if pos == -1:
             start_line = 1
             end_line = content.count("\n") + 1
         else:
             start_line = content[:pos].count("\n") + 1
-            end_line   = start_line + chunk_text_val.count("\n")
-            # 다음 탐색은 현재 chunk 시작 이후부터 (overlap 허용)
+            end_line = start_line + chunk_text_val.count("\n")
             search_start = pos + max(1, len(chunk_text_val) - _CHUNK_OVERLAP)
 
         result.append(
             {
                 "chunk_index": idx,
-                "start_line":  start_line,
-                "end_line":    end_line,
-                "content":     chunk_text_val,
+                "start_line": start_line,
+                "end_line": end_line,
+                "content": chunk_text_val,
             }
         )
 
     return result
 
 
-# 하위 호환: project_ingest_service.py가 기존 함수명으로 호출하는 경우 대비
+def chunk_text(content: str, file_ext: str = "") -> list[dict]:
+    if not content:
+        return []
+
+    separators = _LANG_SEPARATORS.get(file_ext.lower(), _DEFAULT_SEPARATORS)
+    raw_chunks = _split_text(content, separators=separators)
+    return _build_chunk_rows(content, raw_chunks)
+
+
 def chunk_text_by_lines(content: str, file_ext: str = "", **_kwargs) -> list[dict]:
     return chunk_text(content, file_ext=file_ext)
