@@ -251,6 +251,56 @@ class MemoryApplyService:
             source_strength_order=SOURCE_STRENGTH_ORDER,
         )
 
+    def _decide_cluster_apply_action(self, cluster: dict, support_index: dict[str, dict]) -> dict:
+        topic = cluster["topic"]
+        topic_id = cluster.get("topic_id")
+        candidate_content = str(cluster.get("candidate_content") or "").strip()
+
+        promotable, promotion_reason = self.memory_policy.is_promotable_cluster(cluster)
+        if not promotable:
+            return {
+                "action": "pending_candidate",
+                "reason": promotion_reason,
+                "active_profile": None,
+            }
+
+        if self._has_conflicting_active_correction(candidate_content, topic=topic, topic_id=topic_id):
+            return {
+                "action": "blocked_by_correction",
+                "reason": "conflicting_active_correction",
+                "active_profile": None,
+            }
+
+        active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
+        if not active_profile:
+            return {
+                "action": "insert_profile",
+                "reason": "no_active_profile",
+                "active_profile": None,
+            }
+
+        active_content = str(active_profile.get("content") or "").strip()
+        if self._same_meaning(active_content, candidate_content):
+            return {
+                "action": "link_existing_profile",
+                "reason": "same_meaning_active_profile",
+                "active_profile": active_profile,
+            }
+
+        should_replace, replace_reason = self._should_replace_active_profile(active_profile, cluster, support_index)
+        if not should_replace:
+            return {
+                "action": "blocked_by_existing_profile_conflict",
+                "reason": replace_reason,
+                "active_profile": active_profile,
+            }
+
+        return {
+            "action": "replace_active_profile",
+            "reason": replace_reason,
+            "active_profile": active_profile,
+        }
+
     def _should_replace_active_profile(self, active_profile: dict, cluster: dict, support_index: dict[str, dict]) -> tuple[bool, str]:
         active_support = self._profile_support_snapshot(active_profile, support_index)
         candidate_score = self._support_score(cluster)
@@ -269,6 +319,24 @@ class MemoryApplyService:
             return True, "replace_with_fresh_stronger_or_equal_cluster"
 
         return False, "existing_profile_still_stronger"
+
+    def _decide_active_profile_demotion(self, active_profile: dict, support_index: dict[str, dict]) -> dict:
+        support_snapshot = self._profile_support_snapshot(active_profile, support_index)
+        support_score = self._support_score(support_snapshot)
+        if support_score >= PROFILE_DEMOTE_MIN_SUPPORT_SCORE:
+            return {
+                "should_demote": False,
+                "reason": "support_above_threshold",
+                "support_snapshot": support_snapshot,
+                "support_score": support_score,
+            }
+
+        return {
+            "should_demote": True,
+            "reason": "support_below_threshold",
+            "support_snapshot": support_snapshot,
+            "support_score": support_score,
+        }
 
     def _demote_profile_to_candidate(self, *, active_profile: dict, support_snapshot: dict, support_score: float) -> bool:
         profile_id = str(active_profile.get("id") or "").strip()
@@ -304,18 +372,25 @@ class MemoryApplyService:
             active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
             if not active_profile:
                 continue
-            support_snapshot = self._profile_support_snapshot(active_profile, support_index)
-            support_score = self._support_score(support_snapshot)
-            if support_score >= PROFILE_DEMOTE_MIN_SUPPORT_SCORE:
+            demotion = self._decide_active_profile_demotion(active_profile, support_index)
+            if not demotion["should_demote"]:
                 continue
             if self._demote_profile_to_candidate(
                 active_profile=active_profile,
-                support_snapshot=support_snapshot,
-                support_score=support_score,
+                support_snapshot=demotion["support_snapshot"],
+                support_score=demotion["support_score"],
             ):
                 demoted_profiles += 1
                 touched_topics.add((topic_id, topic))
         return demoted_profiles, touched_topics
+
+    def _cluster_topic_refs(self, clusters: list[dict]) -> set[tuple[str | None, str]]:
+        refs: set[tuple[str | None, str]] = set()
+        for cluster in clusters:
+            topic_id = str(cluster.get("topic_id") or "").strip() or None
+            topic = self._topic_label(cluster.get("topic"), topic_id)
+            refs.add((topic_id, topic))
+        return refs
 
     def reconcile_topics(self, topic_refs: list[dict] | None) -> dict:
         normalized_topic_keys: set[tuple[str | None, str]] = set()
@@ -503,33 +578,35 @@ class MemoryApplyService:
             topic = cluster["topic"]
             candidate_content = cluster["candidate_content"]
 
-            promotable, _reason = self.memory_policy.is_promotable_cluster(cluster)
-            if not promotable:
+            decision = self._decide_cluster_apply_action(cluster, support_index)
+            action = decision["action"]
+
+            if action == "pending_candidate":
                 if self._refresh_matching_candidate_profile(cluster=cluster):
                     refreshed_candidates += 1
                 pending_candidates += 1
                 continue
-            if self._has_conflicting_active_correction(candidate_content, topic=topic, topic_id=topic_id):
+
+            if action == "blocked_by_correction":
                 blocked_by_correction += 1
                 continue
 
-            active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
-            if active_profile:
-                active_content = str(active_profile.get("content") or "").strip()
-                if self._same_meaning(active_content, candidate_content):
-                    linked_count = self._link_profile_for_evidence_rows(
-                        evidence_rows=cluster.get("evidence_rows") or [],
-                        profile_id=active_profile["id"],
-                    )
-                    self._archive_matching_candidate_profiles(topic=topic, topic_id=topic_id, content=candidate_content)
-                    if linked_count > 0:
-                        linked_existing_profiles += 1
-                    continue
+            if action == "link_existing_profile":
+                active_profile = decision["active_profile"] or {}
+                linked_count = self._link_profile_for_evidence_rows(
+                    evidence_rows=cluster.get("evidence_rows") or [],
+                    profile_id=active_profile["id"],
+                )
+                self._archive_matching_candidate_profiles(topic=topic, topic_id=topic_id, content=candidate_content)
+                if linked_count > 0:
+                    linked_existing_profiles += 1
+                continue
 
-                should_replace, _replace_reason = self._should_replace_active_profile(active_profile, cluster, support_index)
-                if not should_replace:
-                    blocked_by_existing_profile_conflict += 1
-                    continue
+            if action == "blocked_by_existing_profile_conflict":
+                blocked_by_existing_profile_conflict += 1
+                continue
+
+            if action == "replace_active_profile":
                 replaced_active_profiles += 1
 
             new_profile_id = self.profile_store.insert_profile(
@@ -547,10 +624,7 @@ class MemoryApplyService:
             promoted_profiles += 1
             promoted_topics.add((topic_id, topic))
         demoted_profiles, demoted_topics = self._demote_weak_active_profiles(
-            topic_keys=promoted_topics or {
-                (cluster.get("topic_id"), cluster.get("topic"))
-                for cluster in clusters
-            },
+            topic_keys=promoted_topics or self._cluster_topic_refs(clusters),
             support_index=self._build_profile_support_index(self._list_all_profile_evidence()),
         )
         promoted_topics.update(demoted_topics)

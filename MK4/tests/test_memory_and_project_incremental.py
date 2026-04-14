@@ -339,6 +339,83 @@ class MemoryApplyServiceSupportDelegationTests(unittest.TestCase):
         )
 
 
+class MemoryApplyServiceDecisionTests(unittest.TestCase):
+    def test_decide_cluster_apply_action_links_existing_profile_on_same_meaning(self) -> None:
+        service = MemoryApplyService()
+        cluster = {
+            "topic": "?ㅻ챸 ?좏샇",
+            "topic_id": "topic-1",
+            "candidate_content": "援ъ“瑜?癒쇱? ?ㅻ챸?섎뒗 諛⑹떇???좏샇?쒕떎",
+            "direct_confirm_count": 0,
+            "max_confidence": 0.68,
+            "avg_confidence": 0.61,
+            "distinct_group_count": 2,
+            "evidence_count": 2,
+            "primary_strength": "repeated_behavior",
+            "confirmed_count": 0,
+        }
+        active_profile = {"id": "profile-1", "content": "援ъ“???ㅻ챸???좏샇?쒕떎"}
+
+        with patch.object(service.memory_policy, "is_promotable_cluster", return_value=(True, "promotable_repeated_signal")):
+            with patch.object(service, "_has_conflicting_active_correction", return_value=False):
+                with patch.object(service.profile_store, "get_active_by_topic", return_value=active_profile):
+                    with patch.object(service, "_same_meaning", return_value=True):
+                        decision = service._decide_cluster_apply_action(cluster, support_index={})
+
+        self.assertEqual(decision["action"], "link_existing_profile")
+        self.assertEqual(decision["reason"], "same_meaning_active_profile")
+        self.assertEqual(decision["active_profile"], active_profile)
+
+    def test_decide_cluster_apply_action_blocks_when_existing_profile_still_stronger(self) -> None:
+        service = MemoryApplyService()
+        cluster = {
+            "topic": "?ㅻ챸 ?좏샇",
+            "topic_id": "topic-1",
+            "candidate_content": "援ъ“瑜?癒쇱? ?ㅻ챸?섎뒗 諛⑹떇???좏샇?쒕떎",
+            "direct_confirm_count": 0,
+            "max_confidence": 0.68,
+            "avg_confidence": 0.61,
+            "distinct_group_count": 2,
+            "evidence_count": 2,
+            "primary_strength": "repeated_behavior",
+            "confirmed_count": 0,
+        }
+        active_profile = {"id": "profile-1", "content": "?덉떆瑜?癒쇱? ?ㅻ챸?섎뒗 諛⑹떇???좏샇?쒕떎"}
+
+        with patch.object(service.memory_policy, "is_promotable_cluster", return_value=(True, "promotable_repeated_signal")):
+            with patch.object(service, "_has_conflicting_active_correction", return_value=False):
+                with patch.object(service.profile_store, "get_active_by_topic", return_value=active_profile):
+                    with patch.object(service, "_same_meaning", return_value=False):
+                        with patch.object(service, "_should_replace_active_profile", return_value=(False, "existing_profile_still_stronger")):
+                            decision = service._decide_cluster_apply_action(cluster, support_index={})
+
+        self.assertEqual(decision["action"], "blocked_by_existing_profile_conflict")
+        self.assertEqual(decision["reason"], "existing_profile_still_stronger")
+        self.assertEqual(decision["active_profile"], active_profile)
+
+    def test_decide_active_profile_demotion_reports_threshold_reason(self) -> None:
+        service = MemoryApplyService()
+        active_profile = {"id": "profile-1", "confidence": 0.82, "source": "profile"}
+        support_snapshot = {
+            "avg_confidence": 0.3,
+            "max_confidence": 0.3,
+            "distinct_group_count": 0,
+            "evidence_count": 0,
+            "primary_strength": "",
+            "direct_confirm_count": 0,
+            "confirmed_count": 0,
+        }
+
+        with patch.object(service, "_profile_support_snapshot", return_value=support_snapshot):
+            with patch.object(service, "_support_score", return_value=0.59):
+                decision = service._decide_active_profile_demotion(active_profile, support_index={})
+
+        self.assertTrue(decision["should_demote"])
+        self.assertEqual(decision["reason"], "support_below_threshold")
+        self.assertEqual(decision["support_snapshot"], support_snapshot)
+        self.assertEqual(decision["support_score"], 0.59)
+
+
 class ProjectProfileEvidenceServiceIncrementalTests(unittest.TestCase):
     def test_ensure_extracted_reuses_existing_evidence_without_reextract(self) -> None:
         service = ProjectProfileEvidenceService()
