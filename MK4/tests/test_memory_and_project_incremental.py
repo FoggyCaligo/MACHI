@@ -1,6 +1,12 @@
 import unittest
 from unittest.mock import patch
 
+from config import PROFILE_SEMANTIC_CLUSTER_THRESHOLD
+from memory.policies.memory_classification_policy import (
+    MemoryClassificationPolicy,
+    SOURCE_STRENGTH_ORDER,
+)
+from memory.services.profile_evidence_graph import ProfileEvidenceGraph
 from memory.services.memory_apply_service import MemoryApplyService
 from memory.services.memory_ingress_service import MemoryIngressService
 from project_analysis.services.project_ask_service import ProjectAskService
@@ -142,6 +148,195 @@ class MemoryApplyServiceCandidateRefreshTests(unittest.TestCase):
 
         self.assertEqual(archived, 2)
         mocked_archive.assert_called_once_with(["candidate-1", "candidate-2"], status="promoted")
+
+
+class ProfileEvidenceGraphClusterTests(unittest.TestCase):
+    def test_build_candidate_clusters_groups_semantic_matches_and_keeps_shape(self) -> None:
+        graph = ProfileEvidenceGraph()
+        policy = MemoryClassificationPolicy()
+        evidences = [
+            {
+                "id": "e1",
+                "topic": "?ㅻ챸 ?좏샇",
+                "topic_id": "topic-1",
+                "candidate_content": "援ъ“瑜?癒쇱? ?ㅻ챸?섎뒗 諛⑹떇???좏샇?쒕떎",
+                "source_strength": "repeated_behavior",
+                "confidence": 0.58,
+                "group_id": "group-1",
+                "source_file_path": "notes/a.md",
+                "memory_tier": "candidate",
+                "channel": "uploaded_text",
+                "linked_profile_id": "",
+                "direct_confirm": False,
+            },
+            {
+                "id": "e2",
+                "topic": "?ㅻ챸 ?좏샇",
+                "topic_id": "topic-1",
+                "candidate_content": "援ъ“???ㅻ챸???癒쇱? ?섎뒗 寃껋쓣 ?좏샇?쒕떎",
+                "source_strength": "explicit_self_statement",
+                "confidence": 0.82,
+                "group_id": "group-2",
+                "source_file_path": "notes/b.md",
+                "memory_tier": "confirmed",
+                "channel": "chat",
+                "linked_profile_id": "profile-1",
+                "direct_confirm": True,
+            },
+            {
+                "id": "e3",
+                "topic": "?깆뾽 諛⑹떇",
+                "topic_id": "topic-2",
+                "candidate_content": "?쬆???쒗뻾?곸쑝濡?諛섏쑝??諛⑹떇???좏샇?쒕떎",
+                "source_strength": "temporary_interest",
+                "confidence": 0.43,
+                "group_id": "group-3",
+                "source_file_path": "notes/c.md",
+                "memory_tier": "candidate",
+                "channel": "project_artifact",
+                "linked_profile_id": "",
+                "direct_confirm": False,
+            },
+        ]
+
+        def fake_similarity(left: str | None, right: str | None) -> float:
+            joined = f"{left or ''} {right or ''}"
+            if "?ㅻ챸" in joined and "援ъ“" in joined:
+                return 0.91
+            return 0.19
+
+        with patch.object(graph, "semantic_similarity", side_effect=fake_similarity):
+            clusters = graph.build_candidate_clusters(
+                evidences,
+                memory_policy=policy,
+                source_strength_order=SOURCE_STRENGTH_ORDER,
+            )
+
+        self.assertEqual(len(clusters), 2)
+        self.assertEqual(clusters[0]["topic_id"], "topic-1")
+        self.assertEqual(clusters[0]["candidate_content"], "援ъ“???ㅻ챸???癒쇱? ?섎뒗 寃껋쓣 ?좏샇?쒕떎")
+        self.assertEqual(clusters[0]["evidence_count"], 2)
+        self.assertEqual(clusters[0]["distinct_group_count"], 2)
+        self.assertEqual(clusters[0]["distinct_source_count"], 2)
+        self.assertAlmostEqual(clusters[0]["avg_confidence"], 0.70)
+        self.assertEqual(clusters[0]["max_confidence"], 0.82)
+        self.assertEqual(clusters[0]["primary_strength"], "explicit_self_statement")
+        self.assertEqual(clusters[0]["direct_confirm_count"], 1)
+        self.assertEqual(clusters[0]["candidate_count"], 1)
+        self.assertEqual(clusters[0]["confirmed_count"], 1)
+        self.assertEqual(clusters[0]["channel_count"], 2)
+        self.assertEqual(clusters[0]["linked_profile_ids"], {"profile-1"})
+        self.assertEqual(clusters[1]["topic_id"], "topic-2")
+
+
+class MemoryApplyServiceClusterDelegationTests(unittest.TestCase):
+    def test_build_candidate_clusters_delegates_to_profile_graph(self) -> None:
+        service = MemoryApplyService()
+        evidences = [{"id": "e1", "candidate_content": "foo"}]
+        sentinel = [{"topic": "general", "candidate_content": "foo"}]
+
+        with patch.object(service.profile_graph, "build_candidate_clusters", return_value=sentinel) as mocked_build:
+            result = service._build_candidate_clusters(evidences)
+
+        self.assertIs(result, sentinel)
+        mocked_build.assert_called_once_with(
+            evidences,
+            memory_policy=service.memory_policy,
+            source_strength_order=SOURCE_STRENGTH_ORDER,
+            semantic_cluster_threshold=PROFILE_SEMANTIC_CLUSTER_THRESHOLD,
+        )
+
+
+class ProfileEvidenceGraphSupportTests(unittest.TestCase):
+    def test_build_profile_support_index_and_snapshot_and_score_keep_existing_shape(self) -> None:
+        graph = ProfileEvidenceGraph()
+        policy = MemoryClassificationPolicy()
+        evidences = [
+            {
+                "linked_profile_id": "profile-1",
+                "group_id": "group-1",
+                "confidence": 0.62,
+                "source_strength": "repeated_behavior",
+                "memory_tier": "candidate",
+                "direct_confirm": False,
+            },
+            {
+                "linked_profile_id": "profile-1",
+                "group_id": "group-2",
+                "confidence": 0.85,
+                "source_strength": "explicit_self_statement",
+                "memory_tier": "confirmed",
+                "direct_confirm": True,
+            },
+        ]
+
+        support_index = graph.build_profile_support_index(evidences, memory_policy=policy)
+        snapshot = graph.profile_support_snapshot(
+            {"id": "profile-1", "confidence": 0.4, "source": "profile"},
+            support_index,
+            memory_policy=policy,
+        )
+        fallback_snapshot = graph.profile_support_snapshot(
+            {
+                "id": "profile-2",
+                "confidence": 0.7,
+                "source": "evidence_promotion:explicit_self_statement",
+            },
+            support_index,
+            memory_policy=policy,
+        )
+        score = graph.support_score(snapshot, source_strength_order=SOURCE_STRENGTH_ORDER)
+
+        self.assertEqual(snapshot["distinct_group_count"], 2)
+        self.assertAlmostEqual(snapshot["avg_confidence"], 0.735)
+        self.assertEqual(snapshot["max_confidence"], 0.85)
+        self.assertEqual(snapshot["primary_strength"], "explicit_self_statement")
+        self.assertEqual(snapshot["direct_confirm_count"], 1)
+        self.assertEqual(snapshot["confirmed_count"], 1)
+        self.assertEqual(snapshot["evidence_count"], 2)
+        self.assertEqual(fallback_snapshot["primary_strength"], "explicit_self_statement")
+        self.assertEqual(fallback_snapshot["direct_confirm_count"], 0)
+        self.assertAlmostEqual(score, 1.73)
+
+
+class MemoryApplyServiceSupportDelegationTests(unittest.TestCase):
+    def test_support_methods_delegate_to_profile_graph(self) -> None:
+        service = MemoryApplyService()
+        evidences = [{"linked_profile_id": "profile-1"}]
+        active_profile = {"id": "profile-1", "confidence": 0.8, "source": "profile"}
+        support_index = {"profile-1": {"avg_confidence": 0.8}}
+        snapshot = {"avg_confidence": 0.8}
+
+        with patch.object(service.profile_graph, "build_profile_support_index", return_value={"profile-1": {}}) as mocked_index:
+            result_index = service._build_profile_support_index(evidences)
+        with patch.object(service.profile_graph, "profile_support_snapshot", return_value={"avg_confidence": 0.5}) as mocked_snapshot:
+            result_snapshot = service._profile_support_snapshot(active_profile, support_index)
+        with patch.object(service.profile_graph, "support_score", return_value=0.77) as mocked_score:
+            result_score = service._support_score(snapshot)
+        with patch.object(service.profile_graph, "source_strength_from_profile_source", return_value="explicit_self_statement") as mocked_strength:
+            result_strength = service._source_strength_from_profile_source("evidence_promotion:explicit_self_statement")
+
+        self.assertEqual(result_index, {"profile-1": {}})
+        mocked_index.assert_called_once_with(evidences, memory_policy=service.memory_policy)
+
+        self.assertEqual(result_snapshot, {"avg_confidence": 0.5})
+        mocked_snapshot.assert_called_once_with(
+            active_profile,
+            support_index,
+            memory_policy=service.memory_policy,
+        )
+
+        self.assertEqual(result_score, 0.77)
+        mocked_score.assert_called_once_with(
+            snapshot,
+            source_strength_order=SOURCE_STRENGTH_ORDER,
+        )
+
+        self.assertEqual(result_strength, "explicit_self_statement")
+        mocked_strength.assert_called_once_with(
+            "evidence_promotion:explicit_self_statement",
+            memory_policy=service.memory_policy,
+        )
 
 
 class ProjectProfileEvidenceServiceIncrementalTests(unittest.TestCase):
