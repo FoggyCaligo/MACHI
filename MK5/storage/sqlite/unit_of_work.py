@@ -9,6 +9,7 @@ from storage.sqlite.edge_repository import SqliteEdgeRepository
 from storage.sqlite.graph_event_repository import SqliteGraphEventRepository
 from storage.sqlite.node_pointer_repository import SqliteNodePointerRepository
 from storage.sqlite.node_repository import SqliteNodeRepository
+from storage.sqlite.pattern_repository import SqlitePatternRepository
 from storage.unit_of_work import UnitOfWork
 
 
@@ -27,6 +28,7 @@ class SqliteUnitOfWork(UnitOfWork):
         self.edges = SqliteEdgeRepository(self.connection)
         self.graph_events = SqliteGraphEventRepository(self.connection)
         self.node_pointers = SqliteNodePointerRepository(self.connection)
+        self.patterns = SqlitePatternRepository(self.connection)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

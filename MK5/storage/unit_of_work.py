@@ -7,6 +7,7 @@ from storage.repositories.edge_repository import EdgeRepository
 from storage.repositories.graph_event_repository import GraphEventRepository
 from storage.repositories.node_pointer_repository import NodePointerRepository
 from storage.repositories.node_repository import NodeRepository
+from storage.repositories.pattern_repository import PatternRepository
 
 
 class UnitOfWork(ABC):
@@ -15,6 +16,7 @@ class UnitOfWork(ABC):
     edges: EdgeRepository
     graph_events: GraphEventRepository
     node_pointers: NodePointerRepository
+    patterns: PatternRepository
 
     @abstractmethod
     def __enter__(self) -> "UnitOfWork":

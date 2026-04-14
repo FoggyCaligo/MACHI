@@ -108,3 +108,60 @@ CREATE TABLE IF NOT EXISTS node_pointers (
 CREATE INDEX IF NOT EXISTS idx_node_pointers_owner ON node_pointers(owner_node_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_node_pointers_referenced ON node_pointers(referenced_node_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_node_pointers_dedupe ON node_pointers(owner_node_id, referenced_node_id, pointer_type, pointer_slot, is_active);
+
+CREATE TABLE IF NOT EXISTS subgraph_patterns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_uid TEXT NOT NULL UNIQUE,
+    pattern_type TEXT NOT NULL,
+    node_ids_json TEXT NOT NULL DEFAULT '[]',
+    edge_ids_json TEXT NOT NULL DEFAULT '[]',
+    topology_hash TEXT NOT NULL,
+    cardinality INTEGER NOT NULL DEFAULT 0,
+    edge_count INTEGER NOT NULL DEFAULT 0,
+    pattern_trust REAL NOT NULL DEFAULT 0.5,
+    backing_evidence_count INTEGER NOT NULL DEFAULT 0,
+    conflict_count INTEGER NOT NULL DEFAULT 0,
+    conflict_pressure REAL NOT NULL DEFAULT 0.0,
+    revision_candidate_flag INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    superseded_by TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_from_event_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_from_event_id) REFERENCES graph_events(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_patterns_type_active ON subgraph_patterns(pattern_type, is_active);
+CREATE INDEX IF NOT EXISTS idx_patterns_trust ON subgraph_patterns(pattern_trust DESC, backing_evidence_count DESC);
+CREATE INDEX IF NOT EXISTS idx_patterns_revision ON subgraph_patterns(revision_candidate_flag, conflict_pressure DESC, id);
+CREATE INDEX IF NOT EXISTS idx_patterns_topology ON subgraph_patterns(topology_hash, is_active);
+CREATE INDEX IF NOT EXISTS idx_patterns_active ON subgraph_patterns(is_active, pattern_trust DESC);
+
+CREATE TABLE IF NOT EXISTS pattern_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_id INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    position_in_pattern INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pattern_id) REFERENCES subgraph_patterns(id) ON DELETE CASCADE,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    UNIQUE(pattern_id, node_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_nodes_pattern ON pattern_nodes(pattern_id);
+CREATE INDEX IF NOT EXISTS idx_pattern_nodes_node ON pattern_nodes(node_id);
+
+CREATE TABLE IF NOT EXISTS pattern_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_id INTEGER NOT NULL,
+    edge_id INTEGER NOT NULL,
+    position_in_pattern INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pattern_id) REFERENCES subgraph_patterns(id) ON DELETE CASCADE,
+    FOREIGN KEY (edge_id) REFERENCES edges(id) ON DELETE CASCADE,
+    UNIQUE(pattern_id, edge_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_edges_pattern ON pattern_edges(pattern_id);
+CREATE INDEX IF NOT EXISTS idx_pattern_edges_edge ON pattern_edges(edge_id);

@@ -13,6 +13,12 @@ from core.entities.edge import Edge
 from core.entities.graph_event import GraphEvent
 from core.entities.node import Node
 from core.entities.node_pointer import NodePointer
+from core.entities.subgraph_pattern import (
+    PatternConflictRecord,
+    PatternMatch,
+    PatternRevisionAction,
+    SubgraphPattern,
+)
 from core.entities.thought_view import ActivatedNode, ThoughtView
 
 __all__ = [
@@ -26,8 +32,12 @@ __all__ = [
     "GraphEvent",
     "Node",
     "NodePointer",
+    "PatternConflictRecord",
+    "PatternMatch",
+    "PatternRevisionAction",
     "RevisionAction",
     "RevisionDecisionRecord",
+    "SubgraphPattern",
     "ThoughtResult",
     "ThoughtView",
     "TrustChangeRecord",
