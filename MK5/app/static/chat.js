@@ -18,6 +18,7 @@ const modelBadgeEl = document.getElementById("modelBadge");
 const DEFAULT_REQUEST_TIMEOUT_MS = 300000;
 const PROJECT_STORAGE_KEY = "mk5_selected_project_id";
 const MODEL_STORAGE_KEY = "mk5_selected_model";
+const DEBUG_STORAGE_KEY = "mk5_show_debug";
 
 let uiState = {
   requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
@@ -40,6 +41,36 @@ function addMessage(role, text) {
   div.className = `message ${role}`;
   div.textContent = text;
   messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function shouldShowDebugPanels() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("debug") === "1") return true;
+  return localStorage.getItem(DEBUG_STORAGE_KEY) === "1";
+}
+
+function addDebugPanel(title, sections) {
+  if (!shouldShowDebugPanels()) return;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "message system debug-panel";
+
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = title;
+  details.appendChild(summary);
+
+  sections.filter(Boolean).forEach((section) => {
+    const block = document.createElement("pre");
+    block.className = "debug-block";
+    block.textContent = section;
+    details.appendChild(block);
+  });
+
+  wrapper.appendChild(details);
+  messagesEl.appendChild(wrapper);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
@@ -83,7 +114,11 @@ function restorePreferredProject() {
 }
 
 function renderProjectOptions(preferredProjectId = "") {
-  const previousValue = preferredProjectId || localStorage.getItem(PROJECT_STORAGE_KEY) || projectSelectEl.value || "";
+  const previousValue =
+    preferredProjectId ||
+    localStorage.getItem(PROJECT_STORAGE_KEY) ||
+    projectSelectEl.value ||
+    "";
 
   projectSelectEl.innerHTML = "";
 
@@ -125,7 +160,7 @@ async function loadProjects({ silent = false, preferredProjectId = "" } = {}) {
 
     renderProjectOptions(preferredProjectId);
 
-    if (!silent) {
+    if (!silent && shouldShowDebugPanels()) {
       addMessage("system", `프로젝트 목록 갱신 완료\n- project_count: ${projectsState.projects.length}`);
     }
   } catch (err) {
@@ -134,9 +169,7 @@ async function loadProjects({ silent = false, preferredProjectId = "" } = {}) {
       error: err.message,
     };
     renderProjectOptions("");
-    if (!silent) {
-      addMessage("system", `프로젝트 목록 로드 실패: ${err.message}`);
-    }
+    addMessage("system", `프로젝트 목록 로드 실패: ${err.message}`);
   } finally {
     refreshProjectsBtn.disabled = false;
   }
@@ -161,7 +194,10 @@ function restorePreferredModel() {
     return;
   }
 
-  if (modelsState.defaultModel && Array.from(modelSelectEl.options).some((opt) => opt.value === modelsState.defaultModel)) {
+  if (
+    modelsState.defaultModel &&
+    Array.from(modelSelectEl.options).some((opt) => opt.value === modelsState.defaultModel)
+  ) {
     setModelSelection(modelsState.defaultModel);
     return;
   }
@@ -219,7 +255,7 @@ async function loadModels({ silent = false } = {}) {
 
     renderModelOptions();
 
-    if (!silent) {
+    if (!silent && shouldShowDebugPanels()) {
       const lines = [
         "모델 목록 갱신 완료",
         `- ollama_available: ${modelsState.ollamaAvailable ? "예" : "아니오"}`,
@@ -229,7 +265,7 @@ async function loadModels({ silent = false } = {}) {
       addMessage("system", lines.join("\n"));
     }
 
-    if (modelsState.error) {
+    if (modelsState.error && shouldShowDebugPanels()) {
       addMessage("system", `모델 목록 경고: ${modelsState.error}`);
     }
   } catch (err) {
@@ -283,7 +319,6 @@ clearFileBtn.addEventListener("click", () => {
 
 clearProjectBtn.addEventListener("click", () => {
   setSelectedProject("");
-  addMessage("system", "프로젝트 선택을 해제했습니다.");
 });
 
 refreshProjectsBtn.addEventListener("click", () => {
@@ -296,19 +331,16 @@ refreshModelsBtn.addEventListener("click", () => {
 
 clearModelBtn.addEventListener("click", () => {
   setModelSelection("");
-  addMessage("system", `기본 모델 사용으로 되돌렸습니다. (${modelsState.defaultModel || "서버 기본값"})`);
 });
 
 projectSelectEl.addEventListener("change", () => {
   const projectId = getSelectedProjectId();
   setSelectedProject(projectId);
-  addMessage("system", `선택 프로젝트: ${getProjectDisplayName(projectId) || "없음"}`);
 });
 
 modelSelectEl.addEventListener("change", () => {
   const selected = getSelectedModel();
   setModelSelection(selected);
-  addMessage("system", `선택 모델: ${selected || modelsState.defaultModel || "서버 기본값"}`);
 });
 
 inputEl.addEventListener("keydown", (e) => {
@@ -330,53 +362,20 @@ function summarizeModel(data) {
   return ["응답 모델", `- used_model: ${data.used_model}`].join("\n");
 }
 
-function summarizeExtract(extractInfo) {
-  if (!extractInfo) return null;
-  const stored = extractInfo.stored ? "예" : "아니오";
+function summarizeInternalExplanation(data) {
+  if (!data || !data.internal_explanation) return null;
+  return ["내부 설명용 요약", data.internal_explanation].join("\n\n");
+}
+
+function summarizeDerivedAction(actionLayer) {
+  if (!actionLayer) return null;
   return [
-    "profile evidence 추출",
-    `- stored: ${stored}`,
-    `- document_count: ${extractInfo.document_count ?? 0}`,
-    `- candidate_count: ${extractInfo.candidate_count ?? 0}`,
-  ].join("\n");
-}
-
-function summarizeSync(syncInfo) {
-  if (!syncInfo) return null;
-  return [
-    "memory sync 결과",
-    `- processed: ${syncInfo.processed ?? 0}`,
-    `- inserted_profiles: ${syncInfo.inserted_profiles ?? 0}`,
-    `- added_corrections: ${syncInfo.added_corrections ?? 0}`,
-    `- skipped: ${syncInfo.skipped ?? 0}`,
-  ].join("\n");
-}
-
-function summarizeChunkUsage(chunks) {
-  if (!Array.isArray(chunks) || chunks.length === 0) return null;
-  const lines = chunks.slice(0, 5).map((chunk, index) => {
-    const score = typeof chunk.score === "number" ? chunk.score.toFixed(1) : String(chunk.score ?? "-");
-    return `${index + 1}. ${chunk.file_path} (${chunk.start_line}-${chunk.end_line}, score=${score})`;
-  });
-  return [`사용 chunk: ${chunks.length}건`, ...lines].join("\n");
-}
-
-function summarizeEvidenceUsage(evidences) {
-  if (!Array.isArray(evidences) || evidences.length === 0) return null;
-  const lines = evidences.slice(0, 5).map((item, index) => {
-    return `${index + 1}. ${item.topic} | ${item.source_file_path} | confidence=${item.confidence}`;
-  });
-  return [`사용 profile evidence: ${evidences.length}건`, ...lines].join("\n");
-}
-
-function summarizeArtifactIngest(data) {
-  if (!data || data.mode !== "artifact") return null;
-  if (typeof data.stored_file_count !== "number") return null;
-  return [
-    "artifact ingest 결과",
-    `- stored_file_count: ${data.stored_file_count ?? 0}`,
-    `- stored_chunk_count: ${data.stored_chunk_count ?? 0}`,
-    `- skipped_file_count: ${data.skipped_file_count ?? 0}`,
+    "derived action",
+    `- response_mode: ${actionLayer.response_mode || "-"}`,
+    `- answer_goal: ${actionLayer.answer_goal || "-"}`,
+    `- tone_hint: ${actionLayer.tone_hint || "-"}`,
+    `- suggested_actions: ${(actionLayer.suggested_actions || []).join(" | ") || "없음"}`,
+    `- do_not_claim: ${(actionLayer.do_not_claim || []).join(" | ") || "없음"}`,
   ].join("\n");
 }
 
@@ -398,9 +397,10 @@ function summarizeIngest(ingest) {
 function summarizeActivation(activation) {
   if (!activation) return null;
   const seedBlocks = Array.isArray(activation.seed_blocks) ? activation.seed_blocks : [];
-  const seedLines = seedBlocks.slice(0, 5).map((item, index) =>
-    `${index + 1}. [${item.block_kind}] ${item.text}`
+  const seedLines = seedBlocks.slice(0, 5).map(
+    (item, index) => `${index + 1}. [${item.block_kind}] ${item.text}`,
   );
+
   return [
     "activation debug",
     `- seed_block_count: ${seedBlocks.length}`,
@@ -420,16 +420,21 @@ function summarizeThinkingDebug(thinking) {
     `- trust_update_count: ${thinking.trust_update_count ?? 0}`,
     `- revision_action_count: ${thinking.revision_action_count ?? 0}`,
   ];
+
   const conclusion = thinking.core_conclusion;
   if (conclusion) {
     lines.push(`- activated_concepts: ${(conclusion.activated_concepts || []).join(", ") || "없음"}`);
     lines.push(`- key_relations: ${(conclusion.key_relations || []).join(", ") || "없음"}`);
     lines.push(`- inferred_intent: ${conclusion.inferred_intent || "-"}`);
   }
+
   const signals = Array.isArray(thinking.signals) ? thinking.signals : [];
   signals.slice(0, 5).forEach((item, index) => {
-    lines.push(`${index + 1}. edge#${item.edge_id} [${item.edge_type}] ${item.reason} | severity=${item.severity}`);
+    lines.push(
+      `${index + 1}. edge#${item.edge_id} [${item.edge_type}] ${item.reason} | severity=${item.severity}`,
+    );
   });
+
   return lines.join("\n");
 }
 
@@ -443,21 +448,33 @@ function summarizeCoreConclusion(conclusion) {
   ].join("\n");
 }
 
-function showResponseMeta(data) {
-  const blocks = [
+function summarizeVerbalization(verbalization) {
+  if (!verbalization) return null;
+  return [
+    "verbalization",
+    `- used_llm: ${verbalization.used_llm ? "true" : "false"}`,
+    `- llm_error: ${verbalization.llm_error || "없음"}`,
+  ].join("\n");
+}
+
+function showResponseDebug(data) {
+  const debug = data && data.debug ? data.debug : null;
+  if (!debug) return;
+
+  const sections = [
     summarizeModel(data),
-    summarizeArtifactIngest(data),
-    summarizeExtract(data.profile_evidence_extract),
-    summarizeSync(data.profile_memory_sync),
-    summarizeChunkUsage(data.used_chunks),
-    summarizeEvidenceUsage(data.used_profile_evidence),
-    summarizeIngest(data.ingest),
-    summarizeActivation(data.activation),
-    summarizeThinkingDebug(data.thinking),
-    summarizeCoreConclusion(data.thinking && data.thinking.core_conclusion),
+    summarizeInternalExplanation(data),
+    summarizeDerivedAction(debug.derived_action),
+    summarizeIngest(debug.ingest),
+    summarizeActivation(debug.activation),
+    summarizeThinkingDebug(debug.thinking),
+    summarizeCoreConclusion(debug.thinking && debug.thinking.core_conclusion),
+    summarizeVerbalization(debug.verbalization),
   ].filter(Boolean);
 
-  blocks.forEach((block) => addMessage("system", block));
+  if (sections.length > 0) {
+    addDebugPanel("debug / 내부 설명", sections);
+  }
 }
 
 form.addEventListener("submit", async (e) => {
@@ -482,23 +499,6 @@ form.addEventListener("submit", async (e) => {
   } else if (zipUpload) {
     addMessage("user", "[ZIP 업로드]");
   }
-
-  if (file) {
-    if (zipUpload) {
-      addMessage("system", `ZIP 업로드: ${file.name} (artifact/project로 처리)`);
-      if (projectName) {
-        addMessage("system", `프로젝트 이름: ${projectName}`);
-      }
-    } else {
-      addMessage("system", `첨부 파일: ${file.name} (현재 질문 참고 자료)`);
-    }
-  }
-
-  if (projectId) {
-    addMessage("system", `project: ${getProjectDisplayName(projectId) || "알 수 없는 프로젝트"}`);
-  }
-
-  addMessage("system", `model: ${selectedModel || modelsState.defaultModel || "서버 기본값"}`);
 
   inputEl.value = "";
   sendBtn.disabled = true;
@@ -532,7 +532,6 @@ form.addEventListener("submit", async (e) => {
     if (data.project_id) {
       await loadProjects({ silent: true, preferredProjectId: data.project_id });
       setSelectedProject(data.project_id);
-      addMessage("system", `프로젝트 저장됨: ${data.project_name || getProjectDisplayName(data.project_id) || "이름 없음"}`);
     } else {
       setSelectedProject(projectId);
     }
@@ -541,7 +540,7 @@ form.addEventListener("submit", async (e) => {
       setModelSelection(data.used_model === modelsState.defaultModel && !selectedModel ? "" : data.used_model);
     }
 
-    showResponseMeta(data);
+    showResponseDebug(data);
 
     fileInputEl.value = "";
     fileNameEl.textContent = "선택된 파일 없음";
@@ -567,7 +566,7 @@ form.addEventListener("submit", async (e) => {
 
 addMessage(
   "assistant",
-  "안녕하세요. MK5 채팅 UI입니다. 현재는 그래프 ingest → 국부 활성화 → 구조 점검 흐름을 우선 연결해 두었고, project/profile 구분 없이 모든 입력을 chat 흐름으로 처리합니다.",
+  "안녕하세요. MK5 채팅 UI입니다. 현재는 그래프 기반 응답 흐름이 연결되어 있고, debug 정보는 기본적으로 숨겨져 있습니다. 필요하면 URL 뒤에 ?debug=1 을 붙여 확인할 수 있습니다.",
 );
 
 Promise.allSettled([
