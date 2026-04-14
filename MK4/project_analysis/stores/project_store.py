@@ -8,6 +8,7 @@ class ProjectStore:
     def create(self, name: str, zip_path: str, status: str = "uploaded") -> dict:
         project_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        normalized_name = (name or "").strip() or f"project-{project_id[:8]}"
 
         with get_conn() as conn:
             conn.execute(
@@ -15,13 +16,13 @@ class ProjectStore:
                 INSERT INTO projects (id, name, zip_path, created_at, status)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (project_id, name, zip_path, now, status),
+                (project_id, normalized_name, zip_path, now, status),
             )
             conn.commit()
 
         return {
             "id": project_id,
-            "name": name,
+            "name": normalized_name,
             "zip_path": zip_path,
             "created_at": now,
             "status": status,
@@ -43,3 +44,17 @@ class ProjectStore:
                 (status, project_id),
             )
             conn.commit()
+
+    def list_recent(self, limit: int = 50) -> list[dict]:
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, name, zip_path, created_at, status
+                FROM projects
+                ORDER BY datetime(created_at) DESC, created_at DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+
+        return [dict(row) for row in rows]

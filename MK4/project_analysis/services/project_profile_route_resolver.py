@@ -3,14 +3,19 @@ from __future__ import annotations
 import json
 import re
 
-from config import OLLAMA_DEFAULT_MODEL, PROJECT_PROFILE_ROUTE_SYSTEM_PROMPT_PATH, ROUTE_CLASSIFY_NUM_PREDICT
+from config import (
+    OLLAMA_DEFAULT_MODEL,
+    PROJECT_PROFILE_ROUTE_SYSTEM_PROMPT_PATH,
+    ROUTE_CLASSIFY_NUM_PREDICT,
+    ROUTE_CLASSIFY_TIMEOUT,
+)
 from prompts.prompt_loader import load_prompt_text
 from tools.ollama_client import OllamaClient
 
 
 class ProjectProfileRouteResolver:
     def __init__(self) -> None:
-        self.client = OllamaClient(timeout=45, num_predict=ROUTE_CLASSIFY_NUM_PREDICT)
+        self.client = OllamaClient(timeout=ROUTE_CLASSIFY_TIMEOUT, num_predict=ROUTE_CLASSIFY_NUM_PREDICT)
 
     def resolve(self, *, question: str, model: str | None = None) -> str:
         system_prompt = load_prompt_text(PROJECT_PROFILE_ROUTE_SYSTEM_PROMPT_PATH)

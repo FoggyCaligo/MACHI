@@ -5,17 +5,28 @@ const fileInputEl = document.getElementById("fileInput");
 const fileNameEl = document.getElementById("fileName");
 const clearFileBtn = document.getElementById("clearFileBtn");
 const sendBtn = document.getElementById("sendBtn");
-const projectIdInputEl = document.getElementById("projectIdInput");
+const projectSelectEl = document.getElementById("projectSelect");
+const refreshProjectsBtn = document.getElementById("refreshProjectsBtn");
 const clearProjectBtn = document.getElementById("clearProjectBtn");
-const projectIdBadgeEl = document.getElementById("projectIdBadge");
+const projectNameInputEl = document.getElementById("projectNameInput");
+const projectBadgeEl = document.getElementById("projectBadge");
 const modelSelectEl = document.getElementById("modelSelect");
 const refreshModelsBtn = document.getElementById("refreshModelsBtn");
 const clearModelBtn = document.getElementById("clearModelBtn");
 const modelBadgeEl = document.getElementById("modelBadge");
 
-const REQUEST_TIMEOUT_MS = 300000;
-const PROJECT_ID_STORAGE_KEY = "mk4_project_id";
+const DEFAULT_REQUEST_TIMEOUT_MS = 300000;
+const PROJECT_STORAGE_KEY = "mk4_selected_project_id";
 const MODEL_STORAGE_KEY = "mk4_selected_model";
+
+let uiState = {
+  requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+};
+
+let projectsState = {
+  projects: [],
+  error: null,
+};
 
 let modelsState = {
   defaultModel: "",
@@ -32,15 +43,102 @@ function addMessage(role, text) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function setProjectId(projectId) {
+function getRequestTimeoutMs() {
+  const value = Number(uiState.requestTimeoutMs);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+function getProjectById(projectId) {
+  return projectsState.projects.find((item) => item.id === projectId) || null;
+}
+
+function getProjectDisplayName(projectId) {
+  if (!projectId) return "";
+  const project = getProjectById(projectId);
+  return project?.name || "";
+}
+
+function setSelectedProject(projectId) {
   const value = projectId || "";
-  projectIdInputEl.value = value;
-  projectIdBadgeEl.textContent = value || "없음";
+  const hasOption = Array.from(projectSelectEl.options).some((opt) => opt.value === value);
+  projectSelectEl.value = hasOption ? value : "";
+
+  const badgeText = value ? getProjectDisplayName(value) || "알 수 없는 프로젝트" : "없음";
+  projectBadgeEl.textContent = badgeText;
 
   if (value) {
-    localStorage.setItem(PROJECT_ID_STORAGE_KEY, value);
+    localStorage.setItem(PROJECT_STORAGE_KEY, value);
   } else {
-    localStorage.removeItem(PROJECT_ID_STORAGE_KEY);
+    localStorage.removeItem(PROJECT_STORAGE_KEY);
+  }
+}
+
+function restorePreferredProject() {
+  const saved = localStorage.getItem(PROJECT_STORAGE_KEY) || "";
+  if (saved && Array.from(projectSelectEl.options).some((opt) => opt.value === saved)) {
+    setSelectedProject(saved);
+    return;
+  }
+  setSelectedProject("");
+}
+
+function renderProjectOptions(preferredProjectId = "") {
+  const previousValue = preferredProjectId || localStorage.getItem(PROJECT_STORAGE_KEY) || projectSelectEl.value || "";
+
+  projectSelectEl.innerHTML = "";
+
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = "프로젝트 선택 안 함";
+  projectSelectEl.appendChild(defaultOption);
+
+  projectsState.projects.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+
+    const suffix = item.status && item.status !== "indexed" ? ` [${item.status}]` : "";
+    option.textContent = `${item.name}${suffix}`;
+    projectSelectEl.appendChild(option);
+  });
+
+  projectSelectEl.disabled = projectsState.projects.length === 0;
+
+  if (previousValue && Array.from(projectSelectEl.options).some((opt) => opt.value === previousValue)) {
+    setSelectedProject(previousValue);
+    return;
+  }
+
+  restorePreferredProject();
+}
+
+async function loadProjects({ silent = false, preferredProjectId = "" } = {}) {
+  refreshProjectsBtn.disabled = true;
+
+  try {
+    const res = await fetch("/projects");
+    const data = await res.json();
+
+    projectsState = {
+      projects: Array.isArray(data.projects) ? data.projects : [],
+      error: null,
+    };
+
+    renderProjectOptions(preferredProjectId);
+
+    if (!silent) {
+      addMessage("system", `프로젝트 목록 갱신 완료\n- project_count: ${projectsState.projects.length}`);
+    }
+  } catch (err) {
+    projectsState = {
+      projects: [],
+      error: err.message,
+    };
+    renderProjectOptions("");
+    if (!silent) {
+      addMessage("system", `프로젝트 목록 로드 실패: ${err.message}`);
+    }
+  } finally {
+    refreshProjectsBtn.disabled = false;
   }
 }
 
@@ -54,11 +152,6 @@ function setModelSelection(modelName) {
   } else {
     localStorage.removeItem(MODEL_STORAGE_KEY);
   }
-}
-
-function restoreProjectId() {
-  const saved = localStorage.getItem(PROJECT_ID_STORAGE_KEY) || "";
-  setProjectId(saved);
 }
 
 function restorePreferredModel() {
@@ -153,9 +246,25 @@ async function loadModels({ silent = false } = {}) {
   }
 }
 
+async function loadUiConfig({ silent = false } = {}) {
+  try {
+    const res = await fetch("/ui-config");
+    const data = await res.json();
+    uiState.requestTimeoutMs = Number(data.request_timeout_ms) || DEFAULT_REQUEST_TIMEOUT_MS;
+  } catch (err) {
+    uiState.requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS;
+    if (!silent) {
+      addMessage("system", `UI 설정 로드 실패: ${err.message}`);
+    }
+  }
+}
+
 function getSelectedModel() {
-  const selected = modelSelectEl.value || "";
-  return selected.trim();
+  return (modelSelectEl.value || "").trim();
+}
+
+function getSelectedProjectId() {
+  return (projectSelectEl.value || "").trim();
 }
 
 function isZipFile(file) {
@@ -173,8 +282,12 @@ clearFileBtn.addEventListener("click", () => {
 });
 
 clearProjectBtn.addEventListener("click", () => {
-  setProjectId("");
-  addMessage("system", "project_id를 해제했습니다.");
+  setSelectedProject("");
+  addMessage("system", "프로젝트 선택을 해제했습니다.");
+});
+
+refreshProjectsBtn.addEventListener("click", () => {
+  loadProjects();
 });
 
 refreshModelsBtn.addEventListener("click", () => {
@@ -186,14 +299,16 @@ clearModelBtn.addEventListener("click", () => {
   addMessage("system", `기본 모델 사용으로 되돌렸습니다. (${modelsState.defaultModel || "서버 기본값"})`);
 });
 
+projectSelectEl.addEventListener("change", () => {
+  const projectId = getSelectedProjectId();
+  setSelectedProject(projectId);
+  addMessage("system", `선택 프로젝트: ${getProjectDisplayName(projectId) || "없음"}`);
+});
+
 modelSelectEl.addEventListener("change", () => {
   const selected = getSelectedModel();
   setModelSelection(selected);
   addMessage("system", `선택 모델: ${selected || modelsState.defaultModel || "서버 기본값"}`);
-});
-
-projectIdInputEl.addEventListener("change", () => {
-  setProjectId(projectIdInputEl.value.trim());
 });
 
 inputEl.addEventListener("keydown", (e) => {
@@ -283,7 +398,8 @@ form.addEventListener("submit", async (e) => {
 
   const message = inputEl.value.trim();
   const file = fileInputEl.files && fileInputEl.files[0];
-  const projectId = projectIdInputEl.value.trim();
+  const projectId = getSelectedProjectId();
+  const projectName = projectNameInputEl.value.trim();
   const selectedModel = getSelectedModel();
   const zipUpload = isZipFile(file);
 
@@ -303,13 +419,18 @@ form.addEventListener("submit", async (e) => {
   if (file) {
     if (zipUpload) {
       addMessage("system", `ZIP 업로드: ${file.name} (artifact/project로 처리)`);
+      if (projectName) {
+        addMessage("system", `프로젝트 이름: ${projectName}`);
+      }
     } else {
       addMessage("system", `첨부 파일: ${file.name} (현재 질문 참고 자료)`);
     }
   }
+
   if (projectId) {
-    addMessage("system", `project_id: ${projectId}`);
+    addMessage("system", `project: ${getProjectDisplayName(projectId) || "알 수 없는 프로젝트"}`);
   }
+
   addMessage("system", `model: ${selectedModel || modelsState.defaultModel || "서버 기본값"}`);
 
   inputEl.value = "";
@@ -317,13 +438,14 @@ form.addEventListener("submit", async (e) => {
   sendBtn.textContent = "전송 중...";
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), getRequestTimeoutMs());
 
   try {
     const formData = new FormData();
     formData.append("message", message);
     if (file) formData.append("file", file);
     if (projectId) formData.append("project_id", projectId);
+    if (zipUpload && projectName) formData.append("project_name", projectName);
     if (selectedModel) formData.append("model", selectedModel);
 
     const res = await fetch("/chat", {
@@ -341,10 +463,11 @@ form.addEventListener("submit", async (e) => {
     addMessage("assistant", normalizeReply(data));
 
     if (data.project_id) {
-      setProjectId(data.project_id);
-      addMessage("system", `project_id 저장됨: ${data.project_id}`);
+      await loadProjects({ silent: true, preferredProjectId: data.project_id });
+      setSelectedProject(data.project_id);
+      addMessage("system", `프로젝트 저장됨: ${data.project_name || getProjectDisplayName(data.project_id) || "이름 없음"}`);
     } else {
-      setProjectId(projectId);
+      setSelectedProject(projectId);
     }
 
     if (data.used_model) {
@@ -355,11 +478,14 @@ form.addEventListener("submit", async (e) => {
 
     fileInputEl.value = "";
     fileNameEl.textContent = "선택된 파일 없음";
+    if (zipUpload) {
+      projectNameInputEl.value = "";
+    }
   } catch (err) {
     if (err.name === "AbortError") {
       addMessage(
         "system",
-        `오류: ${REQUEST_TIMEOUT_MS / 1000}초 안에 응답이 오지 않았습니다. 터미널의 [API] / [ORCHESTRATOR] / [OLLAMA] 로그를 확인하세요.`,
+        `오류: ${getRequestTimeoutMs() / 1000}초 안에 응답이 오지 않았습니다. 터미널의 [API] / [ORCHESTRATOR] / [OLLAMA] 로그를 확인하세요.`,
       );
     } else {
       addMessage("system", `오류: ${err.message}`);
@@ -372,9 +498,13 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
-restoreProjectId();
 addMessage(
   "assistant",
-  "안녕하세요. 텍스트 파일은 현재 질문 참고 자료로, ZIP은 artifact/project로 업로드됩니다. ZIP은 메시지 없이도 업로드할 수 있고, 같은 project_id에서 프로젝트 질문과 프로필 질문을 함께 할 수 있습니다.",
+  "안녕하세요. 텍스트 파일은 현재 질문 참고 자료로, ZIP은 프로젝트로 업로드됩니다. ZIP은 메시지 없이도 올릴 수 있고, 업로드한 프로젝트는 이름으로 다시 선택해 이어서 질문할 수 있습니다.",
 );
-loadModels({ silent: true });
+
+Promise.allSettled([
+  loadUiConfig({ silent: true }),
+  loadProjects({ silent: true }),
+  loadModels({ silent: true }),
+]);

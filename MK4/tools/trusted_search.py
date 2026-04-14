@@ -8,7 +8,12 @@ from urllib.parse import urlparse, quote
 import requests
 from bs4 import BeautifulSoup
 
-from config import settings
+from config import (
+    TRUSTED_SEARCH_ARXIV_TIMEOUT,
+    TRUSTED_SEARCH_FETCH_TIMEOUT,
+    TRUSTED_SEARCH_WEB_TIMEOUT,
+    settings,
+)
 
 TRUSTED_DOC_DOMAINS = {
     "ai.google.dev": 1.0,
@@ -72,7 +77,7 @@ def classify_domain(domain: str) -> tuple[str, float]:
     return "untrusted", 0.0
 
 
-def fetch_readable_text(url: str, timeout: int = 20) -> str:
+def fetch_readable_text(url: str, timeout: int = TRUSTED_SEARCH_FETCH_TIMEOUT) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; GemmaTrustedSearch/1.0)"
     }
@@ -91,7 +96,7 @@ def search_arxiv(query: str, max_results: int = 3) -> list[SearchResult]:
         + quote(f"all:{query}")
         + f"&start=0&max_results={max_results}"
     )
-    resp = requests.get(api_url, timeout=20)
+    resp = requests.get(api_url, timeout=TRUSTED_SEARCH_ARXIV_TIMEOUT)
     resp.raise_for_status()
     xml = resp.text
 
@@ -135,7 +140,7 @@ def ollama_web_search(query: str, max_results: int | None = None) -> list[dict[s
         settings.ollama_web_search_url,
         headers=headers,
         json=payload,
-        timeout=30,
+        timeout=TRUSTED_SEARCH_WEB_TIMEOUT,
     )
     resp.raise_for_status()
     data = resp.json()

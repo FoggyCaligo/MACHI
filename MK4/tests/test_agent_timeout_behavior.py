@@ -4,15 +4,31 @@ from unittest.mock import patch
 from app.agent import Agent, tool_schema
 from app.api import _http_error_from_exception
 from config import (
+    CHAT_UPDATE_EXTRACT_TIMEOUT,
     GENERAL_REPLY_MAX_CONTINUATIONS,
     GENERAL_REPLY_NUM_PREDICT,
     GENERAL_REPLY_TIMEOUT,
+    OLLAMA_LIST_TIMEOUT,
+    OLLAMA_TIMEOUT,
+    PROFILE_ATTACHMENT_EXTRACT_TIMEOUT,
+    ROUTE_CLASSIFY_TIMEOUT,
 )
+from app.text_attachment_route_resolver import TextAttachmentRouteResolver
+from memory.services.chat_evidence_service import ChatEvidenceService
+from profile_analysis.services.profile_attachment_ingest_service import ProfileAttachmentIngestService
+from project_analysis.services.project_profile_route_resolver import ProjectProfileRouteResolver
 from tools.ollama_client import OllamaClient
 from tools.response_runner import ResponseRunResult
 
 
 class AgentTimeoutBehaviorTests(unittest.TestCase):
+    def test_ollama_client_defaults_come_from_config(self) -> None:
+        client = OllamaClient()
+
+        self.assertEqual(client.timeout, OLLAMA_TIMEOUT)
+        self.assertEqual(OllamaClient.list_local_models.__defaults__[1], OLLAMA_LIST_TIMEOUT)
+        self.assertEqual(OllamaClient.list_local_model_names.__defaults__[1], OLLAMA_LIST_TIMEOUT)
+
     def test_agent_runner_uses_configured_timeout_settings(self) -> None:
         agent = Agent()
 
@@ -174,6 +190,20 @@ class AgentTimeoutBehaviorTests(unittest.TestCase):
 
         self.assertEqual(http_exc.status_code, 504)
         self.assertIn("240", http_exc.detail)
+
+    def test_route_and_extract_services_use_configured_timeouts(self) -> None:
+        text_route_resolver = TextAttachmentRouteResolver()
+        project_route_resolver = ProjectProfileRouteResolver()
+        chat_evidence_service = ChatEvidenceService()
+        attachment_ingest_service = ProfileAttachmentIngestService()
+
+        self.assertEqual(text_route_resolver.client.timeout, ROUTE_CLASSIFY_TIMEOUT)
+        self.assertEqual(project_route_resolver.client.timeout, ROUTE_CLASSIFY_TIMEOUT)
+        self.assertEqual(chat_evidence_service.extraction_service.client.timeout, CHAT_UPDATE_EXTRACT_TIMEOUT)
+        self.assertEqual(
+            attachment_ingest_service.extraction_service.client.timeout,
+            PROFILE_ATTACHMENT_EXTRACT_TIMEOUT,
+        )
 
 
 if __name__ == "__main__":

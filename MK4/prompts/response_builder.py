@@ -125,12 +125,12 @@ def _normalize_memory_line(label: str, text: str) -> str:
     return f"- {label}: {cleaned}" if label else f"- {cleaned}"
 
 
-def _summarize_recent_messages(recent_messages: list[dict], *, max_sentences: int = 5, max_chars: int = 520) -> str:
+def _summarize_recent_messages(recent_messages: list[dict], *, max_items: int = 5, max_chars: int = 520) -> str:
     if not recent_messages:
         return ""
 
     chunks: list[str] = []
-    for message in recent_messages[-max_sentences:]:
+    for message in recent_messages[-max_items:]:
         role = message.get("role")
         content = _clean_text(message.get("content"), max_len=95)
         if not content:
@@ -140,16 +140,18 @@ def _summarize_recent_messages(recent_messages: list[dict], *, max_sentences: in
             continue
 
         if role == "user":
-            sentence = f"사용자는 {content}"
+            chunks.append(f"- user: {content}")
+            continue
+        if role == "assistant":
+            chunks.append(f"- assistant: {content}")
+            continue
         else:
-            sentence = f"assistant는 {content}라고 답했다"
-
-        chunks.append(sentence.rstrip(" .") + ".")
+            chunks.append(f"- {role}: {content}")
 
     if not chunks:
         return ""
 
-    summary = " ".join(chunks)
+    summary = "\n".join(chunks)
     if len(summary) > max_chars:
         summary = summary[:max_chars].rstrip() + "..."
     return summary
@@ -255,20 +257,19 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
 
     recent_summary = _summarize_recent_messages(recent_messages)
     if recent_summary:
-        memory_lines.append("[최근 대화 요약]")
+        memory_lines.append("[최근 대화 맥락]")
         memory_lines.append(recent_summary)
 
     memory_text = "\n".join(memory_lines).strip()
+    request_block = (
+        f"[현재 사용자 요청]\n"
+        f"{_clean_text(user_message, max_len=1000)}"
+    )
 
     if memory_text:
-        user_content = (
-            f"[참고 기억]\n"
-            f"{memory_text}\n\n"
-            f"[현재 사용자 요청]\n"
-            f"{_clean_text(user_message, max_len=1000)}"
-        )
+        user_content = f"[참고 기억]\n{memory_text}\n\n{request_block}"
     else:
-        user_content = _clean_text(user_message, max_len=1000)
+        user_content = request_block
 
     return [
         {"role": "system", "content": system_prompt},

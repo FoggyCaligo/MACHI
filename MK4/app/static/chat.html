@@ -18,11 +18,11 @@
       <div class="tip secondary">
         <div><strong>텍스트 파일</strong>: 현재 메시지에 참고 자료로 첨부</div>
         <div><strong>ZIP 파일</strong>: 메시지 없이도 artifact/project 업로드 가능</div>
-        <div><strong>프로필 관련 질문</strong>: 같은 project_id 안에서 evidence 기반으로 답변</div>
+        <div><strong>프로필 관련 질문</strong>: 같은 프로젝트 안에서 evidence 기반으로 답변</div>
       </div>
       <div class="tip secondary">
-        <div><strong>현재 project_id</strong></div>
-        <div id="projectIdBadge" class="project-badge">없음</div>
+        <div><strong>현재 프로젝트</strong></div>
+        <div id="projectBadge" class="project-badge">없음</div>
       </div>
       <div class="tip secondary">
         <div><strong>현재 모델</strong></div>
@@ -42,8 +42,19 @@
         </div>
 
         <div class="mode-row">
-          <input id="projectIdInput" type="text" placeholder="project_id (선택, 자동 저장됨)" />
-          <button type="button" id="clearProjectBtn" class="clear-file">project_id 해제</button>
+          <select id="projectSelect" aria-label="프로젝트 선택">
+            <option value="">프로젝트 선택 안 함</option>
+          </select>
+          <button type="button" id="refreshProjectsBtn" class="secondary-button">프로젝트 새로고침</button>
+          <button type="button" id="clearProjectBtn" class="clear-file">프로젝트 해제</button>
+        </div>
+
+        <div class="mode-row">
+          <input
+            id="projectNameInput"
+            type="text"
+            placeholder="ZIP 업로드 시 프로젝트 이름 (선택, 비우면 파일명 사용)"
+          />
         </div>
 
         <div class="mode-row">

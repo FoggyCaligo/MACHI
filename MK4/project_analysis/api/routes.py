@@ -2,12 +2,13 @@ from pathlib import Path
 import shutil
 import uuid
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 from project_analysis.api.schemas import ReviewFileRequest, AskProjectRequest
 from project_analysis.services.project_ingest_service import ProjectIngestService
 from project_analysis.services.project_review_service import ProjectReviewService
 from project_analysis.stores.project_file_store import ProjectFileStore
+from project_analysis.stores.project_store import ProjectStore
 from project_analysis.services.project_ask_service import ProjectAskService
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -19,8 +20,17 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 EXTRACT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+@router.get("")
+def list_projects(limit: int = 50):
+    store = ProjectStore()
+    return {"projects": store.list_recent(limit=limit)}
+
+
 @router.post("/upload")
-async def upload_project_zip(file: UploadFile = File(...)):
+async def upload_project_zip(
+    file: UploadFile = File(...),
+    project_name: str | None = Form(default=None),
+):
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="ZIP 파일만 업로드 가능합니다.")
 
@@ -33,12 +43,13 @@ async def upload_project_zip(file: UploadFile = File(...)):
     service = ProjectIngestService()
     project = service.ingest(
         zip_path=saved_path,
-        project_name=file.filename,
+        project_name=(project_name or "").strip() or Path(file.filename).stem or file.filename,
         extract_root=EXTRACT_DIR,
     )
 
     return {
         "project_id": project["id"],
+        "project_name": project["name"],
         "name": project["name"],
         "status": project["status"],
     }

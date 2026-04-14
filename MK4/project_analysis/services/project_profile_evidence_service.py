@@ -17,6 +17,8 @@ from config import (
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
     EXTRACT_NUM_PREDICT,
     EXTRACT_RETRY_NUM_PREDICT,
+    PROJECT_REPLY_TIMEOUT,
+    PROFILE_EXTRACT_TIMEOUT,
 )
 
 
@@ -27,7 +29,7 @@ class ProjectProfileEvidenceService:
         self.topic_router = TopicRouter()
         self.passage_selection_service = PassageSelectionService()
         self.extraction_service = EvidenceExtractionService(
-            timeout=120,
+            timeout=PROFILE_EXTRACT_TIMEOUT,
             num_predict=EXTRACT_NUM_PREDICT,
             retry_num_predict=EXTRACT_RETRY_NUM_PREDICT,
         )

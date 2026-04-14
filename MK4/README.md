@@ -163,6 +163,9 @@ Conflict 판단 (기존 correction 확인)
 
 를 나타냅니다.
 
+다만 사용자 UI에서는 raw `project_id`를 직접 기억하게 두지 않고,
+프로젝트를 **이름(project name)으로 선택**하고 내부적으로만 `project_id`를 유지하는 방향으로 정리하고 있습니다.
+
 ---
 
 ## 4. 주요 동작 방식
@@ -324,7 +327,7 @@ ollama pull gemma3:4b
 ### 7-3. 서버 실행
 
 ```bash
-python -m uvicorn app.api:app --reload --host 127.0.0.1 --port 8001
+python -m uvicorn app.api:app --reload --host 127.0.0.1 --port 8000
 ```
 
 브라우저:
@@ -347,6 +350,13 @@ http://127.0.0.1:8001/ui
 
 이 값들은 절대 규칙이 아니라, 로컬 환경과 실제 사용 경험에 따라 조정 가능한 운영값입니다.
 
+운영 timeout도 `config.py`에 모아 관리합니다.
+
+- 일반 응답 / 첨부 응답 / project 응답 timeout
+- chat extract / attachment extract / route classify timeout
+- Ollama 기본 요청 timeout / 모델 목록 timeout
+- UI 요청 timeout (`/ui-config`를 통해 프론트에 전달)
+
 ---
 
 ## 9. API / 사용 흐름
@@ -355,7 +365,9 @@ http://127.0.0.1:8001/ui
 
 - `GET /`: 서버 상태 확인
 - `GET /ui`: 간단한 채팅 UI
+- `GET /ui-config`: 프론트 요청 timeout 등 UI 설정
 - `GET /models`: 로컬 Ollama 모델 목록
+- `GET /projects`: 최근 프로젝트 목록
 - `POST /chat`: 일반 채팅 / 첨부 텍스트 / ZIP artifact 처리
 - `GET /recall?query=...`: memory recall 조회
 
@@ -364,7 +376,10 @@ http://127.0.0.1:8001/ui
 - `message`만 있으면 일반 채팅
 - `message + text file`이면 일반 채팅 또는 profile update 경로
 - `zip file`이면 project artifact ingest
+- `zip file + project_name`이면 사용자 지정 이름으로 project 생성
 - `project_id + message`이면 project 기반 질문
+
+UI에서는 ZIP 업로드 후 프로젝트가 이름으로 목록에 등록되고, 이후에는 목록에서 선택해서 이어서 질문합니다.
 
 ---
 
@@ -397,6 +412,7 @@ http://127.0.0.1:8001/ui
 5. retrieval 철학과 budget을 더 정교하게 정리하기
 6. 실제 속도/품질 측정 루프 만들기
 7. 남아 있는 하드코딩 / 레거시 브리지 / 중복 구현 정리
+8. 응답 프롬프트를 더 가볍게 다이어트하되, memory 구조 신호는 유지하는 균형점 찾기
 
 ---
 

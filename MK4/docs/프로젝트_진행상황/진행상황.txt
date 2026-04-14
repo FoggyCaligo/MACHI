@@ -82,6 +82,18 @@ MK4_진행상황_정리
     - `recent_user_messages`를 user-only 문맥으로 추가해 repeated_behavior / 연속성 판단 기반 강화
     - fenced JSON 및 앞뒤 잡텍스트가 섞여도 JSON 객체를 더 안정적으로 추출하도록 보강
     - `tests/test_chat_update_pipeline.py` 추가로 plural candidate / recent context / robust parsing 회귀 테스트 고정
+40. timeout 하드코딩을 `config.py` 중심으로 재정렬하고 UI 요청 timeout도 백엔드 설정값을 따르도록 정리
+    - `OllamaClient`, route resolver, chat extract, attachment extract, trusted_search timeout을 config 상수로 이동
+    - `/ui-config` 엔드포인트를 추가해 프론트의 요청 timeout도 `config.py` 값을 사용
+    - 관련 회귀를 `tests/test_agent_timeout_behavior.py`에 추가
+41. 프로젝트를 raw `project_id` 입력이 아니라 이름 기반 선택형으로 다루는 UI/서버 흐름 반영
+    - `GET /projects` 목록 API 추가
+    - ZIP 업로드 시 사용자가 지정한 `project_name`을 우선 저장하고, 비우면 파일명 stem을 사용
+    - 프론트는 프로젝트 이름으로 목록을 보여주고 내부적으로만 `project_id`를 유지
+42. 일반 응답 첫 문장 품질 개선을 위해 response prompt의 최근 대화 맥락 표현을 정리
+    - narrative 요약 대신 `- user:` / `- assistant:` role line 형태로 recent context를 전달
+    - 첫 턴에도 `[현재 사용자 요청]` 블록을 일관되게 유지
+    - system prompt에 "첫 문장은 핵심부터 자연스럽게 답하라" 규칙을 최소 수준으로 추가
 
 ==================================================
 <미완 또는 부족>
@@ -115,9 +127,11 @@ MK4_진행상황_정리
 26. `project_analysis/services/project_profile_evidence_service.py`와 다른 유사 서비스 파일들의 실제 역할 중복 여부를 확정
 27. 실제 속도/품질 측정 루프(응답시간, topic 유지율, attach 정확도, general 누적량, confirmed 승격 빈도) 추가
 28. 톤, 화자 일관성, 첨부 답변 자연스러움, 존댓말 안정화 같은 응답 품질 이슈를 계속 다듬기
+    - 다만 과도한 말투/persona 고정은 멀티 profile 확장성과 충돌하지 않게 주의
 29. `trusted_search`의 실제 구현 필요 여부와 우선순위를 다시 평가
-30. `README.md`를 현재 코드 기준으로 다시 작성
-31. 향후에는 profile을 더 통합된 개체로 두고, 각 profile이 여러 topic과 연결되어 재사용되는 구조로 확장 검토
+30. 응답 프롬프트를 더 가볍게 다이어트하되, memory 구조 신호는 유지하는 균형점 찾기
+31. `README.md`를 현재 코드 기준으로 다시 작성
+32. 향후에는 profile을 더 통합된 개체로 두고, 각 profile이 여러 topic과 연결되어 재사용되는 구조로 확장 검토
 
 ==================================================
 최종 메모

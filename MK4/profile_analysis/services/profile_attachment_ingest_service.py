@@ -4,6 +4,7 @@ from config import (
     ATTACHMENT_REPLY_TIMEOUT,
     EXTRACT_NUM_PREDICT,
     EXTRACT_RETRY_NUM_PREDICT,
+    PROFILE_ATTACHMENT_EXTRACT_TIMEOUT,
     PROFILE_ATTACHMENT_ANSWER_SYSTEM_PROMPT_PATH,
     PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
 )
@@ -25,8 +26,16 @@ class ProfileAttachmentIngestService:
         self.source_store = UploadedProfileSourceStore()
         self.evidence_store = UploadedProfileEvidenceStore()
         self.state_store = StateStore()
-        self.extraction_service = EvidenceExtractionService(timeout=100, num_predict=EXTRACT_NUM_PREDICT, retry_num_predict=EXTRACT_RETRY_NUM_PREDICT)
-        self.answer_runner = ResponseRunner(timeout=ATTACHMENT_REPLY_TIMEOUT, num_predict=ATTACHMENT_REPLY_NUM_PREDICT, max_continuations=ATTACHMENT_REPLY_MAX_CONTINUATIONS)
+        self.extraction_service = EvidenceExtractionService(
+            timeout=PROFILE_ATTACHMENT_EXTRACT_TIMEOUT,
+            num_predict=EXTRACT_NUM_PREDICT,
+            retry_num_predict=EXTRACT_RETRY_NUM_PREDICT,
+        )
+        self.answer_runner = ResponseRunner(
+            timeout=ATTACHMENT_REPLY_TIMEOUT,
+            num_predict=ATTACHMENT_REPLY_NUM_PREDICT,
+            max_continuations=ATTACHMENT_REPLY_MAX_CONTINUATIONS,
+        )
         self.memory_policy = MemoryClassificationPolicy()
         self.passage_selector = PassageSelectionService()
         self.normalizer = EvidenceNormalizationService()

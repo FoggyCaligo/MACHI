@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import time
 
-from config import CHAT_UPDATE_EXTRACT_SYSTEM_PROMPT_PATH, EXTRACT_NUM_PREDICT, EXTRACT_RETRY_NUM_PREDICT
+from config import (
+    CHAT_UPDATE_EXTRACT_SYSTEM_PROMPT_PATH,
+    CHAT_UPDATE_EXTRACT_TIMEOUT,
+    EXTRACT_NUM_PREDICT,
+    EXTRACT_RETRY_NUM_PREDICT,
+)
 from memory.retrieval.update_retriever import UpdateRetriever
 from memory.services.evidence_extraction_service import EvidenceExtractionService
 from memory.services.evidence_normalization_service import EvidenceNormalizationService
@@ -17,7 +22,11 @@ class ChatEvidenceService:
     """Model-first chat memory extractor with safe no-op fallback."""
 
     def __init__(self) -> None:
-        self.extraction_service = EvidenceExtractionService(timeout=90, num_predict=EXTRACT_NUM_PREDICT, retry_num_predict=EXTRACT_RETRY_NUM_PREDICT)
+        self.extraction_service = EvidenceExtractionService(
+            timeout=CHAT_UPDATE_EXTRACT_TIMEOUT,
+            num_predict=EXTRACT_NUM_PREDICT,
+            retry_num_predict=EXTRACT_RETRY_NUM_PREDICT,
+        )
         self.normalizer = EvidenceNormalizationService()
         self.fallback_retriever = UpdateRetriever()
         self.raw_message_store = RawMessageStore()

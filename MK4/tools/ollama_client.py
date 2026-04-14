@@ -2,10 +2,16 @@ from typing import Any
 
 import requests
 
-from config import OLLAMA_BASE_URL, OLLAMA_DEFAULT_MODEL, GENERAL_REPLY_NUM_PREDICT
+from config import (
+    GENERAL_REPLY_NUM_PREDICT,
+    OLLAMA_BASE_URL,
+    OLLAMA_DEFAULT_MODEL,
+    OLLAMA_LIST_TIMEOUT,
+    OLLAMA_TIMEOUT,
+)
 
 
-DEFAULT_TIMEOUT = 300
+DEFAULT_TIMEOUT = OLLAMA_TIMEOUT
 DEFAULT_NUM_PREDICT = GENERAL_REPLY_NUM_PREDICT
 DEFAULT_TRUNCATED_NOTICE = "\n\n[주의: 답변이 길이 제한으로 중간 종료되었을 수 있습니다. 더 짧게 다시 요청해 주세요.]"
 
@@ -218,7 +224,7 @@ class OllamaClient:
     def list_local_models(
         cls,
         base_url: str = OLLAMA_BASE_URL,
-        timeout: int = 10,
+        timeout: int = OLLAMA_LIST_TIMEOUT,
     ) -> list[dict]:
         try:
             resp = requests.get(
@@ -266,6 +272,6 @@ class OllamaClient:
     def list_local_model_names(
         cls,
         base_url: str = OLLAMA_BASE_URL,
-        timeout: int = 10,
+        timeout: int = OLLAMA_LIST_TIMEOUT,
     ) -> list[str]:
         return [item["name"] for item in cls.list_local_models(base_url=base_url, timeout=timeout)]

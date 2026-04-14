@@ -147,7 +147,8 @@ body {
   font-size: 14px;
 }
 
-#projectIdInput,
+#projectSelect,
+#projectNameInput,
 #modelSelect {
   flex: 1;
   min-width: 240px;
@@ -174,7 +175,8 @@ textarea {
 }
 
 textarea:focus,
-#projectIdInput:focus,
+#projectSelect:focus,
+#projectNameInput:focus,
 #modelSelect:focus {
   border-color: #60a5fa;
 }

@@ -13,6 +13,7 @@ from profile_analysis.services.profile_attachment_ingest_service import (
 )
 from project_analysis.services.project_ask_service import ProjectAskService
 from project_analysis.services.project_ingest_service import ProjectIngestService
+from project_analysis.stores.project_store import ProjectStore
 
 
 TEXT_EXTENSIONS = {
@@ -43,6 +44,26 @@ class RequestOrchestrator:
         self.project_ingest_service = ProjectIngestService()
         self.project_ask_service = ProjectAskService()
         self.profile_attachment_ingest_service = ProfileAttachmentIngestService()
+        self.project_store = ProjectStore()
+
+    def _resolve_project_name(self, filename: str, project_name: str | None) -> str:
+        preferred_name = (project_name or "").strip()
+        if preferred_name:
+            return preferred_name
+
+        stem = Path(filename or "").stem.strip()
+        if stem:
+            return stem
+
+        return (filename or "").strip() or f"project-{uuid.uuid4().hex[:8]}"
+
+    def _lookup_project_name(self, project_id: str | None) -> str | None:
+        if not project_id:
+            return None
+        project = self.project_store.get(project_id)
+        if not project:
+            return None
+        return str(project.get("name") or "").strip() or None
 
     def _read_text_upload(self, file: UploadFile) -> str:
         ext = Path(file.filename or "").suffix.lower()
@@ -102,6 +123,7 @@ class RequestOrchestrator:
         *,
         message: str,
         project_id: str | None,
+        project_name: str | None,
         model: str | None,
         effective_model: str,
         file: UploadFile | None,
@@ -127,9 +149,10 @@ class RequestOrchestrator:
                 with saved_path.open("wb") as buffer:
                     shutil.copyfileobj(file.file, buffer)
 
+                resolved_project_name = self._resolve_project_name(filename, project_name)
                 project = self.project_ingest_service.ingest(
                     zip_path=saved_path,
-                    project_name=filename,
+                    project_name=resolved_project_name,
                     extract_root=self.extract_dir,
                     model=model,
                 )
@@ -137,9 +160,10 @@ class RequestOrchestrator:
                 effective_project_id = project["id"]
 
                 return {
-                    "reply": f"artifact 업로드가 완료되었습니다: {filename}",
+                    "reply": f"artifact 업로드가 완료되었습니다: {project['name']}",
                     "mode": "artifact",
                     "project_id": effective_project_id,
+                    "project_name": project.get("name"),
                     "used_model": effective_model,
                     "used_chunks": [],
                     "used_profile_evidence": [],
@@ -169,6 +193,7 @@ class RequestOrchestrator:
                     "reply": result["answer"],
                     "mode": "artifact",
                     "project_id": project_id,
+                    "project_name": self._lookup_project_name(project_id),
                     "used_model": effective_model,
                     "used_chunks": result.get("used_chunks", []),
                     "used_profile_evidence": result.get("used_profile_evidence", []),
@@ -196,6 +221,7 @@ class RequestOrchestrator:
                     "reply": result["answer"],
                     "mode": "profile_update",
                     "project_id": None,
+                    "project_name": None,
                     "used_model": effective_model,
                     "used_chunks": [],
                     "used_profile_evidence": result.get("used_profile_evidence", []),
@@ -221,6 +247,7 @@ class RequestOrchestrator:
                 "update_plan": result.get("update_plan", {}),
                 "mode": "general",
                 "project_id": None,
+                "project_name": None,
                 "used_model": effective_model,
                 "used_chunks": [],
                 "used_profile_evidence": [],
@@ -240,6 +267,7 @@ class RequestOrchestrator:
                 "reply": result["answer"],
                 "mode": "artifact",
                 "project_id": project_id,
+                "project_name": self._lookup_project_name(project_id),
                 "used_model": effective_model,
                 "used_chunks": result.get("used_chunks", []),
                 "used_profile_evidence": result.get("used_profile_evidence", []),
@@ -255,6 +283,7 @@ class RequestOrchestrator:
             "update_plan": result.get("update_plan", {}),
             "mode": "general",
             "project_id": None,
+            "project_name": None,
             "used_model": effective_model,
             "used_chunks": [],
             "used_profile_evidence": [],

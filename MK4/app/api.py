@@ -9,8 +9,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.orchestrator import Orchestrator
 from app.request_orchestrator import RequestOrchestrator
-from config import OLLAMA_DEFAULT_MODEL
+from config import OLLAMA_DEFAULT_MODEL, OLLAMA_LIST_TIMEOUT, UI_REQUEST_TIMEOUT_MS
 from memory.db import initialize_database
+from project_analysis.api.routes import router as project_router
 from project_analysis.stores.db import init_project_tables
 from tools.ollama_client import OllamaClient
 
@@ -44,6 +45,8 @@ request_orchestrator = RequestOrchestrator(
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+app.include_router(project_router)
+
 
 @app.get("/")
 def root():
@@ -61,7 +64,7 @@ def ui():
 @app.get("/models")
 def list_models():
     try:
-        models = OllamaClient.list_local_models()
+        models = OllamaClient.list_local_models(timeout=OLLAMA_LIST_TIMEOUT)
         return {
             "default_model": OLLAMA_DEFAULT_MODEL,
             "ollama_available": True,
@@ -76,6 +79,13 @@ def list_models():
             "models": [],
             "error": str(exc),
         }
+
+
+@app.get("/ui-config")
+def ui_config():
+    return {
+        "request_timeout_ms": UI_REQUEST_TIMEOUT_MS,
+    }
 
 
 def _normalize_optional(value: str | None) -> str | None:
@@ -101,6 +111,7 @@ def _http_error_from_exception(exc: Exception) -> HTTPException:
 async def chat(
     message: Annotated[str | None, Form()] = None,
     project_id: Annotated[str | None, Form()] = None,
+    project_name: Annotated[str | None, Form()] = None,
     model: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
 ):
@@ -108,6 +119,7 @@ async def chat(
 
     message = (message or "").strip()
     project_id = _normalize_optional(project_id)
+    project_name = _normalize_optional(project_name)
     model = _normalize_optional(model)
     effective_model = _resolve_model_name(model)
 
@@ -125,6 +137,7 @@ async def chat(
         result = request_orchestrator.handle_chat_request(
             message=message,
             project_id=project_id,
+            project_name=project_name,
             model=model,
             effective_model=effective_model,
             file=file,
