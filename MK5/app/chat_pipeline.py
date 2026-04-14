@@ -144,6 +144,7 @@ class ChatPipeline:
                 metadata={
                     'source': 'assistant_reply',
                     'model_name': request.model_name,
+                    'intent_snapshot': thought_result.metadata.get('intent_snapshot', {}),
                 },
                 source_type='assistant',
                 claim_domain=assistant_claim_domain,

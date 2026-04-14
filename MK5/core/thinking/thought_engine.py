@@ -7,6 +7,7 @@ from core.entities.conclusion import ThoughtResult
 from core.entities.thought_view import ThoughtView
 from core.thinking.conclusion_builder import ConclusionBuilder
 from core.thinking.contradiction_detector import ContradictionDetector
+from core.thinking.intent_manager import IntentManager
 from core.thinking.structure_revision_service import StructureRevisionService
 from core.thinking.trust_manager import TrustManager
 from storage.unit_of_work import UnitOfWork
@@ -28,12 +29,14 @@ class ThoughtEngine:
         trust_manager: TrustManager | None = None,
         structure_revision_service: StructureRevisionService | None = None,
         conclusion_builder: ConclusionBuilder | None = None,
+        intent_manager: IntentManager | None = None,
     ) -> None:
         self.uow_factory = uow_factory
         self.contradiction_detector = contradiction_detector or ContradictionDetector()
         self.trust_manager = trust_manager or TrustManager()
         self.structure_revision_service = structure_revision_service or StructureRevisionService()
         self.conclusion_builder = conclusion_builder or ConclusionBuilder()
+        self.intent_manager = intent_manager or IntentManager()
 
     def think(self, request: ThoughtRequest, thought_view: ThoughtView) -> ThoughtResult:
         with self.uow_factory() as uow:
@@ -47,6 +50,14 @@ class ThoughtEngine:
                 uow,
                 message_id=request.message_id,
             )
+            intent_snapshot = self.intent_manager.resolve(
+                uow,
+                request=request,
+                thought_view=thought_view,
+                contradiction_signals=signals,
+                trust_updates=trust_updates,
+                revision_actions=revision_actions,
+            )
             uow.commit()
 
         core_conclusion = self.conclusion_builder.build(
@@ -55,6 +66,7 @@ class ThoughtEngine:
             contradiction_signals=signals,
             trust_updates=trust_updates,
             revision_actions=revision_actions,
+            intent_snapshot=intent_snapshot,
         )
 
         return ThoughtResult(
@@ -72,5 +84,6 @@ class ThoughtEngine:
                 'signal_count': len(signals),
                 'trust_update_count': len(trust_updates),
                 'revision_action_count': len(revision_actions),
+                'intent_snapshot': intent_snapshot.to_metadata(),
             },
         )

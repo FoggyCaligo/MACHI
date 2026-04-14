@@ -11,6 +11,7 @@ from core.entities.conclusion import (
     RevisionDecisionRecord,
     TrustChangeRecord,
 )
+from core.entities.intent import IntentSnapshot
 from core.entities.thought_view import ThoughtView
 
 
@@ -33,17 +34,15 @@ class ConclusionBuilder:
         contradiction_signals: list[ContradictionSignal],
         trust_updates: list[RevisionAction],
         revision_actions: list[RevisionAction],
+        intent_snapshot: IntentSnapshot | None = None,
     ) -> CoreConclusion:
         activated_concepts = self._activated_concepts(thought_view)
+        if intent_snapshot is None:
+            intent_snapshot = self._fallback_intent_snapshot(thought_view=thought_view, contradiction_signals=contradiction_signals, revision_actions=revision_actions)
         key_relations = self._key_relations(thought_view, contradiction_signals, trust_updates, revision_actions)
         detected_conflicts = [self._to_conflict_record(item) for item in contradiction_signals]
         trust_changes = [self._to_trust_change_record(item) for item in trust_updates]
         revision_decisions = [self._to_revision_decision_record(item) for item in revision_actions]
-        inferred_intent = self._infer_intent(
-            thought_view=thought_view,
-            contradiction_signals=contradiction_signals,
-            revision_actions=revision_actions,
-        )
         explanation_summary = self._build_explanation_summary(
             request=request,
             thought_view=thought_view,
@@ -52,14 +51,14 @@ class ConclusionBuilder:
             revision_actions=revision_actions,
             activated_concepts=activated_concepts,
             key_relations=key_relations,
-            inferred_intent=inferred_intent,
+            intent_snapshot=intent_snapshot,
         )
 
         return CoreConclusion(
             session_id=request.session_id,
             message_id=request.message_id,
             user_input_summary=self._summarize_user_input(request.message_text),
-            inferred_intent=inferred_intent,
+            inferred_intent=intent_snapshot.snapshot_intent,
             activated_concepts=activated_concepts,
             key_relations=key_relations,
             detected_conflicts=detected_conflicts,
@@ -73,7 +72,9 @@ class ConclusionBuilder:
                 'local_edge_count': len(thought_view.edges),
                 'pointer_count': len(thought_view.pointers),
                 'pattern_count': len(thought_view.activated_patterns),
-                'intent_basis': 'graph_state_only',
+                'intent_basis': 'intent_manager_graph_state',
+                'activated_concepts': activated_concepts,
+                'intent_snapshot': intent_snapshot.to_metadata(),
             },
         )
 
@@ -135,27 +136,39 @@ class ConclusionBuilder:
             return compact
         return compact[:177] + '...'
 
-    def _infer_intent(
+
+    def _fallback_intent_snapshot(
         self,
         *,
         thought_view: ThoughtView,
         contradiction_signals: list[ContradictionSignal],
         revision_actions: list[RevisionAction],
-    ) -> str:
+    ) -> IntentSnapshot:
         seed_node_count = len(thought_view.seed_nodes)
         edge_count = len(thought_view.edges)
         pointer_count = len(thought_view.pointers)
         pattern_count = len(thought_view.activated_patterns)
 
         if contradiction_signals or revision_actions:
-            return 'structure_review'
-        if pointer_count and seed_node_count <= 2 and edge_count <= 1:
-            return 'memory_probe'
-        if edge_count == 0 and seed_node_count <= 2:
-            return 'open_information_request'
-        if pattern_count > 0 or edge_count >= max(4, seed_node_count):
-            return 'relation_synthesis_request'
-        return 'graph_grounded_reasoning'
+            intent_name = 'structure_review'
+        elif pointer_count and seed_node_count <= 2 and edge_count <= 1:
+            intent_name = 'memory_probe'
+        elif edge_count == 0 and seed_node_count <= 2:
+            intent_name = 'open_information_request'
+        elif pattern_count > 0 or edge_count >= max(4, seed_node_count):
+            intent_name = 'relation_synthesis_request'
+        else:
+            intent_name = 'graph_grounded_reasoning'
+        return IntentSnapshot(
+            drive_name='user_delight',
+            live_intent=intent_name,
+            snapshot_intent=intent_name,
+            sufficiency_score=0.0,
+            stop_threshold=0.62,
+            should_stop=False,
+            evidence=['fallback_graph_state_only'],
+            metadata={'fallback': True},
+        )
 
     def _to_conflict_record(self, signal: ContradictionSignal) -> ConflictRecord:
         return ConflictRecord(
@@ -203,14 +216,16 @@ class ConclusionBuilder:
         revision_actions: list[RevisionAction],
         activated_concepts: list[int],
         key_relations: list[int],
-        inferred_intent: str,
+        intent_snapshot: IntentSnapshot | None = None,
     ) -> str:
         deactivated_count = sum(1 for item in revision_actions if item.deactivated)
         lines = [
-            f"입력은 '{self._summarize_user_input(request.message_text)}'로 요약되었고, 현재 의도는 {inferred_intent}로 해석되었다.",
+            f"입력은 '{self._summarize_user_input(request.message_text)}'로 요약되었고, 현재 사고의 의도 스냅샷은 {intent_snapshot.snapshot_intent}로 정해졌다.",
             f"이번 사고에서는 {len(activated_concepts)}개의 활성 개념 노드와 {len(key_relations)}개의 핵심 관계 참조가 사용되었다.",
             f"구조 점검 결과 충돌 {len(contradiction_signals)}건, 신뢰도 변화 {len(trust_updates)}건, revision 판단 {len(revision_actions)}건이 발생했다.",
         ]
+        if intent_snapshot.shifted and intent_snapshot.shift_reason:
+            lines.append(f"이전 의도에서 현재 의도로 전환된 이유는 {intent_snapshot.shift_reason} 이다.")
         if contradiction_signals:
             conflict_bits = ', '.join(
                 f"edge#{item.edge_id}:{item.reason}" for item in contradiction_signals[: self.max_summary_conflicts]
@@ -222,4 +237,7 @@ class ConclusionBuilder:
             lines.append('revision 후보를 검토했지만 이번 사이클에서는 구조 보존 쪽이 유지되었다.')
         elif thought_view.edges:
             lines.append('현재 국부 그래프에서는 즉시 구조를 교체할 수준의 변화는 감지되지 않았다.')
+        lines.append(
+            f"현재 사고의 충분성 평가는 {intent_snapshot.sufficiency_score:.2f} / 임계치 {intent_snapshot.stop_threshold:.2f} 이며, should_stop={intent_snapshot.should_stop} 로 판정되었다."
+        )
         return ' '.join(lines)
