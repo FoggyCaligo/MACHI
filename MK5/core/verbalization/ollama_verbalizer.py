@@ -18,7 +18,7 @@ class OllamaVerbalizerError(RuntimeError):
 @dataclass(slots=True)
 class OllamaVerbalizer:
     base_url: str = OLLAMA_CHAT_URL
-    timeout_seconds: float = 20.0
+    timeout_seconds: float = 120.0  # increased to support slower model responses
 
     def verbalize(
         self,
