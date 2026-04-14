@@ -5,6 +5,7 @@ from memory.stores.episode_store import EpisodeStore
 from memory.stores.state_store import StateStore
 from memory.stores.raw_message_store import RawMessageStore
 from memory.stores.candidate_profile_store import CandidateProfileStore
+from memory.retrieval.source_lookup_service import SourceLookupService
 
 
 class ResponseRetriever:
@@ -16,6 +17,7 @@ class ResponseRetriever:
         self.state_store = StateStore()
         self.raw_message_store = RawMessageStore()
         self.candidate_profile_store = CandidateProfileStore()
+        self.source_lookup_service = SourceLookupService()
 
     def _clean_text(self, text: str | None, max_len: int = 300) -> str:
         if not text:
@@ -143,6 +145,8 @@ class ResponseRetriever:
         return self.correction_store.list_active(limit=limit)
 
     def retrieve(self, user_message: str) -> dict:
+        active_topic_id = self.state_store.get_active_topic_id()
+
         # Load active topic context only (no string-based search; embedding-based retrieval pending)
         active_topic_context = self._load_active_topic_context()
         contextual_profiles = active_topic_context["profiles"]  # max 1 per topic
@@ -165,6 +169,12 @@ class ResponseRetriever:
         )
         
         states = self._filter_states(self.state_store.get_all(), keep=2)
+
+        recent_sources = self.source_lookup_service.lookup(
+            user_message,
+            limit=3,
+            active_topic_id=active_topic_id,
+        )
         
         # Mark episode references
         for episode in episodes:
@@ -179,4 +189,5 @@ class ResponseRetriever:
             "episodes": episodes,  # based on relevance search (pending embedding)
             "states": states,
             "recent_messages": recent_messages,
+            "recent_sources": recent_sources,
         }

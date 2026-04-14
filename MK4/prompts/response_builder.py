@@ -157,6 +157,43 @@ def _summarize_recent_messages(recent_messages: list[dict], *, max_items: int = 
     return summary
 
 
+def _format_source_trace(trace: dict | None) -> list[str]:
+    if not trace:
+        return []
+
+    lines: list[str] = []
+    topic_anchor = _clean_text(trace.get("topic_anchor"), max_len=60)
+    active_topic_match = bool(trace.get("active_topic_match"))
+    topic_support_count = int(trace.get("topic_support_count") or 0)
+    candidate_support_count = int(trace.get("candidate_support_count") or 0)
+
+    summary_parts = []
+    if topic_anchor:
+        summary_parts.append(f"topic={topic_anchor}")
+    if active_topic_match:
+        summary_parts.append("active_topic_match=yes")
+    if topic_support_count > 1:
+        summary_parts.append(f"topic_support={topic_support_count}")
+    if candidate_support_count > 1:
+        summary_parts.append(f"candidate_support={candidate_support_count}")
+
+    if summary_parts:
+        lines.append("- source_trace: " + " | ".join(summary_parts))
+
+    for connection in (trace.get("connections") or [])[:2]:
+        label = _clean_text(connection.get("label"), max_len=72)
+        via = ",".join(connection.get("via") or [])
+        candidate = _clean_text(connection.get("candidate_content"), max_len=120)
+
+        connection_parts = [part for part in [label, via] if part]
+        if candidate:
+            connection_parts.append(f"candidate={candidate}")
+        if connection_parts:
+            lines.append("- linked_source: " + " | ".join(connection_parts))
+
+    return lines
+
+
 def build_messages(user_message: str, context: dict) -> list[dict]:
     system_prompt = load_prompt_text(SYSTEM_PROMPT_PATH)
 
@@ -167,6 +204,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     episodes = context.get("episodes", [])[:2]
     states = context.get("states", [])[:2]
     recent_messages = context.get("recent_messages", [])[-4:]
+    recent_sources = context.get("recent_sources", [])[:3]
 
     memory_lines: list[str] = []
 
@@ -285,6 +323,29 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     if recent_summary:
         memory_lines.append("[최근 대화 맥락]")
         memory_lines.append(recent_summary)
+
+    if recent_sources:
+        memory_lines.append("[Reference Sources]")
+        memory_lines.append("- reference only; use when helpful, not as a hard constraint")
+        for source in recent_sources:
+            label = _clean_text(
+                source.get("label") or source.get("filename") or source.get("source_kind"),
+                max_len=72,
+            )
+            topic = _clean_text(source.get("topic"), max_len=48)
+            source_kind = _clean_text(source.get("source_kind"), max_len=36)
+            header_parts = [part for part in [label, topic, source_kind] if part]
+            header = " | ".join(header_parts) or "source"
+
+            excerpt = _clean_text(source.get("excerpt"), max_len=320)
+            if excerpt:
+                memory_lines.append(f"- {header}: {excerpt}")
+
+            candidate = _clean_text(source.get("candidate_content"), max_len=180)
+            if candidate:
+                memory_lines.append(f"- related_candidate: {candidate}")
+
+            memory_lines.extend(_format_source_trace(source.get("trace")))
 
     memory_text = "\n".join(memory_lines).strip()
     request_block = (

@@ -9,6 +9,7 @@ from config import (
     PROFILE_DEMOTE_MIN_SUPPORT_SCORE,
 )
 from memory.policies.memory_classification_policy import MemoryClassificationPolicy, SOURCE_STRENGTH_ORDER
+from memory.services.profile_evidence_graph import ProfileEvidenceGraph
 from memory.stores.chat_profile_evidence_store import ChatProfileEvidenceStore
 from memory.stores.candidate_profile_store import CandidateProfileStore
 from memory.stores.correction_store import CorrectionStore
@@ -19,7 +20,6 @@ from memory.stores.topic_store import TopicStore
 from memory.summarization.profile_rebuilder import ProfileRebuilder
 from profile_analysis.stores.uploaded_profile_evidence_store import UploadedProfileEvidenceStore
 from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
-from tools.text_embedding import cosine_similarity, embed_text
 
 
 def _log(message: str) -> None:
@@ -41,23 +41,16 @@ class MemoryApplyService:
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
         self.chat_evidence_store = ChatProfileEvidenceStore()
         self.candidate_profile_store = CandidateProfileStore()
-        self._embedding_cache: dict[str, list[float]] = {}
+        self.profile_graph = ProfileEvidenceGraph(topic_store=self.topic_store)
 
     def _normalize_text(self, text: str) -> str:
-        return " ".join((text or "").strip().split())
+        return self.profile_graph.normalize_text(text)
 
     def _content_embedding(self, text: str) -> list[float]:
-        normalized = self._normalize_text(text)
-        if not normalized:
-            return []
-        if normalized not in self._embedding_cache:
-            self._embedding_cache[normalized] = embed_text(normalized, kind="passage")
-        return self._embedding_cache[normalized]
+        return self.profile_graph.content_embedding(text)
 
     def _semantic_similarity(self, a: str, b: str) -> float:
-        left = self._content_embedding(a)
-        right = self._content_embedding(b)
-        return cosine_similarity(left, right)
+        return self.profile_graph.semantic_similarity(a, b)
 
     def _same_meaning(
         self,
@@ -66,18 +59,10 @@ class MemoryApplyService:
         *,
         threshold: float = PROFILE_SEMANTIC_MATCH_THRESHOLD,
     ) -> bool:
-        if not self._normalize_text(a) or not self._normalize_text(b):
-            return False
-        return self._semantic_similarity(a, b) >= threshold
+        return self.profile_graph.same_meaning(a, b, threshold=threshold)
 
     def _topic_label(self, topic: str | None, topic_id: str | None) -> str:
-        if topic:
-            return str(topic).strip() or "general"
-        if topic_id:
-            topic_row = self.topic_store.get_topic(topic_id)
-            if topic_row:
-                return str(topic_row.get("summary") or topic_row.get("name") or "general").strip() or "general"
-        return "general"
+        return self.profile_graph.topic_label(topic=topic, topic_id=topic_id)
 
     def _correction_target_kind_from_reason(self, reason: str | None) -> str:
         text = str(reason or "").strip()
@@ -206,7 +191,7 @@ class MemoryApplyService:
             if not candidate_content or memory_tier == "discard":
                 continue
 
-            topic_key = topic_id or self._normalize_text(topic)
+            topic_key = self.profile_graph.topic_key(topic=topic, topic_id=topic_id) or "general"
             matched_cluster = None
             best_similarity = 0.0
             for cluster in clusters:

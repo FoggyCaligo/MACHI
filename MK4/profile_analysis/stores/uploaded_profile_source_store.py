@@ -50,3 +50,17 @@ class UploadedProfileSourceStore:
             ).fetchone()
 
         return dict(row) if row else None
+
+    def list_recent(self, limit: int = 5) -> list[dict]:
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM uploaded_profile_sources
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
