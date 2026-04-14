@@ -1,9 +1,49 @@
-"기억은 correction으로 언제든 재구성될 수 있다"는 철학을 실현하려면, 
-apply 단계에서 더 능동적으로 충돌을 감지하고 기존 티어를 강등(demote)시키는 흐름이 강화되면 더 좋음.
+# 향후 개선 방향 (2026-04-14 기준)
 
-추천 순서: gemma3:4b 먼저 → 너무 느리면 qwen2.5:3b
+## Retrieval 의미 기반 완성 (2026-04-14)
+"기억은 correction으로 언제든 재구성될 수 있다"는 철학에 따라,
+회상도 의미 기반으로 통일되어야 한다.
 
-추가 아이디어
-- 새 Python 버전 대응은 interpreter 상한을 먼저 거는 것보다, 문제 의존성을 제거하거나 내부 구현으로 치환하는 쪽을 우선 원칙으로 삼기
-- tool / guard / helper는 편의 계층이지 본체가 아니므로, 일반 응답 계약(`ResponseRunner` / `OllamaClient`)을 우회하지 않는 회귀 테스트를 계속 유지하기
-- MK4 문서에는 앞으로도 "독립 챗봇" 관점보다 "MACHI의 memory substrate" 관점을 계속 유지해서, 구현 디테일이 철학을 거꾸로 끌고 가지 않게 하기
+✅ **완료된 것**:
+- ResponseRetriever: 문자열 검색 제거, active context 우선
+- EpisodeStore: embedding 기반 의미 검색 도입
+- 모든 retrieval이 이제 의미 기반 (또는 명확한 context/ranking)
+
+⏳ **다음 단계**:
+- ProfileStore/CorrectionStore/SummaryStore: 아직 search() 메소드는 LIKE 기반
+  (현재 사용되지 않음 - deprecated 상태)
+- 필요하면 향후 embedding 기반으로 재구현 (우선순위 낮음)
+
+---
+
+## 우선 작업 순서 (Tier별)
+
+### Tier 1: 일반 채팅 품질
+- 현재 75-80% 수준, 첨부/artifact 수준으로 끌어올리기
+- tier 의미론 강화 (특히 general → candidate 승격)
+- 응답 품질 문제 해결 (짧음, ..., 반복, 모르는 척)
+
+### Tier 2: Source lookup layer
+- recent source 자동 관리 (최근 3개, 4턴 미사용 제외)
+- active topic 자동 설정/정리
+- reply_guard.py 책임 축소
+
+### Tier 3: Correction 확장
+- profile → topic 수준으로 확대 (merge/split/rebuild)
+- correction 기반 demote 로직 강화
+
+### Tier 4: 측정 루프
+- 응답시간, tier 승격 빈도, attach 정확도 추적
+- 품질 메트릭 기반 개선
+
+---
+
+## 모델 추천 순서
+gemma3:4b 먼저 → 너무 느리면 qwen2.5:3b
+
+---
+
+## 장기 원칙 유지
+- 새 Python 버전 대응: 상한 먼저 걸기보다 의존성 제거 우선
+- Tool/guard/helper: 편의층이지 본체가 아님 → 계약 우회 금지
+- MK4 문서: "독립 챗봇"이 아니라 "MACHI memory substrate" 관점 유지

@@ -131,6 +131,8 @@ def init_project_tables() -> None:
             """
         )
 
+        _ensure_column(conn, "project_files", "content_hash", "TEXT")
+
         _ensure_column(conn, "project_profile_evidence", "topic", "TEXT")
         _ensure_column(conn, "project_profile_evidence", "topic_id", "TEXT")
         _ensure_column(conn, "project_profile_evidence", "candidate_content", "TEXT")
@@ -140,6 +142,8 @@ def init_project_tables() -> None:
         _ensure_column(conn, "project_profile_evidence", "linked_correction_id", "TEXT")
         _ensure_column(conn, "project_profile_evidence", "direct_confirm", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "project_profile_evidence", "memory_tier", "TEXT")
+        _ensure_column(conn, "project_profile_evidence", "source_file_paths_json", "TEXT")
+        _ensure_column(conn, "project_profile_evidence", "source_file_hashes_json", "TEXT")
 
         _ensure_column(conn, "uploaded_profile_evidence", "topic", "TEXT")
         _ensure_column(conn, "uploaded_profile_evidence", "topic_id", "TEXT")

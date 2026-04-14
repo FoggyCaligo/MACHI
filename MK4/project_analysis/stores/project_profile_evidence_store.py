@@ -23,6 +23,17 @@ class ProjectProfileEvidenceStore:
             normalized_topic = str((topic_row or {}).get("summary") or (topic_row or {}).get("name") or "").strip() or None
         return normalized_topic, resolved_topic_id
 
+    def _normalize_paths(self, source_file_paths: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_path in source_file_paths or []:
+            path = str(raw_path or "").replace("\\", "/").strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        return normalized
+
     def add(
         self,
         project_id: str,
@@ -40,6 +51,7 @@ class ProjectProfileEvidenceStore:
         evidence_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         resolved_topic, resolved_topic_id = self._resolve_topic(topic, topic_id)
+        normalized_path = str(source_file_path or "").replace("\\", "/").strip()
 
         with get_conn() as conn:
             conn.execute(
@@ -67,7 +79,7 @@ class ProjectProfileEvidenceStore:
                 (
                     evidence_id,
                     project_id,
-                    source_file_path,
+                    normalized_path,
                     evidence_type,
                     resolved_topic,
                     resolved_topic_id,
@@ -85,7 +97,7 @@ class ProjectProfileEvidenceStore:
         return {
             "id": evidence_id,
             "project_id": project_id,
-            "source_file_path": source_file_path,
+            "source_file_path": normalized_path,
             "evidence_type": evidence_type,
             "topic": resolved_topic,
             "topic_id": resolved_topic_id,
@@ -106,6 +118,19 @@ class ProjectProfileEvidenceStore:
             conn.execute("DELETE FROM project_profile_evidence WHERE project_id = ?", (project_id,))
             conn.commit()
 
+    def delete_by_project_paths(self, project_id: str, source_file_paths: list[str]) -> int:
+        normalized_paths = self._normalize_paths(source_file_paths)
+        if not normalized_paths:
+            return 0
+        placeholders = ",".join("?" * len(normalized_paths))
+        with get_conn() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM project_profile_evidence WHERE project_id = ? AND source_file_path IN ({placeholders})",
+                (project_id, *normalized_paths),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
     def list_by_project(self, project_id: str) -> list[dict]:
         with get_conn() as conn:
             rows = conn.execute(
@@ -116,6 +141,24 @@ class ProjectProfileEvidenceStore:
                 ORDER BY created_at DESC
                 """,
                 (project_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_by_project_paths(self, project_id: str, source_file_paths: list[str]) -> list[dict]:
+        normalized_paths = self._normalize_paths(source_file_paths)
+        if not normalized_paths:
+            return []
+        placeholders = ",".join("?" * len(normalized_paths))
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM project_profile_evidence
+                WHERE project_id = ?
+                  AND source_file_path IN ({placeholders})
+                ORDER BY created_at DESC
+                """,
+                (project_id, *normalized_paths),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -130,6 +173,25 @@ class ProjectProfileEvidenceStore:
                 ORDER BY created_at ASC
                 """,
                 (project_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_unapplied_by_project_paths(self, project_id: str, source_file_paths: list[str]) -> list[dict]:
+        normalized_paths = self._normalize_paths(source_file_paths)
+        if not normalized_paths:
+            return []
+        placeholders = ",".join("?" * len(normalized_paths))
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM project_profile_evidence
+                WHERE project_id = ?
+                  AND applied_to_memory = 0
+                  AND source_file_path IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                (project_id, *normalized_paths),
             ).fetchall()
         return [dict(row) for row in rows]
 

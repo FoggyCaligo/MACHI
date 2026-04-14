@@ -46,6 +46,7 @@ class MemoryIngressService:
         owner_id: str,
         source_file_path: str = "__unknown__",
         evidence_envelopes: list[dict] | None = None,
+        source_file_hash_by_path: dict[str, str] | None = None,
     ) -> list[dict]:
         evidence_envelopes = evidence_envelopes or []
         if channel == "uploaded_text":
@@ -74,19 +75,30 @@ class MemoryIngressService:
             return stored
 
         if channel == "project_artifact":
-            self.project_evidence_store.delete_by_project(owner_id)
             stored: list[dict] = []
+            hash_by_path = {
+                str(path).replace("\\", "/").strip(): str(value or "").strip()
+                for path, value in (source_file_hash_by_path or {}).items()
+                if str(path or "").strip()
+            }
             for env in evidence_envelopes:
                 if env.get("kind") != "profile_candidate":
                     continue
                 meta = env.get("metadata") or {}
-                source_paths = meta.get("source_file_paths") or []
-                joined_path = ", ".join(source_paths) if source_paths else source_file_path
+                source_paths = [
+                    str(path or "").replace("\\", "/").strip()
+                    for path in (meta.get("source_file_paths") or [])
+                    if str(path or "").strip()
+                ]
+                display_path = source_paths[0] if len(source_paths) == 1 else ", ".join(source_paths) if source_paths else source_file_path
+                source_hashes = {path: hash_by_path[path] for path in source_paths if hash_by_path.get(path)}
                 memory_tier, direct_confirm = self._resolve_profile_memory_tier(env)
                 stored.append(
                     self.project_evidence_store.add(
                         project_id=owner_id,
-                        source_file_path=joined_path,
+                        source_file_path=display_path,
+                        source_file_paths=source_paths,
+                        source_file_hashes=source_hashes,
                         evidence_type="profile_candidate",
                         topic=env.get("topic") or "general",
                         topic_id=env.get("topic_id"),

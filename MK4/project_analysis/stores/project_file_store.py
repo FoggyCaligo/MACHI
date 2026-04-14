@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timezone
 
@@ -5,6 +6,9 @@ from project_analysis.stores.db import get_conn
 
 
 class ProjectFileStore:
+    def compute_content_hash(self, content: str) -> str:
+        return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
     def add(
         self,
         project_id: str,
@@ -12,18 +16,20 @@ class ProjectFileStore:
         ext: str,
         size_bytes: int,
         content: str,
+        content_hash: str | None = None,
     ) -> dict:
         file_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        resolved_hash = str(content_hash or self.compute_content_hash(content))
 
         with get_conn() as conn:
             conn.execute(
                 """
                 INSERT INTO project_files
-                (id, project_id, path, ext, size_bytes, content, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, project_id, path, ext, size_bytes, content, content_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (file_id, project_id, path, ext, size_bytes, content, now),
+                (file_id, project_id, path, ext, size_bytes, content, resolved_hash, now),
             )
             conn.commit()
 
@@ -34,6 +40,7 @@ class ProjectFileStore:
             "ext": ext,
             "size_bytes": size_bytes,
             "content": content,
+            "content_hash": resolved_hash,
             "created_at": now,
         }
 
@@ -41,7 +48,7 @@ class ProjectFileStore:
         with get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT id, project_id, path, ext, size_bytes, created_at
+                SELECT id, project_id, path, ext, size_bytes, content_hash, created_at
                 FROM project_files
                 WHERE project_id = ?
                 ORDER BY path

@@ -1,24 +1,23 @@
+from __future__ import annotations
+
 from memory.services.evidence_extraction_service import EvidenceExtractionService
-from memory.services.passage_selection_service import PassageSelectionService
-from memory.services.topic_router import TopicRouter
 from memory.services.evidence_normalization_service import EvidenceNormalizationService
 from memory.services.memory_ingress_service import MemoryIngressService
+from memory.services.passage_selection_service import PassageSelectionService
+from memory.services.topic_router import TopicRouter
 from prompts.prompt_loader import load_prompt_text
 from project_analysis.stores.project_file_store import ProjectFileStore
-from project_analysis.stores.project_profile_evidence_store import (
-    ProjectProfileEvidenceStore,
-)
+from project_analysis.stores.project_profile_evidence_store import ProjectProfileEvidenceStore
 from tools.response_runner import ResponseRunner
 from config import (
+    EXTRACT_NUM_PREDICT,
+    EXTRACT_RETRY_NUM_PREDICT,
+    PROFILE_EXTRACT_TIMEOUT,
+    PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH,
+    PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
     PROJECT_REPLY_MAX_CONTINUATIONS,
     PROJECT_REPLY_NUM_PREDICT,
     PROJECT_REPLY_TIMEOUT,
-    PROJECT_PROFILE_EVIDENCE_ANSWER_SYSTEM_PROMPT_PATH,
-    PROJECT_PROFILE_EVIDENCE_EXTRACT_SYSTEM_PROMPT_PATH,
-    EXTRACT_NUM_PREDICT,
-    EXTRACT_RETRY_NUM_PREDICT,
-    PROJECT_REPLY_TIMEOUT,
-    PROFILE_EXTRACT_TIMEOUT,
 )
 
 
@@ -41,8 +40,82 @@ class ProjectProfileEvidenceService:
             max_continuations=PROJECT_REPLY_MAX_CONTINUATIONS,
         )
 
-    def _select_documents(self, project_id: str) -> list[dict]:
+    def _normalize_text(self, text: str) -> str:
+        return " ".join((text or "").strip().lower().split())
+
+    def _normalize_paths(self, source_paths: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_path in source_paths or []:
+            path = str(raw_path or "").replace("\\", "/").strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        return normalized
+
+    def _paths_to_extract(
+        self,
+        *,
+        requested_paths: list[str],
+        existing_evidences: list[dict],
+        file_hash_by_path: dict[str, str],
+        force_refresh: bool,
+    ) -> tuple[list[str], list[str]]:
+        if force_refresh:
+            return list(requested_paths), list(requested_paths)
+
+        evidence_rows_by_path: dict[str, list[dict]] = {path: [] for path in requested_paths}
+        for evidence in existing_evidences:
+            for path in self._normalize_paths(evidence.get("source_file_paths") or []):
+                if path in evidence_rows_by_path:
+                    evidence_rows_by_path[path].append(evidence)
+
+        stale_paths: list[str] = []
+        missing_paths: list[str] = []
+        for path in requested_paths:
+            matching_rows = evidence_rows_by_path.get(path) or []
+            if not matching_rows:
+                missing_paths.append(path)
+                continue
+
+            stale = False
+            for row in matching_rows:
+                row_hashes = row.get("source_file_hashes") or {}
+                actual_hash = str(row_hashes.get(path) or "").strip()
+                expected_hash = str(file_hash_by_path.get(path) or "").strip()
+                if actual_hash != expected_hash:
+                    stale = True
+                    break
+            if stale:
+                stale_paths.append(path)
+
+        ordered_paths: list[str] = []
+        seen: set[str] = set()
+        for path in [*missing_paths, *stale_paths]:
+            if path and path not in seen:
+                seen.add(path)
+                ordered_paths.append(path)
+        return ordered_paths, stale_paths
+
+    def _file_hash_by_path(self, documents: list[dict]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for doc in documents:
+            path = str(doc.get("path") or "").replace("\\", "/").strip()
+            if not path:
+                continue
+            content_hash = str(doc.get("content_hash") or "").strip()
+            if not content_hash:
+                content_hash = self.file_store.compute_content_hash(str(doc.get("content") or ""))
+            result[path] = content_hash
+        return result
+
+    def _select_documents(self, project_id: str, source_paths: list[str] | None = None) -> list[dict]:
         files = self.file_store.list_full_by_project(project_id)
+        normalized_paths = self._normalize_paths(source_paths)
+        if normalized_paths:
+            by_path = {str(item.get("path") or "").replace("\\", "/"): item for item in files}
+            return [by_path[path] for path in normalized_paths if path in by_path]
         return self.passage_selection_service.filter_profile_documents(files, max_docs=8)
 
     def _build_extract_user_prompt(
@@ -142,18 +215,83 @@ class ProjectProfileEvidenceService:
         }
         return routed
 
-    def _normalize_text(self, text: str) -> str:
-        return " ".join((text or "").strip().lower().split())
-
-    def extract_and_store(self, project_id: str, model: str | None = None) -> dict:
-        documents = self._select_documents(project_id)
+    def ensure_extracted(
+        self,
+        project_id: str,
+        model: str | None = None,
+        *,
+        source_paths: list[str] | None = None,
+        force_refresh: bool = False,
+    ) -> dict:
+        documents = self._select_documents(project_id, source_paths=source_paths)
+        requested_paths = [str(doc.get("path") or "").replace("\\", "/") for doc in documents]
         if not documents:
             return {
                 "stored": False,
+                "reused": False,
                 "document_count": 0,
                 "source_files": [],
                 "candidate_count": 0,
+                "existing_evidence_count": 0,
+                "newly_extracted_paths": [],
+                "needs_memory_sync": False,
             }
+
+        existing_evidences = self.evidence_store.list_by_project_paths(project_id, requested_paths)
+        file_hash_by_path = self._file_hash_by_path(documents)
+        paths_to_extract, stale_paths = self._paths_to_extract(
+            requested_paths=requested_paths,
+            existing_evidences=existing_evidences,
+            file_hash_by_path=file_hash_by_path,
+            force_refresh=force_refresh,
+        )
+
+        if not paths_to_extract:
+            return {
+                "stored": False,
+                "reused": True,
+                "document_count": len(documents),
+                "source_files": requested_paths,
+                "candidate_count": len(existing_evidences),
+                "existing_evidence_count": len(existing_evidences),
+                "newly_extracted_paths": [],
+                "needs_memory_sync": False,
+            }
+
+        return self.extract_and_store(
+            project_id,
+            model=model,
+            source_paths=paths_to_extract,
+            force_refresh=force_refresh,
+        )
+
+    def extract_and_store(
+        self,
+        project_id: str,
+        model: str | None = None,
+        *,
+        source_paths: list[str] | None = None,
+        force_refresh: bool = False,
+    ) -> dict:
+        documents = self._select_documents(project_id, source_paths=source_paths)
+        selected_paths = [str(doc.get("path") or "").replace("\\", "/") for doc in documents]
+        if not documents:
+            return {
+                "stored": False,
+                "reused": False,
+                "document_count": 0,
+                "source_files": [],
+                "candidate_count": 0,
+                "existing_evidence_count": 0,
+                "newly_extracted_paths": [],
+                "needs_memory_sync": False,
+            }
+
+        removed_existing_count = 0
+        if force_refresh and selected_paths:
+            removed_existing_count = self.evidence_store.delete_by_project_paths(project_id, selected_paths)
+
+        file_hash_by_path = self._file_hash_by_path(documents)
 
         user_prompt = self._build_extract_user_prompt(
             project_id=project_id,
@@ -188,13 +326,18 @@ class ProjectProfileEvidenceService:
             channel="project_artifact",
             owner_id=project_id,
             evidence_envelopes=evidence_envelopes,
+            source_file_hash_by_path=file_hash_by_path,
         )
 
         return {
             "stored": True,
+            "reused": False,
             "document_count": len(documents),
-            "source_files": [doc["path"] for doc in documents],
+            "source_files": selected_paths,
             "candidate_count": len(candidates),
+            "existing_evidence_count": max(removed_existing_count, 0),
+            "newly_extracted_paths": selected_paths,
+            "needs_memory_sync": bool(evidence_envelopes),
             "evidence_envelopes": evidence_envelopes,
         }
 
@@ -204,11 +347,11 @@ class ProjectProfileEvidenceService:
         question: str,
         model: str | None = None,
     ) -> dict | None:
-        evidences = self.evidence_store.list_by_project(project_id)
-        if not evidences:
-            self.extract_and_store(project_id, model=model)
-            evidences = self.evidence_store.list_by_project(project_id)
+        ensure_result = self.ensure_extracted(project_id, model=model)
+        if ensure_result.get("needs_memory_sync"):
+            self.memory_ingress.sync_project(project_id)
 
+        evidences = self.evidence_store.list_by_project(project_id)
         if not evidences:
             return None
 

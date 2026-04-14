@@ -88,6 +88,7 @@ class ResponseRetriever:
         return filtered
 
     def _dedupe_rows(self, rows: list[dict], *, limit: int) -> list[dict]:
+        """Deduplicate rows by ID and content key. Kept for future use if needed."""
         deduped: list[dict] = []
         seen_ids: set[str] = set()
         seen_content_keys: set[tuple[str, str, str]] = set()
@@ -114,9 +115,6 @@ class ResponseRetriever:
 
         return deduped
 
-    def _merge_ranked_rows(self, primary: list[dict], contextual: list[dict], *, limit: int) -> list[dict]:
-        return self._dedupe_rows([*primary, *contextual], limit=limit)
-
     def _load_active_topic_context(self) -> dict:
         topic_id = self.state_store.get_active_topic_id()
         if not topic_id:
@@ -140,43 +138,38 @@ class ResponseRetriever:
         return self.correction_store.list_active(limit=limit)
 
     def retrieve(self, user_message: str) -> dict:
-        searched_profiles = self.profile_store.search(user_message, limit=2, include_general=False)
-        searched_corrections = self.correction_store.search(user_message, limit=1)
-        searched_summaries = self.summary_store.search(user_message, limit=1)
-        episodes = self.episode_store.find_relevant(user_message, limit=2)
-
+        # Load active topic context only (no string-based search; embedding-based retrieval pending)
         active_topic_context = self._load_active_topic_context()
-        contextual_profiles = active_topic_context["profiles"]
+        contextual_profiles = active_topic_context["profiles"]  # max 1 per topic
         contextual_corrections = active_topic_context["corrections"]
         contextual_summaries = active_topic_context["summaries"]
+        
+        # Load recent global corrections as fallback
         recent_global_corrections = self._load_recent_global_corrections(limit=2)
-
-        profiles = self._merge_ranked_rows(searched_profiles, contextual_profiles, limit=2)
-        corrections = self._merge_ranked_rows(
-            searched_corrections,
-            [*contextual_corrections, *recent_global_corrections],
-            limit=2,
-        )
-        summaries = self._merge_ranked_rows(searched_summaries, contextual_summaries, limit=1)
-
+        
+        # Episode retrieval by semantic similarity (embedding-based)
+        episodes = self.episode_store.find_relevant(user_message, limit=2)
+        
+        # Recent messages and states (no search; context-only)
         raw_recent_messages = self.raw_message_store.recent(limit=10)
         recent_messages = self._filter_recent_messages(
             raw_recent_messages,
             user_message=user_message,
             keep=4,
         )
-
+        
         states = self._filter_states(self.state_store.get_all(), keep=2)
-
+        
+        # Mark episode references
         for episode in episodes:
             if episode.get("id"):
                 self.episode_store.reference(episode["id"])
 
         return {
-            "profiles": profiles,
-            "corrections": corrections,
-            "summaries": summaries,
-            "episodes": episodes,
+            "profiles": contextual_profiles,  # max 1 active profile from current topic
+            "corrections": contextual_corrections + recent_global_corrections,  # topic-local + global fallback
+            "summaries": contextual_summaries,  # max 1 per topic
+            "episodes": episodes,  # based on relevance search (pending embedding)
             "states": states,
             "recent_messages": recent_messages,
         }

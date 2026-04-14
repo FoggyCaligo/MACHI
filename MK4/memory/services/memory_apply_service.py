@@ -91,8 +91,14 @@ class MemoryApplyService:
         return f"{normalized_kind}:{reason_text}"
 
     def _has_conflicting_active_correction(self, candidate_content: str, topic: str | None = None, topic_id: str | None = None) -> bool:
-        del topic, topic_id
-        active_corrections = self.correction_store.list_active(limit=20)
+        if topic_id or (topic and str(topic).strip().lower() != "general"):
+            active_corrections = self.correction_store.list_active_by_topic(
+                topic=topic,
+                topic_id=topic_id,
+                limit=20,
+            )
+        else:
+            active_corrections = self.correction_store.list_active(limit=20)
         for correction in active_corrections:
             if self._correction_target_kind_from_reason(correction.get("reason")) != "profile":
                 continue

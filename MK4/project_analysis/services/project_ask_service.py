@@ -21,8 +21,9 @@ class ProjectAskService:
 
         route = self.profile_route_resolver.resolve(question=question, model=model)
         if route == "profile_question":
-            profile_extract_result = self.profile_evidence_service.extract_and_store(project_id, model=model)
-            profile_sync_result = self.memory_ingress_service.sync_project(project_id)
+            profile_extract_result = self.profile_evidence_service.ensure_extracted(project_id, model=model)
+            if profile_extract_result.get("needs_memory_sync"):
+                profile_sync_result = self.memory_ingress_service.sync_project(project_id)
 
             profile_result = self.profile_evidence_service.answer_from_project(
                 project_id,

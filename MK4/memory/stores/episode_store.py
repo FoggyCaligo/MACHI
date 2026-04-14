@@ -1,8 +1,10 @@
+import json
 import uuid
 from typing import Any
 
 from memory.db import connection_context, utc_now
 from memory.stores.topic_store import TopicStore
+from tools.text_embedding import cosine_similarity, embed_text
 
 
 class EpisodeStore:
@@ -28,13 +30,18 @@ class EpisodeStore:
         episode_id = str(uuid.uuid4())
         now = utc_now()
         resolved_topic_id = self._resolve_topic_id(topic=topic, topic_id=topic_id, create_if_missing=True)
+        
+        # Compute embedding for semantic search
+        embedding = embed_text(summary, kind="passage")
+        embedding_json = json.dumps(embedding, ensure_ascii=False)
+        
         with connection_context() as conn:
             conn.execute(
                 """
-                INSERT INTO episodes (id, topic_id, summary, raw_ref, importance, last_referenced_at, created_at, state, pinned)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0)
+                INSERT INTO episodes (id, topic_id, summary, raw_ref, importance, last_referenced_at, created_at, state, pinned, embedding_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)
                 """,
-                (episode_id, resolved_topic_id, summary, raw_ref, importance, now, now),
+                (episode_id, resolved_topic_id, summary, raw_ref, importance, now, now, embedding_json),
             )
         return episode_id
 
@@ -46,13 +53,68 @@ class EpisodeStore:
             )
 
     def find_relevant(self, query: str, limit: int = 5):
-        pattern = f"%{query}%"
+        """Find relevant episodes using semantic similarity (embedding-based).
+        
+        Ranking factors (in order):
+        1. Semantic similarity (cosine of query embedding vs episode embedding)
+        2. Pinned status
+        3. Importance score
+        4. Last referenced time
+        """
+        # Compute query embedding
+        query_embedding = embed_text(query, kind="passage")
+        
+        # Load all active episodes
         with connection_context() as conn:
             rows = conn.execute(
-                f"{self._base_select()} WHERE e.state != 'dropped' AND (COALESCE(t.summary, '') LIKE ? OR COALESCE(t.name, '') LIKE ? OR e.summary LIKE ? OR COALESCE(e.raw_ref, '') LIKE ?) ORDER BY e.pinned DESC, e.importance DESC, e.last_referenced_at DESC LIMIT ?",
-                (pattern, pattern, pattern, pattern, limit),
+                f"{self._base_select()} WHERE e.state != 'dropped' ORDER BY e.created_at DESC LIMIT 100",
             ).fetchall()
-            return [dict(r) for r in rows]
+        
+        if not rows:
+            return []
+        
+        # Rank by semantic similarity + contextual signals
+        scored: list[dict] = []
+        for row in rows:
+            row_dict = dict(row)
+            embedding_json = row_dict.get("embedding_json")
+            
+            if embedding_json:
+                try:
+                    episode_embedding = json.loads(embedding_json)
+                    similarity = cosine_similarity(query_embedding, episode_embedding)
+                except (json.JSONDecodeError, TypeError):
+                    similarity = 0.0
+            else:
+                similarity = 0.0
+            
+            # Combine signals: similarity (0.6 weight) + contextual (0.4 weight)
+            pinned = float(row_dict.get("pinned") or 0)
+            importance = float(row_dict.get("importance") or 0.5)
+            
+            # Contextual score: (pinned * 2 + importance) / 3
+            contextual_score = (pinned * 2.0 + importance) / 3.0
+            
+            # Final score: weighted combination
+            final_score = (similarity * 0.6) + (contextual_score * 0.4)
+            
+            scored.append({
+                **row_dict,
+                "_similarity": similarity,
+                "_contextual_score": contextual_score,
+                "_final_score": final_score,
+            })
+        
+        # Sort by final score descending
+        scored.sort(key=lambda x: x["_final_score"], reverse=True)
+        
+        # Return top-k, removing internal scoring fields
+        result = []
+        for item in scored[:limit]:
+            clean_item = {k: v for k, v in item.items() if not k.startswith("_")}
+            result.append(clean_item)
+        
+        return result
 
     def get_recent(self, limit: int = 5):
         with connection_context() as conn:

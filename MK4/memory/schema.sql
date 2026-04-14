@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     created_at TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('active', 'compressed', 'dropped')),
     pinned INTEGER NOT NULL DEFAULT 0,
+    embedding_json TEXT,
     FOREIGN KEY (topic_id) REFERENCES topics(id)
 );
 

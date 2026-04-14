@@ -1,9 +1,152 @@
-1.
-이 MK4.zip을 풀어서 한번 봐줄래? 네가 보기에, 이 프로젝트의 메인 방향성과 특징, 추구하는 바, 그리고 현재 구현 방식 등이 어떤지 한번 정리를 먼저 해줄래?
+# MK4 Handover Notes (2026-04-14)
 
-2. 
+## 질문 1: 메인 방향성과 특징
+네가 보기에, 이 프로젝트의 메인 방향성과 특징, 추구하는 바, 그리고 현재 구현 방식 등이 어떤지 한번 정리를 먼저 해줄래?
+→ [완료] 별도 문서로 정리함
+
+## 질문 2: 구현된 부분 vs 미완 부분
 그러면 지금 구현된 부분과 아직 부족한 부분을 정리 부탁할게.
-아, 그리고 "작업수칙.txt"에서 설명한 ".zip기준이 아닌 네 로컬 기준. 수정사항을 내게 줄 땐 파일경로-파일다운링크 형식으로 줄것, 중간중간 너와 내 로컬 간의 sync를 맞추기 위해 내가 zip 파일을 주고, 이건 sync 용으로만 사용" 이라는 규칙을 지켜줘.
-이전에 이렇게 하지 않아서 작업이 1>2>3 이렇게 이전 수정이 반영되어 순서대로 되지 않고, .zip 기준 각기 다른 버전1, 버전2, 버전3으로 나왔던 기억이 있어서.
+→ [완료] 별도 문서로 정리함 (42개 완료 / 32개 미완)
 
-이전 채팅창에서 정리된 handover 파일도 같이 넣어줄게.
+## 질문 3: 일반 채팅 채널 코드 분석
+일반 채팅 채널 쪽 실제 코드는 문서에 비해 조금 더 발전되어 있을 거야. 코드를 실제로 보고, 일반 채팅이 지금 어느정도인지 한번 봐줄래?
+→ [완료] 코드 기반 분석 완료
+   - 현황: 75-80% 수준 (문서 예상: 60%)
+   - 강점: Evidence 추출, Memory 저장 구조, Correction 분류, Response building 노이즈 필터, System prompt 정책
+   - 약점: **Retrieval 구현이 모두 문자열/규칙 기반 (LIKE 패턴)**
+
+## [2026-04-14] 구조 수정: Retrieval 문자열 기반 → 의미 기반 전환
+
+### 발견된 문제 (3가지)
+
+#### 1. 모든 Search 메소드가 LIKE 패턴 (문자열만 매칭)
+```
+ProfileStore.search(query)     → WHERE content LIKE ? 
+CorrectionStore.search(query)  → WHERE content LIKE ?
+SummaryStore.search(query)     → WHERE content LIKE ?
+EpisodeStore.find_relevant()   → WHERE summary LIKE ?
+```
+→ 문제: "retrieval 철학을 의미 기반으로 통일"이라는 원칙에 **정면 위배**
+→ embedding 기반 이 어디에도 없음 (MemoryApplyService에는 있지만 retrieval에는 없음)
+
+#### 2. ResponseRetriever에서 Profile 다중 로드
+```python
+# 설계상: topic당 최대 1개 active profile (version_no 기반)
+active_profile = self.profile_store.get_active_by_topic()  # 1개
+
+# 하지만 retrieval에서:
+searched_profiles = self.profile_store.search(user_message, limit=2)  # 최대 2개 추가
+profiles = merge([searched_profiles, contextual_profiles], limit=2)   # 최대 3개
+
+# 결과: 응답 context에 여러 topic의 profile 섞임 + 의미 관련 없는 노이즈
+```
+→ 문제: Topic당 1개 active profile 설계에 위배
+
+#### 3. User message 기반 검색이 불필요
+```python
+searched_profiles = self.profile_store.search(user_message, limit=2, include_general=False)
+```
+→ 문제: 의미 기반이 아니므로 노이즈만 증가
+→ 설계상 active topic이 있으면 그것만, 없으면 general만으로 충분
+
+---
+
+### 수정 방향 (2단계)
+
+#### Phase 1: ResponseRetriever 단순화 (완료)
+**목표**: 문자열 기반 검색 제거 + 명확한 구조
+
+**변경 사항**:
+1. Profile retrieval 단순화
+   ```python
+   # 제거: searched_profiles = self.profile_store.search(...)
+   # 사용: active_topic의 active profile만 (최대 1개)
+   profiles = active_topic_context["profiles"]
+   ```
+
+2. Correction retrieval 단순화
+   ```python
+   # 제거: searched_corrections = self.correction_store.search(...)
+   # 사용: active topic + global fallback
+   corrections = contextual_corrections + recent_global_corrections
+   ```
+
+3. Summary retrieval 단순화
+   ```python
+   # 제거: searched_summaries = self.summary_store.search(...)
+   # 사용: active topic의 summary만 (최대 1개)
+   summaries = contextual_summaries
+   ```
+
+4. Episode retrieval: embedding 기반으로 전환
+   ```python
+   # 변경 전: LIKE 패턴 기반 문자열 검색
+   # 변경 후: cosine similarity 기반 의미 검색
+   episodes = self.episode_store.find_relevant(user_message, limit=2)  # 이제 embedding 기반
+   ```
+
+5. _merge_ranked_rows() 제거
+   ```python
+   # 더 이상 필요 없음 (dedup 목적이었음)
+   ```
+
+**결과**: 응답 context가 명확해짐
+- profiles: max 1개 (active topic의 active)
+- corrections: active topic + 최근 global
+- summaries: max 1개 (active topic의)
+- episodes: embedding 기반 (나중)
+- recent_messages: context 최근 4개
+- states: 최근 2개
+
+#### Phase 2: Embedding 기반 Retrieval 완성 (향후 작업)
+
+**현황**:
+- ✅ EpisodeStore.find_relevant(): embedding 기반으로 전환 (완료)
+- ⏳ ProfileStore.search(): 여전히 LIKE 기반 (현재 사용 안 함 - deprecated 상태)
+- ⏳ CorrectionStore.search(): 여전히 LIKE 기반 (현재 사용 안 함 - deprecated 상태)
+- ⏳ SummaryStore.search(): 여전히 LIKE 기반 (현재 사용 안 함 - deprecated 상태)
+
+**당분간 search() 메소드는 호출하지 않은 상태**:
+- `ProfileStore.search()` → deprecated (사용처 제거됨)
+- `CorrectionStore.search()` → deprecated (사용처 제거됨)  
+- `SummaryStore.search()` → deprecated (사용처 제거됨)
+- `EpisodeStore.find_relevant()` → ✅ embedding 기반 (작동 중)
+
+**상태별 Retrieval 방식**:
+| 타입 | 검색 방식 | 상태 |
+|------|---------|------|
+| Profile | active topic context (1개) | ✅ 의미 기반 (context 우선) |
+| Correction | active topic + global fallback | ✅ 의미 기반 (context 우선) |
+| Summary | active topic context (1개) | ✅ 의미 기반 (context 우선) |
+| Episode | embedding cosine similarity | ✅ 의미 기반 (embedding) |
+| Recent messages | time-based (최근 4개) | ✅ 명확한 기준 |
+| States | global (정렬 후 2개) | ✅ 명확한 기준 |
+
+**향후 (선택사항)**:
+- ProfileStore / CorrectionStore / SummaryStore에도 embedding 저장 추가
+- 더 고도화된 retrieval이 필요한 경우 embedding 기반으로 재구현
+- 현재는 active topic context + global fallback으로 충분할 가능성 높음
+
+---
+
+### 변경 파일
+- `memory/retrieval/response_retriever.py`
+  - retrieve() 메소드 단순화
+  - _merge_ranked_rows() 제거
+  - 주석 추가 (pending embedding)
+
+---
+
+### 남은 할일
+1. ✅ ResponseRetriever 단순화 (완료)
+2. ⏳ EpisodeStore.find_relevant() 평가 (embedding 기반으로 할지 말지)
+3. ⏳ UI/테스트 검증 (단순화 로직이 응답 품질에 영향 없는지)
+4. ⏳ 향후 embedding 기반 retrieval 설계 (별도 PR)
+
+---
+
+### 왜 이렇게 하는가?
+1. **철학 준수**: "retrieval 의미 기반 통일" → 의미 없는 문자열 검색 제거
+2. **설계 명확성**: topic당 1개 active profile 원칙 준수
+3. **노이즈 감소**: 의미 관련 없는 검색 결과 제거
+4. **단계적 개선**: 지금은 단순화, 나중에 embedding으로 업그레이드
