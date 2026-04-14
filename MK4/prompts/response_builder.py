@@ -194,6 +194,20 @@ def _format_source_trace(trace: dict | None) -> list[str]:
     return lines
 
 
+def _build_answering_hint(*, has_reference_context: bool) -> str:
+    if not has_reference_context:
+        return ""
+
+    return "\n".join(
+        [
+            "[Answering Hint]",
+            "- The reference context below is the currently available conversation/memory context.",
+            "- If the user asks what you remember or know about them, answer from this context first.",
+            "- Do not default to generic disclaimers about lacking persistent memory when usable context is present.",
+        ]
+    )
+
+
 def build_messages(user_message: str, context: dict) -> list[dict]:
     system_prompt = load_prompt_text(SYSTEM_PROMPT_PATH)
 
@@ -348,6 +362,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
             memory_lines.extend(_format_source_trace(source.get("trace")))
 
     memory_text = "\n".join(memory_lines).strip()
+    answering_hint = _build_answering_hint(has_reference_context=bool(memory_text))
     request_block = (
         f"[현재 사용자 요청]\n"
         f"{_clean_text(user_message, max_len=1000)}"
@@ -357,6 +372,9 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
         user_content = f"[참고 기억]\n{memory_text}\n\n{request_block}"
     else:
         user_content = request_block
+
+    if memory_text and answering_hint:
+        user_content = f"{answering_hint}\n\n" + user_content
 
     return [
         {"role": "system", "content": system_prompt},

@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.orchestrator import Orchestrator
 from app.request_orchestrator import RequestOrchestrator
-from config import OLLAMA_DEFAULT_MODEL, OLLAMA_LIST_TIMEOUT, UI_REQUEST_TIMEOUT_MS
+from config import CHAT_UPDATE_EXTRACT_MODEL, OLLAMA_DEFAULT_MODEL, OLLAMA_LIST_TIMEOUT, UI_REQUEST_TIMEOUT_MS
 from memory.db import initialize_database
 from project_analysis.api.routes import router as project_router
 from project_analysis.stores.db import init_project_tables
@@ -67,6 +67,7 @@ def list_models():
         models = OllamaClient.list_local_models(timeout=OLLAMA_LIST_TIMEOUT)
         return {
             "default_model": OLLAMA_DEFAULT_MODEL,
+            "chat_extract_model": CHAT_UPDATE_EXTRACT_MODEL,
             "ollama_available": True,
             "models": models,
             "error": None,
@@ -75,6 +76,7 @@ def list_models():
         _log(f"/models warning | error={exc}")
         return {
             "default_model": OLLAMA_DEFAULT_MODEL,
+            "chat_extract_model": CHAT_UPDATE_EXTRACT_MODEL,
             "ollama_available": False,
             "models": [],
             "error": str(exc),

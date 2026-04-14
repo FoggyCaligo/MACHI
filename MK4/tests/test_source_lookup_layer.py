@@ -193,6 +193,24 @@ class ResponseRetrieverSourceLookupTests(unittest.TestCase):
 
 
 class ResponseBuilderSourceRenderingTests(unittest.TestCase):
+    def test_build_messages_adds_answering_hint_when_reference_context_exists(self) -> None:
+        messages = build_messages(
+            "Do you remember how I prefer explanations?",
+            {
+                "profiles": [
+                    {
+                        "topic": "explanation style",
+                        "content": "prefers structure-first explanations",
+                    }
+                ]
+            },
+        )
+
+        content = messages[1]["content"]
+        self.assertIn("[Answering Hint]", content)
+        self.assertIn("currently available conversation/memory context", content)
+        self.assertIn("Do not default to generic disclaimers", content)
+
     def test_build_messages_renders_recent_sources_as_reference_only(self) -> None:
         messages = build_messages(
             "Answer with my preferred explanation style.",

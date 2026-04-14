@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MK4 Chat UI</title>
+  <link rel="stylesheet" href="/static/chat.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <h1>MK4</h1>
+      <p>artifact 중심 간단 채팅 UI</p>
+      <div class="tip">
+        <div><strong>Enter</strong> 전송</div>
+        <div><strong>Shift+Enter</strong> 줄바꿈</div>
+      </div>
+      <div class="tip secondary">
+        <div><strong>텍스트 파일</strong>: 현재 메시지에 참고 자료로 첨부</div>
+        <div><strong>ZIP 파일</strong>: 메시지 없이도 artifact/project 업로드 가능</div>
+        <div><strong>프로필 관련 질문</strong>: 같은 프로젝트 안에서 evidence 기반으로 답변</div>
+      </div>
+      <div class="tip secondary">
+        <div><strong>현재 프로젝트</strong></div>
+        <div id="projectBadge" class="project-badge">없음</div>
+      </div>
+      <div class="tip secondary">
+        <div><strong>현재 모델</strong></div>
+        <div id="modelBadge" class="project-badge">불러오는 중...</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div id="messages" class="messages"></div>
+
+      <form id="chatForm" class="composer">
+        <div class="file-row">
+          <label for="fileInput" class="file-button">파일 첨부</label>
+          <input id="fileInput" name="file" type="file" />
+          <span id="fileName" class="file-name">선택된 파일 없음</span>
+          <button type="button" id="clearFileBtn" class="clear-file">첨부 해제</button>
+        </div>
+
+        <div class="mode-row">
+          <select id="projectSelect" aria-label="프로젝트 선택">
+            <option value="">프로젝트 선택 안 함</option>
+          </select>
+          <button type="button" id="refreshProjectsBtn" class="secondary-button">프로젝트 새로고침</button>
+          <button type="button" id="clearProjectBtn" class="clear-file">프로젝트 해제</button>
+        </div>
+
+        <div class="mode-row">
+          <input
+            id="projectNameInput"
+            type="text"
+            placeholder="ZIP 업로드 시 프로젝트 이름 (선택, 비우면 파일명 사용)"
+          />
+        </div>
+
+        <div class="mode-row">
+          <select id="modelSelect" aria-label="Ollama 모델 선택">
+            <option value="">기본 모델 불러오는 중...</option>
+          </select>
+          <button type="button" id="refreshModelsBtn" class="secondary-button">모델 새로고침</button>
+          <button type="button" id="clearModelBtn" class="clear-file">기본 모델 사용</button>
+        </div>
+
+        <textarea
+          id="messageInput"
+          name="message"
+          rows="4"
+          placeholder="메시지를 입력하세요. ZIP만 올릴 때는 비워둬도 됩니다. Shift+Enter로 줄바꿈, Enter로 전송"
+        ></textarea>
+
+        <div class="actions">
+          <button type="submit" id="sendBtn">전송</button>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <script src="/static/chat.js"></script>
+</body>
+</html>

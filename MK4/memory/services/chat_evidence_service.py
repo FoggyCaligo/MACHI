@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 from config import (
+    CHAT_UPDATE_EXTRACT_MODEL,
     CHAT_UPDATE_EXTRACT_SYSTEM_PROMPT_PATH,
     CHAT_UPDATE_EXTRACT_TIMEOUT,
     EXTRACT_NUM_PREDICT,
@@ -75,10 +76,18 @@ class ChatEvidenceService:
         parts.append("[latest_user_message]\n" + cleaned_user)
         return "\n\n".join(parts)
 
+    def _resolve_extract_model(self, requested_model: str | None) -> str | None:
+        configured_model = str(CHAT_UPDATE_EXTRACT_MODEL or "").strip()
+        if configured_model:
+            return configured_model
+        resolved = str(requested_model or "").strip()
+        return resolved or None
+
     def extract(self, *, user_message: str, reply: str, model: str | None = None) -> dict:
         started_at = time.perf_counter()
         reply_for_fallback = reply
         user_prompt = self._build_user_prompt(user_message=user_message)
+        extract_model = self._resolve_extract_model(model)
 
         try:
             model_started_at = time.perf_counter()
@@ -86,7 +95,7 @@ class ChatEvidenceService:
                 system_prompt_path=CHAT_UPDATE_EXTRACT_SYSTEM_PROMPT_PATH,
                 user_prompt=user_prompt,
                 retry_user_prompt=user_prompt,
-                model=model,
+                model=extract_model,
                 require_complete=True,
             )
             model_elapsed = time.perf_counter() - model_started_at
@@ -100,10 +109,12 @@ class ChatEvidenceService:
             fallback_elapsed = time.perf_counter() - fallback_started_at
             fallback["extractor"] = "noop_fallback"
             fallback["extract_error"] = str(exc)
+            fallback["extract_model"] = extract_model
             total_elapsed = time.perf_counter() - started_at
             _log(
                 "chat_evidence fallback | "
-                f"reason=exception | fallback_elapsed={fallback_elapsed:.2f}s | total={total_elapsed:.2f}s"
+                f"reason=exception | extract_model={extract_model or '-'} | "
+                f"fallback_elapsed={fallback_elapsed:.2f}s | total={total_elapsed:.2f}s"
             )
             return fallback
 
@@ -120,11 +131,17 @@ class ChatEvidenceService:
             fallback_elapsed = time.perf_counter() - fallback_started_at
             fallback["extractor"] = "noop_fallback"
             fallback["extract_error"] = run.error or "parse_failed"
+            fallback["extract_model"] = extract_model
+            extract_preview = self._clean_text(run.text, max_len=260)
+            if extract_preview:
+                fallback["extract_preview"] = extract_preview
             total_elapsed = time.perf_counter() - started_at
             _log(
                 "chat_evidence fallback | "
-                f"reason=parse_failed | model_elapsed={model_elapsed:.2f}s | parse_elapsed={parse_elapsed:.2f}s | "
-                f"fallback_elapsed={fallback_elapsed:.2f}s | total={total_elapsed:.2f}s"
+                f"reason=parse_failed | extract_model={extract_model or '-'} | "
+                f"model_elapsed={model_elapsed:.2f}s | parse_elapsed={parse_elapsed:.2f}s | "
+                f"fallback_elapsed={fallback_elapsed:.2f}s | total={total_elapsed:.2f}s | "
+                f"preview={extract_preview or '-'}"
             )
             return fallback
 
@@ -132,6 +149,7 @@ class ChatEvidenceService:
         bundle = self.normalizer.normalize_chat_update_bundle(parsed)
         normalize_elapsed = time.perf_counter() - normalize_started_at
         bundle["extractor"] = "model"
+        bundle["extract_model"] = extract_model
         if run.error:
             bundle["extract_error"] = run.error
 
@@ -140,7 +158,8 @@ class ChatEvidenceService:
         action_count = len(bundle.get("action_types") or [])
         _log(
             "chat_evidence extract | "
-            f"model_elapsed={model_elapsed:.2f}s | parse_elapsed={parse_elapsed:.2f}s | "
+            f"extract_model={extract_model or '-'} | model_elapsed={model_elapsed:.2f}s | "
+            f"parse_elapsed={parse_elapsed:.2f}s | "
             f"normalize_elapsed={normalize_elapsed:.2f}s | envelopes={evidence_count} | "
             f"actions={action_count} | total={total_elapsed:.2f}s"
         )

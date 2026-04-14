@@ -1,7 +1,9 @@
 import unittest
 from unittest.mock import patch
 
+from config import CHAT_UPDATE_EXTRACT_MODEL
 from memory.services.chat_evidence_service import ChatEvidenceService
+from memory.services.evidence_extraction_service import ExtractionRunResult
 from memory.services.evidence_normalization_service import EvidenceNormalizationService
 
 
@@ -123,6 +125,47 @@ class ChatEvidenceServicePromptTests(unittest.TestCase):
         self.assertIn("I also care about structural thinking.", prompt)
         self.assertNotIn("Tell me more.", prompt)
         self.assertEqual(prompt.count("[latest_user_message]"), 1)
+
+    def test_extract_uses_dedicated_chat_extract_model(self) -> None:
+        service = ChatEvidenceService()
+
+        with patch.object(service.raw_message_store, "recent", return_value=[]):
+            with patch.object(
+                service.extraction_service,
+                "run_extract",
+                return_value=ExtractionRunResult(
+                    text='{"action_types": ["discard"], "state_payloads": []}'
+                ),
+            ) as mocked_run:
+                result = service.extract(
+                    user_message="Do you remember me?",
+                    reply="I can only answer from current context.",
+                    model="gemma4:e2b",
+                )
+
+        self.assertEqual(mocked_run.call_args.kwargs["model"], CHAT_UPDATE_EXTRACT_MODEL)
+        self.assertEqual(result["extract_model"], CHAT_UPDATE_EXTRACT_MODEL)
+        self.assertEqual(result["extractor"], "model")
+
+    def test_extract_parse_failure_keeps_preview_for_debugging(self) -> None:
+        service = ChatEvidenceService()
+
+        with patch.object(service.raw_message_store, "recent", return_value=[]):
+            with patch.object(
+                service.extraction_service,
+                "run_extract",
+                return_value=ExtractionRunResult(text="not valid json reply"),
+            ):
+                result = service.extract(
+                    user_message="Tell me something memorable.",
+                    reply="Here is a reply.",
+                    model="gemma4:e2b",
+                )
+
+        self.assertEqual(result["extractor"], "noop_fallback")
+        self.assertEqual(result["extract_error"], "parse_failed")
+        self.assertEqual(result["extract_model"], CHAT_UPDATE_EXTRACT_MODEL)
+        self.assertIn("not valid json reply", result["extract_preview"])
 
 
 if __name__ == "__main__":
