@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from flask import Flask
 
 
-def create_app() -> Any:
+def create_app() -> 'Flask':
     from flask import Flask
     from app.api import register_routes
 

@@ -5,20 +5,14 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from app.chat_pipeline import ChatPipeline, ChatPipelineRequest
-from storage.sqlite.unit_of_work import SqliteUnitOfWork
+from app.model_discovery import DEFAULT_MODEL_NAME, discover_model_catalog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = PROJECT_ROOT / 'data' / 'memory.db'
-SCHEMA_PATH = PROJECT_ROOT / 'storage' / 'schema.sql'
 REQUEST_TIMEOUT_MS = 300000
 
 
-def _uow_factory():
-    return SqliteUnitOfWork(DB_PATH, schema_path=SCHEMA_PATH, initialize_schema=True)
-
-
 def register_routes(app: Flask) -> None:
-    pipeline = ChatPipeline(db_path=DB_PATH, schema_path=SCHEMA_PATH)
+    pipeline = ChatPipeline()
 
     @app.get('/')
     def index():
@@ -34,44 +28,13 @@ def register_routes(app: Flask) -> None:
 
     @app.get('/models')
     def models():
+        catalog = discover_model_catalog(DEFAULT_MODEL_NAME)
         return jsonify(
             {
-                'default_model': 'mk5-graph-core',
-                'models': [],
-                'ollama_available': False,
-                'error': None,
-            }
-        )
-
-    @app.get('/debug/session/<session_id>')
-    def debug_session(session_id: str):
-        with _uow_factory() as uow:
-            messages = list(uow.chat_messages.list_by_session(session_id, limit=50))
-            events = list(uow.graph_events.list_recent(limit=50))
-        return jsonify(
-            {
-                'session_id': session_id,
-                'message_count': len(messages),
-                'messages': [
-                    {
-                        'id': m.id,
-                        'turn_index': m.turn_index,
-                        'role': m.role,
-                        'content': m.content,
-                    }
-                    for m in messages
-                ],
-                'recent_events': [
-                    {
-                        'id': e.id,
-                        'event_type': e.event_type,
-                        'message_id': e.message_id,
-                        'trigger_node_id': e.trigger_node_id,
-                        'trigger_edge_id': e.trigger_edge_id,
-                        'note': e.note,
-                    }
-                    for e in events
-                ],
+                'default_model': catalog.default_model,
+                'models': catalog.models,
+                'ollama_available': catalog.ollama_available,
+                'error': catalog.error,
             }
         )
 
@@ -82,19 +45,25 @@ def register_routes(app: Flask) -> None:
             return jsonify({'detail': 'message is required'}), 400
 
         session_id = (request.form.get('session_id') or 'default').strip() or 'default'
-        turn_index = pipeline.next_turn_index(session_id)
+        selected_model = (request.form.get('model') or '').strip() or DEFAULT_MODEL_NAME
         file = request.files.get('file')
-        attached_files = []
+        attached_files: list[dict[str, object]] = []
         if file and file.filename:
-            attached_files.append({'name': file.filename, 'size': getattr(file, 'content_length', None)})
+            attached_files.append(
+                {
+                    'name': file.filename,
+                    'content_type': getattr(file, 'content_type', None),
+                    'size': getattr(file, 'content_length', None),
+                }
+            )
 
-        response = pipeline.process(
+        result = pipeline.process(
             ChatPipelineRequest(
                 session_id=session_id,
                 message=message,
-                turn_index=turn_index,
+                turn_index=pipeline.next_turn_index(session_id),
                 attached_files=attached_files,
-                model_name='mk5-graph-core',
+                model_name=selected_model,
             )
         )
-        return jsonify(response)
+        return jsonify(result)

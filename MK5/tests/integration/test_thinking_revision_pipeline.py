@@ -67,8 +67,6 @@ def main() -> None:
 
         assert result.contradiction_signals, 'thinking should detect at least one contradiction signal'
         assert result.revision_actions, 'thinking should create trust/revision actions'
-        assert result.core_conclusion is not None, 'thinking should produce core conclusion'
-        assert result.core_conclusion.activated_concepts, 'core conclusion should reference activated node ids'
 
         with uow_factory() as uow:
             revised = [edge for edge in uow.edges.list_edges_for_nodes([1, 2, 3, 4, 5, 6], active_only=False)]

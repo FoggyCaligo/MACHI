@@ -27,13 +27,13 @@ class ChatPipelineRequest:
 
 
 class ChatPipeline:
-    def __init__(self, db_path: Path = DB_PATH, schema_path: Path = SCHEMA_PATH) -> None:
+    def __init__(self, db_path: Path = DB_PATH, schema_path: Path = SCHEMA_PATH, *, verbalizer: Verbalizer | None = None) -> None:
         self.db_path = db_path
         self.schema_path = schema_path
         self.ingest_service = GraphIngestService(self._uow_factory)
         self.activation_engine = ActivationEngine(self._uow_factory)
         self.thought_engine = ThoughtEngine(self._uow_factory)
-        self.verbalizer = Verbalizer()
+        self.verbalizer = verbalizer or Verbalizer()
 
     def _uow_factory(self) -> SqliteUnitOfWork:
         return SqliteUnitOfWork(self.db_path, schema_path=self.schema_path, initialize_schema=True)
@@ -67,12 +67,38 @@ class ChatPipeline:
         if thought_result.core_conclusion is None:
             raise RuntimeError('ThoughtEngine did not produce core_conclusion')
 
-        reply = self.verbalizer.verbalize(thought_result.core_conclusion)
-        return {
-            'reply': reply,
-            'used_model': request.model_name,
-            'project_id': None,
-            'project_name': None,
+        verbalized = self.verbalizer.verbalize(thought_result.core_conclusion, model_name=request.model_name)
+        thought_result.derived_action = verbalized.derived_action
+
+        activation_debug = {
+            'seed_blocks': [
+                {
+                    'block_kind': block.block_kind,
+                    'text': block.text,
+                    'normalized_text': block.normalized_text,
+                }
+                for block in thought_view.seed_blocks
+            ],
+            'seed_node_ids': [item.node.id for item in thought_view.seed_nodes if item.node.id is not None],
+            'local_node_ids': [node.id for node in thought_view.nodes if node.id is not None],
+            'local_edge_ids': [edge.id for edge in thought_view.edges if edge.id is not None],
+            'pointer_ids': [pointer.id for pointer in thought_view.pointers if pointer.id is not None],
+            'metadata': thought_view.metadata,
+        }
+
+        thinking_debug = {
+            'signal_count': len(thought_result.contradiction_signals),
+            'trust_update_count': len(thought_result.trust_updates),
+            'revision_action_count': len(thought_result.revision_actions),
+            'signals': [asdict(item) for item in thought_result.contradiction_signals],
+            'trust_updates': [asdict(item) for item in thought_result.trust_updates],
+            'revision_actions': [asdict(item) for item in thought_result.revision_actions],
+            'core_conclusion': asdict(thought_result.core_conclusion),
+            'derived_action': asdict(verbalized.derived_action),
+            'metadata': thought_result.metadata,
+        }
+
+        debug_payload = {
             'ingest': {
                 'message_id': ingest_result.message_id,
                 'root_event_id': ingest_result.root_event_id,
@@ -83,33 +109,25 @@ class ChatPipeline:
                 'supported_edge_ids': ingest_result.supported_edge_ids,
                 'created_pointer_ids': ingest_result.created_pointer_ids,
             },
-            'activation': {
-                'seed_blocks': [
-                    {
-                        'text': block.text,
-                        'normalized_text': block.normalized_text,
-                        'block_kind': block.block_kind,
-                        'sentence_index': block.sentence_index,
-                        'block_index': block.block_index,
-                    }
-                    for block in thought_view.seed_blocks
-                ],
-                'seed_node_ids': [item.node.id for item in thought_view.seed_nodes if item.node.id is not None],
-                'local_node_ids': [node.id for node in thought_view.nodes if node.id is not None],
-                'local_edge_ids': [edge.id for edge in thought_view.edges if edge.id is not None],
-                'pointer_ids': [pointer.id for pointer in thought_view.pointers if pointer.id is not None],
-                'metadata': thought_view.metadata,
+            'activation': activation_debug,
+            'thinking': thinking_debug,
+            'verbalization': {
+                'used_llm': verbalized.used_llm,
+                'llm_error': verbalized.llm_error,
             },
-            'thinking': {
-                'signal_count': len(thought_result.contradiction_signals),
-                'trust_update_count': len(thought_result.trust_updates),
-                'revision_action_count': len(thought_result.revision_actions),
-                'metadata': thought_result.metadata,
-                'signals': [asdict(item) for item in thought_result.contradiction_signals],
-                'trust_updates': [asdict(item) for item in thought_result.trust_updates],
-                'revision_actions': [asdict(item) for item in thought_result.revision_actions],
-                'core_conclusion': asdict(thought_result.core_conclusion),
-            },
+        }
+
+        return {
+            'reply': verbalized.user_response,
+            'internal_explanation': verbalized.internal_explanation,
+            'used_model': request.model_name,
+            'project_id': None,
+            'project_name': None,
+            'debug': debug_payload,
+            'ingest': debug_payload['ingest'],
+            'activation': activation_debug,
+            'thinking': thinking_debug,
+            'verbalization': debug_payload['verbalization'],
         }
 
     def next_turn_index(self, session_id: str) -> int:

@@ -196,3 +196,33 @@ textarea:focus,
     display: none;
   }
 }
+
+
+.debug-panel details {
+  width: 100%;
+}
+
+.debug-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.debug-panel summary::marker {
+  color: #93c5fd;
+}
+
+.debug-block {
+  margin: 12px 0 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: #18181b;
+  border: 1px solid #52525b;
+  color: #e4e4e7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}

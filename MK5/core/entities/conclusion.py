@@ -66,6 +66,16 @@ class RevisionDecisionRecord:
 
 
 @dataclass(slots=True)
+class DerivedActionLayer:
+    response_mode: str
+    answer_goal: str
+    suggested_actions: list[str] = field(default_factory=list)
+    do_not_claim: list[str] = field(default_factory=list)
+    tone_hint: str = 'natural_concise_korean'
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class CoreConclusion:
     session_id: str
     message_id: int | None
@@ -88,5 +98,6 @@ class ThoughtResult:
     trust_updates: list[RevisionAction] = field(default_factory=list)
     revision_actions: list[RevisionAction] = field(default_factory=list)
     core_conclusion: CoreConclusion | None = None
+    derived_action: DerivedActionLayer | None = None
     summary: str = ''
     metadata: dict[str, Any] = field(default_factory=dict)
