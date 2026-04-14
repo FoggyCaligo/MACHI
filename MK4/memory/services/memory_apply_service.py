@@ -137,12 +137,46 @@ class MemoryApplyService:
             direct_confirm=bool(evidence.get("direct_confirm")),
         )
 
+    def _matching_candidate_profiles(self, *, topic: str, topic_id: str | None, content: str, limit: int = 8) -> list[dict]:
+        matches: list[dict] = []
+        for candidate in self.candidate_profile_store.list_active_by_topic(topic=topic, topic_id=topic_id, limit=limit):
+            candidate_content = str(candidate.get("content") or "").strip()
+            if candidate_content and self._same_meaning(candidate_content, content):
+                matches.append(candidate)
+        return matches
+
     def _archive_matching_candidate_profiles(self, *, topic: str, topic_id: str | None, content: str) -> int:
-        return self.candidate_profile_store.archive_matching_active(
-            topic=topic,
-            topic_id=topic_id,
-            content=content,
+        matches = self._matching_candidate_profiles(topic=topic, topic_id=topic_id, content=content)
+        candidate_ids = [str(item.get("id") or "").strip() for item in matches if str(item.get("id") or "").strip()]
+        if not candidate_ids:
+            return 0
+        return self.candidate_profile_store.archive_ids(candidate_ids, status="promoted")
+
+    def _refresh_matching_candidate_profile(self, *, cluster: dict) -> bool:
+        topic = cluster["topic"]
+        topic_id = cluster.get("topic_id")
+        candidate_content = str(cluster.get("candidate_content") or "").strip()
+        if not candidate_content:
+            return False
+
+        matches = self._matching_candidate_profiles(topic=topic, topic_id=topic_id, content=candidate_content)
+        if not matches:
+            return False
+
+        primary = matches[0]
+        refreshed = self.candidate_profile_store.update_active_candidate(
+            str(primary.get("id") or "").strip(),
+            confidence=max(
+                float(primary.get("confidence") or 0.0),
+                self.memory_policy.promotion_confidence(cluster),
+            ),
+            support_score=self._support_score(cluster),
+            source=f"candidate_refresh:{cluster['primary_strength'] or 'mixed'}",
         )
+        duplicate_ids = [str(item.get("id") or "").strip() for item in matches[1:] if str(item.get("id") or "").strip()]
+        if duplicate_ids:
+            self.candidate_profile_store.archive_ids(duplicate_ids, status="merged")
+        return refreshed
 
     def _insert_or_link_confirmed_profile(self, *, topic: str, topic_id: str | None, content: str, source: str, confidence: float) -> tuple[str, bool]:
         active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
@@ -517,6 +551,7 @@ class MemoryApplyService:
             "blocked_by_correction": 0,
             "blocked_by_existing_profile_conflict": 0,
             "pending_candidates": 0,
+            "refreshed_candidates": 0,
             "demoted_profiles": 0,
             "promoted_topics": set(),
         }
@@ -659,6 +694,7 @@ class MemoryApplyService:
         blocked_by_correction = 0
         blocked_by_existing_profile_conflict = 0
         pending_candidates = 0
+        refreshed_candidates = 0
         promoted_topics: set[tuple[str | None, str]] = set()
 
         t0 = time.perf_counter()
@@ -669,6 +705,8 @@ class MemoryApplyService:
 
             promotable, _reason = self.memory_policy.is_promotable_cluster(cluster)
             if not promotable:
+                if self._refresh_matching_candidate_profile(cluster=cluster):
+                    refreshed_candidates += 1
                 pending_candidates += 1
                 continue
             if self._has_conflicting_active_correction(candidate_content, topic=topic, topic_id=topic_id):
@@ -683,6 +721,7 @@ class MemoryApplyService:
                         evidence_rows=cluster.get("evidence_rows") or [],
                         profile_id=active_profile["id"],
                     )
+                    self._archive_matching_candidate_profiles(topic=topic, topic_id=topic_id, content=candidate_content)
                     if linked_count > 0:
                         linked_existing_profiles += 1
                     continue
@@ -700,6 +739,7 @@ class MemoryApplyService:
                 source=f"evidence_promotion:{cluster['primary_strength'] or 'mixed'}",
                 confidence=self.memory_policy.promotion_confidence(cluster),
             )
+            self._archive_matching_candidate_profiles(topic=topic, topic_id=topic_id, content=candidate_content)
             self._link_profile_for_evidence_rows(
                 evidence_rows=cluster.get("evidence_rows") or [],
                 profile_id=new_profile_id,
@@ -726,6 +766,7 @@ class MemoryApplyService:
             "blocked_by_correction": blocked_by_correction,
             "blocked_by_existing_profile_conflict": blocked_by_existing_profile_conflict,
             "pending_candidates": pending_candidates,
+            "refreshed_candidates": refreshed_candidates,
             "demoted_profiles": demoted_profiles,
             "promoted_topics": promoted_topics,
         }

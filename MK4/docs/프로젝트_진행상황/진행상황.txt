@@ -106,6 +106,15 @@ MK4_진행상황_정리
     - find_relevant(): LIKE 패턴 → cosine similarity 기반 의미 검색
     - 점수 = similarity(60%) + contextual(pinned/importance 40%)
     - 모든 retrieval이 이제 의미 기반 (또는 명확한 context 우선)
+45. **RecallRetriever 경로를 의미 기반 retrieval 철학에 맞게 재정렬 (2026-04-14)**
+    - recall 경로에서 ProfileStore/CorrectionStore/SummaryStore의 문자열 search() 호출 제거
+    - active profile / correction / summary를 query 의미 기준으로 semantic ranking
+    - trace에 semantic topic 후보를 함께 포함
+    - raw message window도 token substring 점수 대신 embedding 기반 semantic scoring으로 전환
+46. **Candidate profile lifecycle 보강 (2026-04-14 로컬 반영)**
+    - semantic match 기준으로 기존 candidate를 refresh
+    - promote / link 시 의미가 같은 active candidate를 archive
+    - `refreshed_candidates` 집계를 추가해 pending candidate 관리 상태를 더 잘 보이게 정리
 
 ==================================================
 <미완 또는 부족> (30개, 우선순위 정렬)
@@ -147,7 +156,7 @@ MK4_진행상황_정리
 25. 중복된 기능 / 변수 / 함수 / wrapper / 미사용 파일을 전수 조사해서 정리
 
 **Tier 6: 구조 검증 및 통합 (26-30개)**
-26. `project_analysis/services/project_profile_evidence_service.py`와 다른 유사 서비스 파일들의 실제 역할 중복 여부를 확정
+26. `ProjectAskService`와 `ProjectProfileEvidenceService`의 책임 경계를 더 선명하게 문서화하고 유지하기
 27. 실제 속도/품질 측정 루프(응답시간, topic 유지율, attach 정확도, general 누적량, confirmed 승격 빈도) 추가
 28. 톤, 화자 일관성, 첨부 답변 자연스러움, 존댓말 안정화 같은 응답 품질 이슈를 계속 다듬기
     - 다만 과도한 말투/persona 고정은 멀티 profile 확장성과 충돌하지 않게 주의
@@ -165,8 +174,9 @@ MK4_진행상황_정리
 최종 메모 (2026-04-14)
 ==================================================
 
-- Retrieval이 이제 완전히 의미 기반으로 통일됨 (embedding 기반 또는 active context 우선)
-- ProfileStore/CorrectionStore/SummaryStore의 문자열 search() 메소드는 더 이상 호출되지 않음 (deprecated)
+- Retrieval이 이제 응답/회상 경로 모두 의미 기반으로 정리됨 (embedding 기반 또는 active context 우선)
+- ProfileStore/CorrectionStore/SummaryStore의 문자열 search() 메소드는 주요 retrieval 경로에서 더 이상 호출되지 않음
 - EpisodeStore.find_relevant()는 embedding 기반 의미 검색으로 전환됨
+- RecallRetriever도 semantic ranking + semantic raw message expansion 기준으로 정리됨
 - ResponseRetriever의 로직이 단순화되어 profile 1개, correction 2개, summary 1개, episode 2개 수준으로 명확화됨
 - "뼈대 만들기"는 대부분 완성되었고, 이제부터는 "품질 고도화"와 "운영 안정화"가 초점임

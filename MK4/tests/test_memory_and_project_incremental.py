@@ -85,6 +85,65 @@ class MemoryApplyServiceDemotionTests(unittest.TestCase):
         mocked_supersede.assert_not_called()
 
 
+class MemoryApplyServiceCandidateRefreshTests(unittest.TestCase):
+    def test_refresh_matching_candidate_profile_updates_semantic_match(self) -> None:
+        service = MemoryApplyService()
+        cluster = {
+            "topic": "설명 선호",
+            "topic_id": "topic-1",
+            "candidate_content": "구조를 먼저 설명하는 방식을 선호한다",
+            "primary_strength": "repeated_behavior",
+            "avg_confidence": 0.62,
+            "max_confidence": 0.71,
+            "distinct_group_count": 2,
+            "evidence_count": 2,
+            "direct_confirm_count": 0,
+            "confirmed_count": 0,
+        }
+        active_candidates = [
+            {
+                "id": "candidate-1",
+                "content": "구조적 설명을 더 선호한다",
+                "confidence": 0.58,
+            }
+        ]
+
+        with patch.object(service.candidate_profile_store, "list_active_by_topic", return_value=active_candidates) as mocked_list:
+            with patch.object(service, "_same_meaning", return_value=True):
+                with patch.object(service, "_support_score", return_value=0.67):
+                    with patch.object(service.candidate_profile_store, "update_active_candidate", return_value=True) as mocked_update:
+                        refreshed = service._refresh_matching_candidate_profile(cluster=cluster)
+
+        self.assertTrue(refreshed)
+        mocked_list.assert_called_once_with(topic="설명 선호", topic_id="topic-1", limit=8)
+        mocked_update.assert_called_once()
+        self.assertEqual(mocked_update.call_args.args[0], "candidate-1")
+        self.assertEqual(mocked_update.call_args.kwargs["support_score"], 0.67)
+        self.assertEqual(mocked_update.call_args.kwargs["source"], "candidate_refresh:repeated_behavior")
+
+    def test_archive_matching_candidate_profiles_uses_semantic_match(self) -> None:
+        service = MemoryApplyService()
+        active_candidates = [
+            {"id": "candidate-1", "content": "구조적 설명을 선호한다"},
+            {"id": "candidate-2", "content": "예시보다 구조를 더 선호한다"},
+        ]
+
+        def fake_same_meaning(left: str, right: str) -> bool:
+            return "구조" in left and "구조" in right
+
+        with patch.object(service.candidate_profile_store, "list_active_by_topic", return_value=active_candidates):
+            with patch.object(service, "_same_meaning", side_effect=fake_same_meaning):
+                with patch.object(service.candidate_profile_store, "archive_ids", return_value=2) as mocked_archive:
+                    archived = service._archive_matching_candidate_profiles(
+                        topic="설명 선호",
+                        topic_id="topic-1",
+                        content="구조를 먼저 설명해주는 방식을 선호한다",
+                    )
+
+        self.assertEqual(archived, 2)
+        mocked_archive.assert_called_once_with(["candidate-1", "candidate-2"], status="promoted")
+
+
 class ProjectProfileEvidenceServiceIncrementalTests(unittest.TestCase):
     def test_ensure_extracted_reuses_existing_evidence_without_reextract(self) -> None:
         service = ProjectProfileEvidenceService()
@@ -193,13 +252,14 @@ class ProjectProfileEvidenceServiceIncrementalTests(unittest.TestCase):
         ]
 
         with patch.object(service, "_select_documents", return_value=docs):
-            with patch.object(service.evidence_store, "delete_by_project_paths", return_value=2) as mocked_delete_paths:
-                with patch.object(service.extraction_service, "run_extract", return_value=type("R", (), {"text": "[]"})()):
-                    with patch.object(service, "_extract_json_array", return_value=candidates):
-                        with patch.object(service, "_resolve_candidate_topic", side_effect=lambda candidate, model=None: candidate):
-                            with patch.object(service.normalizer, "normalize_profile_candidate_envelopes", return_value=envelopes):
-                                with patch.object(service.memory_ingress, "persist_profile_candidate_envelopes", return_value=[]) as mocked_persist:
-                                    service.extract_and_store("project-1", source_paths=["docs/a.md"], force_refresh=True)
+            with patch.object(service.evidence_store, "list_by_project_paths", return_value=[]):
+                with patch.object(service.evidence_store, "delete_by_project_paths", return_value=2) as mocked_delete_paths:
+                    with patch.object(service.extraction_service, "run_extract", return_value=type("R", (), {"text": "[]"})()):
+                        with patch.object(service, "_extract_json_array", return_value=candidates):
+                            with patch.object(service, "_resolve_candidate_topic", side_effect=lambda candidate, model=None: candidate):
+                                with patch.object(service.normalizer, "normalize_profile_candidate_envelopes", return_value=envelopes):
+                                    with patch.object(service.memory_ingress, "persist_profile_candidate_envelopes", return_value=[]) as mocked_persist:
+                                        service.extract_and_store("project-1", source_paths=["docs/a.md"], force_refresh=True)
 
         mocked_delete_paths.assert_called_once_with("project-1", ["docs/a.md"])
         mocked_persist.assert_called_once_with(

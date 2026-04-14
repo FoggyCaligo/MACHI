@@ -2,14 +2,7 @@ import uuid
 from typing import Any
 
 from memory.db import connection_context, utc_now
-
-
-STOPWORDS = {
-    "그", "이", "저", "것", "수", "좀", "더", "정말", "진짜", "그냥",
-    "대한", "관련", "기억", "예전", "이전", "최근", "현재", "내용", "부분",
-    "what", "when", "where", "which", "about", "that", "this", "with",
-    "from", "have", "your", "their", "into", "were", "been", "there",
-}
+from tools.text_embedding import cosine_similarity, embed_text, embed_texts
 
 
 class RawMessageStore:
@@ -35,10 +28,10 @@ class RawMessageStore:
                 "SELECT * FROM raw_messages ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-            return [dict(r) for r in rows][::-1]
+        return [dict(r) for r in rows][::-1]
 
-    def _normalize_text(self, text: str | None) -> str:
-        return " ".join((text or "").strip().split()).lower()
+    def _semantic_text(self, text: str | None) -> str:
+        return " ".join((text or "").strip().split())
 
     def _clip_text(self, text: str | None, max_len: int = 280) -> str:
         if not text:
@@ -47,35 +40,6 @@ class RawMessageStore:
         if len(text) > max_len:
             return text[:max_len].rstrip() + "..."
         return text
-
-    def _tokenize(self, text: str | None) -> list[str]:
-        raw = self._normalize_text(text)
-        tokens: list[str] = []
-        current: list[str] = []
-
-        for ch in raw:
-            if ch.isalnum() or ch == "_" or ("가" <= ch <= "힣"):
-                current.append(ch)
-            else:
-                if current:
-                    token = "".join(current)
-                    if len(token) >= 2 and token not in STOPWORDS:
-                        tokens.append(token)
-                    current = []
-
-        if current:
-            token = "".join(current)
-            if len(token) >= 2 and token not in STOPWORDS:
-                tokens.append(token)
-
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for token in tokens:
-            if token in seen:
-                continue
-            seen.add(token)
-            deduped.append(token)
-        return deduped
 
     def _load_recent_messages(self, scan_limit: int = 800) -> list[dict[str, Any]]:
         with connection_context() as conn:
@@ -87,54 +51,45 @@ class RawMessageStore:
         messages.reverse()
         return messages
 
-    def _score_message(self, query: str, message: dict[str, Any]) -> tuple[float, list[str]]:
-        content = self._normalize_text(message.get("content"))
-        if not content:
-            return 0.0, []
+    def _semantic_rank_messages(
+        self,
+        query_text: str,
+        *,
+        scan_limit: int = 300,
+        min_similarity: float = 0.35,
+    ) -> tuple[list[dict[str, Any]], list[tuple[float, int, list[str], dict[str, Any]]]]:
+        messages = self._load_recent_messages(scan_limit=scan_limit)
+        prepared_query = self._semantic_text(query_text)
+        if not prepared_query or not messages:
+            return messages, []
 
-        query_normalized = self._normalize_text(query)
-        query_tokens = self._tokenize(query)
+        query_embedding = embed_text(prepared_query, kind="query")
+        if not query_embedding:
+            return messages, []
 
-        score = 0.0
-        matched_terms: list[str] = []
+        candidates: list[tuple[int, dict[str, Any]]] = []
+        texts: list[str] = []
+        for idx, message in enumerate(messages):
+            text = self._semantic_text(message.get("content"))
+            if not text:
+                continue
+            candidates.append((idx, message))
+            texts.append(text)
 
-        if query_normalized and query_normalized in content:
-            score += 8.0
-            matched_terms.append(query_normalized[:80])
+        if not texts:
+            return messages, []
 
-        for token in query_tokens:
-            if token in content:
-                score += 2.0
-                matched_terms.append(token)
+        embeddings = embed_texts(texts, kind="passage")
+        scored: list[tuple[float, int, list[str], dict[str, Any]]] = []
+        for (idx, message), embedding in zip(candidates, embeddings):
+            similarity = cosine_similarity(query_embedding, embedding)
+            if similarity < min_similarity:
+                continue
+            score = similarity + (0.01 if message.get("role") == "user" else 0.0)
+            scored.append((score, idx, [], message))
 
-        if message.get("role") == "user":
-            score += 0.2
-
-        return score, matched_terms
-
-    def _score_anchor_text(self, anchor_text: str, message: dict[str, Any]) -> tuple[float, list[str]]:
-        content = self._normalize_text(message.get("content"))
-        if not content:
-            return 0.0, []
-
-        anchor_normalized = self._normalize_text(anchor_text)
-        anchor_tokens = self._tokenize(anchor_text)
-
-        score = 0.0
-        matched_terms: list[str] = []
-
-        if anchor_normalized:
-            short_anchor = anchor_normalized[:180]
-            if short_anchor and short_anchor in content:
-                score += 7.0
-                matched_terms.append(short_anchor[:80])
-
-        for token in anchor_tokens[:12]:
-            if token in content:
-                score += 1.5
-                matched_terms.append(token)
-
-        return score, matched_terms
+        scored.sort(key=lambda item: (item[0], item[3].get("created_at") or ""), reverse=True)
+        return messages, scored
 
     def _build_window(
         self,
@@ -163,16 +118,7 @@ class RawMessageStore:
         return window
 
     def search(self, query: str, limit: int = 5):
-        messages = self._load_recent_messages(scan_limit=800)
-        scored: list[tuple[float, int, list[str], dict[str, Any]]] = []
-
-        for idx, message in enumerate(messages):
-            score, matched_terms = self._score_message(query, message)
-            if score <= 0:
-                continue
-            scored.append((score, idx, matched_terms, message))
-
-        scored.sort(key=lambda item: (item[0], item[3].get("created_at") or ""), reverse=True)
+        _messages, scored = self._semantic_rank_messages(query, scan_limit=300, min_similarity=0.35)
 
         results: list[dict[str, Any]] = []
         for score, _, matched_terms, message in scored[:limit]:
@@ -190,16 +136,7 @@ class RawMessageStore:
         return results
 
     def search_with_context(self, query: str, limit: int = 3, before: int = 2, after: int = 2):
-        messages = self._load_recent_messages(scan_limit=800)
-        scored: list[tuple[float, int, list[str], dict[str, Any]]] = []
-
-        for idx, message in enumerate(messages):
-            score, matched_terms = self._score_message(query, message)
-            if score <= 0:
-                continue
-            scored.append((score, idx, matched_terms, message))
-
-        scored.sort(key=lambda item: (item[0], item[3].get("created_at") or ""), reverse=True)
+        messages, scored = self._semantic_rank_messages(query, scan_limit=300, min_similarity=0.35)
 
         results: list[dict[str, Any]] = []
         used_ids: set[str] = set()
@@ -212,8 +149,8 @@ class RawMessageStore:
 
             results.append(
                 {
-                    "match_type": "query_direct",
-                    "match_score": round(score, 2),
+                    "match_type": "semantic_query",
+                    "match_score": round(score, 4),
                     "matched_terms": matched_terms[:8],
                     "anchor_message": {
                         "id": message.get("id"),
@@ -242,16 +179,11 @@ class RawMessageStore:
         if not (anchor_text or "").strip():
             return []
 
-        messages = self._load_recent_messages(scan_limit=800)
-        scored: list[tuple[float, int, list[str], dict[str, Any]]] = []
-
-        for idx, message in enumerate(messages):
-            score, matched_terms = self._score_anchor_text(anchor_text, message)
-            if score <= 0:
-                continue
-            scored.append((score, idx, matched_terms, message))
-
-        scored.sort(key=lambda item: (item[0], item[3].get("created_at") or ""), reverse=True)
+        messages, scored = self._semantic_rank_messages(
+            anchor_text,
+            scan_limit=300,
+            min_similarity=0.38,
+        )
 
         results: list[dict[str, Any]] = []
         used_ids: set[str] = set()
@@ -265,7 +197,7 @@ class RawMessageStore:
             results.append(
                 {
                     "match_type": match_type,
-                    "match_score": round(score, 2),
+                    "match_score": round(score, 4),
                     "matched_terms": matched_terms[:8],
                     "anchor_message": {
                         "id": message.get("id"),

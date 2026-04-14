@@ -88,6 +88,53 @@ class CandidateProfileStore:
             )
             return candidate_id
 
+    def update_active_candidate(
+        self,
+        candidate_id: str,
+        *,
+        confidence: float | None = None,
+        support_score: float | None = None,
+        source: str | None = None,
+        content: str | None = None,
+    ) -> bool:
+        if not candidate_id:
+            return False
+        updates: list[str] = []
+        values: list[Any] = []
+        if content is not None:
+            updates.append("content = ?")
+            values.append(content)
+        if confidence is not None:
+            updates.append("confidence = ?")
+            values.append(confidence)
+        if support_score is not None:
+            updates.append("support_score = ?")
+            values.append(support_score)
+        if source is not None:
+            updates.append("source = ?")
+            values.append(source)
+        updates.append("updated_at = ?")
+        values.append(utc_now())
+        with connection_context() as conn:
+            cursor = conn.execute(
+                f"UPDATE candidate_profiles SET {', '.join(updates)} WHERE id = ? AND status = 'active'",
+                (*values, candidate_id),
+            )
+            return bool(cursor.rowcount)
+
+    def archive_ids(self, candidate_ids: list[str], *, status: str = "promoted") -> int:
+        normalized_ids = [str(item).strip() for item in candidate_ids if str(item).strip()]
+        if not normalized_ids:
+            return 0
+        now = utc_now()
+        placeholders = ",".join(["?"] * len(normalized_ids))
+        with connection_context() as conn:
+            cursor = conn.execute(
+                f"UPDATE candidate_profiles SET status = ?, updated_at = ? WHERE id IN ({placeholders}) AND status = 'active'",
+                (status, now, *normalized_ids),
+            )
+            return int(cursor.rowcount or 0)
+
     def archive_matching_active(self, *, topic: str | None, topic_id: str | None, content: str) -> int:
         resolved_topic_id = self._resolve_topic_id(topic=topic, topic_id=topic_id, create_if_missing=False)
         now = utc_now()

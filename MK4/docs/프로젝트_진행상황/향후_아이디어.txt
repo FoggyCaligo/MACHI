@@ -6,13 +6,13 @@
 
 ✅ **완료된 것**:
 - ResponseRetriever: 문자열 검색 제거, active context 우선
+- RecallRetriever: semantic ranking + semantic raw message expansion으로 정리
 - EpisodeStore: embedding 기반 의미 검색 도입
 - 모든 retrieval이 이제 의미 기반 (또는 명확한 context/ranking)
 
 ⏳ **다음 단계**:
-- ProfileStore/CorrectionStore/SummaryStore: 아직 search() 메소드는 LIKE 기반
-  (현재 사용되지 않음 - deprecated 상태)
-- 필요하면 향후 embedding 기반으로 재구현 (우선순위 낮음)
+- raw transcript / recent source lookup을 더 정교한 source lookup layer로 확장
+- topic merge / split 이후의 retrieval 재정렬 기준도 같이 설계
 
 ---
 
