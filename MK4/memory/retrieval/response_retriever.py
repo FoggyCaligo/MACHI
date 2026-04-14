@@ -4,6 +4,7 @@ from memory.stores.summary_store import SummaryStore
 from memory.stores.episode_store import EpisodeStore
 from memory.stores.state_store import StateStore
 from memory.stores.raw_message_store import RawMessageStore
+from memory.stores.candidate_profile_store import CandidateProfileStore
 
 
 class ResponseRetriever:
@@ -14,6 +15,7 @@ class ResponseRetriever:
         self.episode_store = EpisodeStore()
         self.state_store = StateStore()
         self.raw_message_store = RawMessageStore()
+        self.candidate_profile_store = CandidateProfileStore()
 
     def _clean_text(self, text: str | None, max_len: int = 300) -> str:
         if not text:
@@ -120,6 +122,7 @@ class ResponseRetriever:
         if not topic_id:
             return {
                 "profiles": [],
+                "candidate_profiles": [],
                 "corrections": [],
                 "summaries": [],
             }
@@ -127,9 +130,11 @@ class ResponseRetriever:
         profile = self.profile_store.get_active_by_topic(topic_id=topic_id)
         corrections = self.correction_store.list_active_by_topic(topic_id=topic_id, limit=1)
         summary = self.summary_store.get_by_topic(topic_id=topic_id)
+        candidate_profiles = self.candidate_profile_store.list_active_by_topic(topic_id=topic_id, limit=2)
 
         return {
             "profiles": [profile] if profile else [],
+            "candidate_profiles": candidate_profiles,
             "corrections": corrections,
             "summaries": [summary] if summary else [],
         }
@@ -141,6 +146,7 @@ class ResponseRetriever:
         # Load active topic context only (no string-based search; embedding-based retrieval pending)
         active_topic_context = self._load_active_topic_context()
         contextual_profiles = active_topic_context["profiles"]  # max 1 per topic
+        contextual_candidate_profiles = active_topic_context["candidate_profiles"]
         contextual_corrections = active_topic_context["corrections"]
         contextual_summaries = active_topic_context["summaries"]
         
@@ -167,6 +173,7 @@ class ResponseRetriever:
 
         return {
             "profiles": contextual_profiles,  # max 1 active profile from current topic
+            "candidate_profiles": contextual_candidate_profiles,
             "corrections": contextual_corrections + recent_global_corrections,  # topic-local + global fallback
             "summaries": contextual_summaries,  # max 1 per topic
             "episodes": episodes,  # based on relevance search (pending embedding)

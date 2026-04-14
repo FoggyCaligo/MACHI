@@ -81,10 +81,10 @@ class ProjectProfileEvidenceService:
 
             stale = False
             for row in matching_rows:
-                row_hashes = row.get("source_file_hashes") or {}
-                actual_hash = str(row_hashes.get(path) or "").strip()
-                expected_hash = str(file_hash_by_path.get(path) or "").strip()
-                if actual_hash != expected_hash:
+                stored_hashes = row.get("source_file_hashes") or {}
+                stored_hash = str(stored_hashes.get(path) or "").strip()
+                current_hash = str(file_hash_by_path.get(path) or "").strip()
+                if stored_hash != current_hash:
                     stale = True
                     break
             if stale:
@@ -176,6 +176,33 @@ class ProjectProfileEvidenceService:
             return normalized
         return ""
 
+    def _affected_topics_from_rows(self, rows: list[dict]) -> list[dict]:
+        result: list[dict] = []
+        seen: set[tuple[str | None, str]] = set()
+        for row in rows or []:
+            topic_id = str(row.get("topic_id") or "").strip() or None
+            topic = str(row.get("topic") or "").strip() or "general"
+            key = (topic_id, topic)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({"topic_id": topic_id, "topic": topic})
+        return result
+
+    def _merge_affected_topics(self, *topic_groups: list[dict]) -> list[dict]:
+        merged: list[dict] = []
+        seen: set[tuple[str | None, str]] = set()
+        for topic_group in topic_groups:
+            for item in topic_group or []:
+                topic_id = str(item.get("topic_id") or "").strip() or None
+                topic = str(item.get("topic") or "").strip() or "general"
+                key = (topic_id, topic)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append({"topic_id": topic_id, "topic": topic})
+        return merged
+
     def _extract_json_array(self, text: str) -> list[dict]:
         result = self.extraction_service.parse_profile_candidates(
             text,
@@ -235,11 +262,13 @@ class ProjectProfileEvidenceService:
                 "existing_evidence_count": 0,
                 "newly_extracted_paths": [],
                 "needs_memory_sync": False,
+                "needs_support_reconcile": False,
+                "affected_topics": [],
             }
 
         existing_evidences = self.evidence_store.list_by_project_paths(project_id, requested_paths)
         file_hash_by_path = self._file_hash_by_path(documents)
-        paths_to_extract, stale_paths = self._paths_to_extract(
+        paths_to_extract, _stale_paths = self._paths_to_extract(
             requested_paths=requested_paths,
             existing_evidences=existing_evidences,
             file_hash_by_path=file_hash_by_path,
@@ -256,6 +285,8 @@ class ProjectProfileEvidenceService:
                 "existing_evidence_count": len(existing_evidences),
                 "newly_extracted_paths": [],
                 "needs_memory_sync": False,
+                "needs_support_reconcile": False,
+                "affected_topics": [],
             }
 
         return self.extract_and_store(
@@ -285,12 +316,13 @@ class ProjectProfileEvidenceService:
                 "existing_evidence_count": 0,
                 "newly_extracted_paths": [],
                 "needs_memory_sync": False,
+                "needs_support_reconcile": False,
+                "affected_topics": [],
             }
 
-        removed_existing_count = 0
-        if force_refresh and selected_paths:
-            removed_existing_count = self.evidence_store.delete_by_project_paths(project_id, selected_paths)
-
+        existing_rows_for_paths = self.evidence_store.list_by_project_paths(project_id, selected_paths) if selected_paths else []
+        removed_topics = self._affected_topics_from_rows(existing_rows_for_paths)
+        removed_existing_count = self.evidence_store.delete_by_project_paths(project_id, selected_paths) if selected_paths else 0
         file_hash_by_path = self._file_hash_by_path(documents)
 
         user_prompt = self._build_extract_user_prompt(
@@ -329,6 +361,11 @@ class ProjectProfileEvidenceService:
             source_file_hash_by_path=file_hash_by_path,
         )
 
+        affected_topics = self._merge_affected_topics(
+            removed_topics,
+            self._affected_topics_from_rows(evidence_envelopes),
+        )
+
         return {
             "stored": True,
             "reused": False,
@@ -338,6 +375,8 @@ class ProjectProfileEvidenceService:
             "existing_evidence_count": max(removed_existing_count, 0),
             "newly_extracted_paths": selected_paths,
             "needs_memory_sync": bool(evidence_envelopes),
+            "needs_support_reconcile": bool(affected_topics),
+            "affected_topics": affected_topics,
             "evidence_envelopes": evidence_envelopes,
         }
 
@@ -350,6 +389,8 @@ class ProjectProfileEvidenceService:
         ensure_result = self.ensure_extracted(project_id, model=model)
         if ensure_result.get("needs_memory_sync"):
             self.memory_ingress.sync_project(project_id)
+        if ensure_result.get("needs_support_reconcile"):
+            self.memory_ingress.reconcile_topics(ensure_result.get("affected_topics") or [])
 
         evidences = self.evidence_store.list_by_project(project_id)
         if not evidences:

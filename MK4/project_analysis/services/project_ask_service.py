@@ -18,12 +18,17 @@ class ProjectAskService:
     def ask(self, project_id: str, question: str, model: str | None = None) -> dict:
         profile_extract_result = None
         profile_sync_result = None
+        profile_reconcile_result = None
 
         route = self.profile_route_resolver.resolve(question=question, model=model)
         if route == "profile_question":
             profile_extract_result = self.profile_evidence_service.ensure_extracted(project_id, model=model)
             if profile_extract_result.get("needs_memory_sync"):
                 profile_sync_result = self.memory_ingress_service.sync_project(project_id)
+            if profile_extract_result.get("needs_support_reconcile"):
+                profile_reconcile_result = self.memory_ingress_service.reconcile_topics(
+                    profile_extract_result.get("affected_topics") or []
+                )
 
             profile_result = self.profile_evidence_service.answer_from_project(
                 project_id,
@@ -44,6 +49,7 @@ class ProjectAskService:
                     "used_profile_evidence": profile_result.get("used_profile_evidence", []),
                     "profile_evidence_extract": profile_extract_result,
                     "profile_memory_sync": profile_sync_result,
+                    "profile_memory_reconcile": profile_reconcile_result,
                 }
 
         chunks = self.retriever.retrieve(
@@ -82,4 +88,5 @@ class ProjectAskService:
             "used_profile_evidence": [],
             "profile_evidence_extract": profile_extract_result,
             "profile_memory_sync": profile_sync_result,
+            "profile_memory_reconcile": profile_reconcile_result,
         }

@@ -116,6 +116,17 @@ class ProfileStore:
         )
         return new_id
 
+    def supersede_profile(self, profile_id: str) -> bool:
+        if not profile_id:
+            return False
+        now = utc_now()
+        with connection_context() as conn:
+            cursor = conn.execute(
+                "UPDATE profiles SET status = 'superseded', updated_at = ? WHERE id = ? AND status = 'active'",
+                (now, profile_id),
+            )
+            return bool(cursor.rowcount)
+
     def trim_history(
         self,
         topic: str | None = None,

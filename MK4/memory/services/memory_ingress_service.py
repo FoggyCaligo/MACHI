@@ -204,3 +204,8 @@ class MemoryIngressService:
         result = self.memory_apply_service.sync_project(project_id)
         self.retention_policy.run()
         return result
+
+    def reconcile_topics(self, topic_refs: list[dict]) -> dict:
+        result = self.memory_apply_service.reconcile_topics(topic_refs)
+        self.retention_policy.run()
+        return result

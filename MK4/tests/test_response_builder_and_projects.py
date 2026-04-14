@@ -34,6 +34,22 @@ class ResponseBuilderTests(unittest.TestCase):
         self.assertIn("[현재 사용자 요청]\n이어서 말해줘", content)
 
 
+
+
+    def test_candidate_profiles_are_rendered_as_candidate_section(self) -> None:
+        messages = build_messages(
+            "이어서 말해줘",
+            {
+                "profiles": [{"topic": "설명 선호", "content": "구조적 설명을 선호함"}],
+                "candidate_profiles": [{"topic": "설명 선호", "content": "예시보다 구조를 더 선호함"}],
+            },
+        )
+
+        content = messages[1]["content"]
+        self.assertIn("[사용자 프로필 후보]", content)
+        self.assertIn("예시보다 구조를 더 선호함", content)
+
+
 class ProjectStoreTests(unittest.TestCase):
     def test_list_recent_returns_latest_projects_first(self) -> None:
         temp_dir = Path.cwd() / "data" / "tmp_project_store_test"

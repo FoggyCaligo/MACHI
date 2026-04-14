@@ -161,6 +161,7 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
     system_prompt = load_prompt_text(SYSTEM_PROMPT_PATH)
 
     profiles = context.get("profiles", [])[:2]
+    candidate_profiles = context.get("candidate_profiles", [])[:2]
     corrections = context.get("corrections", [])[:2]
     summaries = context.get("summaries", [])[:1]
     episodes = context.get("episodes", [])[:2]
@@ -203,6 +204,31 @@ def build_messages(user_message: str, context: dict) -> list[dict]:
                 section_lines.append(line)
         if section_lines:
             memory_lines.append("[사용자 프로필]")
+            memory_lines.extend(section_lines)
+
+    if candidate_profiles:
+        profile_contents = {
+            _clean_text(item.get("content"), max_len=180)
+            for item in profiles
+            if _clean_text(item.get("content"), max_len=180)
+        }
+        section_lines: list[str] = []
+        for candidate in candidate_profiles:
+            topic = _topic_label(candidate)
+            content = _pick_memory_text(
+                candidate,
+                preferred_keys=["content", "value", "summary"],
+                max_len=180,
+            )
+            if not content or content in profile_contents:
+                continue
+            if _should_skip_memory_item(candidate, content):
+                continue
+            line = _normalize_memory_line(topic, content)
+            if line:
+                section_lines.append(line)
+        if section_lines:
+            memory_lines.append("[사용자 프로필 후보]")
             memory_lines.extend(section_lines)
 
     if states:

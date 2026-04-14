@@ -36,6 +36,25 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE INDEX IF NOT EXISTS idx_profiles_topic_id_status ON profiles(topic_id, status);
 CREATE INDEX IF NOT EXISTS idx_profiles_updated_at ON profiles(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS candidate_profiles (
+    id TEXT PRIMARY KEY,
+    topic_id TEXT,
+    content TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    support_score REAL NOT NULL DEFAULT 0.0,
+    source TEXT NOT NULL,
+    source_profile_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'promoted', 'archived')),
+    FOREIGN KEY (topic_id) REFERENCES topics(id),
+    FOREIGN KEY (source_profile_id) REFERENCES profiles(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_profiles_topic_status ON candidate_profiles(topic_id, status);
+CREATE INDEX IF NOT EXISTS idx_candidate_profiles_updated_at ON candidate_profiles(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_candidate_profiles_source_profile ON candidate_profiles(source_profile_id);
+
 CREATE TABLE IF NOT EXISTS corrections (
     id TEXT PRIMARY KEY,
     topic_id TEXT,

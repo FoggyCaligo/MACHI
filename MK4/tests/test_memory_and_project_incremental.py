@@ -33,6 +33,58 @@ class MemoryApplyServiceCorrectionScopeTests(unittest.TestCase):
         mocked_global.assert_not_called()
 
 
+class MemoryApplyServiceDemotionTests(unittest.TestCase):
+    def test_reconcile_topics_demotes_confirmed_profile_below_threshold(self) -> None:
+        service = MemoryApplyService()
+        active_profile = {
+            "id": "profile-1",
+            "topic_id": "topic-1",
+            "topic": "설명 선호",
+            "content": "구조적 설명을 선호한다",
+            "confidence": 0.82,
+            "source": "evidence_promotion:explicit_self_statement",
+        }
+
+        with patch.object(service.profile_store, "get_active_by_topic", return_value=active_profile):
+            with patch.object(service, "_list_all_profile_evidence", return_value=[]):
+                with patch.object(service, "_build_profile_support_index", return_value={}):
+                    with patch.object(service, "_profile_support_snapshot", return_value={"avg_confidence": 0.3, "max_confidence": 0.3, "distinct_group_count": 0, "evidence_count": 0, "primary_strength": "", "direct_confirm_count": 0, "confirmed_count": 0}):
+                        with patch.object(service, "_support_score", return_value=0.59):
+                            with patch.object(service.candidate_profile_store, "upsert_demoted_profile") as mocked_candidate: 
+                                with patch.object(service.profile_store, "supersede_profile", return_value=True) as mocked_supersede:
+                                    with patch.object(service, "_rebuild_touched_topics") as mocked_rebuild:
+                                        result = service.reconcile_topics([{"topic_id": "topic-1", "topic": "설명 선호"}])
+
+        self.assertEqual(result["demoted_profiles"], 1)
+        mocked_candidate.assert_called_once()
+        mocked_supersede.assert_called_once_with("profile-1")
+        mocked_rebuild.assert_called_once()
+
+    def test_reconcile_topics_keeps_confirmed_profile_at_or_above_threshold(self) -> None:
+        service = MemoryApplyService()
+        active_profile = {
+            "id": "profile-1",
+            "topic_id": "topic-1",
+            "topic": "설명 선호",
+            "content": "구조적 설명을 선호한다",
+            "confidence": 0.82,
+            "source": "evidence_promotion:explicit_self_statement",
+        }
+
+        with patch.object(service.profile_store, "get_active_by_topic", return_value=active_profile):
+            with patch.object(service, "_list_all_profile_evidence", return_value=[]):
+                with patch.object(service, "_build_profile_support_index", return_value={}):
+                    with patch.object(service, "_profile_support_snapshot", return_value={"avg_confidence": 0.7, "max_confidence": 0.7, "distinct_group_count": 1, "evidence_count": 1, "primary_strength": "explicit_self_statement", "direct_confirm_count": 0, "confirmed_count": 0}):
+                        with patch.object(service, "_support_score", return_value=0.60):
+                            with patch.object(service.candidate_profile_store, "upsert_demoted_profile") as mocked_candidate: 
+                                with patch.object(service.profile_store, "supersede_profile", return_value=True) as mocked_supersede:
+                                    result = service.reconcile_topics([{"topic_id": "topic-1", "topic": "설명 선호"}])
+
+        self.assertEqual(result["demoted_profiles"], 0)
+        mocked_candidate.assert_not_called()
+        mocked_supersede.assert_not_called()
+
+
 class ProjectProfileEvidenceServiceIncrementalTests(unittest.TestCase):
     def test_ensure_extracted_reuses_existing_evidence_without_reextract(self) -> None:
         service = ProjectProfileEvidenceService()
@@ -210,6 +262,36 @@ class ProjectAskServiceIncrementalTests(unittest.TestCase):
         mocked_ensure.assert_called_once_with("project-1", model="gemma3:4b")
         mocked_answer.assert_called_once()
         mocked_sync.assert_not_called()
+
+
+    def test_profile_question_reconciles_affected_topics(self) -> None:
+        service = ProjectAskService()
+
+        with patch.object(service.profile_route_resolver, "resolve", return_value="profile_question"):
+            with patch.object(
+                service.profile_evidence_service,
+                "ensure_extracted",
+                return_value={
+                    "stored": True,
+                    "reused": False,
+                    "needs_memory_sync": False,
+                    "needs_support_reconcile": True,
+                    "affected_topics": [{"topic_id": "topic-1", "topic": "설명 선호"}],
+                },
+            ):
+                with patch.object(
+                    service.profile_evidence_service,
+                    "answer_from_project",
+                    return_value={"answer": "프로필 답변", "used_profile_evidence": []},
+                ):
+                    with patch.object(service.memory_ingress_service, "sync_project") as mocked_sync:
+                        with patch.object(service.memory_ingress_service, "reconcile_topics", return_value={"demoted_profiles": 1}) as mocked_reconcile:
+                            with patch.object(service.project_review_store, "add"):
+                                result = service.ask("project-1", "이 프로젝트로 본 내 성향은?", model="gemma3:4b")
+
+        mocked_sync.assert_not_called()
+        mocked_reconcile.assert_called_once_with([{"topic_id": "topic-1", "topic": "설명 선호"}])
+        self.assertEqual(result["profile_memory_reconcile"], {"demoted_profiles": 1})
 
 
 if __name__ == "__main__":

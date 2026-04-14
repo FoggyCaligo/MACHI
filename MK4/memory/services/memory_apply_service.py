@@ -6,9 +6,11 @@ from config import (
     PROFILE_REPLACEMENT_SCORE_TOLERANCE,
     PROFILE_SEMANTIC_CLUSTER_THRESHOLD,
     PROFILE_SEMANTIC_MATCH_THRESHOLD,
+    PROFILE_DEMOTE_MIN_SUPPORT_SCORE,
 )
 from memory.policies.memory_classification_policy import MemoryClassificationPolicy, SOURCE_STRENGTH_ORDER
 from memory.stores.chat_profile_evidence_store import ChatProfileEvidenceStore
+from memory.stores.candidate_profile_store import CandidateProfileStore
 from memory.stores.correction_store import CorrectionStore
 from memory.stores.episode_store import EpisodeStore
 from memory.stores.profile_store import ProfileStore
@@ -38,6 +40,7 @@ class MemoryApplyService:
         self.project_evidence_store = ProjectProfileEvidenceStore()
         self.uploaded_evidence_store = UploadedProfileEvidenceStore()
         self.chat_evidence_store = ChatProfileEvidenceStore()
+        self.candidate_profile_store = CandidateProfileStore()
         self._embedding_cache: dict[str, list[float]] = {}
 
     def _normalize_text(self, text: str) -> str:
@@ -134,9 +137,17 @@ class MemoryApplyService:
             direct_confirm=bool(evidence.get("direct_confirm")),
         )
 
+    def _archive_matching_candidate_profiles(self, *, topic: str, topic_id: str | None, content: str) -> int:
+        return self.candidate_profile_store.archive_matching_active(
+            topic=topic,
+            topic_id=topic_id,
+            content=content,
+        )
+
     def _insert_or_link_confirmed_profile(self, *, topic: str, topic_id: str | None, content: str, source: str, confidence: float) -> tuple[str, bool]:
         active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
         if active_profile and self._same_meaning(str(active_profile.get("content") or ""), content):
+            self._archive_matching_candidate_profiles(topic=topic, topic_id=topic_id, content=content)
             return str(active_profile["id"]), False
         new_profile_id = self.profile_store.insert_profile(
             topic=topic,
@@ -145,6 +156,7 @@ class MemoryApplyService:
             source=source,
             confidence=confidence,
         )
+        self._archive_matching_candidate_profiles(topic=topic, topic_id=topic_id, content=content)
         return str(new_profile_id), True
 
     def _build_candidate_clusters(self, evidences: list[dict]) -> list[dict]:
@@ -424,6 +436,75 @@ class MemoryApplyService:
 
         return False, "existing_profile_still_stronger"
 
+    def _demote_profile_to_candidate(self, *, active_profile: dict, support_snapshot: dict, support_score: float) -> bool:
+        profile_id = str(active_profile.get("id") or "").strip()
+        if not profile_id:
+            return False
+
+        topic_id = str(active_profile.get("topic_id") or "").strip() or None
+        topic = self._topic_label(
+            active_profile.get("topic_name") or active_profile.get("topic_summary") or active_profile.get("topic"),
+            topic_id,
+        )
+        self.candidate_profile_store.upsert_demoted_profile(
+            topic=topic,
+            topic_id=topic_id,
+            content=str(active_profile.get("content") or "").strip(),
+            source=f"demoted_confirmed:{active_profile.get('source') or 'profile'}",
+            confidence=float(active_profile.get("confidence") or 0.0),
+            support_score=float(support_score or 0.0),
+            source_profile_id=profile_id,
+        )
+        return self.profile_store.supersede_profile(profile_id)
+
+    def _demote_weak_active_profiles(
+        self,
+        *,
+        topic_keys: set[tuple[str | None, str]],
+        support_index: dict[str, dict],
+    ) -> tuple[int, set[tuple[str | None, str]]]:
+        demoted_profiles = 0
+        touched_topics: set[tuple[str | None, str]] = set()
+
+        for topic_id, topic in topic_keys:
+            active_profile = self.profile_store.get_active_by_topic(topic=topic, topic_id=topic_id)
+            if not active_profile:
+                continue
+            support_snapshot = self._profile_support_snapshot(active_profile, support_index)
+            support_score = self._support_score(support_snapshot)
+            if support_score >= PROFILE_DEMOTE_MIN_SUPPORT_SCORE:
+                continue
+            if self._demote_profile_to_candidate(
+                active_profile=active_profile,
+                support_snapshot=support_snapshot,
+                support_score=support_score,
+            ):
+                demoted_profiles += 1
+                touched_topics.add((topic_id, topic))
+        return demoted_profiles, touched_topics
+
+    def reconcile_topics(self, topic_refs: list[dict] | None) -> dict:
+        normalized_topic_keys: set[tuple[str | None, str]] = set()
+        for item in topic_refs or []:
+            topic_id = str(item.get("topic_id") or "").strip() or None
+            topic = self._topic_label(item.get("topic"), topic_id)
+            normalized_topic_keys.add((topic_id, topic))
+
+        if not normalized_topic_keys:
+            return {"reconciled_topics": 0, "demoted_profiles": 0}
+
+        evidences = self._list_all_profile_evidence()
+        support_index = self._build_profile_support_index(evidences)
+        demoted_profiles, touched_topics = self._demote_weak_active_profiles(
+            topic_keys=normalized_topic_keys,
+            support_index=support_index,
+        )
+        self._rebuild_touched_topics(touched_topics)
+        return {
+            "reconciled_topics": len(normalized_topic_keys),
+            "demoted_profiles": demoted_profiles,
+        }
+
     def _rebuild_touched_topics(self, touched_topics: set[tuple[str | None, str]]) -> None:
         for topic_id, topic in touched_topics:
             self.profile_rebuilder.rebuild_topic(topic=topic, topic_id=topic_id)
@@ -436,6 +517,7 @@ class MemoryApplyService:
             "blocked_by_correction": 0,
             "blocked_by_existing_profile_conflict": 0,
             "pending_candidates": 0,
+            "demoted_profiles": 0,
             "promoted_topics": set(),
         }
 
@@ -624,6 +706,14 @@ class MemoryApplyService:
             )
             promoted_profiles += 1
             promoted_topics.add((topic_id, topic))
+        demoted_profiles, demoted_topics = self._demote_weak_active_profiles(
+            topic_keys=promoted_topics or {
+                (cluster.get("topic_id"), cluster.get("topic"))
+                for cluster in clusters
+            },
+            support_index=self._build_profile_support_index(self._list_all_profile_evidence()),
+        )
+        promoted_topics.update(demoted_topics)
         loop_elapsed = time.perf_counter() - t0
 
         total_elapsed = time.perf_counter() - started_at
@@ -636,6 +726,7 @@ class MemoryApplyService:
             "blocked_by_correction": blocked_by_correction,
             "blocked_by_existing_profile_conflict": blocked_by_existing_profile_conflict,
             "pending_candidates": pending_candidates,
+            "demoted_profiles": demoted_profiles,
             "promoted_topics": promoted_topics,
         }
 
@@ -708,6 +799,7 @@ class MemoryApplyService:
             "blocked_by_correction": promotion_result["blocked_by_correction"],
             "blocked_by_existing_profile_conflict": promotion_result["blocked_by_existing_profile_conflict"],
             "pending_candidates": promotion_result["pending_candidates"],
+            "demoted_profiles": promotion_result.get("demoted_profiles", 0),
             "rebuilt_topics": len(touched_topics),
             "skipped": skipped,
             "direct_confirm_inserted": direct_confirm_inserted,

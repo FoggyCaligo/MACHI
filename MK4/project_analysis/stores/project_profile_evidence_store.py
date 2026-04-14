@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -47,48 +48,39 @@ class ProjectProfileEvidenceStore:
         source_strength: str | None = None,
         direct_confirm: bool = False,
         memory_tier: str | None = None,
+        source_file_paths: list[str] | None = None,
+        source_file_hashes: dict[str, str] | None = None,
     ) -> dict:
         evidence_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         resolved_topic, resolved_topic_id = self._resolve_topic(topic, topic_id)
         normalized_path = str(source_file_path or "").replace("\\", "/").strip()
+        normalized_paths = self._normalize_paths(source_file_paths)
+        if not normalized_paths and normalized_path:
+            normalized_paths = [normalized_path]
+        normalized_hashes = {
+            str(path).replace("\\", "/").strip(): str(value or "").strip()
+            for path, value in (source_file_hashes or {}).items()
+            if str(path or "").strip() and str(value or "").strip()
+        }
 
         with get_conn() as conn:
             conn.execute(
                 """
                 INSERT INTO project_profile_evidence (
-                    id,
-                    project_id,
-                    source_file_path,
-                    evidence_type,
-                    topic,
-                    topic_id,
-                    candidate_content,
-                    source_strength,
-                    evidence_text,
-                    confidence,
-                    applied_to_memory,
-                    linked_profile_id,
-                    linked_correction_id,
-                    direct_confirm,
-                    memory_tier,
-                    created_at
+                    id, project_id, source_file_path, evidence_type, topic, topic_id,
+                    candidate_content, source_strength, evidence_text, confidence,
+                    applied_to_memory, linked_profile_id, linked_correction_id, direct_confirm, memory_tier,
+                    source_file_paths_json, source_file_hashes_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?, ?)
                 """,
                 (
-                    evidence_id,
-                    project_id,
-                    normalized_path,
-                    evidence_type,
-                    resolved_topic,
-                    resolved_topic_id,
-                    candidate_content,
-                    source_strength,
-                    evidence_text,
-                    confidence,
-                    1 if direct_confirm else 0,
-                    memory_tier,
+                    evidence_id, project_id, normalized_path, evidence_type, resolved_topic, resolved_topic_id,
+                    candidate_content, source_strength, evidence_text, confidence,
+                    1 if direct_confirm else 0, memory_tier,
+                    json.dumps(normalized_paths, ensure_ascii=False),
+                    json.dumps(normalized_hashes, ensure_ascii=False),
                     now,
                 ),
             )
@@ -98,6 +90,8 @@ class ProjectProfileEvidenceStore:
             "id": evidence_id,
             "project_id": project_id,
             "source_file_path": normalized_path,
+            "source_file_paths": normalized_paths,
+            "source_file_hashes": normalized_hashes,
             "evidence_type": evidence_type,
             "topic": resolved_topic,
             "topic_id": resolved_topic_id,
@@ -112,6 +106,33 @@ class ProjectProfileEvidenceStore:
             "memory_tier": memory_tier,
             "created_at": now,
         }
+
+    def _decode_row(self, row) -> dict:
+        item = dict(row)
+        try:
+            source_file_paths = json.loads(item.get("source_file_paths_json") or "[]")
+            if not isinstance(source_file_paths, list):
+                source_file_paths = []
+        except Exception:
+            source_file_paths = []
+        source_file_paths = self._normalize_paths(source_file_paths)
+        if not source_file_paths and str(item.get("source_file_path") or "").strip():
+            source_file_paths = [str(item.get("source_file_path") or "").replace("\\", "/").strip()]
+
+        try:
+            source_file_hashes = json.loads(item.get("source_file_hashes_json") or "{}")
+            if not isinstance(source_file_hashes, dict):
+                source_file_hashes = {}
+        except Exception:
+            source_file_hashes = {}
+
+        item["source_file_paths"] = source_file_paths
+        item["source_file_hashes"] = {
+            str(path).replace("\\", "/").strip(): str(value or "").strip()
+            for path, value in source_file_hashes.items()
+            if str(path or "").strip() and str(value or "").strip()
+        }
+        return item
 
     def delete_by_project(self, project_id: str) -> None:
         with get_conn() as conn:
@@ -142,7 +163,7 @@ class ProjectProfileEvidenceStore:
                 """,
                 (project_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._decode_row(row) for row in rows]
 
     def list_by_project_paths(self, project_id: str, source_file_paths: list[str]) -> list[dict]:
         normalized_paths = self._normalize_paths(source_file_paths)
@@ -160,7 +181,7 @@ class ProjectProfileEvidenceStore:
                 """,
                 (project_id, *normalized_paths),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._decode_row(row) for row in rows]
 
     def list_unapplied_by_project(self, project_id: str) -> list[dict]:
         with get_conn() as conn:
@@ -174,26 +195,7 @@ class ProjectProfileEvidenceStore:
                 """,
                 (project_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
-
-    def list_unapplied_by_project_paths(self, project_id: str, source_file_paths: list[str]) -> list[dict]:
-        normalized_paths = self._normalize_paths(source_file_paths)
-        if not normalized_paths:
-            return []
-        placeholders = ",".join("?" * len(normalized_paths))
-        with get_conn() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM project_profile_evidence
-                WHERE project_id = ?
-                  AND applied_to_memory = 0
-                  AND source_file_path IN ({placeholders})
-                ORDER BY created_at ASC
-                """,
-                (project_id, *normalized_paths),
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._decode_row(row) for row in rows]
 
     def list_profile_evidence(self) -> list[dict]:
         with get_conn() as conn:
@@ -207,17 +209,12 @@ class ProjectProfileEvidenceStore:
                 ORDER BY created_at ASC
                 """
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._decode_row(row) for row in rows]
 
     def list_candidate_evidence(self) -> list[dict]:
         return self.list_profile_evidence()
 
-    def mark_applied(
-        self,
-        evidence_id: str,
-        linked_profile_id: str | None = None,
-        linked_correction_id: str | None = None,
-    ) -> None:
+    def mark_applied(self, evidence_id: str, linked_profile_id: str | None = None, linked_correction_id: str | None = None) -> None:
         with get_conn() as conn:
             conn.execute(
                 """
@@ -231,13 +228,7 @@ class ProjectProfileEvidenceStore:
             )
             conn.commit()
 
-    def link_profile_for_candidate(
-        self,
-        candidate_content: str,
-        profile_id: str,
-        topic_id: str | None = None,
-        topic: str | None = None,
-    ) -> int:
+    def link_profile_for_candidate(self, candidate_content: str, profile_id: str, topic_id: str | None = None, topic: str | None = None) -> int:
         with get_conn() as conn:
             if topic_id:
                 cursor = conn.execute(
