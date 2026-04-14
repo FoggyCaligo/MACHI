@@ -1,0 +1,1 @@
+# Thought view builder placeholder

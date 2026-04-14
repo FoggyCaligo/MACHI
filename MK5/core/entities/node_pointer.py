@@ -1,0 +1,1 @@
+# Node pointer entity placeholder

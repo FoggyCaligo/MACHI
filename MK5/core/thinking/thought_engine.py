@@ -1,0 +1,1 @@
+# Thought engine placeholder

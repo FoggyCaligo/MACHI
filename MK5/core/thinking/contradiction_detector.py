@@ -1,0 +1,1 @@
+# Contradiction detector placeholder
