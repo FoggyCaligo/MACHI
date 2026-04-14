@@ -7,6 +7,7 @@ from core.cognition.meaning_block import MeaningBlock
 from core.entities.edge import Edge
 from core.entities.node import Node
 from core.entities.node_pointer import NodePointer
+from core.entities.subgraph_pattern import PatternMatch
 
 
 @dataclass(slots=True)
@@ -27,4 +28,5 @@ class ThoughtView:
     nodes: list[Node] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
     pointers: list[NodePointer] = field(default_factory=list)
+    activated_patterns: list[PatternMatch] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
