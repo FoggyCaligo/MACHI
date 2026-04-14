@@ -7,7 +7,7 @@
 
 ## 프로젝트 정체
 MK5는 기존 MK4의 profile/candidate/summary 중심 저장 구조를 버리고,
-**의미블록 기반 그래프 + 국부 활성화 + 설명형 conclusion** 구조로 넘어간 실험판이다.
+**의미블록 기반 그래프 + 국부 활성화 + 설명형 conclusion + 얇은 행동형 레이어** 구조로 넘어간 실험판이다.
 
 핵심은:
 - 모든 입력을 chat 흐름으로 본다.
@@ -15,7 +15,8 @@ MK5는 기존 MK4의 profile/candidate/summary 중심 저장 구조를 버리고
 - 영구 그래프에는 재사용 가능한 의미블록을 저장한다.
 - 사고는 전체 그래프가 아니라 `ThoughtView`라는 국부 활성화 그래프 위에서 일어난다.
 - 결론의 본체는 설명형 `CoreConclusion`이다.
-- 행동형은 그 위에서 파생된다.
+- 행동형은 `DerivedActionLayer`로 파생된다.
+- 사용자, 모델, 검색 결과는 모두 같은 세계 그래프에 들어가되, source-aware trust 정책으로 차등화된다.
 
 ---
 
@@ -29,6 +30,7 @@ MK5는 기존 MK4의 profile/candidate/summary 중심 저장 구조를 버리고
 ### ingest
 - `GraphIngestService` 있음
 - 의미블록 추출 -> hash 조회 -> node 재사용/생성 -> edge/pointer/event 기록까지 됨
+- source_type / claim_domain 기반 trust 반영됨
 
 ### activation
 - `ActivationEngine` 있음
@@ -45,8 +47,15 @@ MK5는 기존 MK4의 profile/candidate/summary 중심 저장 구조를 버리고
 ### conclusion / verbalization
 - `CoreConclusion` dataclass 있음
 - `ConclusionBuilder` 있음
+- `DerivedActionLayer` 있음
 - `TemplateVerbalizer` 있음
-- 설명형 conclusion -> 자연어 응답까지 연결됨
+- `OllamaVerbalizer` 있음
+- 선택된 모델이 실제 verbalization에 참여 가능
+
+### search / assistant ingest
+- `SearchSidecar` 있음
+- explanation 계열 질문에는 검색 결과를 가져와 낮은 trust로 같은 세계 그래프에 넣을 수 있음
+- assistant 최종 답변도 낮은 trust로 같은 세계 그래프에 반영됨
 
 ### app
 - `app/chat_pipeline.py` 기준으로 end-to-end 동작
@@ -55,18 +64,7 @@ MK5는 기존 MK4의 profile/candidate/summary 중심 저장 구조를 버리고
 
 ### tests
 - smoke / ingest / activation / thinking / end-to-end integration test 있음
-
----
-
-## 현재 안 된 것
-- Flask 실서버 기동 검증은 이 작업 환경에서 못 했음 (Flask 미설치)
-- `requirements.txt` 없음
-- debug 정보가 아직 UI 패널이 아니라 시스템 메시지 텍스트로 출력됨
-- 행동형 derived plan 없음
-- local LLM verbalizer 없음
-- meaning block 추출은 아직 단순 시작점 수준
-- revision 고도화 부족
-- project 셀렉터/UI 잔재가 남아 있으나 철학상은 chat 단일 흐름이 맞음
+- 로컬 컨테이너 기준 통과 확인함
 
 ---
 
@@ -85,13 +83,18 @@ MK5는 기존 MK4의 profile/candidate/summary 중심 저장 구조를 버리고
 새 구조가 기존 구조를 바로 부수지 않는다.
 다만 반복 반례가 누적되면 trust를 낮추고, 임계점 아래로 내려가면 revision candidate로 보고 구조를 교체할 수 있다.
 
-### 4. 문장은 영구 노드가 아니다
-- 원문/문장 = provenance, 사건 기록
-- 영구 그래프 = 재사용 가능한 의미블록
+### 4. 세계 그래프는 하나다
+사용자 발화, 모델 발화, 검색 결과를 별도 층으로 떼지 않는다.
+하나의 세계 그래프 안에 모두 넣되, source_type과 claim_domain에 따라 trust를 차등 부여한다.
 
-### 5. 언어화는 사고가 아니다
-현재 template verbalizer는 conclusion을 말로 바꾸는 역할만 한다.
-나중에 작은 로컬 LLM을 붙여도, 역할은 언어화 전용이어야 한다.
+### 5. 존재와 확실성은 다르다
+정보가 그래프에 들어온다고 해서 곧바로 안정된 세계지식이 되는 것은 아니다.
+- 낮은 trust로 들어갈 수는 있다.
+- 반복성과 교차 일치로 강화된다.
+- 충돌과 반례로 약해진다.
+
+### 6. 언어화는 사고가 아니다
+현재 template verbalizer와 OLLAMA verbalizer는 conclusion + action layer를 말로 바꾸는 역할만 한다.
 
 ---
 
@@ -105,26 +108,22 @@ MK5는 기존 MK4의 profile/candidate/summary 중심 저장 구조를 버리고
 
 ---
 
+## 현재 안 된 것
+- Flask 실서버 기동 검증은 이 작업 환경에서 못 했음
+- `requirements.txt` 없음
+- `chat.js` 최신본이 네 로컬에 실제 반영됐는지/브라우저 캐시가 남았는지 확인 필요
+- search corroboration 정책 없음
+- source-aware trust policy는 아직 시작점 수준
+- meaning block / contradiction / revision 규칙 정교화 필요
+
+---
+
 ## 다음 우선 작업
-
-### 우선순위 1
-- debug 정보를 UI에서 분리된 패널/토글 형태로 보이게 만들기
-- 현재는 시스템 메시지 텍스트로 흘러서 가독성이 떨어진다.
-
-### 우선순위 2
-- `requirements.txt` 추가
-- 실행 절차 문서화 강화
-
-### 우선순위 3
-- 행동형 derived plan 추가
-- 단, 설명형 core conclusion을 본체로 유지
-
-### 우선순위 4
-- local LLM verbalizer 추가
-- template verbalizer와 선택 가능하게 구성
-
-### 우선순위 5
-- meaning block / contradiction / revision 규칙 정교화
+1. `requirements.txt` 추가
+2. `chat.js` 최신본 실제 반영 및 debug UI 최종 정리
+3. search corroboration 정책 추가
+4. source_type × claim_domain 신뢰도 정책 세밀화
+5. meaning block / contradiction / revision 규칙 정교화
 
 ---
 
@@ -132,7 +131,7 @@ MK5는 기존 MK4의 profile/candidate/summary 중심 저장 구조를 버리고
 ### Windows
 ```bash
 py -m venv .venv
-.venv\Scriptsctivate
+.venv\Scripts\activate
 pip install flask
 python run.py
 ```
@@ -154,4 +153,4 @@ python tests/integration/test_end_to_end_chat_pipeline.py
 ---
 
 ## 새 채팅에서 바로 이어갈 때 한 줄 요약
-“MK5는 의미블록 기반 그래프 + 국부 활성화 + 설명형 core conclusion 구조로 이미 end-to-end 최소 루프가 연결되어 있고, 다음 우선 작업은 debug UI 패널화다.”
+“MK5는 이제 user / search / assistant 입력을 source-aware trust로 같은 세계 그래프에 반영하는 end-to-end 최소 루프까지 연결된 상태고, 다음 우선 작업은 requirements 정리와 search corroboration, trust 정책 세밀화다.”

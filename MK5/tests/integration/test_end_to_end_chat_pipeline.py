@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 
 from app.chat_pipeline import ChatPipeline, ChatPipelineRequest
 from core.entities.conclusion import CoreConclusion, DerivedActionLayer
+from core.search.search_sidecar import SearchEvidence, SearchSidecar
 from core.verbalization.verbalizer import VerbalizationResult, Verbalizer
 
 
@@ -27,6 +28,20 @@ class FakeVerbalizer(Verbalizer):
             used_llm=(model_name != 'mk5-graph-core'),
             llm_error=None,
         )
+
+
+class FakeSearchSidecar(SearchSidecar):
+    def search(self, message: str, conclusion: CoreConclusion) -> list[SearchEvidence]:
+        if '하데스' not in message:
+            return []
+        return [
+            SearchEvidence(
+                title='하데스',
+                snippet='고대 그리스 신화에서 저승 세계를 가리키는 이름으로도 쓰인다.',
+                url='https://example.test/hades',
+                provider='fake-search',
+            )
+        ]
 
 
 def main() -> None:
@@ -54,16 +69,18 @@ def main() -> None:
         assert 'debug' in response and 'activation' in response['debug']
         assert response['thinking']['derived_action']['answer_goal']
         assert response['verbalization']['used_llm'] is False
+        assert response['assistant_ingest']['message_id'] > 0
 
         pipeline_with_fake_llm = ChatPipeline(
             db_path=db_path,
             schema_path=schema_path,
             verbalizer=FakeVerbalizer(),
+            search_sidecar=FakeSearchSidecar(),
         )
         response_with_model = pipeline_with_fake_llm.process(
             ChatPipelineRequest(
                 session_id='session-e2e-2',
-                message='안녕? 나에 대해 기억하고 있는 바가 있니?',
+                message='하데스를 장소의 의미로 설명해줄래?',
                 turn_index=1,
                 model_name='gemma4:e2b',
             )
@@ -71,6 +88,9 @@ def main() -> None:
         assert response_with_model['reply'] == 'FAKE(gemma4:e2b)'
         assert response_with_model['used_model'] == 'gemma4:e2b'
         assert response_with_model['verbalization']['used_llm'] is True
+        assert response_with_model['search']['query_triggered'] is True
+        assert response_with_model['search']['results']
+        assert response_with_model['assistant_ingest']['message_id'] > 0
 
         print('PASS: end-to-end chat pipeline')
 
