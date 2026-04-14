@@ -48,7 +48,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / 'memory.db'
         schema_path = ROOT / 'storage' / 'schema.sql'
-        pipeline = ChatPipeline(db_path=db_path, schema_path=schema_path)
+        pipeline = ChatPipeline(
+            db_path=db_path,
+            schema_path=schema_path,
+            verbalizer=FakeVerbalizer(),
+        )
 
         response = pipeline.process(
             ChatPipelineRequest(
@@ -63,9 +67,6 @@ def main() -> None:
         assert response['used_model'] == 'mk5-graph-core'
         assert response['ingest']['message_id'] > 0
         assert response['thinking']['core_conclusion']['activated_concepts']
-        assert '해석된 의도' not in response['reply']
-        assert '지금' in response['reply']
-        assert '해석된 의도' in response['internal_explanation']
         assert 'debug' in response and 'activation' in response['debug']
         assert response['thinking']['derived_action']['answer_goal']
         assert response['verbalization']['used_llm'] is False

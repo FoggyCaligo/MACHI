@@ -57,13 +57,16 @@ def register_routes(app: Flask) -> None:
                 }
             )
 
-        result = pipeline.process(
-            ChatPipelineRequest(
-                session_id=session_id,
-                message=message,
-                turn_index=pipeline.next_turn_index(session_id),
-                attached_files=attached_files,
-                model_name=selected_model,
+        try:
+            result = pipeline.process(
+                ChatPipelineRequest(
+                    session_id=session_id,
+                    message=message,
+                    turn_index=pipeline.next_turn_index(session_id),
+                    attached_files=attached_files,
+                    model_name=selected_model,
+                )
             )
-        )
-        return jsonify(result)
+            return jsonify(result)
+        except RuntimeError as exc:
+            return jsonify({'detail': str(exc)}), 500

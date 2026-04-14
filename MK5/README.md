@@ -63,7 +63,7 @@ MK5의 사고 결과는 설명형 `CoreConclusion`으로 남는다.
 언어화 모델은 세계를 이해하는 주체가 아니다.
 이미 만들어진 conclusion과 action layer를 자연어로 다듬어 표현하는 역할만 맡는다.
 현재는:
-- `mk5-graph-core` → template verbalizer
+- `mk5-graph-core` → template verbalizer(디버그/개발용 참조용이며, 실제 응답 fallback으로 사용하지 않음)
 - 선택된 OLLAMA 모델 → `OllamaVerbalizer`
 로 연결된다.
 

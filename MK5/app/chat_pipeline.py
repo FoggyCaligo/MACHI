@@ -120,6 +120,15 @@ class ChatPipeline:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
 
         verbalized = self.verbalizer.verbalize(thought_result.core_conclusion, model_name=request.model_name)
+        if verbalized.llm_error or not verbalized.user_response:
+            if verbalized.llm_error == 'template_verbalization_disabled':
+                raise RuntimeError(
+                    '현재 응답을 생성할 수 있는 모델이 없습니다. 모델을 선택하거나 OLLAMA 환경을 확인해주세요.'
+                )
+            raise RuntimeError(
+                f"Verbalization failed: {verbalized.llm_error or 'empty response from verbalizer'}"
+            )
+
         thought_result.derived_action = verbalized.derived_action
 
         assistant_claim_domain = self.ingest_service.trust_policy.infer_claim_domain(
