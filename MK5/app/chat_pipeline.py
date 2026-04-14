@@ -83,11 +83,31 @@ class ChatPipeline:
                 'supported_edge_ids': ingest_result.supported_edge_ids,
                 'created_pointer_ids': ingest_result.created_pointer_ids,
             },
+            'activation': {
+                'seed_blocks': [
+                    {
+                        'text': block.text,
+                        'normalized_text': block.normalized_text,
+                        'block_kind': block.block_kind,
+                        'sentence_index': block.sentence_index,
+                        'block_index': block.block_index,
+                    }
+                    for block in thought_view.seed_blocks
+                ],
+                'seed_node_ids': [item.node.id for item in thought_view.seed_nodes if item.node.id is not None],
+                'local_node_ids': [node.id for node in thought_view.nodes if node.id is not None],
+                'local_edge_ids': [edge.id for edge in thought_view.edges if edge.id is not None],
+                'pointer_ids': [pointer.id for pointer in thought_view.pointers if pointer.id is not None],
+                'metadata': thought_view.metadata,
+            },
             'thinking': {
                 'signal_count': len(thought_result.contradiction_signals),
                 'trust_update_count': len(thought_result.trust_updates),
                 'revision_action_count': len(thought_result.revision_actions),
                 'metadata': thought_result.metadata,
+                'signals': [asdict(item) for item in thought_result.contradiction_signals],
+                'trust_updates': [asdict(item) for item in thought_result.trust_updates],
+                'revision_actions': [asdict(item) for item in thought_result.revision_actions],
                 'core_conclusion': asdict(thought_result.core_conclusion),
             },
         }

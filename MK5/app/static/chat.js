@@ -83,11 +83,7 @@ function restorePreferredProject() {
 }
 
 function renderProjectOptions(preferredProjectId = "") {
-  const previousValue =
-    preferredProjectId ||
-    localStorage.getItem(PROJECT_STORAGE_KEY) ||
-    projectSelectEl.value ||
-    "";
+  const previousValue = preferredProjectId || localStorage.getItem(PROJECT_STORAGE_KEY) || projectSelectEl.value || "";
 
   projectSelectEl.innerHTML = "";
 
@@ -165,10 +161,7 @@ function restorePreferredModel() {
     return;
   }
 
-  if (
-    modelsState.defaultModel &&
-    Array.from(modelSelectEl.options).some((opt) => opt.value === modelsState.defaultModel)
-  ) {
+  if (modelsState.defaultModel && Array.from(modelSelectEl.options).some((opt) => opt.value === modelsState.defaultModel)) {
     setModelSelection(modelsState.defaultModel);
     return;
   }
@@ -387,6 +380,69 @@ function summarizeArtifactIngest(data) {
   ].join("\n");
 }
 
+function summarizeIngest(ingest) {
+  if (!ingest) return null;
+  return [
+    "graph ingest 결과",
+    `- message_id: ${ingest.message_id ?? "-"}`,
+    `- root_event_id: ${ingest.root_event_id ?? "-"}`,
+    `- block_count: ${ingest.block_count ?? 0}`,
+    `- created_node_ids: ${(ingest.created_node_ids || []).join(", ") || "없음"}`,
+    `- reused_node_ids: ${(ingest.reused_node_ids || []).join(", ") || "없음"}`,
+    `- created_edge_ids: ${(ingest.created_edge_ids || []).join(", ") || "없음"}`,
+    `- supported_edge_ids: ${(ingest.supported_edge_ids || []).join(", ") || "없음"}`,
+    `- created_pointer_ids: ${(ingest.created_pointer_ids || []).join(", ") || "없음"}`,
+  ].join("\n");
+}
+
+function summarizeActivation(activation) {
+  if (!activation) return null;
+  const seedBlocks = Array.isArray(activation.seed_blocks) ? activation.seed_blocks : [];
+  const seedLines = seedBlocks.slice(0, 5).map((item, index) =>
+    `${index + 1}. [${item.block_kind}] ${item.text}`
+  );
+  return [
+    "activation debug",
+    `- seed_block_count: ${seedBlocks.length}`,
+    `- seed_node_ids: ${(activation.seed_node_ids || []).join(", ") || "없음"}`,
+    `- local_node_ids: ${(activation.local_node_ids || []).join(", ") || "없음"}`,
+    `- local_edge_ids: ${(activation.local_edge_ids || []).join(", ") || "없음"}`,
+    `- pointer_ids: ${(activation.pointer_ids || []).join(", ") || "없음"}`,
+    ...seedLines,
+  ].join("\n");
+}
+
+function summarizeThinkingDebug(thinking) {
+  if (!thinking) return null;
+  const lines = [
+    "thinking debug",
+    `- signal_count: ${thinking.signal_count ?? 0}`,
+    `- trust_update_count: ${thinking.trust_update_count ?? 0}`,
+    `- revision_action_count: ${thinking.revision_action_count ?? 0}`,
+  ];
+  const conclusion = thinking.core_conclusion;
+  if (conclusion) {
+    lines.push(`- activated_concepts: ${(conclusion.activated_concepts || []).join(", ") || "없음"}`);
+    lines.push(`- key_relations: ${(conclusion.key_relations || []).join(", ") || "없음"}`);
+    lines.push(`- inferred_intent: ${conclusion.inferred_intent || "-"}`);
+  }
+  const signals = Array.isArray(thinking.signals) ? thinking.signals : [];
+  signals.slice(0, 5).forEach((item, index) => {
+    lines.push(`${index + 1}. edge#${item.edge_id} [${item.edge_type}] ${item.reason} | severity=${item.severity}`);
+  });
+  return lines.join("\n");
+}
+
+function summarizeCoreConclusion(conclusion) {
+  if (!conclusion) return null;
+  return [
+    "core conclusion",
+    `- user_input_summary: ${conclusion.user_input_summary || "-"}`,
+    `- inferred_intent: ${conclusion.inferred_intent || "-"}`,
+    `- explanation_summary: ${conclusion.explanation_summary || "-"}`,
+  ].join("\n");
+}
+
 function showResponseMeta(data) {
   const blocks = [
     summarizeModel(data),
@@ -395,6 +451,10 @@ function showResponseMeta(data) {
     summarizeSync(data.profile_memory_sync),
     summarizeChunkUsage(data.used_chunks),
     summarizeEvidenceUsage(data.used_profile_evidence),
+    summarizeIngest(data.ingest),
+    summarizeActivation(data.activation),
+    summarizeThinkingDebug(data.thinking),
+    summarizeCoreConclusion(data.thinking && data.thinking.core_conclusion),
   ].filter(Boolean);
 
   blocks.forEach((block) => addMessage("system", block));
@@ -472,10 +532,7 @@ form.addEventListener("submit", async (e) => {
     if (data.project_id) {
       await loadProjects({ silent: true, preferredProjectId: data.project_id });
       setSelectedProject(data.project_id);
-      addMessage(
-        "system",
-        `프로젝트 저장됨: ${data.project_name || getProjectDisplayName(data.project_id) || "이름 없음"}`
-      );
+      addMessage("system", `프로젝트 저장됨: ${data.project_name || getProjectDisplayName(data.project_id) || "이름 없음"}`);
     } else {
       setSelectedProject(projectId);
     }
@@ -495,7 +552,7 @@ form.addEventListener("submit", async (e) => {
     if (err.name === "AbortError") {
       addMessage(
         "system",
-        `오류: ${getRequestTimeoutMs() / 1000}초 안에 응답이 오지 않았습니다. 터미널의 [API] / [ORCHESTRATOR] / [OLLAMA] 로그를 확인하세요.`
+        `오류: ${getRequestTimeoutMs() / 1000}초 안에 응답이 오지 않았습니다. 터미널의 [API] / [ORCHESTRATOR] / [OLLAMA] 로그를 확인하세요.`,
       );
     } else {
       addMessage("system", `오류: ${err.message}`);
@@ -510,7 +567,7 @@ form.addEventListener("submit", async (e) => {
 
 addMessage(
   "assistant",
-  "안녕하세요. MK5 채팅 UI입니다. 현재는 그래프 ingest → 국부 활성화 → 구조 점검 흐름을 우선 연결해 두었고, project/profile 구분 없이 모든 입력을 chat 흐름으로 처리합니다."
+  "안녕하세요. MK5 채팅 UI입니다. 현재는 그래프 ingest → 국부 활성화 → 구조 점검 흐름을 우선 연결해 두었고, project/profile 구분 없이 모든 입력을 chat 흐름으로 처리합니다.",
 );
 
 Promise.allSettled([

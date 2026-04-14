@@ -29,6 +29,7 @@ def main() -> None:
         assert response['used_model'] == 'mk5-graph-core'
         assert response['ingest']['message_id'] > 0
         assert response['thinking']['core_conclusion']['activated_concepts']
+        assert response['activation']['seed_blocks']
         assert '해석된 의도' in response['reply']
         assert '활성 개념 노드 수' in response['reply']
 

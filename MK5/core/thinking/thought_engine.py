@@ -56,7 +56,6 @@ class ThoughtEngine:
             trust_updates=trust_updates,
             revision_actions=revision_actions,
         )
-        summary = core_conclusion.explanation_summary
 
         return ThoughtResult(
             session_id=request.session_id,
@@ -65,7 +64,7 @@ class ThoughtEngine:
             trust_updates=trust_updates,
             revision_actions=revision_actions,
             core_conclusion=core_conclusion,
-            summary=summary,
+            summary=core_conclusion.explanation_summary,
             metadata={
                 'seed_node_count': len(thought_view.seed_nodes),
                 'local_node_count': len(thought_view.nodes),
