@@ -137,6 +137,7 @@ class MemoryIngressService:
         *,
         project_id: str,
         candidates: list[dict],
+        source_file_hash_by_path: dict[str, str] | None = None,
     ) -> list[dict]:
         envelopes = self.normalizer.normalize_profile_candidate_envelopes(
             candidates or [],
@@ -147,6 +148,7 @@ class MemoryIngressService:
             channel="project_artifact",
             owner_id=project_id,
             evidence_envelopes=envelopes,
+            source_file_hash_by_path=source_file_hash_by_path,
         )
 
     def apply_chat_update(

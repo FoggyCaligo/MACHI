@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from memory.services.memory_apply_service import MemoryApplyService
+from memory.services.memory_ingress_service import MemoryIngressService
 from project_analysis.services.project_ask_service import ProjectAskService
 from project_analysis.services.project_profile_evidence_service import ProjectProfileEvidenceService
 
@@ -155,6 +156,31 @@ class ProjectProfileEvidenceServiceIncrementalTests(unittest.TestCase):
             evidence_envelopes=envelopes,
             source_file_hash_by_path={"docs/a.md": "hash-a"},
         )
+
+
+class MemoryIngressProjectHashPassThroughTests(unittest.TestCase):
+    def test_persist_project_profile_candidates_forwards_hash_map(self) -> None:
+        service = MemoryIngressService()
+        candidates = [
+            {
+                "candidate_content": "사용자는 구조적 설명을 좋아한다",
+                "topic": "설명 선호",
+                "evidence_text": "구조적으로 설명해달라고 말했다",
+                "source_strength": "explicit_self_statement",
+                "confidence": 0.9,
+                "source_file_paths": ["docs/a.md"],
+            }
+        ]
+
+        with patch.object(service.project_evidence_store, "add", return_value={}) as mocked_add:
+            service.persist_project_profile_candidates(
+                project_id="project-1",
+                candidates=candidates,
+                source_file_hash_by_path={"docs/a.md": "hash-a"},
+            )
+
+        self.assertEqual(mocked_add.call_count, 1)
+        self.assertEqual(mocked_add.call_args.kwargs["source_file_hashes"], {"docs/a.md": "hash-a"})
 
 
 class ProjectAskServiceIncrementalTests(unittest.TestCase):
