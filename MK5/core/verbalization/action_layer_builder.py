@@ -8,9 +8,11 @@ from core.entities.conclusion import CoreConclusion, DerivedActionLayer
 @dataclass(slots=True)
 class ActionLayerBuilder:
     def build(self, conclusion: CoreConclusion) -> DerivedActionLayer:
-        text = conclusion.user_input_summary
-        inferred_intent = conclusion.inferred_intent
-        lowered = text.lower()
+        relation_count = len(conclusion.key_relations)
+        activated_count = len(conclusion.activated_concepts)
+        conflict_count = len(conclusion.detected_conflicts)
+        revision_count = len(conclusion.revision_decisions)
+        intent = conclusion.inferred_intent
 
         response_mode = 'direct_answer_with_uncertainty'
         answer_goal = '현재 그래프에 반영된 범위와 한계를 함께 설명한다.'
@@ -22,33 +24,33 @@ class ActionLayerBuilder:
         ]
         tone_hint = 'natural_concise_korean'
 
-        if '기억' in text:
-            response_mode = 'memory_answer_with_scope'
-            answer_goal = '현재 그래프에 실제로 남아 있는 범위 안에서만 기억 여부를 답한다.'
-            suggested_actions = [
-                '기억하고 있는 범위만 짧게 말한다.',
-                '기억이 부족하면 부족하다고 분명히 말한다.',
-            ]
-        elif any(token in text for token in ('설명', '정리', '역할', '무엇', '왜')) or inferred_intent == 'explanation_request':
+        if intent == 'structure_review' or conflict_count > 0 or revision_count > 0:
             response_mode = 'structured_explanation'
-            answer_goal = '핵심 판단을 먼저 말하고 필요한 이유를 짧게 덧붙인다.'
+            answer_goal = '구조 충돌과 현재 판단 범위를 보수적으로 설명한다.'
+            suggested_actions = [
+                '핵심 판단을 먼저 말한다.',
+                '충돌이나 구조 보존 여부를 짧게 덧붙인다.',
+            ]
+        elif intent == 'relation_synthesis_request' or relation_count >= 2 or activated_count >= 3:
+            response_mode = 'structured_explanation'
+            answer_goal = '현재 활성 구조를 바탕으로 핵심 판단과 이유를 짧게 정리한다.'
             suggested_actions = [
                 '핵심 판단을 먼저 말한다.',
                 '필요하면 이유를 1~2문장 덧붙인다.',
             ]
-        elif any(token in text for token in ('수정', '구현', '진행', '만들', '붙여')) or inferred_intent == 'implementation_or_change_request':
-            response_mode = 'implementation_guidance'
-            answer_goal = '지금 해야 할 다음 작업 또는 수정 방향을 짧게 제안한다.'
+        elif intent == 'memory_probe':
+            response_mode = 'direct_answer_with_uncertainty'
+            answer_goal = '현재 활성 범위 안에서만 기억 여부를 신중하게 답한다.'
             suggested_actions = [
-                '현재 가장 우선순위가 높은 작업을 말한다.',
-                '필요하면 다음 수정 대상을 한두 개 제안한다.',
+                '기억이 남아 있는 범위만 말한다.',
+                '부족하면 부족하다고 분명히 말한다.',
             ]
-        elif any(token in lowered for token in ('안녕', 'hello', 'hi')):
-            response_mode = 'light_social_with_scope'
-            answer_goal = '짧고 자연스럽게 응답하되, 기억 여부처럼 추가 질문이 있으면 그 범위만 답한다.'
+        elif intent == 'open_information_request':
+            response_mode = 'direct_answer_with_uncertainty'
+            answer_goal = '그래프 범위가 부족할 수 있음을 밝히고, 가능한 범위만 답한다.'
             suggested_actions = [
-                '인사는 짧고 자연스럽게 한다.',
-                '추가 질문이 있으면 그래프에 근거한 범위만 이어서 답한다.',
+                '확보된 근거 범위만 답한다.',
+                '부족한 경우 단정 대신 한계를 먼저 밝힌다.',
             ]
 
         if conclusion.detected_conflicts:
@@ -63,8 +65,9 @@ class ActionLayerBuilder:
             do_not_claim=do_not_claim,
             tone_hint=tone_hint,
             metadata={
-                'activated_concept_count': len(conclusion.activated_concepts),
-                'key_relation_count': len(conclusion.key_relations),
-                'conflict_count': len(conclusion.detected_conflicts),
+                'activated_concept_count': activated_count,
+                'key_relation_count': relation_count,
+                'conflict_count': conflict_count,
+                'intent_basis': 'graph_state_only',
             },
         )

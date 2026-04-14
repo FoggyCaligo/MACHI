@@ -9,17 +9,18 @@ from core.cognition.meaning_block import MeaningBlock
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?:\r?\n)+|(?<=[.!?])\s+")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_+\-./#]+|[가-힣]{2,}")
+_RELATION_SYMBOLS = ("->", "→", "=", "/")
 
 
 @dataclass(slots=True)
 class InputSegmenter:
-    """Hybrid ingest segmenter for MK5.
+    """Early MK5 ingest segmenter without lexical keyword heuristics.
 
-    Rules:
-    - The raw message and sentence boundaries are preserved for provenance.
-    - Durable graph candidates are reusable meaning blocks, not full sentences.
-    - Initial block kinds are conservative: noun_phrase / judgment_phrase /
-      relation_phrase / correction_phrase.
+    Design note:
+    - No sentence kind is inferred from semantic cue words.
+    - Sentence-level blocks are classified only from surface structure
+      (question mark / relation symbols) plus token extraction.
+    - Durable reusable units are still smaller than full sentences.
     """
 
     hash_resolver: HashResolver
@@ -33,17 +34,6 @@ class InputSegmenter:
         "그럼", "그러면", "그리고", "하지만", "또", "지금", "이번", "그것", "이것", "저것",
         "하는", "되는", "있다", "없다", "한다", "했다", "하기", "처럼", "정도", "기준",
     }
-    _JUDGMENT_CUES: ClassVar[tuple[str, ...]] = (
-        "맞아", "맞다", "좋아", "좋다", "필요", "원해", "원한다", "가자", "낫다",
-        "적합", "가능", "불가능", "문제", "괜찮", "말이 된다", "더 맞다",
-    )
-    _CORRECTION_CUES: ClassVar[tuple[str, ...]] = (
-        "정정", "수정", "아니", "아냐", "말고", "대신", "틀렸", "바꾸자",
-    )
-    _RELATION_CUES: ClassVar[tuple[str, ...]] = (
-        "통합", "분리", "연결", "관계", "기준", "구조", "포인터", "참조", "의미", "그래프",
-        "와", "과", "및", "/", "->", "→", "=",
-    )
 
     def split_sentences(self, content: str) -> list[str]:
         sentences = [part.strip() for part in _SENTENCE_SPLIT_RE.split(content) if part and part.strip()]
@@ -61,22 +51,21 @@ class InputSegmenter:
                 continue
 
             sentence_kind = self._sentence_level_kind(sentence)
-            if sentence_kind is not None:
-                key = (sentence_index, sentence_kind, normalized_sentence)
-                if key not in seen:
-                    blocks.append(
-                        MeaningBlock(
-                            text=sentence,
-                            normalized_text=normalized_sentence,
-                            block_kind=sentence_kind,
-                            sentence_index=sentence_index,
-                            block_index=block_index,
-                            source_sentence=sentence,
-                            metadata={"source": "sentence_rule"},
-                        )
+            key = (sentence_index, sentence_kind, normalized_sentence)
+            if key not in seen:
+                blocks.append(
+                    MeaningBlock(
+                        text=sentence,
+                        normalized_text=normalized_sentence,
+                        block_kind=sentence_kind,
+                        sentence_index=sentence_index,
+                        block_index=block_index,
+                        source_sentence=sentence,
+                        metadata={"source": "sentence_structure"},
                     )
-                    seen.add(key)
-                    block_index += 1
+                )
+                seen.add(key)
+                block_index += 1
 
             token_count = 0
             for token in self._extract_token_candidates(sentence):
@@ -109,7 +98,7 @@ class InputSegmenter:
                 MeaningBlock(
                     text=content.strip(),
                     normalized_text=normalized,
-                    block_kind="judgment_phrase",
+                    block_kind="statement_phrase",
                     sentence_index=0,
                     block_index=0,
                     source_sentence=content.strip(),
@@ -118,15 +107,13 @@ class InputSegmenter:
             )
         return blocks
 
-    def _sentence_level_kind(self, sentence: str) -> str | None:
-        lowered = sentence.lower()
-        if any(cue in lowered for cue in self._CORRECTION_CUES):
-            return "correction_phrase"
-        if any(cue in lowered for cue in self._JUDGMENT_CUES):
-            return "judgment_phrase"
-        if any(cue in lowered for cue in self._RELATION_CUES):
-            return "relation_phrase"
-        return None
+    def _sentence_level_kind(self, sentence: str) -> str:
+        stripped = sentence.strip()
+        if stripped.endswith('?') or stripped.endswith('？'):
+            return 'inquiry_phrase'
+        if any(symbol in stripped for symbol in _RELATION_SYMBOLS):
+            return 'relation_phrase'
+        return 'statement_phrase'
 
     def _extract_token_candidates(self, sentence: str) -> list[str]:
         return _TOKEN_RE.findall(sentence)

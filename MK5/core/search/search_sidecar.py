@@ -39,12 +39,16 @@ class SearchSidecar:
         object.__setattr__(self, 'segmenter', InputSegmenter(hash_resolver=self.hash_resolver))
 
     def should_search(self, message: str, conclusion: CoreConclusion) -> bool:
-        lowered = (message or '').lower()
-        if any(token in lowered for token in ('나에 대해', '기억하고', '기억하고 있는', '내가', '내 ', '취향')):
+        compact = ' '.join((message or '').split())
+        has_interrogative_form = compact.endswith('?') or compact.endswith('？')
+        sparse_graph = len(conclusion.activated_concepts) <= 2 and len(conclusion.key_relations) <= 1
+        unstable_graph = len(conclusion.detected_conflicts) > 0 and len(conclusion.key_relations) <= 2
+
+        if conclusion.inferred_intent == 'memory_probe':
             return False
-        if conclusion.inferred_intent in {'explanation_request', 'design_evaluation_request'}:
-            return True
-        return '?' in message and any(token in lowered for token in ('무엇', '왜', '어디', '설명', '의미', '신화', '역사'))
+        if conclusion.inferred_intent == 'open_information_request':
+            return has_interrogative_form
+        return has_interrogative_form and (sparse_graph or unstable_graph)
 
     def search(self, message: str, conclusion: CoreConclusion) -> list[SearchEvidence]:
         if not self.should_search(message, conclusion):

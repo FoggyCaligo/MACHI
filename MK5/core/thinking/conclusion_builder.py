@@ -39,6 +39,11 @@ class ConclusionBuilder:
         detected_conflicts = [self._to_conflict_record(item) for item in contradiction_signals]
         trust_changes = [self._to_trust_change_record(item) for item in trust_updates]
         revision_decisions = [self._to_revision_decision_record(item) for item in revision_actions]
+        inferred_intent = self._infer_intent(
+            thought_view=thought_view,
+            contradiction_signals=contradiction_signals,
+            revision_actions=revision_actions,
+        )
         explanation_summary = self._build_explanation_summary(
             request=request,
             thought_view=thought_view,
@@ -47,13 +52,14 @@ class ConclusionBuilder:
             revision_actions=revision_actions,
             activated_concepts=activated_concepts,
             key_relations=key_relations,
+            inferred_intent=inferred_intent,
         )
 
         return CoreConclusion(
             session_id=request.session_id,
             message_id=request.message_id,
             user_input_summary=self._summarize_user_input(request.message_text),
-            inferred_intent=self._infer_intent(request.message_text),
+            inferred_intent=inferred_intent,
             activated_concepts=activated_concepts,
             key_relations=key_relations,
             detected_conflicts=detected_conflicts,
@@ -66,6 +72,8 @@ class ConclusionBuilder:
                 'local_node_count': len(thought_view.nodes),
                 'local_edge_count': len(thought_view.edges),
                 'pointer_count': len(thought_view.pointers),
+                'pattern_count': len(thought_view.activated_patterns),
+                'intent_basis': 'graph_state_only',
             },
         )
 
@@ -127,15 +135,27 @@ class ConclusionBuilder:
             return compact
         return compact[:177] + '...'
 
-    def _infer_intent(self, text: str) -> str:
-        lowered = (text or '').lower()
-        if any(keyword in lowered for keyword in ('수정', '바꿔', '구현', '진행', '붙여', '만들')):
-            return 'implementation_or_change_request'
-        if any(keyword in lowered for keyword in ('설명', '정리', '역할', '무엇', '왜')):
-            return 'explanation_request'
-        if any(keyword in lowered for keyword in ('비교', '어때', '맞아', '판단', '결정')):
-            return 'design_evaluation_request'
-        return 'general_reasoning_request'
+    def _infer_intent(
+        self,
+        *,
+        thought_view: ThoughtView,
+        contradiction_signals: list[ContradictionSignal],
+        revision_actions: list[RevisionAction],
+    ) -> str:
+        seed_node_count = len(thought_view.seed_nodes)
+        edge_count = len(thought_view.edges)
+        pointer_count = len(thought_view.pointers)
+        pattern_count = len(thought_view.activated_patterns)
+
+        if contradiction_signals or revision_actions:
+            return 'structure_review'
+        if pointer_count and seed_node_count <= 2 and edge_count <= 1:
+            return 'memory_probe'
+        if edge_count == 0 and seed_node_count <= 2:
+            return 'open_information_request'
+        if pattern_count > 0 or edge_count >= max(4, seed_node_count):
+            return 'relation_synthesis_request'
+        return 'graph_grounded_reasoning'
 
     def _to_conflict_record(self, signal: ContradictionSignal) -> ConflictRecord:
         return ConflictRecord(
@@ -183,10 +203,11 @@ class ConclusionBuilder:
         revision_actions: list[RevisionAction],
         activated_concepts: list[int],
         key_relations: list[int],
+        inferred_intent: str,
     ) -> str:
         deactivated_count = sum(1 for item in revision_actions if item.deactivated)
         lines = [
-            f"입력은 '{self._summarize_user_input(request.message_text)}'로 요약되었고, 현재 의도는 {self._infer_intent(request.message_text)}로 해석되었다.",
+            f"입력은 '{self._summarize_user_input(request.message_text)}'로 요약되었고, 현재 의도는 {inferred_intent}로 해석되었다.",
             f"이번 사고에서는 {len(activated_concepts)}개의 활성 개념 노드와 {len(key_relations)}개의 핵심 관계 참조가 사용되었다.",
             f"구조 점검 결과 충돌 {len(contradiction_signals)}건, 신뢰도 변화 {len(trust_updates)}건, revision 판단 {len(revision_actions)}건이 발생했다.",
         ]
