@@ -85,6 +85,10 @@ MK5는 별도의 evidence layer를 두기보다, 같은 세계 그래프 안에 
 - Graph ingest
 - source-aware trust policy
 - 국부 활성화(`ThoughtView`)
+- `PatternDetector` 기반 SubgraphPattern 감지 및 활성화
+- `ConflictResolutionPolicy` 기반 패턴 충돌 해결
+- `ActivationEngine`에서 ThoughtView 생성 후 자동 패턴 활성화
+- `ThoughtView.activated_patterns` 지원
 - 충돌 감지 / trust 하락 / revision 검토
 - 설명형 core conclusion 생성
 - 얇은 행동형 레이어(`DerivedActionLayer`)
@@ -112,7 +116,8 @@ MK5는 별도의 evidence layer를 두기보다, 같은 세계 그래프 안에 
 1. 사용자 입력 수신
 2. `GraphIngestService`가 user source로 chat_message / graph_event / node / edge / pointer 기록
 3. `ActivationEngine`이 현재 입력 기준 seed block / seed node / local graph 생성
-4. `ThoughtEngine`이 contradiction / trust / revision 검토 수행
+4. `PatternDetector`가 `ThoughtView`를 분석해 SubgraphPattern을 감지하고 활성화한다
+5. `ThoughtEngine`이 contradiction / trust / revision 검토 수행
 5. `ConclusionBuilder`가 설명형 `CoreConclusion` 생성
 6. 필요 시 `SearchSidecar`가 외부 검색 결과를 가져옴
 7. 검색 결과를 `source_type="search"`, 낮은 trust로 같은 세계 그래프에 반영
@@ -169,6 +174,7 @@ python tests/integration/test_chat_graph_pipeline.py
 python tests/integration/test_activation_engine_pipeline.py
 python tests/integration/test_thinking_revision_pipeline.py
 python tests/integration/test_end_to_end_chat_pipeline.py
+python tests/test_activation_engine_integration.py
 ```
 
 ---
