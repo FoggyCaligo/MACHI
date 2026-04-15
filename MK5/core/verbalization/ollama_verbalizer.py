@@ -80,17 +80,32 @@ class OllamaVerbalizer:
 
     def _format_search_status(self, search_context: dict[str, Any]) -> str:
         if not search_context:
-            return '- 외부 검색 정보 없음'
-        lines: list[str] = []
-        lines.append(f"- attempted: {'true' if search_context.get('attempted') else 'false'}")
-        lines.append(f"- result_count: {search_context.get('result_count', 0)}")
+            return '- 검색 정보 없음'
+
+        lines: list[str] = [
+            f"- need_search: {'true' if search_context.get('need_search') else 'false'}",
+            f"- attempted: {'true' if search_context.get('attempted') else 'false'}",
+            f"- result_count: {search_context.get('result_count', 0)}",
+        ]
+        if search_context.get('no_evidence_found'):
+            lines.append('- no_evidence_found: true')
         if search_context.get('grounded_terms'):
             lines.append(f"- grounded_terms: {' | '.join(search_context.get('grounded_terms', []))}")
         if search_context.get('missing_terms'):
             lines.append(f"- missing_terms: {' | '.join(search_context.get('missing_terms', []))}")
+        if search_context.get('missing_aspects'):
+            lines.append(f"- missing_aspects: {' | '.join(search_context.get('missing_aspects', []))}")
         if search_context.get('error'):
             lines.append(f"- error: {search_context.get('error')}")
+
         provider_errors = search_context.get('provider_errors') or []
         for item in provider_errors[:3]:
             lines.append(f"- provider_error: {item.get('provider', '-')} | {item.get('error', '-')}")
-        return '\n'.join(lines) if lines else '- 외부 검색 정보 없음'
+
+        summaries = search_context.get('summaries') or []
+        for item in summaries[:3]:
+            lines.append(
+                f"- evidence: {item.get('title', '-')} ({item.get('provider', '-')}): {item.get('snippet', '')}"
+            )
+
+        return '\n'.join(lines) if lines else '- 검색 정보 없음'

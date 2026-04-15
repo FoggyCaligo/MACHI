@@ -131,6 +131,13 @@ class ChatPipeline:
             )
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
+            if search_run.slot_plan is not None:
+                search_run.decision = self.search_sidecar.need_evaluator.evaluate(
+                    message=request.message,
+                    thought_view=thought_view,
+                    conclusion=thought_result.core_conclusion,
+                    slot_plan=search_run.slot_plan,
+                )
 
         self._attach_search_context(thought_result.core_conclusion, search_run=search_run)
 
@@ -194,6 +201,7 @@ class ChatPipeline:
             'metadata': thought_result.metadata,
         }
 
+        search_grounding = self._build_search_grounding_state(search_run)
         search_debug = {
             'query_triggered': bool(search_run.attempted),
             'planning_attempted': bool(getattr(search_run, 'planning_attempted', False)),
@@ -209,6 +217,7 @@ class ChatPipeline:
             'slot_plan': {
                 'entities': search_run.slot_plan.entities,
                 'aspects': search_run.slot_plan.aspects,
+                'comparison_axes': search_run.slot_plan.comparison_axes,
                 'requested_slots': [slot.label for slot in search_run.slot_plan.requested_slots],
                 'reason': search_run.slot_plan.reason,
             } if search_run.slot_plan else None,
@@ -219,6 +228,11 @@ class ChatPipeline:
                 'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []),
             } if search_run.plan else None,
             'results': [asdict(item) for item in search_results],
+            'provider_errors': search_grounding['provider_errors'],
+            'grounded_terms': search_grounding['grounded_terms'],
+            'missing_terms': search_grounding['missing_terms'],
+            'missing_aspects': search_grounding['missing_aspects'],
+            'no_evidence_found': search_grounding['no_evidence_found'],
             'ingest': [
                 {
                     'message_id': item.message_id,
@@ -308,7 +322,9 @@ class ChatPipeline:
             return
         if conclusion.metadata is None:
             conclusion.metadata = {}
+        search_grounding = self._build_search_grounding_state(search_run)
         conclusion.metadata['search_context'] = {
+            'need_search': bool(search_run.decision.need_search),
             'attempted': bool(search_run.attempted),
             'result_count': len(search_run.results),
             'reason': search_run.decision.reason,
@@ -316,10 +332,17 @@ class ChatPipeline:
             'requested_slots': search_run.decision.requested_slots,
             'covered_slots': search_run.decision.covered_slots,
             'missing_slots': search_run.decision.missing_slots,
+            'grounded_terms': search_grounding['grounded_terms'],
+            'missing_terms': search_grounding['missing_terms'],
+            'missing_aspects': search_grounding['missing_aspects'],
             'slot_entities': search_run.slot_plan.entities if search_run.slot_plan else [],
             'slot_aspects': search_run.slot_plan.aspects if search_run.slot_plan else [],
+            'comparison_axes': search_run.slot_plan.comparison_axes if search_run.slot_plan else [],
             'planned_queries': search_run.plan.queries if search_run.plan else [],
             'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []) if search_run.plan else [],
+            'error': search_run.error,
+            'provider_errors': search_grounding['provider_errors'],
+            'no_evidence_found': search_grounding['no_evidence_found'],
             'summaries': [
                 {
                     'title': item.title,
@@ -330,3 +353,32 @@ class ChatPipeline:
                 for item in search_run.results[:3]
             ],
         }
+
+    def _build_search_grounding_state(self, search_run: SearchRunResult) -> dict[str, Any]:
+        grounded_terms = self._unique_slot_values(search_run.decision.covered_slots, key='entity')
+        missing_terms = self._unique_slot_values(search_run.decision.missing_slots, key='entity')
+        missing_aspects = self._unique_slot_values(search_run.decision.missing_slots, key='aspect')
+        provider_errors = list(getattr(search_run, 'provider_errors', []) or [])
+        no_evidence_found = bool(
+            search_run.decision.need_search
+            and search_run.attempted
+            and not search_run.results
+            and not search_run.error
+            and not provider_errors
+        )
+        return {
+            'grounded_terms': grounded_terms,
+            'missing_terms': missing_terms,
+            'missing_aspects': missing_aspects,
+            'provider_errors': provider_errors,
+            'no_evidence_found': no_evidence_found,
+        }
+
+    def _unique_slot_values(self, slots: list[dict[str, Any]], *, key: str) -> list[str]:
+        values: list[str] = []
+        for slot in slots or []:
+            token = ' '.join(str(slot.get(key) or '').split()).strip()
+            if not token or token in values:
+                continue
+            values.append(token)
+        return values

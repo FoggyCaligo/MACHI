@@ -54,12 +54,7 @@ class SearchQueryPlanner:
         issued_slot_queries: list[dict[str, Any]] = []
         for entity, info in grouped.items():
             aspects = info['aspects'][:3]
-            if info['needs_grounding'] and aspects:
-                query = self._compact_query([entity, *aspects])
-            elif info['needs_grounding']:
-                query = self._compact_query([entity, '정의'])
-            else:
-                query = self._compact_query([entity, *aspects])
+            query = self._compact_query([entity, *aspects]) if aspects else self._compact_query([entity])
             if query and query not in queries:
                 queries.append(query)
                 issued_slot_queries.append({'entity': entity, 'aspects': aspects, 'query': query})

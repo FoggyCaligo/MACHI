@@ -12,6 +12,7 @@
 
 현재 상태:
 - "검색이 필요한데 모델이 미선택"인 경우는 이미 사용자 오류로 반환된다.
+- `result_count=0`은 `no_evidence_found`로 verbalization까지 전달된다.
 - 하지만 `QuestionSlotPlanner` 실패 중 일부는 아직 `slot_planner_failed_needs_grounding`으로 남아 있다.
 
 완료 조건:
@@ -28,6 +29,7 @@
 완료 조건:
 - 일부 항목만 검색으로 확인된 경우, 나머지를 자연스럽게 메우는 식의 설명이 줄어든다.
 - `missing_terms`, `missing_aspects`가 실제 응답 어조를 제어한다.
+- search evidence ingest 뒤 재평가된 covered/missing 상태가 답변 제어에 반영된다.
 
 ### A3. 테스트와 계약 동기화
 목표:
@@ -61,6 +63,10 @@
 - 방어력
 - 기동성
 - 사용 맥락
+
+현재 메모:
+- slot planner는 `search_aspects`와 `comparison_axes`를 분리할 수 있으므로,
+  이후 synthesis는 검색축이 아니라 비교축 중심으로 답변을 조직해야 한다.
 
 ### B3. graph semantics 강화
 목표:

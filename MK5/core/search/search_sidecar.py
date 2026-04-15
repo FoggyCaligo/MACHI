@@ -39,6 +39,7 @@ class SearchRunResult:
     results: list[SearchEvidence] = field(default_factory=list)
     error: str | None = None
     planning_attempted: bool = False
+    provider_errors: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SearchBackend(Protocol):

@@ -496,6 +496,7 @@ function summarizeSearch(search) {
   if (slotPlan) {
     lines.push(`- slot_entities: ${(slotPlan.entities || []).join(" | ") || "-"}`);
     lines.push(`- slot_aspects: ${(slotPlan.aspects || []).join(" | ") || "-"}`);
+    lines.push(`- comparison_axes: ${(slotPlan.comparison_axes || []).join(" | ") || "-"}`);
     lines.push(`- slot_reason: ${slotPlan.reason || "-"}`);
   }
 
@@ -521,6 +522,12 @@ function summarizeSearch(search) {
   }
   if (Array.isArray(search.missing_terms) && search.missing_terms.length > 0) {
     lines.push(`- missing_terms: ${search.missing_terms.join(" | ")}`);
+  }
+  if (Array.isArray(search.missing_aspects) && search.missing_aspects.length > 0) {
+    lines.push(`- missing_aspects: ${search.missing_aspects.join(" | ")}`);
+  }
+  if (search.no_evidence_found) {
+    lines.push(`- no_evidence_found: true`);
   }
 
   ingest.slice(0, 5).forEach((item, index) => {

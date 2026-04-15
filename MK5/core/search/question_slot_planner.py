@@ -34,8 +34,9 @@ class RequestedSlot:
 class QuestionSlotPlan:
     entities: list[str]
     aspects: list[str]
-    requested_slots: list[RequestedSlot]
-    reason: str
+    comparison_axes: list[str] = field(default_factory=list)
+    requested_slots: list[RequestedSlot] = field(default_factory=list)
+    reason: str = ''
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -86,19 +87,26 @@ class QuestionSlotPlanner:
 
         payload = self._parse_json(result.content)
         entities = self._dedupe_items(payload.get('entities') or [], limit=6)
-        aspects = self._dedupe_items(payload.get('aspects') or [], limit=6)
+        search_aspects = self._dedupe_items(
+            payload.get('search_aspects') or payload.get('aspects') or [],
+            limit=6,
+        )
+        comparison_axes = self._dedupe_items(payload.get('comparison_axes') or [], limit=6)
         if not entities:
             raise QuestionSlotPlannerError('question slot planner returned no usable entities')
+
         requested_slots: list[RequestedSlot] = []
         seen_labels: set[str] = set()
         for entity in entities:
             self._append_slot(requested_slots, seen_labels, RequestedSlot(kind='entity', entity=entity))
-            for aspect in aspects:
+            for aspect in search_aspects:
                 self._append_slot(requested_slots, seen_labels, RequestedSlot(kind='aspect', entity=entity, aspect=aspect))
-        reason = ' '.join(str(payload.get('reason') or '').split()).strip() or '질문의 핵심 개념과 비교 축을 슬롯으로 분해했다.'
+
+        reason = ' '.join(str(payload.get('reason') or '').split()).strip() or '질문의 대상 개념과 검색용 사실 축을 분리했다.'
         return QuestionSlotPlan(
             entities=entities,
-            aspects=aspects,
+            aspects=search_aspects,
+            comparison_axes=comparison_axes,
             requested_slots=requested_slots,
             reason=reason,
             metadata={'raw': payload},
