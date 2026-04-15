@@ -14,13 +14,14 @@ _RELATION_SYMBOLS = ("->", "→", "=", "/")
 
 @dataclass(slots=True)
 class InputSegmenter:
-    """Early MK5 ingest segmenter without lexical keyword heuristics.
+    """Early MK5 ingest segmenter without lexical keyword fallbacks.
 
     Design note:
     - No sentence kind is inferred from semantic cue words.
     - Sentence-level blocks are classified only from surface structure
       (question mark / relation symbols) plus token extraction.
-    - Durable reusable units are still smaller than full sentences.
+    - No stopword list is used to silently drop candidate noun blocks.
+    - No terminal fallback statement block is synthesized when segmentation fails.
     """
 
     hash_resolver: HashResolver
@@ -30,10 +31,6 @@ class InputSegmenter:
         "으로", "에서", "에게", "까지", "부터", "처럼", "보다", "하고",
         "은", "는", "이", "가", "을", "를", "에", "의", "도", "로", "과", "와", "만", "랑",
     )
-    _STOPWORDS: ClassVar[set[str]] = {
-        "그럼", "그러면", "그리고", "하지만", "또", "지금", "이번", "그것", "이것", "저것",
-        "하는", "되는", "있다", "없다", "한다", "했다", "하기", "처럼", "정도", "기준",
-    }
 
     def split_sentences(self, content: str) -> list[str]:
         sentences = [part.strip() for part in _SENTENCE_SPLIT_RE.split(content) if part and part.strip()]
@@ -72,7 +69,7 @@ class InputSegmenter:
                 if token_count >= self.max_token_blocks_per_sentence:
                     break
                 normalized_token = self._normalize_token(token)
-                if not normalized_token or normalized_token in self._STOPWORDS:
+                if not normalized_token:
                     continue
                 key = (sentence_index, "noun_phrase", normalized_token)
                 if key in seen:
@@ -92,19 +89,6 @@ class InputSegmenter:
                 token_count += 1
                 block_index += 1
 
-        if not blocks and content.strip():
-            normalized = self.hash_resolver.normalize_text(content)
-            blocks.append(
-                MeaningBlock(
-                    text=content.strip(),
-                    normalized_text=normalized,
-                    block_kind="statement_phrase",
-                    sentence_index=0,
-                    block_index=0,
-                    source_sentence=content.strip(),
-                    metadata={"source": "fallback"},
-                )
-            )
         return blocks
 
     def _sentence_level_kind(self, sentence: str) -> str:

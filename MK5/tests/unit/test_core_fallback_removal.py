@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from core.cognition.direct_node_accessor import DirectNodeAccessor
+from core.cognition.hash_resolver import HashResolver
+from core.cognition.input_segmenter import InputSegmenter
 from core.cognition.meaning_block import MeaningBlock
 from core.entities.intent import IntentSnapshot
 from core.entities.node import Node
@@ -93,3 +95,18 @@ def test_prompt_loader_resolves_from_project_root_even_when_cwd_changes(monkeypa
     monkeypatch.chdir(tmp_path)
     text = load_prompt_text('prompts/system/chat_system_prompt.txt')
     assert text
+
+
+def test_input_segmenter_does_not_force_statement_fallback_for_punctuation_only_input() -> None:
+    segmenter = InputSegmenter(hash_resolver=HashResolver())
+    blocks = segmenter.segment('!!!')
+    assert blocks == []
+
+
+def test_input_segmenter_does_not_drop_tokens_via_stopword_list() -> None:
+    segmenter = InputSegmenter(hash_resolver=HashResolver())
+    blocks = segmenter.segment('그리고 지금 기준을 정리해줘.')
+    normalized = [block.normalized_text for block in blocks if block.block_kind == 'noun_phrase']
+    assert '그리고' in normalized
+    assert '지금' in normalized
+    assert '기준' in normalized
