@@ -1,21 +1,20 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _resolve_prompt_path(prompt_path: str | Path) -> Path:
     path = Path(prompt_path)
     if path.is_absolute():
         return path
-    if path.exists():
-        return path.resolve()
-    candidate = (_PROJECT_ROOT / path).resolve()
-    return candidate
+    return PROJECT_ROOT / path
 
 
+@lru_cache(maxsize=64)
 def load_prompt_text(prompt_path: str | Path) -> str:
     path = _resolve_prompt_path(prompt_path)
     text = path.read_text(encoding='utf-8').strip()

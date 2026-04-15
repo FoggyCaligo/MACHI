@@ -16,7 +16,7 @@ class NodeLookupResult:
 
 
 class DirectNodeAccessor:
-    """Resolve meaning blocks to existing durable nodes when possible."""
+    """Resolve meaning blocks to existing durable nodes only by address hash."""
 
     def __init__(self, hash_resolver: HashResolver) -> None:
         self.hash_resolver = hash_resolver
@@ -26,14 +26,4 @@ class DirectNodeAccessor:
         direct = nodes.get_by_address_hash(address_hash)
         if direct is not None:
             return NodeLookupResult(address_hash=address_hash, node=direct, reused_via="address_hash")
-
-        fallback = nodes.search_by_normalized_value(
-            block.normalized_text,
-            node_kinds=[block.block_kind],
-            active_only=True,
-            limit=1,
-        )
-        if fallback:
-            return NodeLookupResult(address_hash=address_hash, node=fallback[0], reused_via="normalized_value")
-
         return NodeLookupResult(address_hash=address_hash, node=None, reused_via=None)

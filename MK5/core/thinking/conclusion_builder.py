@@ -21,6 +21,10 @@ class ConclusionRequestLike(Protocol):
     message_text: str
 
 
+class MissingIntentSnapshotError(RuntimeError):
+    """Raised when conclusion building is attempted without a resolved intent snapshot."""
+
+
 @dataclass(slots=True)
 class ConclusionBuilder:
     max_summary_conflicts: int = 3
@@ -38,7 +42,10 @@ class ConclusionBuilder:
     ) -> CoreConclusion:
         activated_concepts = self._activated_concepts(thought_view)
         if intent_snapshot is None:
-            intent_snapshot = self._fallback_intent_snapshot(thought_view=thought_view, contradiction_signals=contradiction_signals, revision_actions=revision_actions)
+            raise MissingIntentSnapshotError(
+                'ConclusionBuilder.build() requires an intent_snapshot from IntentManager. '
+                'Do not fall back to inferred graph-state intent here.'
+            )
         key_relations = self._key_relations(thought_view, contradiction_signals, trust_updates, revision_actions)
         detected_conflicts = [self._to_conflict_record(item) for item in contradiction_signals]
         trust_changes = [self._to_trust_change_record(item) for item in trust_updates]
@@ -136,39 +143,6 @@ class ConclusionBuilder:
             return compact
         return compact[:177] + '...'
 
-    def _fallback_intent_snapshot(
-        self,
-        *,
-        thought_view: ThoughtView,
-        contradiction_signals: list[ContradictionSignal],
-        revision_actions: list[RevisionAction],
-    ) -> IntentSnapshot:
-        seed_node_count = len(thought_view.seed_nodes)
-        edge_count = len(thought_view.edges)
-        pointer_count = len(thought_view.pointers)
-        pattern_count = len(thought_view.activated_patterns)
-
-        if contradiction_signals or revision_actions:
-            intent_name = 'structure_review'
-        elif pointer_count and seed_node_count <= 2 and edge_count <= 1:
-            intent_name = 'memory_probe'
-        elif edge_count == 0 and seed_node_count <= 2:
-            intent_name = 'open_information_request'
-        elif pattern_count > 0 or edge_count >= max(4, seed_node_count):
-            intent_name = 'relation_synthesis_request'
-        else:
-            intent_name = 'graph_grounded_reasoning'
-        return IntentSnapshot(
-            drive_name='user_delight',
-            live_intent=intent_name,
-            snapshot_intent=intent_name,
-            sufficiency_score=0.0,
-            stop_threshold=0.62,
-            should_stop=False,
-            evidence=['fallback_graph_state_only'],
-            metadata={'fallback': True},
-        )
-
     def _to_conflict_record(self, signal: ContradictionSignal) -> ConflictRecord:
         return ConflictRecord(
             edge_id=signal.edge_id,
@@ -217,19 +191,35 @@ class ConclusionBuilder:
         key_relations: list[int],
         intent_snapshot: IntentSnapshot | None = None,
     ) -> str:
+        topic = self._summarize_user_input(request.message_text)
         has_context = bool(activated_concepts or key_relations)
         has_uncertainty = bool(contradiction_signals or revision_actions or trust_updates)
 
         if contradiction_signals:
-            summary = '질문의 핵심 내용부터 답하되, 단정이 어려운 부분은 짧게만 보수적으로 밝힌다.'
+            summary = (
+                f"'{topic}'에 대해 바로 단정하기엔 아직 내부 판단 충돌이 남아 있어, "
+                '지금은 보수적으로 답하는 편이 맞다.'
+            )
         elif revision_actions:
-            summary = '질문의 핵심 내용을 먼저 설명하고, 아직 확실하지 않은 부분은 과장하지 않는다.'
+            summary = (
+                f"'{topic}'와 관련된 기존 이해를 다시 점검하는 흐름이 있어, "
+                '확실한 부분만 짧게 답하는 편이 맞다.'
+            )
         elif has_context:
-            summary = '질문의 핵심 차이, 사실, 이유 같은 내용을 바로 설명한다.'
+            summary = (
+                f"'{topic}'와 이어지는 기존 맥락이 일부 있어, "
+                '현재 확보된 범위 안에서 답을 정리할 수 있다.'
+            )
         else:
-            summary = '질문에 직접 답하되 추측으로 비지 말고, 모르면 모른다고 짧게 말한다.'
+            summary = (
+                f"'{topic}'에 답하기 위한 맥락이 아직 충분하지 않아, "
+                '가능한 범위만 신중하게 말하는 편이 맞다.'
+            )
+
+        if intent_snapshot and intent_snapshot.shifted and intent_snapshot.shift_reason and not has_uncertainty:
+            summary += ' 이전 흐름과는 조금 다른 주제로 넘어온 상태다.'
 
         if intent_snapshot and intent_snapshot.should_stop and has_context and not has_uncertainty:
-            summary += ' 불필요한 해석을 덧붙이지 않는다.'
+            summary += ' 지금은 더 크게 억지 해석을 덧붙이지 않는 편이 낫다.'
 
         return summary
