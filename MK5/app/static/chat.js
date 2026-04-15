@@ -451,6 +451,7 @@ function summarizeCoreConclusion(conclusion) {
 function summarizeSearch(search) {
   if (!search) return null;
   const decision = search.need_decision || {};
+  const slotPlan = search.slot_plan || null;
   const plan = search.plan || null;
   const results = Array.isArray(search.results) ? search.results : [];
   const ingest = Array.isArray(search.ingest) ? search.ingest : [];
@@ -471,11 +472,16 @@ function summarizeSearch(search) {
     lines.push(`- focus_terms: ${(plan.focus_terms || []).join(" | ") || "없음"}`);
     const groundingQueries = (plan.grounding_queries || []).join(" | ");
     const comparisonQueries = (plan.comparison_queries || []).join(" | ");
-    const requestedSlots = (plan.requested_slots || []).map((slot) => `${slot.entity}:${slot.aspect}`).join(" | ");
-    const coveredSlots = (plan.covered_slots || []).map((slot) => `${slot.entity}:${slot.aspect}`).join(" | ");
-    const missingSlots = (plan.missing_slots || []).map((slot) => `${slot.entity}:${slot.aspect}`).join(" | ");
+    const requestedSlots = (decision.requested_slots || []).map((slot) => slot.label || `${slot.entity || "-"}:${slot.aspect || ""}`).join(" | ");
+    const coveredSlots = (decision.covered_slots || []).map((slot) => slot.label || `${slot.entity || "-"}:${slot.aspect || ""}`).join(" | ");
+    const missingSlots = (decision.missing_slots || []).map((slot) => slot.label || `${slot.entity || "-"}:${slot.aspect || ""}`).join(" | ");
     const issuedSlotQueries = (plan.issued_slot_queries || [])
-      .map((item) => `${item.slot.entity}:${item.slot.aspect} -> ${item.query}`)
+      .map((item) => {
+        const entity = item?.entity || "-";
+        const aspects = Array.isArray(item?.aspects) ? item.aspects.filter(Boolean).join(", ") : "";
+        const slotLabel = aspects ? `${entity}:${aspects}` : entity;
+        return `${slotLabel} -> ${item?.query || "-"}`;
+      })
       .join(" | ");
     lines.push(`- grounding_queries: ${groundingQueries || "없음"}`);
     lines.push(`- comparison_queries: ${comparisonQueries || "없음"}`);
@@ -485,6 +491,12 @@ function summarizeSearch(search) {
     lines.push(`- issued_slot_queries: ${issuedSlotQueries || "없음"}`);
   } else {
     lines.push(`- planned_queries: 없음`);
+  }
+
+  if (slotPlan) {
+    lines.push(`- slot_entities: ${(slotPlan.entities || []).join(" | ") || "-"}`);
+    lines.push(`- slot_aspects: ${(slotPlan.aspects || []).join(" | ") || "-"}`);
+    lines.push(`- slot_reason: ${slotPlan.reason || "-"}`);
   }
 
   lines.push(`- result_count: ${results.length}`);

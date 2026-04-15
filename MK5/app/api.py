@@ -4,7 +4,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from app.chat_pipeline import ChatPipeline, ChatPipelineRequest
+from app.chat_pipeline import ChatPipeline, ChatPipelineRequest, UserFacingChatError
 from app.model_discovery import DEFAULT_MODEL_NAME, discover_model_catalog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -68,5 +68,7 @@ def register_routes(app: Flask) -> None:
                 )
             )
             return jsonify(result)
+        except UserFacingChatError as exc:
+            return jsonify({'detail': str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({'detail': str(exc)}), 500

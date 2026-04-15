@@ -16,6 +16,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / 'data' / 'memory.db'
 SCHEMA_PATH = PROJECT_ROOT / 'storage' / 'schema.sql'
 DEFAULT_MODEL_NAME = 'mk5-graph-core'
+SEARCH_MODEL_SELECTION_REQUIRED_ERROR = 'question slot planner requires a selectable LLM model'
+
+
+class UserFacingChatError(RuntimeError):
+    """Raised for actionable chat errors that should be shown directly to the user."""
 
 
 @dataclass(slots=True)
@@ -86,6 +91,7 @@ class ChatPipeline:
             conclusion=thought_result.core_conclusion,
             model_name=request.model_name,
         )
+        self._raise_if_search_requires_model_selection(request=request, search_run=search_run)
         search_results: list[SearchEvidence] = search_run.results
         search_ingest_results: list[GraphIngestResult] = []
         if search_results:
@@ -279,6 +285,23 @@ class ChatPipeline:
         with self._uow_factory() as uow:
             rows = [row for row in uow.chat_messages.list_by_session(session_id, limit=100000) if row.role == 'user']
             return (rows[-1].turn_index + 1) if rows else 1
+
+    def _raise_if_search_requires_model_selection(
+        self,
+        *,
+        request: ChatPipelineRequest,
+        search_run: SearchRunResult,
+    ) -> None:
+        if not search_run.decision.need_search or not search_run.error:
+            return
+        if search_run.error != SEARCH_MODEL_SELECTION_REQUIRED_ERROR:
+            return
+        if request.model_name.strip() and request.model_name != DEFAULT_MODEL_NAME:
+            return
+        raise UserFacingChatError(
+            '이 질문은 외부 검색이 필요한데 검색 계획용 모델이 선택되지 않았습니다. '
+            '상단의 모델 선택에서 Ollama 모델을 고른 뒤 다시 시도해주세요.'
+        )
 
     def _attach_search_context(self, conclusion, *, search_run: SearchRunResult) -> None:
         if conclusion is None:
