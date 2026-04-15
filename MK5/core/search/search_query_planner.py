@@ -41,37 +41,49 @@ class SearchQueryPlanner:
         for slot in missing_slots:
             entity = ' '.join(str(slot.get('entity') or '').split()).strip()
             aspect = ' '.join(str(slot.get('aspect') or '').split()).strip()
-            kind = str(slot.get('kind') or '').strip() or 'entity'
             if not entity:
                 continue
-            bucket = grouped.setdefault(entity, {'needs_grounding': False, 'aspects': []})
-            if kind == 'entity' or not aspect:
-                bucket['needs_grounding'] = True
+            bucket = grouped.setdefault(entity, {'aspects': []})
             if aspect and aspect not in bucket['aspects']:
                 bucket['aspects'].append(aspect)
 
         queries: list[str] = []
         issued_slot_queries: list[dict[str, Any]] = []
+        planned_aspect_extraction: list[dict[str, Any]] = []
         for entity, info in grouped.items():
-            aspects = info['aspects'][:3]
-            query = self._compact_query([entity, *aspects]) if aspects else self._compact_query([entity])
-            if query and query not in queries:
+            query = self._compact_query([entity])
+            if not query:
+                continue
+            if query not in queries:
                 queries.append(query)
-                issued_slot_queries.append({'entity': entity, 'aspects': aspects, 'query': query})
+            issued_slot_queries.append(
+                {
+                    'entity': entity,
+                    'aspects': list(info['aspects'][:6]),
+                    'query': query,
+                }
+            )
+            planned_aspect_extraction.append(
+                {
+                    'entity': entity,
+                    'aspects': list(info['aspects'][:6]),
+                }
+            )
             if len(queries) >= self.max_queries:
                 break
 
         if not queries:
-            raise SearchQueryPlannerError('search planner produced no usable slot queries')
+            raise SearchQueryPlannerError('search planner produced no usable entity queries')
 
         focus_terms = list(grouped.keys())[:6]
-        reason = '그래프에 비어 있는 슬롯만 골라 국소 검색 질의로 변환했다.'
+        reason = 'missing slot은 우선 entity 단위로 검색하고, 필요한 aspect는 검색 결과 안에서 확인하도록 계획했다.'
         return SearchPlan(
             queries=queries,
             reason=reason,
             focus_terms=focus_terms,
             metadata={
                 'issued_slot_queries': issued_slot_queries,
+                'planned_aspect_extraction': planned_aspect_extraction,
                 'missing_slots': missing_slots,
             },
         )

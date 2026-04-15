@@ -226,6 +226,7 @@ class ChatPipeline:
                 'reason': search_run.plan.reason,
                 'focus_terms': search_run.plan.focus_terms,
                 'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []),
+                'planned_aspect_extraction': (search_run.plan.metadata or {}).get('planned_aspect_extraction', []),
             } if search_run.plan else None,
             'results': [asdict(item) for item in search_results],
             'provider_errors': search_grounding['provider_errors'],

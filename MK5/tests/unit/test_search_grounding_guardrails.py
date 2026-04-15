@@ -13,7 +13,12 @@ from core.entities.conclusion import CoreConclusion
 from core.search.question_slot_planner import QuestionSlotPlanner
 from core.search.search_need_evaluator import SearchNeedDecision
 from core.search.search_query_planner import SearchPlan, SearchQueryPlanner
-from core.search.search_sidecar import SearchRunResult
+from core.search.search_sidecar import (
+    CompositeSearchBackend,
+    SearchBackendResult,
+    SearchEvidence,
+    SearchRunResult,
+)
 from core.verbalization.action_layer_builder import ActionLayerBuilder
 
 
@@ -30,15 +35,27 @@ class FakeClient:
         return FakeChatResult(self.content)
 
 
+class StaticBackend:
+    def __init__(self, results: list[SearchEvidence], *, provider_errors: list[dict[str, str]] | None = None) -> None:
+        self.results = results
+        self.provider_errors = provider_errors or []
+
+    def search(self, query: str, *, max_results: int, timeout_seconds: float) -> SearchBackendResult:
+        return SearchBackendResult(
+            results=self.results[:max_results],
+            provider_errors=list(self.provider_errors),
+        )
+
+
 def test_question_slot_planner_supports_structured_search_aspects() -> None:
     planner = QuestionSlotPlanner(
         client=FakeClient(
             json.dumps(
                 {
-                    'entities': ['가죽갑옷', '누비갑옷'],
-                    'search_aspects': ['구조'],
-                    'comparison_axes': ['차이점'],
-                    'reason': '검색으로 확인할 구조 축과 최종 비교축을 분리했다.',
+                    'entities': ['plate armor', 'mail armor'],
+                    'search_aspects': ['construction'],
+                    'comparison_axes': ['mobility'],
+                    'reason': 'Split factual lookup axes from final comparison axes.',
                 }
             )
         )
@@ -46,7 +63,7 @@ def test_question_slot_planner_supports_structured_search_aspects() -> None:
 
     plan = planner.plan(
         model_name='gemma3:4b',
-        message='가죽갑옷과 누비갑옷의 차이점에 대해 알려줘.',
+        message='Compare plate armor and mail armor.',
         thought_view=type('ThoughtViewStub', (), {'seed_nodes': [], 'nodes': []})(),
         conclusion=CoreConclusion(
             session_id='s1',
@@ -54,37 +71,37 @@ def test_question_slot_planner_supports_structured_search_aspects() -> None:
             user_input_summary='armor comparison',
             inferred_intent='structure_review',
         ),
-        target_terms=['가죽갑옷', '누비갑옷'],
+        target_terms=['plate armor', 'mail armor'],
     )
 
-    assert plan.entities == ['가죽갑옷', '누비갑옷']
-    assert plan.aspects == ['구조']
-    assert plan.comparison_axes == ['차이점']
+    assert plan.entities == ['plate armor', 'mail armor']
+    assert plan.aspects == ['construction']
+    assert plan.comparison_axes == ['mobility']
     assert [slot.label for slot in plan.requested_slots] == [
-        '가죽갑옷',
-        '가죽갑옷:구조',
-        '누비갑옷',
-        '누비갑옷:구조',
+        'plate armor',
+        'plate armor:construction',
+        'mail armor',
+        'mail armor:construction',
     ]
 
 
-def test_search_query_planner_uses_structured_missing_slots_without_string_filters() -> None:
+def test_search_query_planner_uses_structured_missing_slots() -> None:
     planner = SearchQueryPlanner()
     decision = SearchNeedDecision(
         need_search=True,
         reason='missing_slot_grounding',
         gap_summary='missing grounding',
         missing_slots=[
-            {'kind': 'entity', 'entity': '가죽갑옷', 'aspect': '', 'label': '가죽갑옷'},
-            {'kind': 'aspect', 'entity': '가죽갑옷', 'aspect': '구조', 'label': '가죽갑옷:구조'},
-            {'kind': 'entity', 'entity': '누비갑옷', 'aspect': '', 'label': '누비갑옷'},
-            {'kind': 'aspect', 'entity': '누비갑옷', 'aspect': '구조', 'label': '누비갑옷:구조'},
+            {'kind': 'entity', 'entity': 'plate armor', 'aspect': '', 'label': 'plate armor'},
+            {'kind': 'aspect', 'entity': 'plate armor', 'aspect': 'construction', 'label': 'plate armor:construction'},
+            {'kind': 'entity', 'entity': 'mail armor', 'aspect': '', 'label': 'mail armor'},
+            {'kind': 'aspect', 'entity': 'mail armor', 'aspect': 'construction', 'label': 'mail armor:construction'},
         ],
     )
 
     plan = planner.plan(
         model_name='gemma3:4b',
-        message='가죽갑옷과 누비갑옷의 차이점에 대해 알려줘.',
+        message='Compare plate armor and mail armor.',
         thought_view=type('ThoughtViewStub', (), {})(),
         conclusion=CoreConclusion(
             session_id='s1',
@@ -95,10 +112,10 @@ def test_search_query_planner_uses_structured_missing_slots_without_string_filte
         decision=decision,
     )
 
-    assert plan.queries == ['가죽갑옷 구조', '누비갑옷 구조']
+    assert plan.queries == ['plate armor construction', 'mail armor construction']
 
 
-def test_chat_pipeline_marks_no_evidence_without_string_matching(tmp_path: Path) -> None:
+def test_chat_pipeline_marks_no_evidence_when_search_returns_no_results(tmp_path: Path) -> None:
     pipeline = ChatPipeline(db_path=tmp_path / 'memory.db', schema_path=ROOT / 'storage' / 'schema.sql')
     conclusion = CoreConclusion(
         session_id='s1',
@@ -114,22 +131,22 @@ def test_chat_pipeline_marks_no_evidence_without_string_matching(tmp_path: Path)
             reason='missing_slot_grounding',
             gap_summary='missing grounding',
             requested_slots=[
-                {'kind': 'entity', 'entity': '가죽갑옷', 'aspect': '', 'label': '가죽갑옷'},
-                {'kind': 'aspect', 'entity': '가죽갑옷', 'aspect': '구조', 'label': '가죽갑옷:구조'},
-                {'kind': 'entity', 'entity': '누비갑옷', 'aspect': '', 'label': '누비갑옷'},
-                {'kind': 'aspect', 'entity': '누비갑옷', 'aspect': '구조', 'label': '누비갑옷:구조'},
+                {'kind': 'entity', 'entity': 'plate armor', 'aspect': '', 'label': 'plate armor'},
+                {'kind': 'aspect', 'entity': 'plate armor', 'aspect': 'construction', 'label': 'plate armor:construction'},
+                {'kind': 'entity', 'entity': 'mail armor', 'aspect': '', 'label': 'mail armor'},
+                {'kind': 'aspect', 'entity': 'mail armor', 'aspect': 'construction', 'label': 'mail armor:construction'},
             ],
             missing_slots=[
-                {'kind': 'entity', 'entity': '가죽갑옷', 'aspect': '', 'label': '가죽갑옷'},
-                {'kind': 'aspect', 'entity': '가죽갑옷', 'aspect': '구조', 'label': '가죽갑옷:구조'},
-                {'kind': 'entity', 'entity': '누비갑옷', 'aspect': '', 'label': '누비갑옷'},
-                {'kind': 'aspect', 'entity': '누비갑옷', 'aspect': '구조', 'label': '누비갑옷:구조'},
+                {'kind': 'entity', 'entity': 'plate armor', 'aspect': '', 'label': 'plate armor'},
+                {'kind': 'aspect', 'entity': 'plate armor', 'aspect': 'construction', 'label': 'plate armor:construction'},
+                {'kind': 'entity', 'entity': 'mail armor', 'aspect': '', 'label': 'mail armor'},
+                {'kind': 'aspect', 'entity': 'mail armor', 'aspect': 'construction', 'label': 'mail armor:construction'},
             ],
         ),
         plan=SearchPlan(
-            queries=['가죽갑옷 구조', '누비갑옷 구조'],
+            queries=['plate armor construction', 'mail armor construction'],
             reason='test plan',
-            focus_terms=['가죽갑옷', '누비갑옷'],
+            focus_terms=['plate armor', 'mail armor'],
         ),
         results=[],
     )
@@ -139,8 +156,8 @@ def test_chat_pipeline_marks_no_evidence_without_string_matching(tmp_path: Path)
 
     assert search_context['need_search'] is True
     assert search_context['grounded_terms'] == []
-    assert search_context['missing_terms'] == ['가죽갑옷', '누비갑옷']
-    assert search_context['missing_aspects'] == ['구조']
+    assert search_context['missing_terms'] == ['plate armor', 'mail armor']
+    assert search_context['missing_aspects'] == ['construction']
     assert search_context['no_evidence_found'] is True
 
 
@@ -155,8 +172,8 @@ def test_action_layer_builder_becomes_conservative_when_no_evidence_is_reported(
         'need_search': True,
         'attempted': True,
         'result_count': 0,
-        'missing_terms': ['가죽갑옷', '누비갑옷'],
-        'missing_aspects': ['구조'],
+        'missing_terms': ['plate armor', 'mail armor'],
+        'missing_aspects': ['construction'],
         'no_evidence_found': True,
     }
 
@@ -167,4 +184,37 @@ def test_action_layer_builder_becomes_conservative_when_no_evidence_is_reported(
     assert action.metadata['search_result_count'] == 0
     assert action.metadata['no_evidence_found'] is True
     assert action.metadata['missing_aspect_count'] == 1
-    assert any('구조' in item for item in action.do_not_claim)
+    assert any('construction' in item for item in action.do_not_claim)
+
+
+def test_composite_search_backend_merges_results_and_provider_errors() -> None:
+    backend = CompositeSearchBackend(
+        backends=[
+            StaticBackend(
+                [
+                    SearchEvidence(
+                        title='Plate armor',
+                        snippet='Rigid metal plates.',
+                        url='https://example.test/plate',
+                        provider='provider-a',
+                    )
+                ],
+                provider_errors=[{'provider': 'provider-a', 'query': 'armor', 'error': 'partial'}],
+            ),
+            StaticBackend(
+                [
+                    SearchEvidence(
+                        title='Mail armor',
+                        snippet='Interlinked rings.',
+                        url='https://example.test/mail',
+                        provider='provider-b',
+                    )
+                ]
+            ),
+        ]
+    )
+
+    result = backend.search('armor', max_results=4, timeout_seconds=1.0)
+
+    assert [item.title for item in result.results] == ['Plate armor', 'Mail armor']
+    assert result.provider_errors == [{'provider': 'provider-a', 'query': 'armor', 'error': 'partial'}]

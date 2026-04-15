@@ -46,7 +46,8 @@
 
 ### B1. trusted-search backend 확장
 현재:
-- backend는 사실상 Wikipedia 중심이다.
+- backend는 `CompositeSearchBackend`로 Wikipedia + web search를 함께 시도한다.
+- 하지만 provider 선택 정책, trust policy 연결, provider별 오류 구분은 아직 초기형이다.
 
 다음:
 - 다중 provider
