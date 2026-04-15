@@ -470,6 +470,13 @@ function summarizeSearch(search) {
     lines.push(`- planned_queries: ${(plan.queries || []).join(" | ") || "없음"}`);
     lines.push(`- plan_reason: ${plan.reason || "-"}`);
     lines.push(`- focus_terms: ${(plan.focus_terms || []).join(" | ") || "없음"}`);
+    const plannedAspectExtraction = (plan.planned_aspect_extraction || [])
+      .map((item) => {
+        const entity = item?.entity || "-";
+        const aspects = Array.isArray(item?.aspects) ? item.aspects.filter(Boolean).join(", ") : "";
+        return aspects ? `${entity} -> ${aspects}` : `${entity} -> 없음`;
+      })
+      .join(" | ");
     const groundingQueries = (plan.grounding_queries || []).join(" | ");
     const comparisonQueries = (plan.comparison_queries || []).join(" | ");
     const requestedSlots = (decision.requested_slots || []).map((slot) => slot.label || `${slot.entity || "-"}:${slot.aspect || ""}`).join(" | ");
@@ -485,6 +492,7 @@ function summarizeSearch(search) {
       .join(" | ");
     lines.push(`- grounding_queries: ${groundingQueries || "없음"}`);
     lines.push(`- comparison_queries: ${comparisonQueries || "없음"}`);
+    lines.push(`- planned_aspect_extraction: ${plannedAspectExtraction || "없음"}`);
     lines.push(`- requested_slots: ${requestedSlots || "없음"}`);
     lines.push(`- covered_slots: ${coveredSlots || "없음"}`);
     lines.push(`- missing_slots: ${missingSlots || "없음"}`);

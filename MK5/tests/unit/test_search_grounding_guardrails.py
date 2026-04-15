@@ -112,7 +112,11 @@ def test_search_query_planner_uses_structured_missing_slots() -> None:
         decision=decision,
     )
 
-    assert plan.queries == ['plate armor construction', 'mail armor construction']
+    assert plan.queries == ['plate armor', 'mail armor']
+    assert plan.metadata['planned_aspect_extraction'] == [
+        {'entity': 'plate armor', 'aspects': ['construction']},
+        {'entity': 'mail armor', 'aspects': ['construction']},
+    ]
 
 
 def test_chat_pipeline_marks_no_evidence_when_search_returns_no_results(tmp_path: Path) -> None:
@@ -144,7 +148,7 @@ def test_chat_pipeline_marks_no_evidence_when_search_returns_no_results(tmp_path
             ],
         ),
         plan=SearchPlan(
-            queries=['plate armor construction', 'mail armor construction'],
+            queries=['plate armor', 'mail armor'],
             reason='test plan',
             focus_terms=['plate armor', 'mail armor'],
         ),
