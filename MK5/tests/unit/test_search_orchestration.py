@@ -7,12 +7,14 @@ from core.entities.node import Node
 from core.entities.thought_view import ActivatedNode, ThoughtView
 from core.search.search_need_evaluator import SearchNeedEvaluator
 from core.search.search_query_planner import SearchQueryPlanner
-from core.search.search_sidecar import SearchEvidence, SearchSidecar, TrustedSearchBackend
+from core.search.search_sidecar import SearchBackendResult, SearchEvidence, SearchSidecar, TrustedSearchBackend
 
 
 class FakeChatResult:
     def __init__(self, content: str) -> None:
         self.content = content
+        self.model = 'fake-model'
+        self.raw = {}
 
 
 class FakeClient:
@@ -31,24 +33,30 @@ class FakeClient:
 
 class FakeBackend:
     def search(self, query: str, *, max_results: int, timeout_seconds: float):
-        return [
-            SearchEvidence(
-                title=query,
-                snippet='result',
-                url=f'https://example.test/{query}',
-                provider='fake-backend',
-                trust_hint=0.77,
-                source_provenance='trusted_search',
-            )
-        ]
+        return SearchBackendResult(
+            results=[
+                SearchEvidence(
+                    title=query,
+                    snippet='result',
+                    url=f'https://example.test/{query}',
+                    provider='fake-backend',
+                    trust_hint=0.77,
+                    source_provenance='trusted_search',
+                )
+            ],
+            errors=[],
+        )
 
 
 class FakeProvider:
-    def __init__(self, name: str, items: list[SearchEvidence]) -> None:
-        self.name = name
+    def __init__(self, name: str, items: list[SearchEvidence], fail: bool = False) -> None:
+        self.provider_name = name
         self.items = items
+        self.fail = fail
 
     def search(self, query: str, *, max_results: int, timeout_seconds: float):
+        if self.fail:
+            raise RuntimeError('network down')
         return self.items[:max_results]
 
 
@@ -80,7 +88,7 @@ def _conclusion() -> CoreConclusion:
     )
 
 
-def test_search_need_evaluator_uses_task_kind_and_grounding() -> None:
+def test_search_need_evaluator_uses_task_kind_and_scope_grounding() -> None:
     decision = SearchNeedEvaluator().evaluate(
         message='찰갑과 미늘갑옷, 사슬갑옷에 대한 차이점을 정리해줄래?',
         thought_view=_thought_view(),
@@ -119,11 +127,12 @@ def test_search_query_planner_returns_grounding_and_comparison_queries() -> None
     assert '사슬갑옷' in prompt
 
 
-def test_trusted_search_backend_dedups_and_preserves_trust_hint() -> None:
+def test_trusted_search_backend_dedups_preserves_trust_and_reports_errors() -> None:
     backend = TrustedSearchBackend(
         providers=[
+            FakeProvider('broken-provider', [], fail=True),
             FakeProvider(
-                'p1',
+                'provider-a',
                 [
                     SearchEvidence(
                         title='찰갑',
@@ -136,7 +145,7 @@ def test_trusted_search_backend_dedups_and_preserves_trust_hint() -> None:
                 ],
             ),
             FakeProvider(
-                'p2',
+                'provider-b',
                 [
                     SearchEvidence(
                         title='찰갑',
@@ -158,11 +167,12 @@ def test_trusted_search_backend_dedups_and_preserves_trust_hint() -> None:
             ),
         ]
     )
-    results = backend.search('갑옷 비교', max_results=4, timeout_seconds=1.0)
-    assert len(results) == 2
-    assert results[0].provider == 'provider-a'
-    assert results[0].trust_hint == 0.91
-    assert results[0].metadata['source_provenance'] == 'trusted_search'
+    outcome = backend.search('갑옷 비교', max_results=4, timeout_seconds=1.0)
+    assert len(outcome.results) == 2
+    assert outcome.results[0].provider == 'provider-a'
+    assert outcome.results[0].trust_hint == 0.91
+    assert outcome.results[0].metadata['source_provenance'] == 'trusted_search'
+    assert any('broken-provider' in item for item in outcome.errors)
 
 
 def test_search_sidecar_runs_multi_query_plan_then_backend() -> None:

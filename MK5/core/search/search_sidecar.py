@@ -34,26 +34,48 @@ class SearchEvidence:
 
 
 @dataclass(slots=True)
+class SearchBackendResult:
+    results: list[SearchEvidence] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class SearchRunResult:
     attempted: bool
     decision: SearchNeedDecision
     plan: SearchPlan | None = None
     results: list[SearchEvidence] = field(default_factory=list)
     error: str | None = None
+    provider_errors: list[str] = field(default_factory=list)
 
 
 class SearchBackend(Protocol):
-    def search(self, query: str, *, max_results: int, timeout_seconds: float) -> list[SearchEvidence]: ...
+    def search(self, query: str, *, max_results: int, timeout_seconds: float) -> SearchBackendResult: ...
 
 
 class SearchProvider(Protocol):
+    provider_name: str
     def search(self, query: str, *, max_results: int, timeout_seconds: float) -> list[SearchEvidence]: ...
+
+
+class SearchProviderError(RuntimeError):
+    def __init__(self, provider: str, message: str) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.message = message
+
+    def __str__(self) -> str:
+        return f'{self.provider}: {self.message}'
 
 
 @dataclass(slots=True)
 class WikipediaSearchProvider:
     lang: str = 'ko'
     trust_hint: float = 0.88
+
+    @property
+    def provider_name(self) -> str:
+        return f'wikipedia-{self.lang}'
 
     def search(self, query: str, *, max_results: int, timeout_seconds: float) -> list[SearchEvidence]:
         base = (
@@ -64,8 +86,8 @@ class WikipediaSearchProvider:
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
                 payload = json.loads(response.read().decode('utf-8'))
-        except Exception:
-            return []
+        except Exception as exc:
+            raise SearchProviderError(self.provider_name, str(exc)) from exc
 
         titles = payload[1] if len(payload) > 1 else []
         descriptions = payload[2] if len(payload) > 2 else []
@@ -82,7 +104,7 @@ class WikipediaSearchProvider:
                     title=token,
                     snippet=str(snippet or '').strip(),
                     url=str(url or '').strip(),
-                    provider=f'wikipedia-{self.lang}',
+                    provider=self.provider_name,
                     trust_hint=self.trust_hint,
                     source_provenance='trusted_search',
                     metadata={'query': query, 'lang': self.lang, 'provider_kind': 'wikipedia'},
@@ -95,6 +117,10 @@ class WikipediaSearchProvider:
 class WikidataSearchProvider:
     lang: str = 'ko'
     trust_hint: float = 0.82
+
+    @property
+    def provider_name(self) -> str:
+        return f'wikidata-{self.lang}'
 
     def search(self, query: str, *, max_results: int, timeout_seconds: float) -> list[SearchEvidence]:
         params = urlencode(
@@ -113,8 +139,8 @@ class WikidataSearchProvider:
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
                 payload = json.loads(response.read().decode('utf-8'))
-        except Exception:
-            return []
+        except Exception as exc:
+            raise SearchProviderError(self.provider_name, str(exc)) from exc
 
         entries = payload.get('search') or []
         evidences: list[SearchEvidence] = []
@@ -129,7 +155,7 @@ class WikidataSearchProvider:
                     title=label,
                     snippet=description,
                     url=url,
-                    provider=f'wikidata-{self.lang}',
+                    provider=self.provider_name,
                     trust_hint=self.trust_hint,
                     source_provenance='trusted_search',
                     metadata={
@@ -179,6 +205,7 @@ class _DuckDuckGoHtmlParser(HTMLParser):
 @dataclass(slots=True)
 class DuckDuckGoSearchProvider:
     trust_hint: float = 0.62
+    provider_name: str = 'duckduckgo-web'
 
     def search(self, query: str, *, max_results: int, timeout_seconds: float) -> list[SearchEvidence]:
         request = Request(
@@ -188,14 +215,14 @@ class DuckDuckGoSearchProvider:
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
                 html = response.read().decode('utf-8', errors='ignore')
-        except Exception:
-            return []
+        except Exception as exc:
+            raise SearchProviderError(self.provider_name, str(exc)) from exc
 
         parser = _DuckDuckGoHtmlParser()
         try:
             parser.feed(html)
-        except Exception:
-            return []
+        except Exception as exc:
+            raise SearchProviderError(self.provider_name, f'parse failure: {exc}') from exc
 
         evidences: list[SearchEvidence] = []
         for item in parser.results[:max_results]:
@@ -208,7 +235,7 @@ class DuckDuckGoSearchProvider:
                     title=title,
                     snippet='',
                     url=url,
-                    provider='duckduckgo-web',
+                    provider=self.provider_name,
                     trust_hint=self.trust_hint,
                     source_provenance='trusted_search',
                     metadata={'query': query, 'provider_kind': 'duckduckgo_html'},
@@ -231,13 +258,22 @@ class TrustedSearchBackend:
                 WikipediaSearchProvider(lang='en', trust_hint=0.78),
             ]
 
-    def search(self, query: str, *, max_results: int, timeout_seconds: float) -> list[SearchEvidence]:
+    def search(self, query: str, *, max_results: int, timeout_seconds: float) -> SearchBackendResult:
         aggregated: list[SearchEvidence] = []
+        errors: list[str] = []
         seen_urls: set[str] = set()
         seen_titles: set[str] = set()
         provider_limit = max(1, min(self.per_provider_max_results, max_results))
         for provider in self.providers or []:
-            items = provider.search(query, max_results=provider_limit, timeout_seconds=timeout_seconds)
+            try:
+                items = provider.search(query, max_results=provider_limit, timeout_seconds=timeout_seconds)
+            except SearchProviderError as exc:
+                errors.append(str(exc))
+                continue
+            except Exception as exc:
+                provider_name = getattr(provider, 'provider_name', provider.__class__.__name__)
+                errors.append(f'{provider_name}: {exc}')
+                continue
             for item in items:
                 title_key = item.title.strip().lower()
                 url_key = item.url.strip().lower()
@@ -255,8 +291,8 @@ class TrustedSearchBackend:
                 }
                 aggregated.append(item)
                 if len(aggregated) >= max_results:
-                    return aggregated
-        return aggregated
+                    return SearchBackendResult(results=aggregated, errors=errors)
+        return SearchBackendResult(results=aggregated, errors=errors)
 
 
 @dataclass(slots=True)
@@ -295,8 +331,18 @@ class SearchSidecar:
         except SearchQueryPlannerError as exc:
             return SearchRunResult(attempted=True, decision=decision, error=str(exc))
 
-        results = self._execute_plan(plan)
-        return SearchRunResult(attempted=True, decision=decision, plan=plan, results=results)
+        results, provider_errors = self._execute_plan(plan)
+        error = None
+        if provider_errors and not results:
+            error = 'search_transport_failure'
+        return SearchRunResult(
+            attempted=True,
+            decision=decision,
+            plan=plan,
+            results=results,
+            error=error,
+            provider_errors=provider_errors,
+        )
 
     def search(
         self,
@@ -313,13 +359,15 @@ class SearchSidecar:
             model_name=model_name,
         ).results
 
-    def _execute_plan(self, plan: SearchPlan) -> list[SearchEvidence]:
+    def _execute_plan(self, plan: SearchPlan) -> tuple[list[SearchEvidence], list[str]]:
         aggregated: list[SearchEvidence] = []
+        provider_errors: list[str] = []
         seen_urls: set[str] = set()
         seen_titles: set[str] = set()
         for query in plan.queries:
-            items = self.backend.search(query, max_results=self.per_query_max_results, timeout_seconds=self.timeout_seconds)
-            for item in items:
+            backend_result = self.backend.search(query, max_results=self.per_query_max_results, timeout_seconds=self.timeout_seconds)
+            provider_errors.extend([f'{query} -> {item}' for item in backend_result.errors])
+            for item in backend_result.results:
                 title_key = item.title.strip().lower()
                 url_key = item.url.strip().lower()
                 if (url_key and url_key in seen_urls) or (title_key and title_key in seen_titles):
@@ -331,5 +379,5 @@ class SearchSidecar:
                 item.metadata = {**item.metadata, 'planned_query': query}
                 aggregated.append(item)
                 if len(aggregated) >= self.max_results:
-                    return aggregated
-        return aggregated
+                    return aggregated, provider_errors
+        return aggregated, provider_errors

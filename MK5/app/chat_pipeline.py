@@ -189,6 +189,7 @@ class ChatPipeline:
             'metadata': thought_result.metadata,
         }
 
+        search_context_debug = (thought_result.core_conclusion.metadata or {}).get('search_context', {}) if thought_result.core_conclusion else {}
         search_debug = {
             'query_triggered': bool(search_run.attempted),
             'need_decision': {
@@ -205,6 +206,9 @@ class ChatPipeline:
                 'comparison_queries': (search_run.plan.metadata or {}).get('comparison_queries', []),
             } if search_run.plan else None,
             'results': [asdict(item) for item in search_results],
+            'provider_errors': list(search_run.provider_errors),
+            'grounded_terms': list(search_context_debug.get('grounded_terms', [])),
+            'missing_terms': list(search_context_debug.get('missing_terms', [])),
             'ingest': [
                 {
                     'message_id': item.message_id,
@@ -277,6 +281,8 @@ class ChatPipeline:
             return
         if conclusion.metadata is None:
             conclusion.metadata = {}
+        focus_terms = search_run.plan.focus_terms if search_run.plan and search_run.plan.focus_terms else search_run.decision.target_terms
+        grounded_terms, missing_terms = self._classify_search_coverage(focus_terms, search_run.results)
         conclusion.metadata['search_context'] = {
             'attempted': bool(search_run.attempted),
             'result_count': len(search_run.results),
@@ -285,13 +291,38 @@ class ChatPipeline:
             'target_terms': search_run.decision.target_terms,
             'planned_queries': search_run.plan.queries if search_run.plan else [],
             'plan_reason': search_run.plan.reason if search_run.plan else '',
+            'focus_terms': focus_terms,
+            'grounded_terms': grounded_terms,
+            'missing_terms': missing_terms,
+            'provider_errors': list(search_run.provider_errors),
+            'search_failed': bool(search_run.error),
             'summaries': [
                 {
                     'title': item.title,
                     'snippet': item.snippet,
                     'provider': item.provider,
                     'url': item.url,
+                    'trust_hint': item.trust_hint,
+                    'source_provenance': item.source_provenance,
                 }
                 for item in search_run.results[:3]
             ],
         }
+
+    def _classify_search_coverage(self, focus_terms: list[str], results: list[SearchEvidence]) -> tuple[list[str], list[str]]:
+        texts: list[str] = []
+        for item in results:
+            corpus = ' '.join([item.title or '', item.snippet or '']).lower()
+            texts.append(corpus)
+        grounded: list[str] = []
+        missing: list[str] = []
+        for term in focus_terms[:6]:
+            token = str(term or '').strip()
+            if not token:
+                continue
+            lowered = token.lower()
+            if any(lowered in corpus for corpus in texts):
+                grounded.append(token)
+            else:
+                missing.append(token)
+        return grounded, missing

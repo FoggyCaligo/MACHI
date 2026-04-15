@@ -30,6 +30,7 @@ class OllamaModelNotFoundError(OllamaRequestError):
 
 @dataclass(slots=True)
 class OllamaChatResult:
+    model: str
     content: str
     raw: dict[str, Any]
 
@@ -46,12 +47,12 @@ class OllamaClient:
         if self.timeout_seconds is None:
             self.timeout_seconds = float(os.getenv('OLLAMA_TIMEOUT_SECONDS', '120'))
 
-    def health_check(self) -> bool:
+    def health_check(self) -> tuple[bool, str | None]:
         try:
             self.tags()
-            return True
-        except OllamaClientError:
-            return False
+            return True, None
+        except OllamaClientError as exc:
+            return False, str(exc)
 
     def tags(self) -> dict[str, Any]:
         return self._request_json('GET', '/api/tags')
@@ -59,7 +60,19 @@ class OllamaClient:
     def list_models(self) -> list[dict[str, Any]]:
         payload = self.tags()
         models = payload.get('models')
-        return list(models) if isinstance(models, list) else []
+        if not isinstance(models, list):
+            return []
+        flattened: list[dict[str, Any]] = []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            details = item.get('details') if isinstance(item.get('details'), dict) else {}
+            flattened.append({
+                'name': str(item.get('name') or ''),
+                'parameter_size': str(details.get('parameter_size') or item.get('parameter_size') or ''),
+                'quantization_level': str(details.get('quantization_level') or item.get('quantization_level') or ''),
+            })
+        return [item for item in flattened if item['name']]
 
     def chat(
         self,
@@ -78,16 +91,14 @@ class OllamaClient:
         if options:
             payload['options'] = options
         if response_format is not None:
-            if response_format == 'json':
-                payload['format'] = 'json'
-            else:
-                payload['format'] = response_format
+            payload['format'] = 'json' if response_format == 'json' else response_format
         raw = self._request_json('POST', '/api/chat', payload)
         message = raw.get('message') or {}
         content = str(message.get('content') or '').strip()
         if not content:
             raise OllamaResponseError('OLLAMA returned empty content')
-        return OllamaChatResult(content=content, raw=raw)
+        used_model = str(raw.get('model') or model_name or '').strip() or model_name
+        return OllamaChatResult(model=used_model, content=content, raw=raw)
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(payload).encode('utf-8') if payload is not None else None
@@ -105,7 +116,7 @@ class OllamaClient:
                     raise OllamaResponseError('OLLAMA returned invalid JSON') from exc
         except HTTPError as exc:
             body = exc.read().decode('utf-8', errors='ignore')
-            message = body or exc.reason
+            message = body or str(exc.reason)
             if exc.code == 404 and 'model' in message.lower():
                 raise OllamaModelNotFoundError(message) from exc
             raise OllamaRequestError(f'OLLAMA HTTP {exc.code}: {message}') from exc
