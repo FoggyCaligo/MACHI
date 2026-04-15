@@ -1,94 +1,99 @@
 # MK5 다음작업 로드맵
 
+기준 시점: 2026-04-15
+
 ## A. 지금 바로 해야 하는 것
 
-### A1. slot 기반 search 안정화
+### A1. search 오류 계약 정리
 목표:
-- 새 entity 누락 방지
-- 새 aspect 누락 방지
-- planner 실패 시 fail-open
-- missing slot만 국소 search
+- slot planner / query planner / backend 오류를 fail-open하지 않고 명시적으로 surface
+- provider failure와 no-result를 분리
+- transport / timeout / 4xx / 5xx를 debug와 응답 계약에서 구분
+
+현재 상태:
+- "검색이 필요한데 모델이 미선택"인 경우는 이미 사용자 오류로 반환된다.
+- 하지만 `QuestionSlotPlanner` 실패 중 일부는 아직 `slot_planner_failed_needs_grounding`으로 남아 있다.
 
 완료 조건:
-- `판금갑옷 + 찰갑 + 사슬갑옷 + 미늘갑옷 + 가죽갑옷`
-  같은 질문에서 search false로 떨어지지 않음
-- debug에 requested/covered/missing slot이 명확히 보임
+- planner JSON 오류, backend transport 오류, provider no-result가 서로 다른 상태로 기록된다.
+- `search.error`와 `search.provider_errors`의 의미가 명확해진다.
+- "오류를 오류로 돌려준다"는 Machi 철학과 실제 런타임이 일치한다.
 
-### A2. hallucination 억제 강화
+### A2. groundedness 억제 강화
 목표:
-- grounded term이 없는 항목은 단정 금지
-- missing aspect가 있으면 그 aspect도 단정 금지
+- grounded term이 없는 항목은 단정하지 않기
+- missing aspect가 있으면 그 aspect에 대한 단정 금지
+- verbalization이 search gap을 자연스럽게 감추지 못하게 하기
 
 완료 조건:
-- 일부 항목만 search로 확인됐을 때,
-  나머지를 자연스럽게 메워서 설명하지 않음
+- 일부 항목만 검색으로 확인된 경우, 나머지를 자연스럽게 메우는 식의 설명이 줄어든다.
+- `missing_terms`, `missing_aspects`가 실제 응답 어조를 제어한다.
 
-### A3. search failure visibility 고정
+### A3. 테스트와 계약 동기화
 목표:
-- provider failure와 no-result 분리
-- transport failure를 실제 오류처럼 노출
+- 현재 search / debug payload 기준으로 unit / integration 테스트 정리
+- 오래된 fixture와 dataclass 필드 불일치 제거
+- 문서와 코드가 같은 상태를 바라보게 만들기
 
 완료 조건:
-- 인터넷 끊김 / 404 / timeout에서 `error: search_transport_failure`
-- debug에 `provider_errors`가 남음
+- `SearchEvidence`의 현재 필드 기준으로 테스트가 정리된다.
+- search debug 관련 회귀를 자동으로 잡을 수 있다.
+- 최소 pytest 루틴이 바로 실행 가능하다.
 
----
+## B. 그 다음 해야 하는 것
 
-## B. 그 다음에 해야 하는 것
-
-### B1. trusted_search backend 확장
+### B1. trusted-search backend 확장
 현재:
-- 위키피디아 중심
+- backend는 사실상 Wikipedia 중심이다.
 
 다음:
 - 다중 provider
-- source_provenance / trust_hint 표준화
-- dedup 전략 강화
+- source provenance / trust 계층 연결
+- dedup / ranking / provider별 실패 기록 강화
 
-### B2. conflict double-check
+### B2. post-search synthesis 강화
 목표:
-- 기존 그래프와 충돌 시, 검색 가능한 대상이면 external corroboration 수행
-- corroboration 되면 trust 상승
-- threshold 넘으면 graph update / revision 반영
+- 검색 결과를 단순 나열이 아니라 비교 / 요약 / 차이 구조로 재조직
+- entity별 aspect 비교를 conclusion에 더 직접 반영
 
-### B3. post-search synthesis 강화
+예시:
+- 구조
+- 방어력
+- 기동성
+- 사용 맥락
+
+### B3. graph semantics 강화
 목표:
-- 검색 결과를 단순 나열이 아니라 비교 축으로 재구성
-- 예: 구조 / 방어력 / 기동성 / 장단점
-
----
+- typed edge semantics 확장
+- `InputSegmenter`를 concept / relation block 수준으로 고도화
+- contradiction / revision이 더 구조적으로 동작하게 만들기
 
 ## C. 코어 빈칸 채우기
 
 ### C1. `graph_commit_service.py`
-필요성:
-- merge / deactivate / rewrite / trust update를
-  한 사이클의 구조 변경으로 안정적으로 묶을 orchestration이 필요함
+필요한 이유:
+- merge / deactivate / rewrite / trust update를 하나의 구조 변경 흐름으로 안정적으로 묶을 orchestration이 필요하다.
 
 ### C2. `edge_update_service.py`
-필요성:
-- relation refinement / retyping / support accumulation 고도화 필요
+필요한 이유:
+- relation refinement / retyping / support accumulation을 별도 책임으로 끌어내야 한다.
 
 ### C3. `meaning_preserver.py` 또는 동등 계층
-필요성:
-- conclusion과 최종 사용자 응답 사이 의미 왜곡 감시
+필요한 이유:
+- conclusion과 최종 사용자 응답 사이에서 의미 보존과 과장 억제를 감시할 계층이 필요하다.
 
----
-
-## D. 삭제 또는 보류 판단이 필요한 것
+## D. 지금은 미뤄도 되는 것
 - `tools/response_runner.py`
 - `app/orchestrator.py`
 - `app/routes/chat.py`
 - `core/verbalization/llm_verbalizer.py`
 
-이 파일들은 지금 당장 다 구현해야 한다기보다,
-**정말 쓸 구조인지 먼저 결정**하는 게 맞다.
+이 파일들은 지금 당장 실구현하는 것보다, 현재 루프와 오류 계약을 먼저 정리하는 편이 더 중요하다.
 
----
-
-## E. 다음 채팅에서 바로 할 수 있는 작업 순서
-1. slot coverage / missing aspect 계산 보강
-2. hallucination 억제 강화
-3. trusted_search backend 확장
-4. conflict double-check 정책 연결
-5. graph_commit_service 설계 초안
+## E. 추천 작업 순서
+1. `SearchSidecar`의 fail-open 잔여 정책 제거 또는 축소
+2. provider failure / no-result / timeout 구분 추가
+3. groundedness 억제 강화
+4. search 관련 테스트 정리
+5. trusted-search backend 확장
+6. `graph_commit_service.py` 설계 초안
