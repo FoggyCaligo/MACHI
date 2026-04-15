@@ -136,7 +136,6 @@ class ConclusionBuilder:
             return compact
         return compact[:177] + '...'
 
-
     def _fallback_intent_snapshot(
         self,
         *,
@@ -218,36 +217,19 @@ class ConclusionBuilder:
         key_relations: list[int],
         intent_snapshot: IntentSnapshot | None = None,
     ) -> str:
-        topic = self._summarize_user_input(request.message_text)
         has_context = bool(activated_concepts or key_relations)
         has_uncertainty = bool(contradiction_signals or revision_actions or trust_updates)
 
         if contradiction_signals:
-            summary = (
-                f"'{topic}'에 대해 바로 단정하기엔 아직 내부 판단 충돌이 남아 있어, "
-                '지금은 보수적으로 답하는 편이 맞다.'
-            )
+            summary = '질문의 핵심 내용부터 답하되, 단정이 어려운 부분은 짧게만 보수적으로 밝힌다.'
         elif revision_actions:
-            summary = (
-                f"'{topic}'와 관련된 기존 이해를 다시 점검하는 흐름이 있어, "
-                '확실한 부분만 짧게 답하는 편이 맞다.'
-            )
+            summary = '질문의 핵심 내용을 먼저 설명하고, 아직 확실하지 않은 부분은 과장하지 않는다.'
         elif has_context:
-            summary = (
-                f"'{topic}'와 이어지는 기존 맥락이 일부 있어, "
-                '현재 확보된 범위 안에서 답을 정리할 수 있다.'
-            )
+            summary = '질문의 핵심 차이, 사실, 이유 같은 내용을 바로 설명한다.'
         else:
-            summary = (
-                f"'{topic}'에 답하기 위한 맥락이 아직 충분하지 않아, "
-                '가능한 범위만 신중하게 말하는 편이 맞다.'
-            )
-
-        if intent_snapshot and intent_snapshot.shifted and intent_snapshot.shift_reason and not has_uncertainty:
-            summary += ' 이전 흐름과는 조금 다른 주제로 넘어온 상태다.'
+            summary = '질문에 직접 답하되 추측으로 비지 말고, 모르면 모른다고 짧게 말한다.'
 
         if intent_snapshot and intent_snapshot.should_stop and has_context and not has_uncertainty:
-            summary += ' 지금은 더 크게 억지 해석을 덧붙이지 않는 편이 낫다.'
+            summary += ' 불필요한 해석을 덧붙이지 않는다.'
 
         return summary
-

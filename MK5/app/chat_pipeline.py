@@ -80,6 +80,7 @@ class ChatPipeline:
         if thought_result.core_conclusion is None:
             raise RuntimeError('ThoughtEngine did not produce core_conclusion')
 
+        search_attempted = self.search_sidecar.should_search(request.message, thought_result.core_conclusion)
         search_results: list[SearchEvidence] = self.search_sidecar.search(request.message, thought_result.core_conclusion)
         search_ingest_results: list[GraphIngestResult] = []
         if search_results:
@@ -119,9 +120,11 @@ class ChatPipeline:
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
 
+        self._attach_search_context(thought_result.core_conclusion, search_attempted=search_attempted, search_results=search_results)
+
         verbalized = self.verbalizer.verbalize(thought_result.core_conclusion, model_name=request.model_name)
         if verbalized.llm_error or not verbalized.user_response:
-            if verbalized.llm_error == 'template_verbalization_disabled':
+            if verbalized.llm_error and verbalized.llm_error.startswith('template_verbalizer_disabled:'):
                 raise RuntimeError(
                     '현재 응답을 생성할 수 있는 모델이 없습니다. 모델을 선택하거나 OLLAMA 환경을 확인해주세요.'
                 )
@@ -180,7 +183,7 @@ class ChatPipeline:
         }
 
         search_debug = {
-            'query_triggered': bool(search_results),
+            'query_triggered': bool(search_attempted),
             'results': [asdict(item) for item in search_results],
             'ingest': [
                 {
@@ -247,3 +250,28 @@ class ChatPipeline:
         with self._uow_factory() as uow:
             rows = [row for row in uow.chat_messages.list_by_session(session_id, limit=100000) if row.role == 'user']
             return (rows[-1].turn_index + 1) if rows else 1
+
+    def _attach_search_context(
+        self,
+        conclusion,
+        *,
+        search_attempted: bool,
+        search_results: list[SearchEvidence],
+    ) -> None:
+        if conclusion is None:
+            return
+        if conclusion.metadata is None:
+            conclusion.metadata = {}
+        conclusion.metadata['search_context'] = {
+            'attempted': bool(search_attempted),
+            'result_count': len(search_results),
+            'summaries': [
+                {
+                    'title': item.title,
+                    'snippet': item.snippet,
+                    'provider': item.provider,
+                    'url': item.url,
+                }
+                for item in search_results[:3]
+            ],
+        }

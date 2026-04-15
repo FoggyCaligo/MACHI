@@ -68,9 +68,33 @@ class OllamaVerbalizer:
             surface_summary=conclusion.explanation_summary,
             suggested_actions=self._format_lines(action_layer.suggested_actions),
             do_not_claim=self._format_lines(action_layer.do_not_claim),
+            search_context=self._format_search_context(conclusion),
         )
 
     def _format_lines(self, items: list[str]) -> str:
         if not items:
             return '- 없음'
         return '\n'.join(f'- {item}' for item in items)
+
+    def _format_search_context(self, conclusion: CoreConclusion) -> str:
+        search_context = conclusion.metadata.get('search_context', {}) if conclusion.metadata else {}
+        if not isinstance(search_context, dict):
+            return '- 검색 수행 정보 없음'
+
+        attempted = bool(search_context.get('attempted'))
+        result_count = int(search_context.get('result_count', 0) or 0)
+        summaries = search_context.get('summaries', []) or []
+        if not attempted:
+            return '- 이번 턴에서는 별도 검색을 수행하지 않음'
+        if result_count <= 0:
+            return '- 검색을 시도했지만 현재 확보된 결과가 없음'
+        lines = [f'- 검색 결과 {result_count}건 확보']
+        for item in summaries[:3]:
+            title = str(item.get('title') or '').strip()
+            snippet = str(item.get('snippet') or '').strip()
+            provider = str(item.get('provider') or '').strip()
+            if title and snippet:
+                lines.append(f'- {title} ({provider}): {snippet}')
+            elif title:
+                lines.append(f'- {title} ({provider})')
+        return '\n'.join(lines)
