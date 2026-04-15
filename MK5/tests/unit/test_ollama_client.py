@@ -11,6 +11,7 @@ from tools.ollama_client import (
     OllamaModelNotFoundError,
     OllamaResponseError,
 )
+from core.verbalization.ollama_verbalizer import OllamaVerbalizer
 
 
 class _OllamaMockHandler(BaseHTTPRequestHandler):
@@ -168,3 +169,9 @@ def test_ollama_client_health_check_connection_failure() -> None:
         raise AssertionError('Expected OllamaConnectionError')
     except OllamaConnectionError:
         pass
+
+
+def test_ollama_verbalizer_uses_bounded_default_timeout() -> None:
+    verbalizer = OllamaVerbalizer()
+    assert verbalizer.client is not None
+    assert verbalizer.client.timeout_seconds == 90.0

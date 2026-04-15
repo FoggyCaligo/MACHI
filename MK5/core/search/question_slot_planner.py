@@ -19,6 +19,9 @@ class QuestionSlotPlannerError(RuntimeError):
     pass
 
 
+PLANNER_OLLAMA_TIMEOUT_SECONDS = 30.0
+
+
 @dataclass(frozen=True, slots=True)
 class RequestedSlot:
     kind: str
@@ -48,7 +51,7 @@ class QuestionSlotPlanner:
 
     def __post_init__(self) -> None:
         if self.client is None:
-            self.client = OllamaClient()
+            self.client = OllamaClient(timeout_seconds=PLANNER_OLLAMA_TIMEOUT_SECONDS)
 
     def plan(
         self,

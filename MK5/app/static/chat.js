@@ -15,7 +15,7 @@ const refreshModelsBtn = document.getElementById("refreshModelsBtn");
 const clearModelBtn = document.getElementById("clearModelBtn");
 const modelBadgeEl = document.getElementById("modelBadge");
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 300000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 360000;
 const PROJECT_STORAGE_KEY = "mk5_selected_project_id";
 const MODEL_STORAGE_KEY = "mk5_selected_model";
 const DEBUG_STORAGE_KEY = "mk5_show_debug";

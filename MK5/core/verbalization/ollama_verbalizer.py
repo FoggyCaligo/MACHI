@@ -17,6 +17,9 @@ class OllamaVerbalizerError(RuntimeError):
     pass
 
 
+VERBALIZER_OLLAMA_TIMEOUT_SECONDS = 90.0
+
+
 @dataclass(slots=True)
 class OllamaVerbalizer:
     client: OllamaClient | None = None
@@ -25,7 +28,7 @@ class OllamaVerbalizer:
 
     def __post_init__(self) -> None:
         if self.client is None:
-            self.client = OllamaClient()
+            self.client = OllamaClient(timeout_seconds=VERBALIZER_OLLAMA_TIMEOUT_SECONDS)
 
     def verbalize(
         self,

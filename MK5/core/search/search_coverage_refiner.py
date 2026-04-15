@@ -6,7 +6,6 @@ from typing import Any, TYPE_CHECKING
 
 from core.entities.conclusion import CoreConclusion
 from core.search.question_slot_planner import QuestionSlotPlan, RequestedSlot
-from core.search.search_sidecar import SearchEvidence
 from tools.ollama_client import (
     OllamaClient,
     OllamaClientError,
@@ -21,6 +20,9 @@ if TYPE_CHECKING:
 
 class SearchCoverageRefinerError(RuntimeError):
     pass
+
+
+REFINER_OLLAMA_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(slots=True)
@@ -38,7 +40,7 @@ class SearchCoverageRefiner:
 
     def __post_init__(self) -> None:
         if self.client is None:
-            self.client = OllamaClient()
+            self.client = OllamaClient(timeout_seconds=REFINER_OLLAMA_TIMEOUT_SECONDS)
 
     def refine(
         self,

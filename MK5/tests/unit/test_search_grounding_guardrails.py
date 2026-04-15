@@ -86,6 +86,16 @@ def test_question_slot_planner_supports_structured_search_aspects() -> None:
     ]
 
 
+def test_search_llm_helpers_use_bounded_default_timeouts() -> None:
+    planner = QuestionSlotPlanner()
+    refiner = SearchCoverageRefiner()
+
+    assert planner.client is not None
+    assert refiner.client is not None
+    assert planner.client.timeout_seconds == 30.0
+    assert refiner.client.timeout_seconds == 30.0
+
+
 def test_search_coverage_refiner_marks_aspects_from_evidence_summaries() -> None:
     refiner = SearchCoverageRefiner(
         client=FakeClient(
