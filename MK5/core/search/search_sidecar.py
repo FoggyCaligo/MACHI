@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from core.cognition.hash_resolver import HashResolver
-from core.cognition.input_segmenter import InputSegmenter
 from core.entities.conclusion import CoreConclusion
+from core.entities.thought_view import ThoughtView
+from core.search.search_need_evaluator import SearchNeedDecision, SearchNeedEvaluator
+from core.search.search_query_planner import SearchPlan, SearchQueryPlanner, SearchQueryPlannerError
 
 
 @dataclass(slots=True)
@@ -29,61 +30,31 @@ class SearchEvidence:
 
 
 @dataclass(slots=True)
-class SearchSidecar:
-    max_results: int = 2
-    timeout_seconds: float = 4.0
-    hash_resolver: HashResolver = field(default_factory=HashResolver)
-    segmenter: InputSegmenter = field(init=False)
+class SearchRunResult:
+    attempted: bool
+    decision: SearchNeedDecision
+    plan: SearchPlan | None = None
+    results: list[SearchEvidence] = field(default_factory=list)
+    error: str | None = None
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, 'segmenter', InputSegmenter(hash_resolver=self.hash_resolver))
 
-    def should_search(self, message: str, conclusion: CoreConclusion) -> bool:
-        compact = ' '.join((message or '').split())
-        has_interrogative_form = compact.endswith('?') or compact.endswith('？')
-        sparse_graph = len(conclusion.activated_concepts) <= 2 and len(conclusion.key_relations) <= 1
-        unstable_graph = len(conclusion.detected_conflicts) > 0 and len(conclusion.key_relations) <= 2
+class SearchBackend(Protocol):
+    def search(self, query: str, *, max_results: int, timeout_seconds: float) -> list[SearchEvidence]: ...
 
-        if conclusion.inferred_intent == 'memory_probe':
-            return False
-        if conclusion.inferred_intent == 'open_information_request':
-            return has_interrogative_form
-        return has_interrogative_form and (sparse_graph or unstable_graph)
 
-    def search(self, message: str, conclusion: CoreConclusion) -> list[SearchEvidence]:
-        if not self.should_search(message, conclusion):
-            return []
-        query = self._build_query(message)
-        if not query:
-            return []
-        results = self._search_wikipedia(query, lang='ko')
+@dataclass(slots=True)
+class WikipediaSearchBackend:
+    def search(self, query: str, *, max_results: int, timeout_seconds: float) -> list[SearchEvidence]:
+        results = self._search_wikipedia(query, lang='ko', max_results=max_results, timeout_seconds=timeout_seconds)
         if results:
-            return results[: self.max_results]
-        return self._search_wikipedia(query, lang='en')[: self.max_results]
+            return results[:max_results]
+        return self._search_wikipedia(query, lang='en', max_results=max_results, timeout_seconds=timeout_seconds)[:max_results]
 
-    def _build_query(self, message: str) -> str:
-        blocks = self.segmenter.segment(message)
-        noun_parts: list[str] = []
-        for block in blocks:
-            if block.block_kind != 'noun_phrase':
-                continue
-            token = block.normalized_text.strip()
-            if len(token) < 2:
-                continue
-            if token in noun_parts:
-                continue
-            noun_parts.append(token)
-            if len(noun_parts) >= 4:
-                break
-        if noun_parts:
-            return ' '.join(noun_parts)
-        return ' '.join(message.split())[:80]
-
-    def _search_wikipedia(self, query: str, *, lang: str) -> list[SearchEvidence]:
-        base = f'https://{lang}.wikipedia.org/w/api.php?action=opensearch&search={quote(query)}&limit={self.max_results}&namespace=0&format=json'
+    def _search_wikipedia(self, query: str, *, lang: str, max_results: int, timeout_seconds: float) -> list[SearchEvidence]:
+        base = f'https://{lang}.wikipedia.org/w/api.php?action=opensearch&search={quote(query)}&limit={max_results}&namespace=0&format=json'
         request = Request(base, headers={'User-Agent': 'MK5-SearchSidecar/0.1'})
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(request, timeout=timeout_seconds) as response:
                 payload = json.loads(response.read().decode('utf-8'))
         except Exception:
             return []
@@ -92,7 +63,7 @@ class SearchSidecar:
         descriptions = payload[2] if len(payload) > 2 else []
         urls = payload[3] if len(payload) > 3 else []
         evidences: list[SearchEvidence] = []
-        for index, title in enumerate(titles[: self.max_results]):
+        for index, title in enumerate(titles[:max_results]):
             snippet = descriptions[index] if index < len(descriptions) else ''
             url = urls[index] if index < len(urls) else ''
             if not title:
@@ -107,3 +78,79 @@ class SearchSidecar:
                 )
             )
         return evidences
+
+
+@dataclass(slots=True)
+class SearchSidecar:
+    max_results: int = 6
+    per_query_max_results: int = 2
+    timeout_seconds: float = 4.0
+    need_evaluator: SearchNeedEvaluator = field(default_factory=SearchNeedEvaluator)
+    query_planner: SearchQueryPlanner = field(default_factory=SearchQueryPlanner)
+    backend: SearchBackend = field(default_factory=WikipediaSearchBackend)
+
+    def should_search(self, message: str, thought_view: ThoughtView, conclusion: CoreConclusion) -> bool:
+        decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
+        return decision.need_search
+
+    def run(
+        self,
+        *,
+        message: str,
+        thought_view: ThoughtView,
+        conclusion: CoreConclusion,
+        model_name: str,
+    ) -> SearchRunResult:
+        decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
+        if not decision.need_search:
+            return SearchRunResult(attempted=False, decision=decision)
+
+        try:
+            plan = self.query_planner.plan(
+                model_name=model_name,
+                message=message,
+                thought_view=thought_view,
+                conclusion=conclusion,
+                decision=decision,
+            )
+        except SearchQueryPlannerError as exc:
+            return SearchRunResult(attempted=True, decision=decision, error=str(exc))
+
+        results = self._execute_plan(plan)
+        return SearchRunResult(attempted=True, decision=decision, plan=plan, results=results)
+
+    def search(
+        self,
+        message: str,
+        thought_view: ThoughtView,
+        conclusion: CoreConclusion,
+        *,
+        model_name: str,
+    ) -> list[SearchEvidence]:
+        return self.run(
+            message=message,
+            thought_view=thought_view,
+            conclusion=conclusion,
+            model_name=model_name,
+        ).results
+
+    def _execute_plan(self, plan: SearchPlan) -> list[SearchEvidence]:
+        aggregated: list[SearchEvidence] = []
+        seen_urls: set[str] = set()
+        seen_titles: set[str] = set()
+        for query in plan.queries:
+            items = self.backend.search(query, max_results=self.per_query_max_results, timeout_seconds=self.timeout_seconds)
+            for item in items:
+                title_key = item.title.strip().lower()
+                url_key = item.url.strip().lower()
+                if (url_key and url_key in seen_urls) or (title_key and title_key in seen_titles):
+                    continue
+                if url_key:
+                    seen_urls.add(url_key)
+                if title_key:
+                    seen_titles.add(title_key)
+                item.metadata = {**item.metadata, 'planned_query': query}
+                aggregated.append(item)
+                if len(aggregated) >= self.max_results:
+                    return aggregated
+        return aggregated

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from core.activation.activation_engine import ActivationEngine, ActivationRequest
-from core.search.search_sidecar import SearchEvidence, SearchSidecar
+from core.search.search_sidecar import SearchEvidence, SearchRunResult, SearchSidecar
 from core.thinking.thought_engine import ThoughtEngine, ThoughtRequest
 from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestResult, GraphIngestService
 from core.verbalization.verbalizer import Verbalizer
@@ -80,8 +80,13 @@ class ChatPipeline:
         if thought_result.core_conclusion is None:
             raise RuntimeError('ThoughtEngine did not produce core_conclusion')
 
-        search_attempted = self.search_sidecar.should_search(request.message, thought_result.core_conclusion)
-        search_results: list[SearchEvidence] = self.search_sidecar.search(request.message, thought_result.core_conclusion)
+        search_run = self.search_sidecar.run(
+            message=request.message,
+            thought_view=thought_view,
+            conclusion=thought_result.core_conclusion,
+            model_name=request.model_name,
+        )
+        search_results: list[SearchEvidence] = search_run.results
         search_ingest_results: list[GraphIngestResult] = []
         if search_results:
             for index, item in enumerate(search_results, start=1):
@@ -97,6 +102,7 @@ class ChatPipeline:
                                 'url': item.url,
                                 'title': item.title,
                                 'search_rank': index,
+                                'planned_query': item.metadata.get('planned_query'),
                             },
                             source_type='search',
                             claim_domain=item.claim_domain,
@@ -120,11 +126,11 @@ class ChatPipeline:
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
 
-        self._attach_search_context(thought_result.core_conclusion, search_attempted=search_attempted, search_results=search_results)
+        self._attach_search_context(thought_result.core_conclusion, search_run=search_run)
 
         verbalized = self.verbalizer.verbalize(thought_result.core_conclusion, model_name=request.model_name)
         if verbalized.llm_error or not verbalized.user_response:
-            if verbalized.llm_error and verbalized.llm_error.startswith('template_verbalizer_disabled:'):
+            if verbalized.llm_error == 'template_verbalization_disabled':
                 raise RuntimeError(
                     '현재 응답을 생성할 수 있는 모델이 없습니다. 모델을 선택하거나 OLLAMA 환경을 확인해주세요.'
                 )
@@ -147,7 +153,6 @@ class ChatPipeline:
                 metadata={
                     'source': 'assistant_reply',
                     'model_name': request.model_name,
-                    'intent_snapshot': thought_result.metadata.get('intent_snapshot', {}),
                 },
                 source_type='assistant',
                 claim_domain=assistant_claim_domain,
@@ -183,7 +188,20 @@ class ChatPipeline:
         }
 
         search_debug = {
-            'query_triggered': bool(search_attempted),
+            'query_triggered': bool(search_run.attempted),
+            'need_decision': {
+                'need_search': search_run.decision.need_search,
+                'reason': search_run.decision.reason,
+                'gap_summary': search_run.decision.gap_summary,
+                'target_terms': search_run.decision.target_terms,
+            },
+            'plan': {
+                'queries': search_run.plan.queries,
+                'reason': search_run.plan.reason,
+                'focus_terms': search_run.plan.focus_terms,
+                'grounding_queries': (search_run.plan.metadata or {}).get('grounding_queries', []),
+                'comparison_queries': (search_run.plan.metadata or {}).get('comparison_queries', []),
+            } if search_run.plan else None,
             'results': [asdict(item) for item in search_results],
             'ingest': [
                 {
@@ -196,6 +214,7 @@ class ChatPipeline:
                 }
                 for item in search_ingest_results
             ],
+            'error': search_run.error,
         }
 
         assistant_ingest_debug = {
@@ -251,20 +270,19 @@ class ChatPipeline:
             rows = [row for row in uow.chat_messages.list_by_session(session_id, limit=100000) if row.role == 'user']
             return (rows[-1].turn_index + 1) if rows else 1
 
-    def _attach_search_context(
-        self,
-        conclusion,
-        *,
-        search_attempted: bool,
-        search_results: list[SearchEvidence],
-    ) -> None:
+    def _attach_search_context(self, conclusion, *, search_run: SearchRunResult) -> None:
         if conclusion is None:
             return
         if conclusion.metadata is None:
             conclusion.metadata = {}
         conclusion.metadata['search_context'] = {
-            'attempted': bool(search_attempted),
-            'result_count': len(search_results),
+            'attempted': bool(search_run.attempted),
+            'result_count': len(search_run.results),
+            'reason': search_run.decision.reason,
+            'gap_summary': search_run.decision.gap_summary,
+            'target_terms': search_run.decision.target_terms,
+            'planned_queries': search_run.plan.queries if search_run.plan else [],
+            'plan_reason': search_run.plan.reason if search_run.plan else '',
             'summaries': [
                 {
                     'title': item.title,
@@ -272,6 +290,6 @@ class ChatPipeline:
                     'provider': item.provider,
                     'url': item.url,
                 }
-                for item in search_results[:3]
+                for item in search_run.results[:3]
             ],
         }

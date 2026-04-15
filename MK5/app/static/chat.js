@@ -448,6 +448,46 @@ function summarizeCoreConclusion(conclusion) {
   ].join("\n");
 }
 
+function summarizeSearch(search) {
+  if (!search) return null;
+  const decision = search.need_decision || {};
+  const plan = search.plan || null;
+  const results = Array.isArray(search.results) ? search.results : [];
+  const ingest = Array.isArray(search.ingest) ? search.ingest : [];
+
+  const lines = [
+    "search debug",
+    `- query_triggered: ${search.query_triggered ? "true" : "false"}`,
+    `- need_search: ${decision.need_search ? "true" : "false"}`,
+    `- decision_reason: ${decision.reason || "-"}`,
+    `- gap_summary: ${decision.gap_summary || "-"}`,
+    `- target_terms: ${(decision.target_terms || []).join(" | ") || "없음"}`,
+  ];
+
+  if (plan) {
+    lines.push(`- planned_queries: ${(plan.queries || []).join(" | ") || "없음"}`);
+    lines.push(`- plan_reason: ${plan.reason || "-"}`);
+    lines.push(`- focus_terms: ${(plan.focus_terms || []).join(" | ") || "없음"}`);
+  } else {
+    lines.push(`- planned_queries: 없음`);
+  }
+
+  lines.push(`- result_count: ${results.length}`);
+  lines.push(`- error: ${search.error || "없음"}`);
+
+  results.slice(0, 3).forEach((item, index) => {
+    lines.push(`${index + 1}. [${item.provider || "-"}] ${item.title || "(제목 없음)"}`);
+  });
+
+  ingest.slice(0, 3).forEach((item, index) => {
+    lines.push(
+      `ingest ${index + 1}. message_id=${item.message_id ?? "-"}, created_nodes=${(item.created_node_ids || []).join(", ") || "없음"}`,
+    );
+  });
+
+  return lines.join("\n");
+}
+
 function summarizeVerbalization(verbalization) {
   if (!verbalization) return null;
   return [
@@ -469,6 +509,7 @@ function showResponseDebug(data) {
     summarizeActivation(debug.activation),
     summarizeThinkingDebug(debug.thinking),
     summarizeCoreConclusion(debug.thinking && debug.thinking.core_conclusion),
+    summarizeSearch(debug.search),
     summarizeVerbalization(debug.verbalization),
   ].filter(Boolean);
 
