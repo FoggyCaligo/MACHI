@@ -1,1 +1,21 @@
-MK5 verbalization prompt placeholder
+[사용자 질문/요청]
+{user_input_summary}
+
+[이번 답변의 목표]
+{answer_goal}
+
+[현재 판단 요약]
+{surface_summary}
+
+[응답 작성 힌트]
+{suggested_actions}
+
+[주의사항]
+{do_not_claim}
+
+중요:
+- 위의 내부 판단 요약은 답변의 주제가 아니다.
+- 사용자의 질문/요청 자체를 중심으로 답하라.
+- 내부 시스템 용어를 직접 노출하지 마라.
+- 확실하지 않으면 모른다고 말하라.
+- 최종 사용자 답변만 출력하라.

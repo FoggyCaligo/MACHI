@@ -218,26 +218,36 @@ class ConclusionBuilder:
         key_relations: list[int],
         intent_snapshot: IntentSnapshot | None = None,
     ) -> str:
-        deactivated_count = sum(1 for item in revision_actions if item.deactivated)
-        lines = [
-            f"입력은 '{self._summarize_user_input(request.message_text)}'로 요약되었고, 현재 사고의 의도 스냅샷은 {intent_snapshot.snapshot_intent}로 정해졌다.",
-            f"이번 사고에서는 {len(activated_concepts)}개의 활성 개념 노드와 {len(key_relations)}개의 핵심 관계 참조가 사용되었다.",
-            f"구조 점검 결과 충돌 {len(contradiction_signals)}건, 신뢰도 변화 {len(trust_updates)}건, revision 판단 {len(revision_actions)}건이 발생했다.",
-        ]
-        if intent_snapshot.shifted and intent_snapshot.shift_reason:
-            lines.append(f"이전 의도에서 현재 의도로 전환된 이유는 {intent_snapshot.shift_reason} 이다.")
+        topic = self._summarize_user_input(request.message_text)
+        has_context = bool(activated_concepts or key_relations)
+        has_uncertainty = bool(contradiction_signals or revision_actions or trust_updates)
+
         if contradiction_signals:
-            conflict_bits = ', '.join(
-                f"edge#{item.edge_id}:{item.reason}" for item in contradiction_signals[: self.max_summary_conflicts]
+            summary = (
+                f"'{topic}'에 대해 바로 단정하기엔 아직 내부 판단 충돌이 남아 있어, "
+                '지금은 보수적으로 답하는 편이 맞다.'
             )
-            lines.append(f"주요 충돌은 {conflict_bits} 이다.")
-        if deactivated_count:
-            lines.append(f"반복 충돌로 인해 {deactivated_count}개의 엣지가 비활성화되었다.")
         elif revision_actions:
-            lines.append('revision 후보를 검토했지만 이번 사이클에서는 구조 보존 쪽이 유지되었다.')
-        elif thought_view.edges:
-            lines.append('현재 국부 그래프에서는 즉시 구조를 교체할 수준의 변화는 감지되지 않았다.')
-        lines.append(
-            f"현재 사고의 충분성 평가는 {intent_snapshot.sufficiency_score:.2f} / 임계치 {intent_snapshot.stop_threshold:.2f} 이며, should_stop={intent_snapshot.should_stop} 로 판정되었다."
-        )
-        return ' '.join(lines)
+            summary = (
+                f"'{topic}'와 관련된 기존 이해를 다시 점검하는 흐름이 있어, "
+                '확실한 부분만 짧게 답하는 편이 맞다.'
+            )
+        elif has_context:
+            summary = (
+                f"'{topic}'와 이어지는 기존 맥락이 일부 있어, "
+                '현재 확보된 범위 안에서 답을 정리할 수 있다.'
+            )
+        else:
+            summary = (
+                f"'{topic}'에 답하기 위한 맥락이 아직 충분하지 않아, "
+                '가능한 범위만 신중하게 말하는 편이 맞다.'
+            )
+
+        if intent_snapshot and intent_snapshot.shifted and intent_snapshot.shift_reason and not has_uncertainty:
+            summary += ' 이전 흐름과는 조금 다른 주제로 넘어온 상태다.'
+
+        if intent_snapshot and intent_snapshot.should_stop and has_context and not has_uncertainty:
+            summary += ' 지금은 더 크게 억지 해석을 덧붙이지 않는 편이 낫다.'
+
+        return summary
+

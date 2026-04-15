@@ -101,6 +101,26 @@ class EdgeRepository(Repository, ABC):
         """Update edge-level quantitative signals."""
 
     @abstractmethod
+    def update_counters(
+        self,
+        edge_id: int,
+        *,
+        support_count: int | None = None,
+        conflict_count: int | None = None,
+    ) -> None:
+        """Set edge counters directly when consolidating duplicate relations."""
+
+    @abstractmethod
+    def reassign(
+        self,
+        edge_id: int,
+        *,
+        source_node_id: int | None = None,
+        target_node_id: int | None = None,
+    ) -> None:
+        """Rewrite one or both endpoints without recreating the edge row."""
+
+    @abstractmethod
     def list_revision_candidates(
         self,
         *,

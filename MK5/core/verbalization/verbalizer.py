@@ -24,7 +24,6 @@ class Verbalizer:
     template_verbalizer: TemplateVerbalizer | None = None
     action_layer_builder: ActionLayerBuilder | None = None
     ollama_verbalizer: OllamaVerbalizer | None = None
-    allow_template_fallback: bool = False
 
     def __post_init__(self) -> None:
         if self.template_verbalizer is None:
@@ -39,20 +38,12 @@ class Verbalizer:
         internal_explanation = self.template_verbalizer.build_internal_explanation(conclusion)
 
         if not model_name or model_name == DEFAULT_MODEL_NAME:
-            if self.allow_template_fallback:
-                return VerbalizationResult(
-                    user_response=self.template_verbalizer.build_user_response(conclusion, derived_action),
-                    internal_explanation=internal_explanation,
-                    derived_action=derived_action,
-                    used_llm=False,
-                    llm_error=None,
-                )
             return VerbalizationResult(
-                user_response="",
+                user_response='',
                 internal_explanation=internal_explanation,
                 derived_action=derived_action,
                 used_llm=False,
-                llm_error="template_verbalization_disabled",
+                llm_error='template_verbalizer_disabled:model_not_selected',
             )
 
         try:
@@ -70,9 +61,9 @@ class Verbalizer:
             )
         except OllamaVerbalizerError as exc:
             return VerbalizationResult(
-                user_response=self.template_verbalizer.build_user_response(conclusion, derived_action),
+                user_response='',
                 internal_explanation=internal_explanation,
                 derived_action=derived_action,
                 used_llm=False,
-                llm_error=str(exc),
+                llm_error=f'llm_verbalization_failed:{exc}',
             )

@@ -10,6 +10,7 @@ from core.thinking.contradiction_detector import ContradictionDetector
 from core.thinking.intent_manager import IntentManager
 from core.thinking.structure_revision_service import StructureRevisionService
 from core.thinking.trust_manager import TrustManager
+from core.update.node_merge_service import NodeMergeService
 from storage.unit_of_work import UnitOfWork
 
 
@@ -34,7 +35,9 @@ class ThoughtEngine:
         self.uow_factory = uow_factory
         self.contradiction_detector = contradiction_detector or ContradictionDetector()
         self.trust_manager = trust_manager or TrustManager()
-        self.structure_revision_service = structure_revision_service or StructureRevisionService()
+        self.structure_revision_service = structure_revision_service or StructureRevisionService(
+            node_merge_service=NodeMergeService(uow_factory),
+        )
         self.conclusion_builder = conclusion_builder or ConclusionBuilder()
         self.intent_manager = intent_manager or IntentManager()
 

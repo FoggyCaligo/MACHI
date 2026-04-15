@@ -96,6 +96,24 @@ class SqliteNodePointerRepository(NodePointerRepository):
         rows = fetch_all(self.connection, sql, params)
         return [_row_to_node_pointer(row) for row in rows]
 
+    def update_owner(self, pointer_id: int, owner_node_id: int) -> None:
+        self.connection.execute(
+            "UPDATE node_pointers SET owner_node_id = ? WHERE id = ?",
+            (owner_node_id, pointer_id),
+        )
+
+    def update_referenced(self, pointer_id: int, referenced_node_id: int) -> None:
+        self.connection.execute(
+            "UPDATE node_pointers SET referenced_node_id = ? WHERE id = ?",
+            (referenced_node_id, pointer_id),
+        )
+
+    def update_detail(self, pointer_id: int, detail: dict) -> None:
+        self.connection.execute(
+            "UPDATE node_pointers SET detail_json = ? WHERE id = ?",
+            (dumps_json(detail), pointer_id),
+        )
+
     def deactivate(self, pointer_id: int) -> None:
         self.connection.execute("UPDATE node_pointers SET is_active = 0 WHERE id = ?", (pointer_id,))
 

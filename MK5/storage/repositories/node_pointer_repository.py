@@ -36,5 +36,17 @@ class NodePointerRepository(Repository, ABC):
         """Return all owners that currently point at the given node."""
 
     @abstractmethod
+    def update_owner(self, pointer_id: int, owner_node_id: int) -> None:
+        """Rewrite the owner side of one pointer row."""
+
+    @abstractmethod
+    def update_referenced(self, pointer_id: int, referenced_node_id: int) -> None:
+        """Rewrite the referenced side of one pointer row."""
+
+    @abstractmethod
+    def update_detail(self, pointer_id: int, detail: dict) -> None:
+        """Replace pointer detail JSON after consolidation."""
+
+    @abstractmethod
     def deactivate(self, pointer_id: int) -> None:
         """Deactivate one pointer without erasing the history row."""

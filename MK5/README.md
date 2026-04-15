@@ -1,135 +1,140 @@
 # MK5
 
-## 개요
-MK5는 기존의 “프로필 문장 저장 + 프롬프트 주입” 중심 구조에서 벗어나,
-**입력을 의미 단위로 분해하고, 하나의 세계 그래프에 누적하며, 그 그래프의 국부 활성화 위에서 사고를 전개한 뒤, 마지막에만 언어로 표현하는 인지형 대화 시스템**을 목표로 한다.
+## 한 문장 정의
+MK5는 **입력을 의미 단위로 분해하고, 하나의 세계 그래프에 누적하며, 그 그래프의 국부 활성화 위에서 사고를 전개한 뒤, 마지막에만 언어화하는 인지형 대화 시스템**이다.
 
-즉 MK5의 핵심은 “더 좋은 답변 생성기”가 아니라,
-**인지 → 사고 → 설명형 결론 → 얇은 행동형 레이어 → 언어화**를 분리한 구조를 실제로 구현하는 데 있다.
-
----
-
-## 장기적인 의미
-이 프로젝트는 단순히 기존 LLM 위에 메모리를 덧씌우는 실험이 아니다. 장기적으로는 다음 문제의식을 다룬다.
-
-1. **정보를 받는 것과 이해하는 것을 분리한다.**
-   - 입력을 바로 답변으로 연결하지 않는다.
-   - 먼저 의미블록과 관계로 해석하고, 그 결과를 세계 그래프에 반영한다.
-
-2. **지식을 문장 모음이 아니라 구조로 취급한다.**
-   - 노드는 문장 자체가 아니라, 반복 입력을 거치며 체감되고 안정화된 개념이다.
-   - 엣지는 단순 연결이 아니라 관계, 차이, 조건, 충돌 압력을 담는다.
-
-3. **세계 그래프는 하나다.**
-   - 사용자 발화, 모델 발화, 검색 결과를 서로 다른 “층”으로 분리해 별도 저장하지 않는다.
-   - 대신 하나의 세계 그래프 안에 넣되, 출처와 주장 종류에 따라 초기 trust와 증감률을 다르게 둔다.
-
-4. **설명 가능한 구조를 본체로 둔다.**
-   - 행동형 지시는 설명형 conclusion으로부터 파생 가능하다.
-   - 반대로, 설명 없는 행동형 결론만으로는 원래 사고 구조를 복원하기 어렵다.
-   - 그래서 MK5의 본체는 설명형이고, 행동형은 얇은 파생 출력이다.
-
-5. **외부 정보도 세계 그래프에 영향을 줄 수 있다.**
-   - 검색 결과도, 모델 답변도, 사용자 발화도 그래프에 들어갈 수 있다.
-   - 다만 source_type과 claim_domain에 따라 낮은 trust에서 시작하고, 반복성과 교차 일치로 강화된다.
+즉 목표는 “더 좋은 답변 생성기”가 아니라,
+**인지 → 활성화 → 의도 스냅샷 → 구조 점검 / revision → 설명형 결론 → 얇은 행동형 레이어 → 언어화**를 분리하는 것이다.
 
 ---
 
-## 핵심 철학
+## 프로젝트의 방향
+MK5는 MK4의 `profile / candidate / confirmed` 중심 구조를 그대로 확장하는 프로젝트가 아니다.
+중심축을 **사용자 프로필 저장**에서 **세계 그래프 기반 판단**으로 옮긴다.
 
-### 1. 본체는 구조다
-MK5에서 본질은 “문장 생성”이 아니라 “구조 형성”이다.
-- 원문은 provenance로 남는다.
-- 영구 그래프에는 재사용 가능한 의미블록이 저장된다.
-- 응답은 이 구조의 결과를 언어로 치환한 표면이다.
+핵심 방향은 다음과 같다.
 
-### 2. 기본은 구조 보존이다
-새로운 구조가 들어오더라도, 기존 연결을 즉시 부수지 않는다.
-- 기본은 기존 구조를 유지한다.
-- 다만, 기존 구조를 깨야만 설명 가능한 반례가 반복적으로 누적되면 trust를 낮춘다.
-- trust가 임계점 밑으로 내려가면 revision candidate가 되고, 필요하면 구조를 교체한다.
+1. **세계 그래프는 하나다.**
+   - user / assistant / search / file 입력을 별도 층으로 떼지 않는다.
+   - 대신 같은 그래프 안에 넣되, `source_type × claim_domain`에 따라 trust를 다르게 둔다.
 
-### 3. 설명형 conclusion이 본체다
-MK5의 사고 결과는 설명형 `CoreConclusion`으로 남는다.
-- `activated_concepts`는 node id 참조 목록이다.
-- `key_relations`는 edge id 참조 목록이다.
-- `detected_conflicts`, `trust_changes`, `revision_decisions`를 통해 구조적 판단이 남는다.
+2. **노드는 문장이 아니라 재사용 가능한 의미 단위다.**
+   - 원문 전체는 provenance로 남고,
+   - 그래프에는 의미블록이 재사용 가능한 형태로 들어간다.
 
-### 4. 행동형은 얇은 파생 레이어다
-행동형 계획이나 “다음으로 무엇을 할지”는 설명형 conclusion 위에 얹힌다.
-현재 구현에서는 `DerivedActionLayer`가 이 역할을 맡고 있다.
+3. **설명형 conclusion이 본체다.**
+   - 행동형 지시는 설명형 conclusion에서 파생된다.
+   - 본체는 항상 `CoreConclusion`이며, `activated_concepts` / `key_relations`는 node / edge 참조다.
 
-### 5. 언어화는 사고가 아니다
-언어화 모델은 세계를 이해하는 주체가 아니다.
-이미 만들어진 conclusion과 action layer를 자연어로 다듬어 표현하는 역할만 맡는다.
-현재는:
-- `mk5-graph-core` → template verbalizer(디버그/개발용 참조용이며, 실제 응답 fallback으로 사용하지 않음)
-- 선택된 OLLAMA 모델 → `OllamaVerbalizer`
-로 연결된다.
+4. **기본은 구조 보존이다.**
+   - 새 입력이 들어와도 기존 연결을 즉시 부수지 않는다.
+   - 반복 충돌과 trust 하락이 누적될 때만 revision 단계에서 구조 교체를 검토한다.
 
-### 6. 세계 그래프는 하나지만 확실성은 차등적이다
-MK5는 별도의 evidence layer를 두기보다, 같은 세계 그래프 안에 모두 넣는다.
-대신 다음이 다르다.
-- 초기 trust
-- support 시 trust 상승률
-- conflict 시 trust 하락률
-
-즉 **존재는 허용하되, 확실성은 출처와 반복성으로 조절**한다.
+5. **언어화는 사고가 아니다.**
+   - verbalizer는 이미 만들어진 결론을 한국어로 바꾸는 역할만 맡는다.
 
 ---
 
 ## 현재 구현 상태
 
-### 구현 완료
-- SQLite 스키마와 repository 계층
-- Graph ingest
+### 현재 이미 연결된 것
+- SQLite 스키마 / repository / unit of work
+- `GraphIngestService`
+- 의미블록 분해 후 node 재사용/생성
 - source-aware trust policy
-- 국부 활성화(`ThoughtView`)
-- `PatternDetector` 기반 SubgraphPattern 감지 및 활성화
-- `ConflictResolutionPolicy` 기반 패턴 충돌 해결
-- `ActivationEngine`에서 ThoughtView 생성 후 자동 패턴 활성화
-- `ThoughtView.activated_patterns` 지원
-- 충돌 감지 / trust 하락 / revision 검토
-- 설명형 core conclusion 생성
-- 얇은 행동형 레이어(`DerivedActionLayer`)
-- template verbalizer
-- 선택 모델 OLLAMA verbalizer 연결
-- 검색 sidecar (낮은 trust의 검색 결과 그래프 반영)
-- assistant 답변 자체의 그래프 반영
+- partial reuse pointer 생성
+- `ActivationEngine` → `ThoughtView`
+- `PatternDetector` / `ConflictResolutionPolicy`
+- `ContradictionDetector`
+- `TrustManager`
+- `StructureRevisionService`
+- **revision 단계 shallow node merge**
+- `NodeMergeService` / `PointerRewriteService`
+- **`IntentManager` 기반 intent snapshot 결정**
+- 설명형 `CoreConclusion`
+- `DerivedActionLayer`
+- `TemplateVerbalizer` (사용자 응답 fallback 금지, 내부 설명 전용)
+- `OllamaVerbalizer` (프롬프트는 prompts/ 에서 로드)
+- search sidecar
+- assistant 답변의 그래프 반영
 - chat end-to-end pipeline
-- 최소 Flask API 셸
-- 기본 chat UI
+- 최소 Flask API 셸 / chat UI
 - integration tests
 
-### 아직 미완료
-- Flask 실서버 기동 검증
-- `requirements.txt`
-- debug UI 패널 최종 정리
+### 아직 안 된 것
+- `tools/ollama_client.py` 실구현
+- trusted_search 기반 검색 레이어로 전환
+- search corroboration 고도화
+- `graph_commit_service.py` 실구현
+- `edge_update_service.py` 실구현
 - meaning block 정교화
-- revision 고도화
-- 검색 결과의 다중 출처 corroboration
-- 출처/주장 종류별 신뢰도 정책의 세밀화
+- contradiction / revision 규칙 고도화
+- Flask 실서버 기동 검증
+- requirements 정리
 
 ---
 
-## 현재 주요 흐름
+## 현재 사고 흐름
 1. 사용자 입력 수신
 2. `GraphIngestService`가 user source로 chat_message / graph_event / node / edge / pointer 기록
-3. `ActivationEngine`이 현재 입력 기준 seed block / seed node / local graph 생성
-4. `PatternDetector`가 `ThoughtView`를 분석해 SubgraphPattern을 감지하고 활성화한다
-5. `ThoughtEngine`이 contradiction / trust / revision 검토 수행
-5. `ConclusionBuilder`가 설명형 `CoreConclusion` 생성
-6. 필요 시 `SearchSidecar`가 외부 검색 결과를 가져옴
-7. 검색 결과를 `source_type="search"`, 낮은 trust로 같은 세계 그래프에 반영
-8. 다시 activation / thinking 수행
+3. `ActivationEngine`이 현재 입력 기준 `ThoughtView`를 생성
+4. `PatternDetector`가 local graph 패턴을 감지
+5. `ThoughtEngine`이 아래를 순서대로 수행
+   - contradiction 감지
+   - trust 하락 및 revision candidate 표기
+   - revision 단계 검토
+   - 필요 시 shallow duplicate merge 또는 edge deactivation
+   - **`IntentManager`가 현재 그래프 상태와 최근 session continuity를 바탕으로 intent snapshot 결정**
+6. `ConclusionBuilder`가 설명형 `CoreConclusion` 생성
+7. 필요 시 `SearchSidecar`가 외부 검색 결과를 가져와 낮은 trust로 그래프에 반영
+8. 다시 activation / thinking
 9. `DerivedActionLayer` 생성
-10. 선택 모델 또는 템플릿 verbalizer가 최종 사용자 응답 생성
-11. assistant 답변도 `source_type="assistant"`, 낮은 trust로 같은 세계 그래프에 반영
+10. verbalizer가 최종 사용자 응답 생성
+11. assistant 답변도 낮은 trust로 같은 세계 그래프에 반영
+
+---
+
+## Intent snapshot 정책
+현재 `IntentManager`는 완전한 의도 함수 엔진은 아니다.
+대신, 지금 사고 사이클에서 무엇을 우선할지를 고르는 **상태 전이기**로 동작한다.
+
+현재 선택 가능한 snapshot intent:
+- `structure_review`
+- `memory_probe`
+- `open_information_request`
+- `relation_synthesis_request`
+- `graph_grounded_reasoning`
+
+판단 근거:
+- contradiction 수
+- trust update / revision 수
+- seed / node / edge / pointer 수
+- pattern 존재 여부
+- 직전 assistant turn에 저장된 이전 intent snapshot과의 overlap
+
+의미:
+- 의도는 문자열 키워드가 아니라 **현재 그래프 상태 + 최근 사고 연속성**으로 결정된다.
+- assistant 답변 metadata에 `intent_snapshot`이 저장되며, 다음 turn에서 continuity / shift 판단에 사용된다.
+
+---
+
+## Revision 단계 merge 정책
+현재 merge는 **A안**으로 고정되어 있다.
+
+- ingest 직후 바로 merge하지 않는다.
+- revision candidate가 된 edge를 `StructureRevisionService`가 review할 때만 merge를 검토한다.
+- 누적량은 보수적으로 높게 잡지 않고, **조금 얕은 임계치**를 사용한다.
+
+현재 방향:
+- trigger는 얕게
+- merge 허용 조건은 보수적으로
+
+즉, 지금은 “구조가 조금만 흔들려도 바로 다 합친다”가 아니라,
+**revision review 단계에서 duplicate-like 노드만 먼저 정리하는 초기형 merge**다.
 
 ---
 
 ## 신뢰도 정책 개요
-
 ### source_type 예시
 - `user`
 - `assistant`
@@ -144,12 +149,10 @@ MK5는 별도의 evidence layer를 두기보다, 같은 세계 그래프 안에 
 - `world_fact`
 
 ### 기본 원칙
-- 사용자의 자기 상태/선호 진술은 비교적 높은 trust에서 시작
-- 일반 사용자 발화는 중간 trust에서 시작
-- 검색 결과는 낮거나 중간 trust에서 시작
-- 모델 발화는 더 낮은 trust에서 시작
-- 같은 내용이 반복되거나, 다른 source와 교차 일치하면 trust 상승
-- 충돌과 반례가 누적되면 trust 하락 및 revision 후보화
+- 사용자 자기 상태/선호 진술은 비교적 높은 trust에서 시작
+- 검색 결과와 모델 발화는 더 낮은 trust에서 시작
+- support와 교차 일치가 누적되면 trust 상승
+- conflict와 반례가 누적되면 trust 하락 및 revision 후보화
 
 ---
 
@@ -170,25 +173,28 @@ http://127.0.0.1:5000
 ### 테스트
 ```bash
 python tests/unit/test_sqlite_repository_smoke.py
+python tests/unit/test_intent_manager.py
 python tests/integration/test_chat_graph_pipeline.py
 python tests/integration/test_activation_engine_pipeline.py
 python tests/integration/test_thinking_revision_pipeline.py
+python tests/integration/test_revision_driven_node_merge.py
 python tests/integration/test_end_to_end_chat_pipeline.py
-python tests/test_activation_engine_integration.py
+python tests/integration/test_intent_snapshot_pipeline.py
 ```
 
 ---
 
 ## 다음 우선 작업
-1. `requirements.txt` 추가
-2. debug UI 패널 최종 정리
-3. 검색 결과 다중 출처 corroboration
-4. source_type × claim_domain 신뢰도 정책 세밀화
-5. meaning block / contradiction / revision 정교화
+1. `tools/ollama_client.py` 실구현
+2. search를 위키피디아 전용이 아니라 trusted_search 기반으로 전환
+3. search corroboration 정책 추가
+4. `graph_commit_service.py` / `edge_update_service.py` 실구현
+5. meaning block / contradiction / revision 규칙 정교화
+6. requirements 정리 및 Flask 실서버 확인
 
 ---
 
 ## 주의
-- 현재 기준으로 `project/profile/chat`을 별도 도메인으로 나누지 않는다.
-- 모든 입력은 기본적으로 chat 흐름으로 들어오고, project나 profile은 그 그래프 안에서 해석되는 구조다.
 - zip 업로드는 sync용일 뿐, 기준본은 항상 현재 로컬 작업본이다.
+- 수정 사항은 파일 단위로 순차 패치한다.
+- 정책/철학 분기점이 나오면 먼저 사용자에게 묻는다.

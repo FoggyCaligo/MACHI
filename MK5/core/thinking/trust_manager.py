@@ -14,9 +14,9 @@ class TrustManager:
     medium_pressure_delta: float = 0.75
     high_trust_delta: float = -0.15
     high_pressure_delta: float = 1.25
-    revision_candidate_pressure_threshold: float = 3.0
-    revision_candidate_conflict_threshold: int = 3
-    revision_candidate_trust_threshold: float = 0.35
+    revision_candidate_pressure_threshold: float = 2.0
+    revision_candidate_conflict_threshold: int = 2
+    revision_candidate_trust_threshold: float = 0.42
 
     def apply_signal(
         self,

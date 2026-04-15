@@ -197,6 +197,46 @@ class SqliteEdgeRepository(EdgeRepository):
         params.append(edge_id)
         self.connection.execute(f"UPDATE edges SET {', '.join(updates)} WHERE id = ?", params)
 
+    def update_counters(
+        self,
+        edge_id: int,
+        *,
+        support_count: int | None = None,
+        conflict_count: int | None = None,
+    ) -> None:
+        updates: list[str] = []
+        params: list[object] = []
+        if support_count is not None:
+            updates.append("support_count = ?")
+            params.append(support_count)
+        if conflict_count is not None:
+            updates.append("conflict_count = ?")
+            params.append(conflict_count)
+        if not updates:
+            return
+        params.append(edge_id)
+        self.connection.execute(f"UPDATE edges SET {', '.join(updates)} WHERE id = ?", params)
+
+    def reassign(
+        self,
+        edge_id: int,
+        *,
+        source_node_id: int | None = None,
+        target_node_id: int | None = None,
+    ) -> None:
+        updates: list[str] = []
+        params: list[object] = []
+        if source_node_id is not None:
+            updates.append("source_node_id = ?")
+            params.append(source_node_id)
+        if target_node_id is not None:
+            updates.append("target_node_id = ?")
+            params.append(target_node_id)
+        if not updates:
+            return
+        params.append(edge_id)
+        self.connection.execute(f"UPDATE edges SET {', '.join(updates)} WHERE id = ?", params)
+
     def list_revision_candidates(
         self,
         *,
