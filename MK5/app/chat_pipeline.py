@@ -131,7 +131,7 @@ class ChatPipeline:
             )
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
-            if search_run.slot_plan is not None:
+            if search_run.slot_plan is not None and not search_run.decision.metadata.get('post_search_refined'):
                 search_run.decision = self.search_sidecar.need_evaluator.evaluate(
                     message=request.message,
                     thought_view=thought_view,

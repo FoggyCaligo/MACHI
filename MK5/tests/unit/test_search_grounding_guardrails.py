@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 from app.chat_pipeline import ChatPipeline
 from core.entities.conclusion import CoreConclusion
 from core.search.question_slot_planner import QuestionSlotPlanner
+from core.search.search_coverage_refiner import SearchCoverageRefiner
 from core.search.search_need_evaluator import SearchNeedDecision
 from core.search.search_query_planner import SearchPlan, SearchQueryPlanner
 from core.search.search_sidecar import (
@@ -83,6 +84,66 @@ def test_question_slot_planner_supports_structured_search_aspects() -> None:
         'mail armor',
         'mail armor:construction',
     ]
+
+
+def test_search_coverage_refiner_marks_aspects_from_evidence_summaries() -> None:
+    refiner = SearchCoverageRefiner(
+        client=FakeClient(
+            json.dumps(
+                {
+                    'covered_slot_labels': ['plate armor', 'plate armor:construction'],
+                    'missing_slot_labels': ['mail armor', 'mail armor:construction'],
+                    'reason': 'Only plate armor evidence includes a construction summary.',
+                }
+            )
+        )
+    )
+    slot_plan = QuestionSlotPlanner(
+        client=FakeClient(
+            json.dumps(
+                {
+                    'entities': ['plate armor', 'mail armor'],
+                    'search_aspects': ['construction'],
+                    'comparison_axes': ['mobility'],
+                    'reason': 'Split factual lookup axes from final comparison axes.',
+                }
+            )
+        )
+    ).plan(
+        model_name='gemma3:4b',
+        message='Compare plate armor and mail armor.',
+        thought_view=type('ThoughtViewStub', (), {'seed_nodes': [], 'nodes': []})(),
+        conclusion=CoreConclusion(
+            session_id='s1',
+            message_id=1,
+            user_input_summary='armor comparison',
+            inferred_intent='structure_review',
+        ),
+        target_terms=['plate armor', 'mail armor'],
+    )
+
+    analysis = refiner.refine(
+        model_name='gemma3:4b',
+        message='Compare plate armor and mail armor.',
+        conclusion=CoreConclusion(
+            session_id='s1',
+            message_id=1,
+            user_input_summary='armor comparison',
+            inferred_intent='structure_review',
+        ),
+        slot_plan=slot_plan,
+        evidences=[
+            SearchEvidence(
+                title='Plate armor',
+                snippet='Plate armor uses large rigid plates.',
+                url='https://example.test/plate',
+                provider='provider-a',
+            )
+        ],
+    )
+
+    assert analysis.covered_slot_labels == ['plate armor', 'plate armor:construction']
+    assert analysis.missing_slot_labels == ['mail armor', 'mail armor:construction']
 
 
 def test_search_query_planner_uses_structured_missing_slots() -> None:

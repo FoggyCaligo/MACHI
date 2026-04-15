@@ -10,6 +10,8 @@
 - entities에는 비교/설명의 대상이 되는 개념만 넣어라.
 - search_aspects에는 각 entity를 개별적으로 검색해서 확인해야 할 factual aspect만 넣어라.
 - comparison_axes에는 최종 답변에서 비교에 사용할 축만 넣어라.
+- search_aspects에는 "차이점", "비교", "우열"처럼 비교 자체를 뜻하는 표현보다, 실제 evidence 안에서 확인할 수 있는 factual facet을 넣어라.
+- 예를 들어 비교 질문이라도 search_aspects는 "구조", "재료", "결합 방식", "보호 방식", "무게", "유연성"처럼 evidence에서 확인 가능한 형태가 더 좋다.
 - 정확하지 않은 항목은 억지로 만들지 마라.
 - JSON object만 출력하라.
 - JSON 형식: {"entities": ["..."], "search_aspects": ["..."], "comparison_axes": ["..."], "reason": "..."}

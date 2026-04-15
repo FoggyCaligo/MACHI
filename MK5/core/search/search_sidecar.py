@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from core.entities.conclusion import CoreConclusion
+from core.search.search_coverage_refiner import SearchCoverageRefiner, SearchCoverageRefinerError
 from core.entities.thought_view import ThoughtView
 from core.search.question_slot_planner import QuestionSlotPlan, QuestionSlotPlanner, QuestionSlotPlannerError
 from core.search.search_need_evaluator import SearchNeedDecision, SearchNeedEvaluator
@@ -259,6 +260,7 @@ class SearchSidecar:
     need_evaluator: SearchNeedEvaluator = field(default_factory=SearchNeedEvaluator)
     slot_planner: QuestionSlotPlanner = field(default_factory=QuestionSlotPlanner)
     query_planner: SearchQueryPlanner = field(default_factory=SearchQueryPlanner)
+    coverage_refiner: SearchCoverageRefiner = field(default_factory=SearchCoverageRefiner)
     backend: SearchBackend = field(default_factory=CompositeSearchBackend)
 
     def should_search(self, message: str, thought_view: ThoughtView, conclusion: CoreConclusion) -> bool:
@@ -315,9 +317,28 @@ class SearchSidecar:
             return SearchRunResult(attempted=False, decision=decision, slot_plan=slot_plan, error=str(exc), planning_attempted=True)
 
         results, provider_errors = self._execute_plan(plan)
+        post_search_decision = decision
+        if results:
+            try:
+                analysis = self.coverage_refiner.refine(
+                    model_name=model_name,
+                    message=message,
+                    conclusion=conclusion,
+                    slot_plan=slot_plan,
+                    evidences=results,
+                )
+                post_search_decision = self._decision_after_search_refinement(
+                    original_decision=decision,
+                    slot_plan=slot_plan,
+                    covered_slot_labels=analysis.covered_slot_labels,
+                    missing_slot_labels=analysis.missing_slot_labels,
+                    reason=analysis.reason,
+                )
+            except SearchCoverageRefinerError as exc:
+                provider_errors.append({'provider': 'search-coverage-refiner', 'query': message, 'error': str(exc)})
         return SearchRunResult(
             attempted=True,
-            decision=decision,
+            decision=post_search_decision,
             slot_plan=slot_plan,
             plan=plan,
             results=results,
@@ -384,3 +405,52 @@ class SearchSidecar:
         if isinstance(response, SearchBackendResult):
             return response
         return SearchBackendResult(results=list(response or []), provider_errors=[])
+
+    def _decision_after_search_refinement(
+        self,
+        *,
+        original_decision: SearchNeedDecision,
+        slot_plan: QuestionSlotPlan,
+        covered_slot_labels: list[str],
+        missing_slot_labels: list[str],
+        reason: str,
+    ) -> SearchNeedDecision:
+        slot_by_label = {slot.label: slot for slot in slot_plan.requested_slots}
+        covered = [
+            self.need_evaluator._slot_dict(slot_by_label[label])
+            for label in covered_slot_labels
+            if label in slot_by_label
+        ]
+        missing = [
+            self.need_evaluator._slot_dict(slot_by_label[label])
+            for label in missing_slot_labels
+            if label in slot_by_label
+        ]
+        if not missing and len(covered) < len(slot_plan.requested_slots):
+            missing = [
+                self.need_evaluator._slot_dict(slot)
+                for slot in slot_plan.requested_slots
+                if slot.label not in covered_slot_labels
+            ]
+
+        need_search = bool(missing)
+        gap_summary = (
+            f'검색 결과를 반영해도 아직 비어 있는 슬롯이 있다: {", ".join(item["label"] for item in missing[:4])}'
+            if need_search
+            else '검색 결과 기준으로 요청 슬롯이 모두 확인되었다.'
+        )
+        return SearchNeedDecision(
+            need_search=need_search,
+            reason='post_search_missing_slot_grounding' if need_search else 'post_search_slot_coverage_sufficient',
+            gap_summary=gap_summary,
+            target_node_ids=list(original_decision.target_node_ids),
+            target_terms=list(original_decision.target_terms),
+            requested_slots=list(original_decision.requested_slots),
+            covered_slots=covered,
+            missing_slots=missing,
+            metadata={
+                **original_decision.metadata,
+                'post_search_refined': True,
+                'post_search_refiner_reason': reason,
+            },
+        )
