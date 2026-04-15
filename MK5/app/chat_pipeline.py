@@ -99,6 +99,8 @@ class ChatPipeline:
                             content=item.text_for_graph,
                             metadata={
                                 'source': item.provider,
+                                'source_provenance': item.source_provenance,
+                                'trust_hint': item.trust_hint,
                                 'url': item.url,
                                 'title': item.title,
                                 'search_rank': index,

@@ -1,0 +1,3 @@
+그래서 네오에서 가장 현실적인 추천 순서를 한 줄로 말하면 이렇다.
+
+qwen3:4b → phi4-mini → llama3.2:3b → (Gemma 고집이면) gemma4:e2b.

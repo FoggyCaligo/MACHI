@@ -10,7 +10,9 @@ if str(ROOT) not in sys.path:
 
 from app.chat_pipeline import ChatPipeline, ChatPipelineRequest
 from core.entities.conclusion import CoreConclusion, DerivedActionLayer
-from core.search.search_sidecar import SearchEvidence, SearchSidecar
+from core.search.search_need_evaluator import SearchNeedDecision
+from core.search.search_query_planner import SearchPlan
+from core.search.search_sidecar import SearchEvidence, SearchRunResult, SearchSidecar
 from core.verbalization.verbalizer import VerbalizationResult, Verbalizer
 
 
@@ -31,17 +33,37 @@ class FakeVerbalizer(Verbalizer):
 
 
 class FakeSearchSidecar(SearchSidecar):
-    def search(self, message: str, conclusion: CoreConclusion) -> list[SearchEvidence]:
+    def run(self, *, message: str, thought_view, conclusion: CoreConclusion, model_name: str) -> SearchRunResult:
+        decision = SearchNeedDecision(
+            need_search=('하데스' in message),
+            reason='test',
+            gap_summary='test gap',
+            target_terms=['하데스'],
+        )
         if '하데스' not in message:
-            return []
-        return [
-            SearchEvidence(
-                title='하데스',
-                snippet='고대 그리스 신화에서 저승 세계를 가리키는 이름으로도 쓰인다.',
-                url='https://example.test/hades',
-                provider='fake-search',
-            )
-        ]
+            return SearchRunResult(attempted=False, decision=decision)
+        return SearchRunResult(
+            attempted=True,
+            decision=decision,
+            plan=SearchPlan(
+                queries=['하데스 그리스 신화', '하데스 장소 의미'],
+                reason='test plan',
+                focus_terms=['하데스'],
+                metadata={
+                    'grounding_queries': ['하데스 그리스 신화'],
+                    'comparison_queries': ['하데스 장소 의미'],
+                },
+            ),
+            results=[
+                SearchEvidence(
+                    title='하데스',
+                    snippet='고대 그리스 신화에서 저승 세계를 가리키는 이름으로도 쓰인다.',
+                    url='https://example.test/hades',
+                    provider='fake-search',
+                    metadata={'planned_query': '하데스 그리스 신화'},
+                )
+            ],
+        )
 
 
 def main() -> None:
@@ -91,6 +113,7 @@ def main() -> None:
         assert response_with_model['verbalization']['used_llm'] is True
         assert response_with_model['search']['query_triggered'] is True
         assert response_with_model['search']['results']
+        assert response_with_model['search']['plan']['queries'][0] == '하데스 그리스 신화'
         assert response_with_model['assistant_ingest']['message_id'] > 0
 
         print('PASS: end-to-end chat pipeline')
