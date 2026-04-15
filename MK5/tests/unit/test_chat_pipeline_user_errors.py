@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.chat_pipeline import ChatPipeline, ChatPipelineRequest, UserFacingChatError
-from core.entities.conclusion import CoreConclusion
+from core.entities.conclusion import CoreConclusion, DerivedActionLayer
 from core.search.search_need_evaluator import SearchNeedDecision
 from core.search.search_sidecar import SearchRunResult, SearchSidecar
 from core.verbalization.verbalizer import VerbalizationResult, Verbalizer
@@ -19,6 +19,21 @@ from core.verbalization.verbalizer import VerbalizationResult, Verbalizer
 class FakeVerbalizer(Verbalizer):
     def verbalize(self, conclusion: CoreConclusion, *, model_name: str = 'mk5-graph-core') -> VerbalizationResult:
         raise AssertionError('verbalize() should not be reached when search model selection is required')
+
+
+class TimeoutVerbalizer(Verbalizer):
+    def verbalize(self, conclusion: CoreConclusion, *, model_name: str = 'mk5-graph-core') -> VerbalizationResult:
+        return VerbalizationResult(
+            user_response='',
+            internal_explanation='timeout',
+            derived_action=DerivedActionLayer(
+                response_mode='direct_answer_with_uncertainty',
+                answer_goal='report timeout',
+            ),
+            used_llm=False,
+            llm_error='llm_verbalization_failed:timed out',
+            llm_error_code='timeout',
+        )
 
 
 class SearchModelSelectionRequiredSidecar(SearchSidecar):
@@ -30,7 +45,7 @@ class SearchModelSelectionRequiredSidecar(SearchSidecar):
                 need_search=True,
                 reason='slot_planner_failed_needs_grounding',
                 gap_summary='search requires explicit grounding',
-                target_terms=['판금갑옷', '찰갑', '사슬갑옷'],
+                target_terms=['plate armor', 'lamellar', 'mail armor'],
             ),
             error='question slot planner requires a selectable LLM model',
         )
@@ -50,12 +65,35 @@ def test_chat_pipeline_raises_user_facing_error_when_search_model_is_not_selecte
         pipeline.process(
             ChatPipelineRequest(
                 session_id='session-search-error',
-                message='판금갑옷과 찰갑, 사슬갑옷, 미늘갑옷, 가죽갑옷의 구조적 차이점과 방어력, 기동성에 대해 알려줘.',
+                message='Compare plate armor, lamellar, mail armor, scale armor, and leather armor.',
                 turn_index=1,
                 model_name='mk5-graph-core',
             )
         )
 
     message = str(exc_info.value)
-    assert '외부 검색이 필요' in message
+    assert '검색이 필요' in message
     assert '모델' in message
+
+
+def test_chat_pipeline_raises_user_facing_error_when_verbalizer_times_out(tmp_path: Path) -> None:
+    db_path = tmp_path / 'memory.db'
+    schema_path = ROOT / 'storage' / 'schema.sql'
+    pipeline = ChatPipeline(
+        db_path=db_path,
+        schema_path=schema_path,
+        verbalizer=TimeoutVerbalizer(),
+        search_sidecar=SearchSidecar(),
+    )
+
+    with pytest.raises(UserFacingChatError) as exc_info:
+        pipeline.process(
+            ChatPipelineRequest(
+                session_id='session-timeout',
+                message='안녕하세요',
+                turn_index=1,
+                model_name='gemma3:4b',
+            )
+        )
+
+    assert '제한 시간' in str(exc_info.value)

@@ -19,6 +19,10 @@ class OllamaConnectionError(OllamaClientError):
     """Raised when the Ollama server cannot be reached."""
 
 
+class OllamaTimeoutError(OllamaConnectionError):
+    """Raised when an Ollama request exceeds the configured timeout."""
+
+
 class OllamaRequestError(OllamaClientError):
     """Raised when Ollama returns an HTTP error."""
 
@@ -131,7 +135,16 @@ class OllamaClient:
         except HTTPError as exc:
             body = exc.read().decode('utf-8', errors='ignore')
             self._raise_http_error(exc.code, body or exc.reason)
-        except (URLError, TimeoutError, OSError) as exc:
+        except TimeoutError as exc:
+            raise OllamaTimeoutError(str(exc) or f'timed out after {self.timeout_seconds} seconds') from exc
+        except URLError as exc:
+            reason = getattr(exc, 'reason', None)
+            if isinstance(reason, TimeoutError):
+                raise OllamaTimeoutError(str(reason) or f'timed out after {self.timeout_seconds} seconds') from exc
+            raise OllamaConnectionError(str(exc)) from exc
+        except OSError as exc:
+            if isinstance(exc, TimeoutError):
+                raise OllamaTimeoutError(str(exc) or f'timed out after {self.timeout_seconds} seconds') from exc
             raise OllamaConnectionError(str(exc)) from exc
 
         try:

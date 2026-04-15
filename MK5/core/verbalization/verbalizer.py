@@ -4,7 +4,11 @@ from dataclasses import dataclass
 
 from core.entities.conclusion import CoreConclusion, DerivedActionLayer
 from core.verbalization.action_layer_builder import ActionLayerBuilder
-from core.verbalization.ollama_verbalizer import OllamaVerbalizer, OllamaVerbalizerError
+from core.verbalization.ollama_verbalizer import (
+    OllamaVerbalizer,
+    OllamaVerbalizerError,
+    OllamaVerbalizerTimeoutError,
+)
 from core.verbalization.template_verbalizer import TemplateVerbalizer
 
 DEFAULT_MODEL_NAME = 'mk5-graph-core'
@@ -17,6 +21,7 @@ class VerbalizationResult:
     derived_action: DerivedActionLayer
     used_llm: bool = False
     llm_error: str | None = None
+    llm_error_code: str | None = None
 
 
 @dataclass(slots=True)
@@ -44,6 +49,7 @@ class Verbalizer:
                 derived_action=derived_action,
                 used_llm=False,
                 llm_error='template_verbalizer_disabled:model_not_selected',
+                llm_error_code='model_not_selected',
             )
 
         try:
@@ -58,6 +64,16 @@ class Verbalizer:
                 derived_action=derived_action,
                 used_llm=True,
                 llm_error=None,
+                llm_error_code=None,
+            )
+        except OllamaVerbalizerTimeoutError as exc:
+            return VerbalizationResult(
+                user_response='',
+                internal_explanation=internal_explanation,
+                derived_action=derived_action,
+                used_llm=False,
+                llm_error=f'llm_verbalization_failed:{exc}',
+                llm_error_code='timeout',
             )
         except OllamaVerbalizerError as exc:
             return VerbalizationResult(
@@ -66,4 +82,5 @@ class Verbalizer:
                 derived_action=derived_action,
                 used_llm=False,
                 llm_error=f'llm_verbalization_failed:{exc}',
+                llm_error_code='llm_error',
             )

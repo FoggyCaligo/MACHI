@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +10,7 @@ from tools.ollama_client import (
     OllamaClientError,
     OllamaModelNotFoundError,
     OllamaResponseError,
+    OllamaTimeoutError,
 )
 from tools.prompt_loader import load_prompt_text
 
@@ -17,7 +19,11 @@ class OllamaVerbalizerError(RuntimeError):
     pass
 
 
-VERBALIZER_OLLAMA_TIMEOUT_SECONDS = 90.0
+class OllamaVerbalizerTimeoutError(OllamaVerbalizerError):
+    pass
+
+
+VERBALIZER_OLLAMA_TIMEOUT_SECONDS = float(os.getenv('OLLAMA_VERBALIZER_TIMEOUT_SECONDS', '180.0'))
 
 
 @dataclass(slots=True)
@@ -57,6 +63,8 @@ class OllamaVerbalizer:
             )
         except OllamaModelNotFoundError as exc:
             raise OllamaVerbalizerError(str(exc)) from exc
+        except OllamaTimeoutError as exc:
+            raise OllamaVerbalizerTimeoutError(str(exc)) from exc
         except (OllamaClientError, OllamaResponseError) as exc:
             raise OllamaVerbalizerError(str(exc)) from exc
         return result.content

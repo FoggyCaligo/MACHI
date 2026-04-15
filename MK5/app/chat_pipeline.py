@@ -147,6 +147,10 @@ class ChatPipeline:
                 raise RuntimeError(
                     '현재 응답을 생성할 수 있는 모델이 없습니다. 모델을 선택하거나 OLLAMA 환경을 확인해주세요.'
                 )
+            if verbalized.llm_error_code == 'timeout':
+                raise UserFacingChatError(
+                    '선택한 모델의 응답 생성이 제한 시간 안에 끝나지 않았습니다. 더 빠른 모델로 바꾸거나, Ollama 상태와 모델 로드 상태를 확인한 뒤 다시 시도해주세요.'
+                )
             raise RuntimeError(
                 f"Verbalization failed: {verbalized.llm_error or 'empty response from verbalizer'}"
             )
@@ -278,6 +282,7 @@ class ChatPipeline:
             'verbalization': {
                 'used_llm': verbalized.used_llm,
                 'llm_error': verbalized.llm_error,
+                'llm_error_code': verbalized.llm_error_code,
             },
         }
 

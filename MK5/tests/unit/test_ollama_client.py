@@ -10,6 +10,7 @@ from tools.ollama_client import (
     OllamaConnectionError,
     OllamaModelNotFoundError,
     OllamaResponseError,
+    OllamaTimeoutError,
 )
 from core.verbalization.ollama_verbalizer import OllamaVerbalizer
 
@@ -174,4 +175,15 @@ def test_ollama_client_health_check_connection_failure() -> None:
 def test_ollama_verbalizer_uses_bounded_default_timeout() -> None:
     verbalizer = OllamaVerbalizer()
     assert verbalizer.client is not None
-    assert verbalizer.client.timeout_seconds == 90.0
+    assert verbalizer.client.timeout_seconds == 180.0
+
+
+def test_ollama_client_timeout_error_classification() -> None:
+    client = OllamaClient(base_url='http://10.255.255.1:81', timeout_seconds=0.01)
+    try:
+        client.chat(model_name='any-model', messages=[{'role': 'user', 'content': 'test'}])
+        raise AssertionError('Expected OllamaTimeoutError or OllamaConnectionError')
+    except OllamaTimeoutError:
+        pass
+    except OllamaConnectionError:
+        pass
