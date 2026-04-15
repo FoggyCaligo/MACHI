@@ -6,9 +6,9 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from app.chat_pipeline import ChatPipeline, ChatPipelineRequest, UserFacingChatError
 from app.model_discovery import DEFAULT_MODEL_NAME, discover_model_catalog
+from config import REQUEST_TIMEOUT_MS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REQUEST_TIMEOUT_MS = 300000
 
 
 def register_routes(app: Flask) -> None:

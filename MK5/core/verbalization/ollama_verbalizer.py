@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 
+from config import (
+    VERBALIZER_NUM_PREDICT,
+    VERBALIZER_OLLAMA_TIMEOUT_SECONDS,
+    VERBALIZER_TEMPERATURE,
+    build_ollama_options,
+)
 from core.entities.conclusion import CoreConclusion, DerivedActionLayer
 from tools.ollama_client import (
     OllamaClient,
@@ -21,9 +26,6 @@ class OllamaVerbalizerError(RuntimeError):
 
 class OllamaVerbalizerTimeoutError(OllamaVerbalizerError):
     pass
-
-
-VERBALIZER_OLLAMA_TIMEOUT_SECONDS = float(os.getenv('OLLAMA_VERBALIZER_TIMEOUT_SECONDS', '180.0'))
 
 
 @dataclass(slots=True)
@@ -57,9 +59,10 @@ class OllamaVerbalizer:
                     },
                 ],
                 stream=False,
-                options={
-                    'temperature': 0.2,
-                },
+                options=build_ollama_options(
+                    temperature=VERBALIZER_TEMPERATURE,
+                    num_predict=VERBALIZER_NUM_PREDICT,
+                ),
             )
         except OllamaModelNotFoundError as exc:
             raise OllamaVerbalizerError(str(exc)) from exc
@@ -87,12 +90,15 @@ class OllamaVerbalizer:
     def _format_lines(self, items: list[str]) -> str:
         if not items:
             return '- 없음'
-        return '\n'.join(f'- {item}' for item in items)
+        return '\n'.join(f'- {self._truncate(item, 120)}' for item in items[:6])
 
     def _format_search_status(self, search_context: dict[str, Any]) -> str:
         if not search_context:
             return '- 검색 정보 없음'
 
+        grounded_terms = [self._truncate(item, 40) for item in (search_context.get('grounded_terms') or [])[:3]]
+        missing_terms = [self._truncate(item, 40) for item in (search_context.get('missing_terms') or [])[:3]]
+        missing_aspects = [self._truncate(item, 40) for item in (search_context.get('missing_aspects') or [])[:3]]
         lines: list[str] = [
             f"- need_search: {'true' if search_context.get('need_search') else 'false'}",
             f"- attempted: {'true' if search_context.get('attempted') else 'false'}",
@@ -100,23 +106,31 @@ class OllamaVerbalizer:
         ]
         if search_context.get('no_evidence_found'):
             lines.append('- no_evidence_found: true')
-        if search_context.get('grounded_terms'):
-            lines.append(f"- grounded_terms: {' | '.join(search_context.get('grounded_terms', []))}")
-        if search_context.get('missing_terms'):
-            lines.append(f"- missing_terms: {' | '.join(search_context.get('missing_terms', []))}")
-        if search_context.get('missing_aspects'):
-            lines.append(f"- missing_aspects: {' | '.join(search_context.get('missing_aspects', []))}")
+        if grounded_terms:
+            lines.append(f"- grounded_terms: {' | '.join(grounded_terms)}")
+        if missing_terms:
+            lines.append(f"- missing_terms: {' | '.join(missing_terms)}")
+        if missing_aspects:
+            lines.append(f"- missing_aspects: {' | '.join(missing_aspects)}")
         if search_context.get('error'):
-            lines.append(f"- error: {search_context.get('error')}")
+            lines.append(f"- error: {self._truncate(search_context.get('error'), 160)}")
 
         provider_errors = search_context.get('provider_errors') or []
-        for item in provider_errors[:3]:
-            lines.append(f"- provider_error: {item.get('provider', '-')} | {item.get('error', '-')}")
+        for item in provider_errors[:2]:
+            lines.append(
+                f"- provider_error: {self._truncate(item.get('provider', '-'), 40)} | {self._truncate(item.get('error', '-'), 100)}"
+            )
 
         summaries = search_context.get('summaries') or []
-        for item in summaries[:3]:
+        for item in summaries[:2]:
             lines.append(
-                f"- evidence: {item.get('title', '-')} ({item.get('provider', '-')}): {item.get('snippet', '')}"
+                f"- evidence: {self._truncate(item.get('title', '-'), 60)} ({self._truncate(item.get('provider', '-'), 24)}): {self._truncate(item.get('snippet', ''), 140)}"
             )
 
         return '\n'.join(lines) if lines else '- 검색 정보 없음'
+
+    def _truncate(self, value: Any, limit: int) -> str:
+        text = ' '.join(str(value or '').split()).strip()
+        if len(text) <= limit:
+            return text
+        return f'{text[: max(0, limit - 3)]}...'

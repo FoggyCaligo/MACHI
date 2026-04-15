@@ -283,6 +283,9 @@ class ChatPipeline:
                 'used_llm': verbalized.used_llm,
                 'llm_error': verbalized.llm_error,
                 'llm_error_code': verbalized.llm_error_code,
+                'preservation_action': verbalized.preservation_action,
+                'preservation_reason': verbalized.preservation_reason,
+                'preservation_violations': verbalized.preservation_violations or [],
             },
         }
 

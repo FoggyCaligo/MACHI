@@ -5,6 +5,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from config import VERBALIZER_OLLAMA_TIMEOUT_SECONDS
 from tools.ollama_client import (
     OllamaClient,
     OllamaConnectionError,
@@ -175,7 +176,7 @@ def test_ollama_client_health_check_connection_failure() -> None:
 def test_ollama_verbalizer_uses_bounded_default_timeout() -> None:
     verbalizer = OllamaVerbalizer()
     assert verbalizer.client is not None
-    assert verbalizer.client.timeout_seconds == 180.0
+    assert verbalizer.client.timeout_seconds == VERBALIZER_OLLAMA_TIMEOUT_SECONDS
 
 
 def test_ollama_client_timeout_error_classification() -> None:

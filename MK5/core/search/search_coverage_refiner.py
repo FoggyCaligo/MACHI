@@ -4,6 +4,12 @@ import json
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from config import (
+    SEARCH_COVERAGE_REFINER_NUM_PREDICT,
+    SEARCH_COVERAGE_REFINER_TEMPERATURE,
+    SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS,
+    build_ollama_options,
+)
 from core.entities.conclusion import CoreConclusion
 from core.search.question_slot_planner import QuestionSlotPlan, RequestedSlot
 from tools.ollama_client import (
@@ -22,9 +28,6 @@ class SearchCoverageRefinerError(RuntimeError):
     pass
 
 
-REFINER_OLLAMA_TIMEOUT_SECONDS = 30.0
-
-
 @dataclass(slots=True)
 class SearchCoverageAnalysis:
     covered_slot_labels: list[str]
@@ -40,7 +43,7 @@ class SearchCoverageRefiner:
 
     def __post_init__(self) -> None:
         if self.client is None:
-            self.client = OllamaClient(timeout_seconds=REFINER_OLLAMA_TIMEOUT_SECONDS)
+            self.client = OllamaClient(timeout_seconds=SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS)
 
     def refine(
         self,
@@ -69,7 +72,10 @@ class SearchCoverageRefiner:
                     },
                 ],
                 stream=False,
-                options={'temperature': 0.1},
+                options=build_ollama_options(
+                    temperature=SEARCH_COVERAGE_REFINER_TEMPERATURE,
+                    num_predict=SEARCH_COVERAGE_REFINER_NUM_PREDICT,
+                ),
                 response_format='json',
             )
         except OllamaModelNotFoundError as exc:

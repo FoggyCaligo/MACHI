@@ -4,6 +4,12 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from config import (
+    QUESTION_SLOT_PLANNER_NUM_PREDICT,
+    QUESTION_SLOT_PLANNER_TEMPERATURE,
+    QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS,
+    build_ollama_options,
+)
 from core.entities.conclusion import CoreConclusion
 from core.entities.thought_view import ThoughtView
 from tools.ollama_client import (
@@ -17,9 +23,6 @@ from tools.prompt_loader import load_prompt_text
 
 class QuestionSlotPlannerError(RuntimeError):
     pass
-
-
-PLANNER_OLLAMA_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +54,7 @@ class QuestionSlotPlanner:
 
     def __post_init__(self) -> None:
         if self.client is None:
-            self.client = OllamaClient(timeout_seconds=PLANNER_OLLAMA_TIMEOUT_SECONDS)
+            self.client = OllamaClient(timeout_seconds=QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS)
 
     def plan(
         self,
@@ -80,7 +83,10 @@ class QuestionSlotPlanner:
                     },
                 ],
                 stream=False,
-                options={'temperature': 0.1},
+                options=build_ollama_options(
+                    temperature=QUESTION_SLOT_PLANNER_TEMPERATURE,
+                    num_predict=QUESTION_SLOT_PLANNER_NUM_PREDICT,
+                ),
                 response_format='json',
             )
         except OllamaModelNotFoundError as exc:

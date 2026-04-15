@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-DEFAULT_OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434').rstrip('/')
-DEFAULT_OLLAMA_TIMEOUT_SECONDS = float(os.getenv('OLLAMA_TIMEOUT_SECONDS', '120.0'))
+from config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT_SECONDS
 
 
 class OllamaClientError(RuntimeError):
@@ -51,8 +49,8 @@ class OllamaChatResult:
 
 @dataclass(slots=True)
 class OllamaClient:
-    base_url: str = DEFAULT_OLLAMA_BASE_URL
-    timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS
+    base_url: str = OLLAMA_BASE_URL
+    timeout_seconds: float = OLLAMA_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
         self.base_url = self.base_url.rstrip('/')

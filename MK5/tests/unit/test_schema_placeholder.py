@@ -1,1 +1,0 @@
-# Schema-related tests placeholder

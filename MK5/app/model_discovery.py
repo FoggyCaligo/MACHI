@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from config import MODEL_DISCOVERY_TIMEOUT_SECONDS
 from tools.ollama_client import OllamaClient
 
 DEFAULT_MODEL_NAME = 'mk5-graph-core'
@@ -16,7 +17,7 @@ class ModelCatalog:
 
 
 def discover_model_catalog(default_model: str = DEFAULT_MODEL_NAME) -> ModelCatalog:
-    client = OllamaClient(timeout_seconds=1.5)
+    client = OllamaClient(timeout_seconds=MODEL_DISCOVERY_TIMEOUT_SECONDS)
     ok, error = client.health_check()
     if ok:
         try:

@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from config import SEARCH_BACKEND_TIMEOUT_SECONDS, SEARCH_MAX_RESULTS
 from core.entities.conclusion import CoreConclusion
 from core.search.search_coverage_refiner import SearchCoverageRefiner, SearchCoverageRefinerError
 from core.entities.thought_view import ThoughtView
@@ -255,8 +256,8 @@ class CompositeSearchBackend:
 
 @dataclass(slots=True)
 class SearchSidecar:
-    max_results: int = 4
-    timeout_seconds: float = 4.0
+    max_results: int = SEARCH_MAX_RESULTS
+    timeout_seconds: float = SEARCH_BACKEND_TIMEOUT_SECONDS
     need_evaluator: SearchNeedEvaluator = field(default_factory=SearchNeedEvaluator)
     slot_planner: QuestionSlotPlanner = field(default_factory=QuestionSlotPlanner)
     query_planner: SearchQueryPlanner = field(default_factory=SearchQueryPlanner)
