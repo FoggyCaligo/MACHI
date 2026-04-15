@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -87,7 +86,7 @@ class ChatPipeline:
             conclusion=thought_result.core_conclusion,
             model_name=request.model_name,
         )
-        search_results: list[SearchEvidence] = list(search_run.results)
+        search_results: list[SearchEvidence] = search_run.results
         search_ingest_results: list[GraphIngestResult] = []
         if search_results:
             for index, item in enumerate(search_results, start=1):
@@ -103,8 +102,6 @@ class ChatPipeline:
                                 'url': item.url,
                                 'title': item.title,
                                 'search_rank': index,
-                                'source_provenance': item.source_provenance,
-                                'trust_hint': item.trust_hint,
                                 'planned_query': item.metadata.get('planned_query'),
                             },
                             source_type='search',
@@ -129,13 +126,7 @@ class ChatPipeline:
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
 
-        grounded_terms, missing_terms = self._compute_search_coverage(search_run)
-        self._attach_search_context(
-            thought_result.core_conclusion,
-            search_run=search_run,
-            grounded_terms=grounded_terms,
-            missing_terms=missing_terms,
-        )
+        self._attach_search_context(thought_result.core_conclusion, search_run=search_run)
 
         verbalized = self.verbalizer.verbalize(thought_result.core_conclusion, model_name=request.model_name)
         if verbalized.llm_error or not verbalized.user_response:
@@ -199,13 +190,29 @@ class ChatPipeline:
 
         search_debug = {
             'query_triggered': bool(search_run.attempted),
-            'need_decision': asdict(search_run.decision),
-            'plan': asdict(search_run.plan) if search_run.plan is not None else None,
+            'planning_attempted': bool(getattr(search_run, 'planning_attempted', False)),
+            'need_decision': {
+                'need_search': search_run.decision.need_search,
+                'reason': search_run.decision.reason,
+                'gap_summary': search_run.decision.gap_summary,
+                'target_terms': search_run.decision.target_terms,
+                'requested_slots': search_run.decision.requested_slots,
+                'covered_slots': search_run.decision.covered_slots,
+                'missing_slots': search_run.decision.missing_slots,
+            },
+            'slot_plan': {
+                'entities': search_run.slot_plan.entities,
+                'aspects': search_run.slot_plan.aspects,
+                'requested_slots': [slot.label for slot in search_run.slot_plan.requested_slots],
+                'reason': search_run.slot_plan.reason,
+            } if search_run.slot_plan else None,
+            'plan': {
+                'queries': search_run.plan.queries,
+                'reason': search_run.plan.reason,
+                'focus_terms': search_run.plan.focus_terms,
+                'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []),
+            } if search_run.plan else None,
             'results': [asdict(item) for item in search_results],
-            'provider_errors': [asdict(item) for item in search_run.provider_errors],
-            'grounded_terms': grounded_terms,
-            'missing_terms': missing_terms,
-            'error': search_run.error,
             'ingest': [
                 {
                     'message_id': item.message_id,
@@ -217,6 +224,7 @@ class ChatPipeline:
                 }
                 for item in search_ingest_results
             ],
+            'error': search_run.error,
         }
 
         assistant_ingest_debug = {
@@ -250,7 +258,6 @@ class ChatPipeline:
                 'used_llm': verbalized.used_llm,
                 'llm_error': verbalized.llm_error,
             },
-            'derived_action': asdict(verbalized.derived_action),
         }
 
         return {
@@ -266,7 +273,6 @@ class ChatPipeline:
             'search': search_debug,
             'assistant_ingest': assistant_ingest_debug,
             'verbalization': debug_payload['verbalization'],
-            'derived_action': debug_payload['derived_action'],
         }
 
     def next_turn_index(self, session_id: str) -> int:
@@ -274,14 +280,7 @@ class ChatPipeline:
             rows = [row for row in uow.chat_messages.list_by_session(session_id, limit=100000) if row.role == 'user']
             return (rows[-1].turn_index + 1) if rows else 1
 
-    def _attach_search_context(
-        self,
-        conclusion,
-        *,
-        search_run: SearchRunResult,
-        grounded_terms: list[str],
-        missing_terms: list[str],
-    ) -> None:
+    def _attach_search_context(self, conclusion, *, search_run: SearchRunResult) -> None:
         if conclusion is None:
             return
         if conclusion.metadata is None:
@@ -289,49 +288,22 @@ class ChatPipeline:
         conclusion.metadata['search_context'] = {
             'attempted': bool(search_run.attempted),
             'result_count': len(search_run.results),
-            'error': search_run.error,
-            'provider_errors': [asdict(item) for item in search_run.provider_errors],
-            'focus_terms': list(search_run.plan.focus_terms) if search_run.plan is not None else [],
-            'grounded_terms': grounded_terms,
-            'missing_terms': missing_terms,
+            'reason': search_run.decision.reason,
+            'target_terms': search_run.decision.target_terms,
+            'requested_slots': search_run.decision.requested_slots,
+            'covered_slots': search_run.decision.covered_slots,
+            'missing_slots': search_run.decision.missing_slots,
+            'slot_entities': search_run.slot_plan.entities if search_run.slot_plan else [],
+            'slot_aspects': search_run.slot_plan.aspects if search_run.slot_plan else [],
+            'planned_queries': search_run.plan.queries if search_run.plan else [],
+            'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []) if search_run.plan else [],
             'summaries': [
                 {
                     'title': item.title,
                     'snippet': item.snippet,
                     'provider': item.provider,
                     'url': item.url,
-                    'trust_hint': item.trust_hint,
-                    'source_provenance': item.source_provenance,
                 }
                 for item in search_run.results[:3]
             ],
         }
-
-    def _compute_search_coverage(self, search_run: SearchRunResult) -> tuple[list[str], list[str]]:
-        if search_run.plan is None:
-            return [], []
-        focus_terms = [term for term in search_run.plan.focus_terms if term]
-        if not focus_terms:
-            return [], []
-        grounded_keys = {
-            self._normalize_term(item.title)
-            for item in search_run.results
-            if item.title
-        }
-        grounded_terms: list[str] = []
-        missing_terms: list[str] = []
-        seen: set[str] = set()
-        for term in focus_terms:
-            key = self._normalize_term(term)
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            if key in grounded_keys:
-                grounded_terms.append(term)
-            else:
-                missing_terms.append(term)
-        return grounded_terms, missing_terms
-
-    def _normalize_term(self, text: str) -> str:
-        compact = re.sub(r'[^0-9a-zA-Z가-힣]+', '', str(text or '').lower())
-        return compact

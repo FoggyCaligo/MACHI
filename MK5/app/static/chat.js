@@ -457,6 +457,7 @@ function summarizeSearch(search) {
 
   const lines = [
     "search debug",
+    `- planning_attempted: ${search.planning_attempted ? "true" : "false"}`,
     `- query_triggered: ${search.query_triggered ? "true" : "false"}`,
     `- need_search: ${decision.need_search ? "true" : "false"}`,
     `- decision_reason: ${decision.reason || "-"}`,
@@ -468,6 +469,20 @@ function summarizeSearch(search) {
     lines.push(`- planned_queries: ${(plan.queries || []).join(" | ") || "없음"}`);
     lines.push(`- plan_reason: ${plan.reason || "-"}`);
     lines.push(`- focus_terms: ${(plan.focus_terms || []).join(" | ") || "없음"}`);
+    const groundingQueries = (plan.grounding_queries || []).join(" | ");
+    const comparisonQueries = (plan.comparison_queries || []).join(" | ");
+    const requestedSlots = (plan.requested_slots || []).map((slot) => `${slot.entity}:${slot.aspect}`).join(" | ");
+    const coveredSlots = (plan.covered_slots || []).map((slot) => `${slot.entity}:${slot.aspect}`).join(" | ");
+    const missingSlots = (plan.missing_slots || []).map((slot) => `${slot.entity}:${slot.aspect}`).join(" | ");
+    const issuedSlotQueries = (plan.issued_slot_queries || [])
+      .map((item) => `${item.slot.entity}:${item.slot.aspect} -> ${item.query}`)
+      .join(" | ");
+    lines.push(`- grounding_queries: ${groundingQueries || "없음"}`);
+    lines.push(`- comparison_queries: ${comparisonQueries || "없음"}`);
+    lines.push(`- requested_slots: ${requestedSlots || "없음"}`);
+    lines.push(`- covered_slots: ${coveredSlots || "없음"}`);
+    lines.push(`- missing_slots: ${missingSlots || "없음"}`);
+    lines.push(`- issued_slot_queries: ${issuedSlotQueries || "없음"}`);
   } else {
     lines.push(`- planned_queries: 없음`);
   }
@@ -475,13 +490,30 @@ function summarizeSearch(search) {
   lines.push(`- result_count: ${results.length}`);
   lines.push(`- error: ${search.error || "없음"}`);
 
-  results.slice(0, 3).forEach((item, index) => {
-    lines.push(`${index + 1}. [${item.provider || "-"}] ${item.title || "(제목 없음)"}`);
+  results.slice(0, 5).forEach((item, index) => {
+    lines.push(
+      `${index + 1}. [${item.provider || "-"} | trust=${item.trust_hint ?? "-"} | provenance=${item.source_provenance || "-"}] ${item.title || "(제목 없음)"}`
+    );
   });
 
-  ingest.slice(0, 3).forEach((item, index) => {
+  if (Array.isArray(search.provider_errors) && search.provider_errors.length > 0) {
+    search.provider_errors.slice(0, 5).forEach((item, index) => {
+      lines.push(
+        `provider_error ${index + 1}. [${item.provider || "-"}] query=${item.query || "-"} | ${item.error || "-"}`
+      );
+    });
+  }
+
+  if (Array.isArray(search.grounded_terms) && search.grounded_terms.length > 0) {
+    lines.push(`- grounded_terms: ${search.grounded_terms.join(" | ")}`);
+  }
+  if (Array.isArray(search.missing_terms) && search.missing_terms.length > 0) {
+    lines.push(`- missing_terms: ${search.missing_terms.join(" | ")}`);
+  }
+
+  ingest.slice(0, 5).forEach((item, index) => {
     lines.push(
-      `ingest ${index + 1}. message_id=${item.message_id ?? "-"}, created_nodes=${(item.created_node_ids || []).join(", ") || "없음"}`,
+      `ingest ${index + 1}. message_id=${item.message_id ?? "-"}, created_nodes=${(item.created_node_ids || []).join(", ") || "없음"}`
     );
   });
 
