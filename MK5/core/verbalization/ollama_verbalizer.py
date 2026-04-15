@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from core.entities.conclusion import CoreConclusion, DerivedActionLayer
 from tools.ollama_client import (
@@ -61,14 +62,15 @@ class OllamaVerbalizer:
         return load_prompt_text(self.system_prompt_path)
 
     def _build_user_prompt(self, conclusion: CoreConclusion, action_layer: DerivedActionLayer) -> str:
+        search_context = conclusion.metadata.get('search_context', {}) if isinstance(conclusion.metadata, dict) else {}
         template = load_prompt_text(self.user_prompt_path)
         return template.format(
             user_input_summary=conclusion.user_input_summary,
             answer_goal=action_layer.answer_goal,
-            surface_summary=conclusion.explanation_summary,
+            surface_summary=conclusion.explanation_summary or '- 없음',
             suggested_actions=self._format_lines(action_layer.suggested_actions),
             do_not_claim=self._format_lines(action_layer.do_not_claim),
-            search_context=self._format_search_context(conclusion),
+            search_status=self._format_search_status(search_context),
         )
 
     def _format_lines(self, items: list[str]) -> str:
@@ -76,25 +78,19 @@ class OllamaVerbalizer:
             return '- 없음'
         return '\n'.join(f'- {item}' for item in items)
 
-    def _format_search_context(self, conclusion: CoreConclusion) -> str:
-        search_context = conclusion.metadata.get('search_context', {}) if conclusion.metadata else {}
-        if not isinstance(search_context, dict):
-            return '- 검색 수행 정보 없음'
-
-        attempted = bool(search_context.get('attempted'))
-        result_count = int(search_context.get('result_count', 0) or 0)
-        summaries = search_context.get('summaries', []) or []
-        if not attempted:
-            return '- 이번 턴에서는 별도 검색을 수행하지 않음'
-        if result_count <= 0:
-            return '- 검색을 시도했지만 현재 확보된 결과가 없음'
-        lines = [f'- 검색 결과 {result_count}건 확보']
-        for item in summaries[:3]:
-            title = str(item.get('title') or '').strip()
-            snippet = str(item.get('snippet') or '').strip()
-            provider = str(item.get('provider') or '').strip()
-            if title and snippet:
-                lines.append(f'- {title} ({provider}): {snippet}')
-            elif title:
-                lines.append(f'- {title} ({provider})')
-        return '\n'.join(lines)
+    def _format_search_status(self, search_context: dict[str, Any]) -> str:
+        if not search_context:
+            return '- 외부 검색 정보 없음'
+        lines: list[str] = []
+        lines.append(f"- attempted: {'true' if search_context.get('attempted') else 'false'}")
+        lines.append(f"- result_count: {search_context.get('result_count', 0)}")
+        if search_context.get('grounded_terms'):
+            lines.append(f"- grounded_terms: {' | '.join(search_context.get('grounded_terms', []))}")
+        if search_context.get('missing_terms'):
+            lines.append(f"- missing_terms: {' | '.join(search_context.get('missing_terms', []))}")
+        if search_context.get('error'):
+            lines.append(f"- error: {search_context.get('error')}")
+        provider_errors = search_context.get('provider_errors') or []
+        for item in provider_errors[:3]:
+            lines.append(f"- provider_error: {item.get('provider', '-')} | {item.get('error', '-')}")
+        return '\n'.join(lines) if lines else '- 외부 검색 정보 없음'

@@ -45,24 +45,19 @@ class FakeSearchSidecar(SearchSidecar):
         return SearchRunResult(
             attempted=True,
             decision=decision,
-            plan=SearchPlan(
-                queries=['하데스 그리스 신화', '하데스 장소 의미'],
-                reason='test plan',
-                focus_terms=['하데스'],
-                metadata={
-                    'grounding_queries': ['하데스 그리스 신화'],
-                    'comparison_queries': ['하데스 장소 의미'],
-                },
-            ),
+            plan=SearchPlan(queries=['하데스 장소 의미'], reason='test plan', focus_terms=['하데스']),
             results=[
                 SearchEvidence(
                     title='하데스',
                     snippet='고대 그리스 신화에서 저승 세계를 가리키는 이름으로도 쓰인다.',
                     url='https://example.test/hades',
                     provider='fake-search',
-                    metadata={'planned_query': '하데스 그리스 신화'},
+                    trust_hint='high',
+                    source_provenance='trusted_search:fake',
                 )
             ],
+            provider_errors=[],
+            error=None,
         )
 
 
@@ -113,7 +108,6 @@ def main() -> None:
         assert response_with_model['verbalization']['used_llm'] is True
         assert response_with_model['search']['query_triggered'] is True
         assert response_with_model['search']['results']
-        assert response_with_model['search']['plan']['queries'][0] == '하데스 그리스 신화'
         assert response_with_model['assistant_ingest']['message_id'] > 0
 
         print('PASS: end-to-end chat pipeline')

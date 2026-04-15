@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -86,7 +87,7 @@ class ChatPipeline:
             conclusion=thought_result.core_conclusion,
             model_name=request.model_name,
         )
-        search_results: list[SearchEvidence] = search_run.results
+        search_results: list[SearchEvidence] = list(search_run.results)
         search_ingest_results: list[GraphIngestResult] = []
         if search_results:
             for index, item in enumerate(search_results, start=1):
@@ -99,11 +100,11 @@ class ChatPipeline:
                             content=item.text_for_graph,
                             metadata={
                                 'source': item.provider,
-                                'source_provenance': item.source_provenance,
-                                'trust_hint': item.trust_hint,
                                 'url': item.url,
                                 'title': item.title,
                                 'search_rank': index,
+                                'source_provenance': item.source_provenance,
+                                'trust_hint': item.trust_hint,
                                 'planned_query': item.metadata.get('planned_query'),
                             },
                             source_type='search',
@@ -128,11 +129,17 @@ class ChatPipeline:
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
 
-        self._attach_search_context(thought_result.core_conclusion, search_run=search_run)
+        grounded_terms, missing_terms = self._compute_search_coverage(search_run)
+        self._attach_search_context(
+            thought_result.core_conclusion,
+            search_run=search_run,
+            grounded_terms=grounded_terms,
+            missing_terms=missing_terms,
+        )
 
         verbalized = self.verbalizer.verbalize(thought_result.core_conclusion, model_name=request.model_name)
         if verbalized.llm_error or not verbalized.user_response:
-            if verbalized.llm_error == 'template_verbalization_disabled':
+            if verbalized.llm_error and verbalized.llm_error.startswith('template_verbalizer_disabled:'):
                 raise RuntimeError(
                     '현재 응답을 생성할 수 있는 모델이 없습니다. 모델을 선택하거나 OLLAMA 환경을 확인해주세요.'
                 )
@@ -155,6 +162,7 @@ class ChatPipeline:
                 metadata={
                     'source': 'assistant_reply',
                     'model_name': request.model_name,
+                    'intent_snapshot': thought_result.metadata.get('intent_snapshot', {}),
                 },
                 source_type='assistant',
                 claim_domain=assistant_claim_domain,
@@ -189,26 +197,15 @@ class ChatPipeline:
             'metadata': thought_result.metadata,
         }
 
-        search_context_debug = (thought_result.core_conclusion.metadata or {}).get('search_context', {}) if thought_result.core_conclusion else {}
         search_debug = {
             'query_triggered': bool(search_run.attempted),
-            'need_decision': {
-                'need_search': search_run.decision.need_search,
-                'reason': search_run.decision.reason,
-                'gap_summary': search_run.decision.gap_summary,
-                'target_terms': search_run.decision.target_terms,
-            },
-            'plan': {
-                'queries': search_run.plan.queries,
-                'reason': search_run.plan.reason,
-                'focus_terms': search_run.plan.focus_terms,
-                'grounding_queries': (search_run.plan.metadata or {}).get('grounding_queries', []),
-                'comparison_queries': (search_run.plan.metadata or {}).get('comparison_queries', []),
-            } if search_run.plan else None,
+            'need_decision': asdict(search_run.decision),
+            'plan': asdict(search_run.plan) if search_run.plan is not None else None,
             'results': [asdict(item) for item in search_results],
-            'provider_errors': list(search_run.provider_errors),
-            'grounded_terms': list(search_context_debug.get('grounded_terms', [])),
-            'missing_terms': list(search_context_debug.get('missing_terms', [])),
+            'provider_errors': [asdict(item) for item in search_run.provider_errors],
+            'grounded_terms': grounded_terms,
+            'missing_terms': missing_terms,
+            'error': search_run.error,
             'ingest': [
                 {
                     'message_id': item.message_id,
@@ -220,7 +217,6 @@ class ChatPipeline:
                 }
                 for item in search_ingest_results
             ],
-            'error': search_run.error,
         }
 
         assistant_ingest_debug = {
@@ -254,6 +250,7 @@ class ChatPipeline:
                 'used_llm': verbalized.used_llm,
                 'llm_error': verbalized.llm_error,
             },
+            'derived_action': asdict(verbalized.derived_action),
         }
 
         return {
@@ -269,6 +266,7 @@ class ChatPipeline:
             'search': search_debug,
             'assistant_ingest': assistant_ingest_debug,
             'verbalization': debug_payload['verbalization'],
+            'derived_action': debug_payload['derived_action'],
         }
 
     def next_turn_index(self, session_id: str) -> int:
@@ -276,26 +274,26 @@ class ChatPipeline:
             rows = [row for row in uow.chat_messages.list_by_session(session_id, limit=100000) if row.role == 'user']
             return (rows[-1].turn_index + 1) if rows else 1
 
-    def _attach_search_context(self, conclusion, *, search_run: SearchRunResult) -> None:
+    def _attach_search_context(
+        self,
+        conclusion,
+        *,
+        search_run: SearchRunResult,
+        grounded_terms: list[str],
+        missing_terms: list[str],
+    ) -> None:
         if conclusion is None:
             return
         if conclusion.metadata is None:
             conclusion.metadata = {}
-        focus_terms = search_run.plan.focus_terms if search_run.plan and search_run.plan.focus_terms else search_run.decision.target_terms
-        grounded_terms, missing_terms = self._classify_search_coverage(focus_terms, search_run.results)
         conclusion.metadata['search_context'] = {
             'attempted': bool(search_run.attempted),
             'result_count': len(search_run.results),
-            'reason': search_run.decision.reason,
-            'gap_summary': search_run.decision.gap_summary,
-            'target_terms': search_run.decision.target_terms,
-            'planned_queries': search_run.plan.queries if search_run.plan else [],
-            'plan_reason': search_run.plan.reason if search_run.plan else '',
-            'focus_terms': focus_terms,
+            'error': search_run.error,
+            'provider_errors': [asdict(item) for item in search_run.provider_errors],
+            'focus_terms': list(search_run.plan.focus_terms) if search_run.plan is not None else [],
             'grounded_terms': grounded_terms,
             'missing_terms': missing_terms,
-            'provider_errors': list(search_run.provider_errors),
-            'search_failed': bool(search_run.error),
             'summaries': [
                 {
                     'title': item.title,
@@ -309,20 +307,31 @@ class ChatPipeline:
             ],
         }
 
-    def _classify_search_coverage(self, focus_terms: list[str], results: list[SearchEvidence]) -> tuple[list[str], list[str]]:
-        texts: list[str] = []
-        for item in results:
-            corpus = ' '.join([item.title or '', item.snippet or '']).lower()
-            texts.append(corpus)
-        grounded: list[str] = []
-        missing: list[str] = []
-        for term in focus_terms[:6]:
-            token = str(term or '').strip()
-            if not token:
+    def _compute_search_coverage(self, search_run: SearchRunResult) -> tuple[list[str], list[str]]:
+        if search_run.plan is None:
+            return [], []
+        focus_terms = [term for term in search_run.plan.focus_terms if term]
+        if not focus_terms:
+            return [], []
+        grounded_keys = {
+            self._normalize_term(item.title)
+            for item in search_run.results
+            if item.title
+        }
+        grounded_terms: list[str] = []
+        missing_terms: list[str] = []
+        seen: set[str] = set()
+        for term in focus_terms:
+            key = self._normalize_term(term)
+            if not key or key in seen:
                 continue
-            lowered = token.lower()
-            if any(lowered in corpus for corpus in texts):
-                grounded.append(token)
+            seen.add(key)
+            if key in grounded_keys:
+                grounded_terms.append(term)
             else:
-                missing.append(token)
-        return grounded, missing
+                missing_terms.append(term)
+        return grounded_terms, missing_terms
+
+    def _normalize_term(self, text: str) -> str:
+        compact = re.sub(r'[^0-9a-zA-Z가-힣]+', '', str(text or '').lower())
+        return compact

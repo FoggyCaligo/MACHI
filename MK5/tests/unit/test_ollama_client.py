@@ -112,6 +112,7 @@ def test_ollama_client_chat_and_tags_success() -> None:
         result = client.chat(
             model_name='gemma4:e2b',
             messages=[{'role': 'user', 'content': '테스트'}],
+            response_format='json',
         )
         assert result.model == 'gemma4:e2b'
         assert result.content == '안녕하세요. MK5 응답입니다.'
