@@ -13,8 +13,9 @@ class FakeNodesRepo:
         self.nodes = nodes
         self.hash_map = hash_map
 
-    def find_by_address_hashes(self, address_hashes):
-        return []
+    def list_by_address_hashes(self, address_hashes):
+        allowed = set(address_hashes or [])
+        return [node for address_hash, node in self.hash_map.items() if address_hash in allowed]
 
     def get_by_address_hash(self, address_hash):
         return self.hash_map.get(address_hash)

@@ -14,9 +14,19 @@ from storage.unit_of_work import UnitOfWork
 
 
 class SqliteUnitOfWork(UnitOfWork):
-    def __init__(self, db_path: str | Path, *, schema_path: str | Path | None = None, initialize_schema: bool = False) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        schema_path: str | Path | None = None,
+        initialize_schema: bool = False,
+        node_event_cap: int | None = None,
+        edge_event_cap: int | None = None,
+    ) -> None:
         self.database = SQLiteDatabase(db_path, schema_path=schema_path)
         self._initialize_schema = initialize_schema
+        self._node_event_cap = node_event_cap
+        self._edge_event_cap = edge_event_cap
         self.connection: sqlite3.Connection | None = None
 
     def __enter__(self) -> "SqliteUnitOfWork":
@@ -26,7 +36,11 @@ class SqliteUnitOfWork(UnitOfWork):
         self.chat_messages = SqliteChatMessageRepository(self.connection)
         self.nodes = SqliteNodeRepository(self.connection)
         self.edges = SqliteEdgeRepository(self.connection)
-        self.graph_events = SqliteGraphEventRepository(self.connection)
+        self.graph_events = SqliteGraphEventRepository(
+            self.connection,
+            node_event_cap=self._node_event_cap,
+            edge_event_cap=self._edge_event_cap,
+        )
         self.node_pointers = SqliteNodePointerRepository(self.connection)
         self.patterns = SqlitePatternRepository(self.connection)
         return self

@@ -7,10 +7,21 @@ from core.entities.graph_event import GraphEvent
 from storage.repositories.graph_event_repository import GraphEventRepository
 from storage.sqlite.common import dumps_json, fetch_all, fetch_one, loads_json, placeholders
 
+DEFAULT_NODE_EVENT_CAP = 64
+DEFAULT_EDGE_EVENT_CAP = 64
+
 
 class SqliteGraphEventRepository(GraphEventRepository):
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        node_event_cap: int | None = DEFAULT_NODE_EVENT_CAP,
+        edge_event_cap: int | None = DEFAULT_EDGE_EVENT_CAP,
+    ) -> None:
         self.connection = connection
+        self.node_event_cap = node_event_cap
+        self.edge_event_cap = edge_event_cap
 
     def ping(self) -> None:
         self.connection.execute("SELECT 1").fetchone()
@@ -35,7 +46,9 @@ class SqliteGraphEventRepository(GraphEventRepository):
                 event.note,
             ),
         )
-        return self.get_by_id(int(cursor.lastrowid)) or event
+        event_id = int(cursor.lastrowid)
+        self._trim_scope_events(trigger_node_id=event.trigger_node_id, trigger_edge_id=event.trigger_edge_id)
+        return self.get_by_id(event_id) or event
 
     def get_by_id(self, event_id: int) -> GraphEvent | None:
         row = fetch_one(self.connection, "SELECT * FROM graph_events WHERE id = ?", (event_id,))
@@ -103,6 +116,41 @@ class SqliteGraphEventRepository(GraphEventRepository):
             params,
         )
         return [_row_to_graph_event(row) for row in rows]
+
+    def _trim_scope_events(
+        self,
+        *,
+        trigger_node_id: int | None,
+        trigger_edge_id: int | None,
+    ) -> None:
+        if trigger_node_id is not None:
+            self._trim_events_for_scope('trigger_node_id', trigger_node_id, self.node_event_cap)
+        if trigger_edge_id is not None:
+            self._trim_events_for_scope('trigger_edge_id', trigger_edge_id, self.edge_event_cap)
+
+    def _trim_events_for_scope(self, column_name: str, scope_id: int, cap: int | None) -> None:
+        if cap is None or cap < 1:
+            return
+        rows = fetch_all(
+            self.connection,
+            f"""
+            SELECT id
+            FROM graph_events
+            WHERE {column_name} = ?
+              AND event_type NOT LIKE ?
+              AND event_type != ?
+            ORDER BY id DESC
+            LIMIT -1 OFFSET ?
+            """,
+            (scope_id, '%_created', 'message_ingested', cap),
+        )
+        stale_ids = [int(row['id']) for row in rows]
+        if not stale_ids:
+            return
+        self.connection.execute(
+            f"DELETE FROM graph_events WHERE id IN ({placeholders(stale_ids)})",
+            stale_ids,
+        )
 
 
 def _row_to_graph_event(row: sqlite3.Row) -> GraphEvent:
