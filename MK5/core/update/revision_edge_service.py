@@ -10,13 +10,6 @@ from storage.unit_of_work import UnitOfWork
 REVISION_PURPOSE = 'revision'
 REVISION_MARKER_CONFLICT_SUPPORT = 'conflict_support'
 REVISION_MARKER_NEUTRAL_SUPPORT = 'neutral_support'
-# Deprecated aliases kept for compatibility with older tests/callers.
-REVISION_KIND_CONFLICT_ASSERTION = REVISION_MARKER_CONFLICT_SUPPORT
-REVISION_KIND_PENDING = REVISION_MARKER_NEUTRAL_SUPPORT
-REVISION_KIND_DEACTIVATE_CANDIDATE = REVISION_MARKER_NEUTRAL_SUPPORT
-REVISION_KIND_MERGE_CANDIDATE = REVISION_MARKER_NEUTRAL_SUPPORT
-
-
 @dataclass(slots=True)
 class RevisionEdgeUpsertResult:
     edge_id: int | None
@@ -62,7 +55,6 @@ class RevisionEdgeService:
         marker_role: str = REVISION_MARKER_NEUTRAL_SUPPORT,
         status: str = 'open',
         metadata: dict[str, Any] | None = None,
-        kind: str | None = None,  # backward-compatible input; ignored
     ) -> RevisionEdgeUpsertResult:
         relation_detail = self._base_detail(
             reason=reason,

@@ -146,7 +146,6 @@ class EdgeRepository(Repository, ABC):
     def list_active_revision_markers(
         self,
         *,
-        kinds: Sequence[str] | None = None,
         limit: int = 500,
     ) -> Sequence[Edge]:
         """Return active revision-purpose marker edges."""

@@ -105,7 +105,6 @@ def main() -> None:
                     connect_type="conflict",
                     relation_detail={
                         "purpose": "revision",
-                        "kind": "conflict_assertion",
                         "source_edge_ids": [edge.id],
                         "reasons": ["smoke"],
                     },

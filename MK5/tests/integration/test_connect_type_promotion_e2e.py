@@ -49,14 +49,14 @@ class NoopFeedbackService(ModelFeedbackService):
 class AssertionClientPlain:
     def chat(self, **kwargs):  # noqa: ANN003
         return SimpleNamespace(
-            content='{"new_edges":[{"from_node_id":1,"to_node_id":2,"edge_family":"concept","connect_type":"reflective","relation_detail":{"kind":"name_variant"}}]}'
+            content='{"new_edges":[{"from_node_id":1,"to_node_id":2,"edge_family":"concept","connect_type":"reflective","relation_detail":{}}]}'
         )
 
 
 class AssertionClientWeighted:
     def chat(self, **kwargs):  # noqa: ANN003
         return SimpleNamespace(
-            content='{"new_edges":[{"from_node_id":1,"to_node_id":2,"edge_family":"concept","connect_type":"reflective","relation_detail":{"kind":"name_variant","source_type":"search","claim_domain":"world_fact"}}]}'
+            content='{"new_edges":[{"from_node_id":1,"to_node_id":2,"edge_family":"concept","connect_type":"reflective","relation_detail":{"source_type":"search","claim_domain":"world_fact"}}]}'
         )
 
 

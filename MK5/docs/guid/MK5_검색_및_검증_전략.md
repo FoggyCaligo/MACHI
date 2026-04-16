@@ -122,7 +122,7 @@ MK5의 검색은 “모르면 인터넷 검색해서 답한다”가 아니다.
 ### 이번 코드 반영 사항
 - `ModelFeedbackService`가 `ChatPipeline.process()`에 연결되어, 최종 `thought_view` 기준으로 기존 엣지에 대한 support/conflict 피드백을 `GraphCommitService`로 커밋한다.
 - `ModelEdgeAssertionService`를 신규 도입하고 `ChatPipeline.process()`에 연결했다.
-  - 모델이 `from_node_id / to_node_id / edge_family / connect_type` 형태의 새 엣지를 제안하면 실제 그래프에 생성/강화한다. 세부 메모가 필요하면 `relation_detail` 또는 `data/note`에 보조 정보만 남긴다.
+  - 모델이 `from_node_id / to_node_id / edge_family / connect_type / relation_detail(note/provenance/proposal)` 형태의 새 엣지를 제안하면 실제 그래프에 생성/강화한다.
 - `ActivationEngine`에 concept 2-hop 확장을 추가했다.
   - seed의 1-hop concept 인접 노드에 대해 concept 엣지를 한 번 더 확장해 사고 뷰에서 상위/유사 개념 연결이 덜 잘리지 않게 했다.
 - concept 엣지 우선 정렬을 유지해 `max_neighbor_edges` 한도에서 relation 엣지에 밀리는 문제를 완화했다.

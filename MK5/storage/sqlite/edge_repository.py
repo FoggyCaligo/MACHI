@@ -290,7 +290,6 @@ class SqliteEdgeRepository(EdgeRepository):
     def list_active_revision_markers(
         self,
         *,
-        kinds: Sequence[str] | None = None,
         limit: int = 500,
     ) -> Sequence[Edge]:
         rows = fetch_all(
@@ -306,7 +305,6 @@ class SqliteEdgeRepository(EdgeRepository):
             (limit,),
         )
         edges = [_row_to_edge(row) for row in rows]
-        # kind-based filtering is intentionally disabled in edge-first mode.
         # Marker semantics are resolved from edge_family/connect_type/purpose.
         return edges
 

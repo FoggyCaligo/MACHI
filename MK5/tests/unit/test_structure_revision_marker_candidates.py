@@ -36,7 +36,7 @@ def test_structure_revision_uses_revision_marker_candidates_without_flag(tmp_pat
                 target_node_id=2,
                 edge_family='concept',
                 connect_type='flow',
-                relation_detail={'kind': 'name_variant'},
+                relation_detail={},
                 trust_score=0.65,
                 support_count=2,
                 contradiction_pressure=0.1,
@@ -52,7 +52,7 @@ def test_structure_revision_uses_revision_marker_candidates_without_flag(tmp_pat
         uow.commit()
 
     with uow_factory() as uow:
-        actions = StructureRevisionService().review_candidates(uow, message_id=11, limit=20)
+        actions = StructureRevisionService().review_candidates(uow, message_id=None, limit=20)
         uow.commit()
         assert actions
         assert any(action.edge_id == (base_edge.id or 0) for action in actions)
@@ -74,7 +74,7 @@ def test_structure_revision_deactivates_when_deactivate_marker_support_accumulat
                 target_node_id=2,
                 edge_family='relation',
                 connect_type='neutral',
-                relation_detail={'kind': 'co_occurs_with'},
+                relation_detail={},
                 trust_score=0.9,
                 support_count=3,
                 contradiction_pressure=0.1,
@@ -85,7 +85,7 @@ def test_structure_revision_deactivates_when_deactivate_marker_support_accumulat
         service.record_revision_marker(
             uow,
             base_edge=base_edge,
-            kind='deactivate_candidate',
+            marker_role='deactivate_candidate',
             reason='manual_deactivate_vote',
             message_id=None,
             status='open',
@@ -93,7 +93,7 @@ def test_structure_revision_deactivates_when_deactivate_marker_support_accumulat
         service.record_revision_marker(
             uow,
             base_edge=base_edge,
-            kind='deactivate_candidate',
+            marker_role='deactivate_candidate',
             reason='manual_deactivate_vote',
             message_id=None,
             status='open',
@@ -124,7 +124,7 @@ def test_structure_revision_uses_execution_rule_table_for_thresholds(tmp_path: P
                 target_node_id=2,
                 edge_family='relation',
                 connect_type='neutral',
-                relation_detail={'kind': 'co_occurs_with'},
+                relation_detail={},
                 trust_score=0.9,
                 support_count=2,
                 contradiction_pressure=0.0,
@@ -134,7 +134,7 @@ def test_structure_revision_uses_execution_rule_table_for_thresholds(tmp_path: P
         RevisionEdgeService().record_revision_marker(
             uow,
             base_edge=base_edge,
-            kind='deactivate_candidate',
+            marker_role='deactivate_candidate',
             reason='single_vote',
             message_id=None,
             status='open',
@@ -176,7 +176,7 @@ def test_structure_revision_default_rules_branch_by_family_and_connect_type(tmp_
                 target_node_id=2,
                 edge_family='concept',
                 connect_type='conflict',
-                relation_detail={'kind': 'conflict_assertion'},
+                relation_detail={},
                 trust_score=0.30,
                 support_count=1,
                 conflict_count=1,
@@ -190,7 +190,7 @@ def test_structure_revision_default_rules_branch_by_family_and_connect_type(tmp_
                 target_node_id=4,
                 edge_family='relation',
                 connect_type='neutral',
-                relation_detail={'kind': 'co_occurs_with'},
+                relation_detail={},
                 trust_score=0.30,
                 support_count=1,
                 conflict_count=1,
@@ -216,7 +216,7 @@ def test_structure_revision_default_rules_branch_by_family_and_connect_type(tmp_
         uow.commit()
 
     with uow_factory() as uow:
-        actions = StructureRevisionService().review_candidates(uow, message_id=99, limit=20)
+        actions = StructureRevisionService().review_candidates(uow, message_id=None, limit=20)
         uow.commit()
         by_edge = {action.edge_id: action for action in actions}
         concept_action = by_edge.get(concept_conflict.id or 0)
@@ -244,7 +244,7 @@ def test_structure_revision_uses_marker_evidence_threshold_when_support_count_is
                 target_node_id=2,
                 edge_family='relation',
                 connect_type='neutral',
-                relation_detail={'kind': 'co_occurs_with'},
+                relation_detail={},
                 trust_score=0.9,
                 support_count=1,
                 conflict_count=0,
@@ -297,7 +297,7 @@ def test_structure_revision_applies_rule_overrides_on_default_rules(tmp_path: Pa
                 target_node_id=2,
                 edge_family='relation',
                 connect_type='neutral',
-                relation_detail={'kind': 'co_occurs_with'},
+                relation_detail={},
                 trust_score=0.9,
                 support_count=1,
                 conflict_count=0,

@@ -246,7 +246,6 @@ class ModelEdgeAssertionService:
 
             detail_raw = item.get('relation_detail') or {}
             relation_detail: dict[str, Any] = dict(detail_raw) if isinstance(detail_raw, dict) else {}
-            relation_detail.pop('kind', None)
             relation_detail.setdefault('note', '')
             relation_detail['inferred_from'] = 'model_assertion'
 

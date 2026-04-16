@@ -49,7 +49,7 @@ def test_model_edge_assertion_keeps_unknown_connect_type_as_proposal(tmp_path: P
     service = ModelEdgeAssertionService(
         uow_factory=uow_factory,
         client=FakeClient(
-            '{"new_edges":[{"from_node_id":1,"to_node_id":2,"edge_family":"concept","connect_type":"reflective","relation_detail":{"kind":"name_variant"}}]}'
+            '{"new_edges":[{"from_node_id":1,"to_node_id":2,"edge_family":"concept","connect_type":"reflective","relation_detail":{}}]}'
         ),
     )
     thought_view = ThoughtView(
@@ -88,7 +88,7 @@ def test_connect_type_promotion_promotes_repeated_candidate(tmp_path: Path) -> N
                 target_node_id=2,
                 edge_family='concept',
                 connect_type='neutral',
-                relation_detail={'kind': 'name_variant', 'proposed_connect_type': 'reflective'},
+                relation_detail={'proposed_connect_type': 'reflective'},
                 support_count=1,
                 trust_score=0.6,
             )
@@ -100,7 +100,7 @@ def test_connect_type_promotion_promotes_repeated_candidate(tmp_path: Path) -> N
                 target_node_id=3,
                 edge_family='concept',
                 connect_type='neutral',
-                relation_detail={'kind': 'name_variant', 'proposed_connect_type': 'reflective'},
+                relation_detail={'proposed_connect_type': 'reflective'},
                 support_count=1,
                 trust_score=0.6,
             )
@@ -112,7 +112,7 @@ def test_connect_type_promotion_promotes_repeated_candidate(tmp_path: Path) -> N
                 target_node_id=4,
                 edge_family='concept',
                 connect_type='neutral',
-                relation_detail={'kind': 'name_variant', 'proposed_connect_type': 'reflective'},
+                relation_detail={'proposed_connect_type': 'reflective'},
                 support_count=1,
                 trust_score=0.6,
             )
@@ -151,7 +151,7 @@ def test_connect_type_promotion_respects_trust_and_source_weight(tmp_path: Path)
                 target_node_id=2,
                 edge_family='concept',
                 connect_type='neutral',
-                relation_detail={'kind': 'name_variant', 'proposed_connect_type': 'reflective', 'inferred_from': 'assistant'},
+                relation_detail={'proposed_connect_type': 'reflective', 'inferred_from': 'assistant'},
                 support_count=2,
                 trust_score=0.20,
             )
@@ -163,7 +163,7 @@ def test_connect_type_promotion_respects_trust_and_source_weight(tmp_path: Path)
                 target_node_id=3,
                 edge_family='concept',
                 connect_type='neutral',
-                relation_detail={'kind': 'name_variant', 'proposed_connect_type': 'reflective', 'inferred_from': 'assistant'},
+                relation_detail={'proposed_connect_type': 'reflective', 'inferred_from': 'assistant'},
                 support_count=2,
                 trust_score=0.20,
             )
@@ -187,8 +187,7 @@ def test_connect_type_promotion_respects_trust_and_source_weight(tmp_path: Path)
                 edge_family='concept',
                 connect_type='neutral',
                 relation_detail={
-                    'kind': 'name_variant',
-                    'proposed_connect_type': 'reflective',
+                                        'proposed_connect_type': 'reflective',
                     'inferred_from': 'search',
                     'source_type': 'search',
                     'claim_domain': 'world_fact',
@@ -218,7 +217,7 @@ def test_hierarchical_concept_flow_is_not_merged_during_revision(tmp_path: Path)
                 target_node_id=2,
                 edge_family='concept',
                 connect_type='flow',
-                relation_detail={'kind': 'subtype_of'},
+                relation_detail={},
                 trust_score=0.39,
                 support_count=1,
                 conflict_count=1,
@@ -249,7 +248,7 @@ def test_hierarchical_concept_flow_is_not_merged_during_revision(tmp_path: Path)
 
     service = StructureRevisionService()
     with uow_factory() as uow:
-        actions = service.review_candidates(uow, message_id=1, limit=10)
+        actions = service.review_candidates(uow, message_id=None, limit=10)
         uow.commit()
         assert all(action.action != 'node_merged' for action in actions)
 
@@ -268,7 +267,7 @@ def test_opposite_connect_type_emits_dedicated_contradiction_reason() -> None:
         target_node_id=2,
         edge_family='concept',
         connect_type='opposite',
-        relation_detail={'kind': 'opposes'},
+        relation_detail={},
         support_count=1,
         conflict_count=0,
         contradiction_pressure=0.0,

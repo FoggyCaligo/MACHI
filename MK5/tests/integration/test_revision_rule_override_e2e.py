@@ -41,7 +41,7 @@ def _run_revision_once(
                 target_node_id=2,
                 edge_family='relation',
                 connect_type='neutral',
-                relation_detail={'kind': 'co_occurs_with'},
+                relation_detail={},
                 trust_score=0.9,
                 support_count=1,
                 conflict_count=0,

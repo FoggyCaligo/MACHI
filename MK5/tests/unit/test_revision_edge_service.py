@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 from core.entities.edge import Edge
 from core.entities.node import Node
 from core.update.revision_edge_service import (
-    REVISION_KIND_PENDING,
+    REVISION_MARKER_NEUTRAL_SUPPORT,
     RevisionEdgeService,
 )
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
@@ -38,7 +38,7 @@ def test_revision_marker_upserts_with_standard_detail(tmp_path: Path) -> None:
                 target_node_id=2,
                 edge_family='concept',
                 connect_type='flow',
-                relation_detail={'kind': 'subtype_of'},
+                relation_detail={},
                 support_count=1,
                 trust_score=0.7,
             )
@@ -50,7 +50,7 @@ def test_revision_marker_upserts_with_standard_detail(tmp_path: Path) -> None:
         created = service.record_revision_marker(
             uow,
             base_edge=base,
-            kind=REVISION_KIND_PENDING,
+            marker_role=REVISION_MARKER_NEUTRAL_SUPPORT,
             reason='candidate_but_not_below_floor',
             message_id=11,
             status='open',
@@ -59,7 +59,7 @@ def test_revision_marker_upserts_with_standard_detail(tmp_path: Path) -> None:
         supported = service.record_revision_marker(
             uow,
             base_edge=base,
-            kind=REVISION_KIND_PENDING,
+            marker_role=REVISION_MARKER_NEUTRAL_SUPPORT,
             reason='candidate_but_not_below_floor',
             message_id=12,
             status='open',
@@ -74,6 +74,6 @@ def test_revision_marker_upserts_with_standard_detail(tmp_path: Path) -> None:
         assert marker.connect_type == 'neutral'
         assert marker.support_count >= 2
         assert marker.relation_detail.get('purpose') == 'revision'
-        assert marker.relation_detail.get('marker_role') == REVISION_KIND_PENDING
+        assert marker.relation_detail.get('marker_role') == REVISION_MARKER_NEUTRAL_SUPPORT
         assert marker.relation_detail.get('status') == 'open'
         assert marker.relation_detail.get('source_edge_ids') == [base.id]
