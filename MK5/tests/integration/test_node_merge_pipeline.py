@@ -86,8 +86,9 @@ def main() -> None:
                     edge_uid='edge-kept',
                     source_node_id=canonical.id or 0,
                     target_node_id=target.id or 0,
-                    edge_type='co_occurs_with',
-                    relation_detail={'source_counts': {'user': 1}},
+                    edge_family='relation',
+                    connect_type='neutral',
+                    relation_detail={'connect_semantics': 'same_sentence_co_occurrence', 'source_counts': {'user': 1}},
                     edge_weight=0.2,
                     trust_score=0.5,
                     support_count=2,
@@ -99,8 +100,9 @@ def main() -> None:
                     edge_uid='edge-merged',
                     source_node_id=absorbed.id or 0,
                     target_node_id=target.id or 0,
-                    edge_type='co_occurs_with',
-                    relation_detail={'source_counts': {'search': 1}},
+                    edge_family='relation',
+                    connect_type='neutral',
+                    relation_detail={'connect_semantics': 'same_sentence_co_occurrence', 'source_counts': {'search': 1}},
                     edge_weight=0.4,
                     trust_score=0.8,
                     support_count=3,
@@ -112,8 +114,9 @@ def main() -> None:
                     edge_uid='edge-rewired',
                     source_node_id=owner.id or 0,
                     target_node_id=absorbed.id or 0,
-                    edge_type='supports',
-                    relation_detail={'reason': 'fixture'},
+                    edge_family='relation',
+                    connect_type='flow',
+                    relation_detail={'connect_semantics': 'support_relation', 'reason': 'fixture'},
                     edge_weight=0.3,
                     trust_score=0.6,
                     support_count=1,
@@ -185,7 +188,13 @@ def main() -> None:
             assert canonical_after.payload['source_counts'] == {'user': 2, 'search': 1}
             assert canonical_after.payload['merged_from'][0]['node_id'] == (absorbed.id or 0)
 
-            surviving_edge = uow.edges.find_active_relation(canonical.id or 0, target.id or 0, 'co_occurs_with')
+            surviving_edge = uow.edges.find_active_relation(
+                canonical.id or 0,
+                target.id or 0,
+                edge_family='relation',
+                connect_type='neutral',
+                connect_semantics='same_sentence_co_occurrence',
+            )
             assert surviving_edge is not None
             assert surviving_edge.support_count == 5
             assert surviving_edge.trust_score == 0.8
@@ -193,7 +202,13 @@ def main() -> None:
             assert surviving_edge.relation_detail['source_counts'] == {'user': 1, 'search': 1}
             assert (merged_edge.id or 0) in surviving_edge.relation_detail['merged_edge_ids']
 
-            moved_edge = uow.edges.find_active_relation(owner.id or 0, canonical.id or 0, 'supports')
+            moved_edge = uow.edges.find_active_relation(
+                owner.id or 0,
+                canonical.id or 0,
+                edge_family='relation',
+                connect_type='flow',
+                connect_semantics='support_relation',
+            )
             assert moved_edge is not None and moved_edge.id == rewired_edge.id
             assert moved_edge.relation_detail['rewrite_history'][0]['from_node_id'] == (absorbed.id or 0)
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any
 from uuid import uuid4
+import hashlib
 
 from core.cognition.direct_node_accessor import DirectNodeAccessor
 from core.cognition.hash_resolver import HashResolver
@@ -216,6 +217,30 @@ class GraphIngestService:
                 resolved.append((block, node))
                 sentence_nodes[block.sentence_index][node.id or 0] = node
 
+            identity_anchor = self._ensure_identity_anchor(
+                uow=uow,
+                session_id=request.session_id,
+                role=request.role,
+                source_type=source_type,
+                claim_domain=claim_domain,
+                root_event_id=root_event.id,
+                message_id=message.id,
+            )
+            if identity_anchor is not None:
+                if identity_anchor.id is not None and identity_anchor.id not in result.reused_node_ids and identity_anchor.id not in result.created_node_ids:
+                    result.reused_node_ids.append(identity_anchor.id)
+                self._link_identity_anchor(
+                    uow=uow,
+                    anchor_node=identity_anchor,
+                    resolved=resolved,
+                    message=message,
+                    root_event=root_event,
+                    result=result,
+                    source_type=source_type,
+                    claim_domain=claim_domain,
+                    profile=profile,
+                )
+
             self._link_sentence_co_occurrence(
                 uow=uow,
                 message=message,
@@ -274,15 +299,23 @@ class GraphIngestService:
             if len(node_map) < 2:
                 continue
             for source_id, target_id in combinations(sorted(node_map), 2):
-                existing = uow.edges.find_active_relation(source_id, target_id, 'co_occurs_with')
+                existing = uow.edges.find_active_relation(
+                    source_id,
+                    target_id,
+                    edge_family='relation',
+                    connect_type='neutral',
+                    connect_semantics='same_sentence_co_occurrence',
+                )
                 if existing is None:
                     edge = uow.edges.add(
                         Edge(
                             edge_uid=self._new_uid('edge'),
                             source_node_id=source_id,
                             target_node_id=target_id,
-                            edge_type='co_occurs_with',
+                            edge_family='relation',
+                            connect_type='neutral',
                             relation_detail={
+                                'connect_semantics': 'same_sentence_co_occurrence',
                                 'scope': 'sentence',
                                 'sentence_index': sentence_index,
                                 'message_id': message.id,
@@ -309,7 +342,9 @@ class GraphIngestService:
                                 'claim_domain': claim_domain,
                             },
                             effect={
-                                'edge_type': 'co_occurs_with',
+                                'edge_family': 'relation',
+                                'connect_type': 'neutral',
+                                'connect_semantics': 'same_sentence_co_occurrence',
                                 'source_node_id': source_id,
                                 'target_node_id': target_id,
                                 'initial_trust': profile.initial_edge_trust,
@@ -425,6 +460,173 @@ class GraphIngestService:
         if len(text_b) < len(text_a) and text_b in text_a and text_a != text_b:
             return (block_a, node_a), (block_b, node_b)
         return None, None
+
+    def _ensure_identity_anchor(
+        self,
+        *,
+        uow: UnitOfWork,
+        session_id: str,
+        role: str,
+        source_type: str,
+        claim_domain: str,
+        root_event_id: int | None,
+        message_id: int | None,
+    ) -> Node | None:
+        anchor_key = self._identity_anchor_key(role=role, source_type=source_type)
+        if not anchor_key:
+            return None
+        address_hash = self._identity_anchor_address(session_id=session_id, anchor_key=anchor_key)
+        existing = uow.nodes.get_by_address_hash(address_hash)
+        if existing is not None:
+            payload = dict(existing.payload or {})
+            payload['last_source_type'] = source_type
+            payload['last_claim_domain'] = claim_domain
+            payload['session_id'] = session_id
+            payload['anchor_key'] = anchor_key
+            uow.nodes.update_payload(existing.id or 0, payload)
+            return existing
+
+        anchor = uow.nodes.add(
+            Node(
+                node_uid=self._new_uid('node'),
+                address_hash=address_hash,
+                node_kind='identity_anchor',
+                raw_value=anchor_key,
+                normalized_value=anchor_key,
+                payload={
+                    'session_id': session_id,
+                    'anchor_key': anchor_key,
+                    'source_type': source_type,
+                    'claim_domain': claim_domain,
+                    'created_from_message_id': message_id,
+                },
+                trust_score=0.9,
+                stability_score=0.9,
+                created_from_event_id=root_event_id,
+            )
+        )
+        uow.graph_events.add(
+            GraphEvent(
+                event_uid=self._new_uid('evt'),
+                event_type='identity_anchor_created',
+                message_id=message_id,
+                trigger_node_id=anchor.id,
+                parsed_input={
+                    'session_id': session_id,
+                    'anchor_key': anchor_key,
+                    'source_type': source_type,
+                },
+                effect={'address_hash': address_hash},
+                note='Session-scoped identity anchor node created.',
+            )
+        )
+        return anchor
+
+    def _link_identity_anchor(
+        self,
+        *,
+        uow: UnitOfWork,
+        anchor_node: Node,
+        resolved: list[tuple[MeaningBlock, Node]],
+        message: ChatMessage,
+        root_event: GraphEvent,
+        result: GraphIngestResult,
+        source_type: str,
+        claim_domain: str,
+        profile,
+    ) -> None:
+        seen_target_ids: set[int] = set()
+        semantics = self._identity_anchor_semantics(source_type=source_type)
+        for _block, node in resolved:
+            if node.id is None or anchor_node.id is None or node.id == anchor_node.id or node.id in seen_target_ids:
+                continue
+            seen_target_ids.add(node.id)
+            existing = uow.edges.find_active_relation(
+                anchor_node.id,
+                node.id,
+                edge_family='relation',
+                connect_type='flow',
+                connect_semantics=semantics,
+            )
+            if existing is None:
+                edge = uow.edges.add(
+                    Edge(
+                        edge_uid=self._new_uid('edge'),
+                        source_node_id=anchor_node.id,
+                        target_node_id=node.id,
+                        edge_family='relation',
+                        connect_type='flow',
+                        relation_detail={
+                            'connect_semantics': semantics,
+                            'message_id': message.id,
+                            'source_type': source_type,
+                            'claim_domain': claim_domain,
+                            'anchor_key': anchor_node.normalized_value,
+                            'source_counts': {source_type: 1},
+                        },
+                        edge_weight=max(0.15, profile.edge_weight),
+                        trust_score=profile.initial_edge_trust,
+                        support_count=1,
+                        created_from_event_id=root_event.id,
+                    )
+                )
+                result.created_edge_ids.append(edge.id or 0)
+                event = uow.graph_events.add(
+                    GraphEvent(
+                        event_uid=self._new_uid('evt'),
+                        event_type='identity_anchor_linked',
+                        message_id=message.id,
+                        trigger_edge_id=edge.id,
+                        parsed_input={
+                            'source_type': source_type,
+                            'claim_domain': claim_domain,
+                            'anchor_node_id': anchor_node.id,
+                            'target_node_id': node.id,
+                        },
+                        effect={
+                            'edge_family': 'relation',
+                            'connect_type': 'flow',
+                            'connect_semantics': semantics,
+                        },
+                        note='Identity anchor linked to message-derived node.',
+                    )
+                )
+                result.created_event_ids.append(event.id or 0)
+            else:
+                relation_detail = dict(existing.relation_detail or {})
+                source_counts = dict(relation_detail.get('source_counts') or {})
+                source_counts[source_type] = int(source_counts.get(source_type, 0)) + 1
+                relation_detail['source_counts'] = source_counts
+                relation_detail['last_message_id'] = message.id
+                relation_detail['last_claim_domain'] = claim_domain
+                uow.edges.update_relation_detail(existing.id or 0, relation_detail)
+                uow.edges.bump_support(existing.id or 0, delta=1, trust_delta=profile.edge_support_trust_delta)
+                result.supported_edge_ids.append(existing.id or 0)
+
+    def _identity_anchor_key(self, *, role: str, source_type: str) -> str:
+        normalized_role = ' '.join(str(role or '').split()).strip().lower()
+        normalized_source = ' '.join(str(source_type or '').split()).strip().lower()
+        if normalized_role == 'user' or normalized_source == 'user':
+            return 'user_self'
+        if normalized_role == 'assistant' or normalized_source == 'assistant':
+            return 'assistant_self'
+        if normalized_role == 'search' or normalized_source == 'search':
+            return 'search_source_self'
+        return ''
+
+    def _identity_anchor_semantics(self, *, source_type: str) -> str:
+        normalized_source = ' '.join(str(source_type or '').split()).strip().lower()
+        if normalized_source == 'user':
+            return 'user_authored_node'
+        if normalized_source == 'assistant':
+            return 'assistant_authored_node'
+        if normalized_source == 'search':
+            return 'search_evidence_node'
+        return 'source_authored_node'
+
+    def _identity_anchor_address(self, *, session_id: str, anchor_key: str) -> str:
+        payload = f'identity_anchor::{session_id}::{anchor_key}'
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()[: self.hash_resolver.digest_size * 2]
 
     def _new_uid(self, prefix: str) -> str:
         return f'{prefix}-{uuid4().hex}'

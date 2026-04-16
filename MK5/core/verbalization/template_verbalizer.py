@@ -33,7 +33,7 @@ class TemplateVerbalizer:
             lines.append('감지된 구조 충돌:')
             for item in conclusion.detected_conflicts[: self.max_conflicts]:
                 lines.append(
-                    f"- edge#{item.edge_id} [{item.edge_type}] {item.reason} | severity={item.severity} | score={item.score:.2f}"
+                    f"- edge#{item.edge_id} [{item.edge_label}] {item.reason} | severity={item.severity} | score={item.score:.2f}"
                 )
         else:
             lines.append('')

@@ -144,7 +144,9 @@ class NodeMergeService:
                 new_target=edge.target_node_id,
                 merged_node_id=merged_node_id,
                 canonical_node_id=canonical_node_id,
-                edge_type=edge.edge_type,
+                edge_family=edge.edge_family,
+                connect_type=edge.connect_type,
+                connect_semantics=edge.connect_semantics,
             )
             rewired.extend(action['rewired'])
             merged.extend(action['merged'])
@@ -163,7 +165,9 @@ class NodeMergeService:
                 new_target=canonical_node_id,
                 merged_node_id=merged_node_id,
                 canonical_node_id=canonical_node_id,
-                edge_type=edge.edge_type,
+                edge_family=edge.edge_family,
+                connect_type=edge.connect_type,
+                connect_semantics=edge.connect_semantics,
             )
             rewired.extend(action['rewired'])
             merged.extend(action['merged'])
@@ -182,7 +186,9 @@ class NodeMergeService:
         new_target: int,
         merged_node_id: int,
         canonical_node_id: int,
-        edge_type: str,
+        edge_family: str,
+        connect_type: str,
+        connect_semantics: str,
     ) -> dict[str, list[int]]:
         edge = uow.edges.get_by_id(edge_id)
         if edge is None or not edge.is_active:
@@ -191,7 +197,13 @@ class NodeMergeService:
             uow.edges.deactivate(edge_id)
             return {'rewired': [], 'merged': [], 'deactivated': [edge_id]}
 
-        duplicate = uow.edges.find_active_relation(new_source, new_target, edge_type)
+        duplicate = uow.edges.find_active_relation(
+            new_source,
+            new_target,
+            edge_family=edge_family,
+            connect_type=connect_type,
+            connect_semantics=connect_semantics or None,
+        )
         if duplicate is not None and duplicate.id != edge_id:
             merged_detail = self._merge_relation_detail(duplicate.relation_detail, edge.relation_detail, merged_edge_id=edge_id)
             uow.edges.update_relation_detail(duplicate.id or 0, merged_detail)

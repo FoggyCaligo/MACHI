@@ -154,7 +154,7 @@ class ConclusionBuilder:
             edge_id=signal.edge_id,
             source_node_id=signal.source_node_id,
             target_node_id=signal.target_node_id,
-            edge_type=signal.edge_type,
+            edge_label=signal.edge_label,
             severity=signal.severity,
             reason=signal.reason,
             score=signal.score,

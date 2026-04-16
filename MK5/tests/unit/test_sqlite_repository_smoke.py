@@ -68,8 +68,9 @@ def main() -> None:
                     edge_uid="edge-1",
                     source_node_id=node_a.id or 0,
                     target_node_id=node_b.id or 0,
-                    edge_type="is_a",
-                    relation_detail={"reason": "smoke"},
+                    edge_family="concept",
+                    connect_type="flow",
+                    relation_detail={"connect_semantics": "is_a", "reason": "smoke"},
                     created_from_event_id=event.id,
                 )
             )
@@ -86,7 +87,13 @@ def main() -> None:
             assert uow.chat_messages.get_by_uid("msg-1") is not None
             assert uow.graph_events.get_by_uid("evt-1") is not None
             assert uow.nodes.get_by_address_hash("hash-a") is not None
-            assert uow.edges.find_active_relation(node_a.id or 0, node_b.id or 0, "is_a") is not None
+            assert uow.edges.find_active_relation(
+                node_a.id or 0,
+                node_b.id or 0,
+                edge_family="concept",
+                connect_type="flow",
+                connect_semantics="is_a",
+            ) is not None
             assert uow.node_pointers.find_active(node_a.id or 0, node_b.id or 0, "support_reference") is not None
 
             uow.edges.bump_conflict(edge.id or 0, trust_delta=-0.2)

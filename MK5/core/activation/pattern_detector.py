@@ -195,7 +195,7 @@ class PatternDetector:
         # Sort nodes and edges by ID for consistent hashing
         node_ids = sorted(n.id for n in nodes if n.id)
         edge_tuples = sorted(
-            (e.source_node_id, e.target_node_id, e.edge_type) 
+            (e.source_node_id, e.target_node_id, e.edge_family, e.connect_type, e.connect_semantics)
             for e in edges 
             if e.source_node_id and e.target_node_id
         )

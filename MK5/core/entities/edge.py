@@ -10,7 +10,8 @@ class Edge:
     edge_uid: str = ""
     source_node_id: int = 0
     target_node_id: int = 0
-    edge_type: str = "related_to"
+    edge_family: str = "relation"
+    connect_type: str = "flow"
     relation_detail: dict[str, Any] = field(default_factory=dict)
     edge_weight: float = 0.1
     trust_score: float = 0.5
@@ -24,3 +25,15 @@ class Edge:
     created_at: str | None = None
     updated_at: str | None = None
     is_active: bool = True
+
+    @property
+    def connect_semantics(self) -> str:
+        value = self.relation_detail.get("connect_semantics")
+        return ' '.join(str(value or '').split()).strip()
+
+    @property
+    def display_label(self) -> str:
+        semantics = self.connect_semantics
+        if semantics:
+            return f"{self.edge_family}/{self.connect_type}/{semantics}"
+        return f"{self.edge_family}/{self.connect_type}"

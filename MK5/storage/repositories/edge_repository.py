@@ -25,7 +25,10 @@ class EdgeRepository(Repository, ABC):
         self,
         source_node_id: int,
         target_node_id: int,
-        edge_type: str,
+        *,
+        edge_family: str,
+        connect_type: str,
+        connect_semantics: str | None = None,
     ) -> Edge | None:
         """Return the currently active edge for the exact relation triple."""
 
@@ -34,7 +37,8 @@ class EdgeRepository(Repository, ABC):
         self,
         source_node_id: int,
         *,
-        edge_types: Sequence[str] | None = None,
+        edge_families: Sequence[str] | None = None,
+        connect_types: Sequence[str] | None = None,
         active_only: bool = True,
         limit: int | None = None,
     ) -> Sequence[Edge]:
@@ -45,7 +49,8 @@ class EdgeRepository(Repository, ABC):
         self,
         target_node_id: int,
         *,
-        edge_types: Sequence[str] | None = None,
+        edge_families: Sequence[str] | None = None,
+        connect_types: Sequence[str] | None = None,
         active_only: bool = True,
         limit: int | None = None,
     ) -> Sequence[Edge]:

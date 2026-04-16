@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS edges (
     edge_uid TEXT NOT NULL UNIQUE,
     source_node_id INTEGER NOT NULL,
     target_node_id INTEGER NOT NULL,
-    edge_type TEXT NOT NULL,
+    edge_family TEXT NOT NULL,
+    connect_type TEXT NOT NULL,
     relation_detail_json TEXT NOT NULL DEFAULT '{}',
     edge_weight REAL NOT NULL DEFAULT 0.1,
     trust_score REAL NOT NULL DEFAULT 0.5,
@@ -84,9 +85,9 @@ CREATE TABLE IF NOT EXISTS edges (
     FOREIGN KEY (created_from_event_id) REFERENCES graph_events(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_node_id, is_active, edge_type);
-CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_node_id, is_active, edge_type);
-CREATE INDEX IF NOT EXISTS idx_edges_pair_type ON edges(source_node_id, target_node_id, edge_type, is_active);
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_node_id, is_active, edge_family, connect_type);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_node_id, is_active, edge_family, connect_type);
+CREATE INDEX IF NOT EXISTS idx_edges_pair_type ON edges(source_node_id, target_node_id, edge_family, connect_type, is_active);
 CREATE INDEX IF NOT EXISTS idx_edges_revision ON edges(revision_candidate_flag, contradiction_pressure DESC, id);
 
 CREATE TABLE IF NOT EXISTS node_pointers (

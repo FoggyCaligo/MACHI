@@ -429,11 +429,11 @@ function summarizeThinkingDebug(thinking) {
   }
 
   const signals = Array.isArray(thinking.signals) ? thinking.signals : [];
-  signals.slice(0, 5).forEach((item, index) => {
-    lines.push(
-      `${index + 1}. edge#${item.edge_id} [${item.edge_type}] ${item.reason} | severity=${item.severity}`,
-    );
-  });
+    signals.slice(0, 5).forEach((item, index) => {
+      lines.push(
+      `${index + 1}. edge#${item.edge_id} [${item.edge_label}] ${item.reason} | severity=${item.severity}`,
+      );
+    });
 
   return lines.join("\n");
 }

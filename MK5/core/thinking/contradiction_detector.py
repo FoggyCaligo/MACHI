@@ -21,8 +21,9 @@ class ContradictionDetector:
         for edge in thought_view.edges:
             if edge.id is None or not edge.is_active:
                 continue
-            if self._is_singular_relation(edge.edge_type):
-                singular_groups.setdefault((edge.source_node_id, edge.edge_type), []).append(edge)
+            singular_key = self._singular_group_key(edge)
+            if singular_key is not None:
+                singular_groups.setdefault((edge.source_node_id, singular_key), []).append(edge)
 
             signal = self._inspect_one(edge)
             if signal is not None and signal.edge_id not in seen_edge_ids:
@@ -43,7 +44,7 @@ class ContradictionDetector:
                         edge_id=edge.id,
                         source_node_id=edge.source_node_id,
                         target_node_id=edge.target_node_id,
-                        edge_type=edge.edge_type,
+                        edge_label=edge.display_label,
                         severity='high',
                         reason=f'singular_relation_collision_with_edge_{primary.id}',
                         score=score,
@@ -89,7 +90,7 @@ class ContradictionDetector:
             edge_id=edge.id,
             source_node_id=edge.source_node_id,
             target_node_id=edge.target_node_id,
-            edge_type=edge.edge_type,
+            edge_label=edge.display_label,
             severity=severity,
             reason=reason or 'structural_tension',
             score=round(score, 6),
@@ -101,5 +102,10 @@ class ContradictionDetector:
             },
         )
 
-    def _is_singular_relation(self, edge_type: str) -> bool:
-        return edge_type in {'same_as', 'parent_of', 'child_of', 'contradicts'}
+    def _singular_group_key(self, edge) -> str | None:
+        semantics = edge.connect_semantics
+        if edge.edge_family == 'concept' and edge.connect_type == 'neutral':
+            return 'concept_identity_cluster'
+        if semantics in {'same_as', 'parent_of', 'child_of', 'contradicts'}:
+            return semantics
+        return None

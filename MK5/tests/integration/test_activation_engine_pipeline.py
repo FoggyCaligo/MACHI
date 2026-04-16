@@ -57,7 +57,7 @@ def main() -> None:
         assert view.metadata['seed_node_count'] > 0
         normalized_values = {(node.normalized_value or '') for node in view.nodes}
         assert 'mk5' in normalized_values
-        assert any(edge.edge_type == 'co_occurs_with' for edge in view.edges)
+        assert any(edge.connect_semantics == 'same_sentence_co_occurrence' for edge in view.edges)
 
 
 if __name__ == '__main__':

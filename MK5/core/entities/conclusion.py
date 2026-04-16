@@ -9,7 +9,7 @@ class ContradictionSignal:
     edge_id: int
     source_node_id: int
     target_node_id: int
-    edge_type: str
+    edge_label: str
     severity: str
     reason: str
     score: float
@@ -34,7 +34,7 @@ class ConflictRecord:
     edge_id: int
     source_node_id: int
     target_node_id: int
-    edge_type: str
+    edge_label: str
     severity: str
     reason: str
     score: float

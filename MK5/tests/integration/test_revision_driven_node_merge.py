@@ -74,8 +74,9 @@ def main() -> None:
                     edge_uid='edge-revision',
                     source_node_id=node_a.id or 0,
                     target_node_id=node_b.id or 0,
-                    edge_type='contradicts',
-                    relation_detail={'fixture': True},
+                    edge_family='concept',
+                    connect_type='opposite',
+                    relation_detail={'connect_semantics': 'contradicts', 'fixture': True},
                     edge_weight=0.2,
                     trust_score=0.39,
                     support_count=1,
@@ -90,8 +91,9 @@ def main() -> None:
                     edge_uid='edge-carried',
                     source_node_id=node_b.id or 0,
                     target_node_id=target.id or 0,
-                    edge_type='supports',
-                    relation_detail={'fixture': 'carried'},
+                    edge_family='relation',
+                    connect_type='flow',
+                    relation_detail={'connect_semantics': 'support_relation', 'fixture': 'carried'},
                     edge_weight=0.6,
                     trust_score=0.7,
                     support_count=1,
@@ -117,7 +119,13 @@ def main() -> None:
             node_b_after = uow.nodes.get_by_id(node_b.id or 0)
             assert node_a_after is not None and node_a_after.is_active
             assert node_b_after is not None and not node_b_after.is_active
-            moved = uow.edges.find_active_relation(node_a.id or 0, target.id or 0, 'supports')
+            moved = uow.edges.find_active_relation(
+                node_a.id or 0,
+                target.id or 0,
+                edge_family='relation',
+                connect_type='flow',
+                connect_semantics='support_relation',
+            )
             assert moved is not None and moved.id == (carried.id or 0)
             event_types = {event.event_type for event in uow.graph_events.list_recent(limit=20)}
             assert 'node_merged' in event_types

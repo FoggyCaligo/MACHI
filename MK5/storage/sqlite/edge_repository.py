@@ -19,17 +19,18 @@ class SqliteEdgeRepository(EdgeRepository):
         cursor = self.connection.execute(
             """
             INSERT INTO edges (
-                edge_uid, source_node_id, target_node_id, edge_type, relation_detail_json,
+                edge_uid, source_node_id, target_node_id, edge_family, connect_type, relation_detail_json,
                 edge_weight, trust_score, support_count, conflict_count,
                 contradiction_pressure, revision_candidate_flag, created_from_event_id,
                 last_supported_at, last_conflicted_at, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 edge.edge_uid,
                 edge.source_node_id,
                 edge.target_node_id,
-                edge.edge_type,
+                edge.edge_family,
+                edge.connect_type,
                 dumps_json(edge.relation_detail),
                 edge.edge_weight,
                 edge.trust_score,
@@ -53,7 +54,15 @@ class SqliteEdgeRepository(EdgeRepository):
         row = fetch_one(self.connection, "SELECT * FROM edges WHERE edge_uid = ?", (edge_uid,))
         return _row_to_edge(row) if row else None
 
-    def find_active_relation(self, source_node_id: int, target_node_id: int, edge_type: str) -> Edge | None:
+    def find_active_relation(
+        self,
+        source_node_id: int,
+        target_node_id: int,
+        *,
+        edge_family: str,
+        connect_type: str,
+        connect_semantics: str | None = None,
+    ) -> Edge | None:
         row = fetch_one(
             self.connection,
             """
@@ -61,27 +70,58 @@ class SqliteEdgeRepository(EdgeRepository):
             FROM edges
             WHERE source_node_id = ?
               AND target_node_id = ?
-              AND edge_type = ?
+              AND edge_family = ?
+              AND connect_type = ?
               AND is_active = 1
-            LIMIT 1
             """,
-            (source_node_id, target_node_id, edge_type),
+            (source_node_id, target_node_id, edge_family, connect_type),
         )
-        return _row_to_edge(row) if row else None
+        if row is None:
+            return None
+        candidate = _row_to_edge(row)
+        if connect_semantics is None:
+            return candidate
+        semantics = ' '.join(str(connect_semantics or '').split()).strip()
+        if candidate.connect_semantics == semantics:
+            return candidate
+
+        rows = fetch_all(
+            self.connection,
+            """
+            SELECT *
+            FROM edges
+            WHERE source_node_id = ?
+              AND target_node_id = ?
+              AND edge_family = ?
+              AND connect_type = ?
+              AND is_active = 1
+            ORDER BY trust_score DESC, edge_weight DESC, id ASC
+            """,
+            (source_node_id, target_node_id, edge_family, connect_type),
+        )
+        for item in rows:
+            edge = _row_to_edge(item)
+            if edge.connect_semantics == semantics:
+                return edge
+        return None
 
     def list_outgoing(
         self,
         source_node_id: int,
         *,
-        edge_types: Sequence[str] | None = None,
+        edge_families: Sequence[str] | None = None,
+        connect_types: Sequence[str] | None = None,
         active_only: bool = True,
         limit: int | None = None,
     ) -> Sequence[Edge]:
         clauses = ["source_node_id = ?"]
         params: list[object] = [source_node_id]
-        if edge_types:
-            clauses.append(f"edge_type IN ({placeholders(edge_types)})")
-            params.extend(edge_types)
+        if edge_families:
+            clauses.append(f"edge_family IN ({placeholders(edge_families)})")
+            params.extend(edge_families)
+        if connect_types:
+            clauses.append(f"connect_type IN ({placeholders(connect_types)})")
+            params.extend(connect_types)
         if active_only:
             clauses.append("is_active = 1")
         sql = f"SELECT * FROM edges WHERE {' AND '.join(clauses)} ORDER BY trust_score DESC, edge_weight DESC, id ASC"
@@ -95,15 +135,19 @@ class SqliteEdgeRepository(EdgeRepository):
         self,
         target_node_id: int,
         *,
-        edge_types: Sequence[str] | None = None,
+        edge_families: Sequence[str] | None = None,
+        connect_types: Sequence[str] | None = None,
         active_only: bool = True,
         limit: int | None = None,
     ) -> Sequence[Edge]:
         clauses = ["target_node_id = ?"]
         params: list[object] = [target_node_id]
-        if edge_types:
-            clauses.append(f"edge_type IN ({placeholders(edge_types)})")
-            params.extend(edge_types)
+        if edge_families:
+            clauses.append(f"edge_family IN ({placeholders(edge_families)})")
+            params.extend(edge_families)
+        if connect_types:
+            clauses.append(f"connect_type IN ({placeholders(connect_types)})")
+            params.extend(connect_types)
         if active_only:
             clauses.append("is_active = 1")
         sql = f"SELECT * FROM edges WHERE {' AND '.join(clauses)} ORDER BY trust_score DESC, edge_weight DESC, id ASC"
@@ -268,7 +312,8 @@ def _row_to_edge(row: sqlite3.Row) -> Edge:
         edge_uid=str(row["edge_uid"]),
         source_node_id=int(row["source_node_id"]),
         target_node_id=int(row["target_node_id"]),
-        edge_type=str(row["edge_type"]),
+        edge_family=str(row["edge_family"]),
+        connect_type=str(row["connect_type"]),
         relation_detail=loads_json(row["relation_detail_json"], default={}),
         edge_weight=float(row["edge_weight"]),
         trust_score=float(row["trust_score"]),

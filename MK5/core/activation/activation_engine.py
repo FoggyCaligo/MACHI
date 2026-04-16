@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
 
 from core.activation.pattern_detector import PatternDetector
 from core.activation.thought_view_builder import ThoughtViewBuilder
@@ -63,10 +64,11 @@ class ActivationEngine:
             current_topic_terms = self._extract_topic_terms(seed_blocks, seed_nodes)
             topic_overlap_count = len(set(previous_topic_terms).intersection(current_topic_terms))
             recent_memory_messages = self._recent_conversation_memory(uow, request.session_id)
+            identity_nodes = self._session_identity_nodes(uow, request.session_id)
 
             local_edges = self._collect_neighbor_edges(uow, seed_node_ids, request.max_neighbor_edges)
             neighbor_nodes = self._collect_neighbor_nodes(uow, seed_nodes, local_edges, request.max_neighbors)
-            all_nodes = self._merge_nodes(seed_nodes, neighbor_nodes)
+            all_nodes = self._merge_nodes(seed_nodes, neighbor_nodes + identity_nodes)
             pointers = self._collect_pointers(uow, all_nodes, request.include_pointer_expansion)
 
             metadata = {
@@ -80,6 +82,8 @@ class ActivationEngine:
                 'topic_overlap_count': topic_overlap_count,
                 'recent_memory_messages': recent_memory_messages,
                 'recent_memory_count': len(recent_memory_messages),
+                'identity_node_ids': [node.id for node in identity_nodes if node.id is not None],
+                'identity_terms': self._extract_identity_terms(identity_nodes),
             }
             thought_view = self.thought_view_builder.build(
                 session_id=request.session_id,
@@ -147,6 +151,12 @@ class ActivationEngine:
             items.append(item)
         return items[-6:]
 
+    def _session_identity_nodes(self, uow: UnitOfWork, session_id: str) -> list[Node]:
+        anchor_keys = ('user_self', 'assistant_self', 'search_source_self')
+        address_hashes = [self._identity_anchor_address(session_id=session_id, anchor_key=key) for key in anchor_keys]
+        rows = list(uow.nodes.list_by_address_hashes(address_hashes))
+        return [row for row in rows if row is not None]
+
     def _extract_topic_terms(self, seed_blocks: list[MeaningBlock], seed_nodes: list[ActivatedNode]) -> list[str]:
         tokens: list[str] = []
         for block in seed_blocks:
@@ -158,6 +168,12 @@ class ActivationEngine:
                 tokens,
                 getattr(activated.node, 'normalized_value', '') or getattr(activated.node, 'raw_value', ''),
             )
+        return tokens[:6]
+
+    def _extract_identity_terms(self, identity_nodes: list[Node]) -> list[str]:
+        tokens: list[str] = []
+        for node in identity_nodes:
+            self._append_topic_token(tokens, node.normalized_value or node.raw_value)
         return tokens[:6]
 
     def _append_topic_token(self, tokens: list[str], value: str) -> None:
@@ -180,6 +196,10 @@ class ActivationEngine:
         if len(text) <= limit:
             return text
         return f'{text[: max(0, limit - 3)]}...'
+
+    def _identity_anchor_address(self, *, session_id: str, anchor_key: str) -> str:
+        payload = f'identity_anchor::{session_id}::{anchor_key}'
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()[: self.hash_resolver.digest_size * 2]
 
     def _resolve_seed_nodes(
         self,

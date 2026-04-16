@@ -52,6 +52,13 @@ def main() -> None:
         with make_uow() as uow:
             mk5_nodes = uow.nodes.search_by_normalized_value("mk5", limit=10)
             assert mk5_nodes, "The reusable block 'mk5' should exist as a durable node"
+            user_anchor_nodes = uow.nodes.search_by_normalized_value("user_self", limit=10)
+            assert user_anchor_nodes, "Session-scoped user identity anchor should exist"
+            authored_edges = [
+                edge for edge in uow.edges.list_outgoing(user_anchor_nodes[0].id or 0, active_only=True)
+                if edge.connect_semantics == 'user_authored_node'
+            ]
+            assert authored_edges, "Identity anchor should link to message-derived nodes"
 
             events = uow.graph_events.list_for_message(first.message_id)
             assert events, "Ingest should leave message-scoped graph events"
