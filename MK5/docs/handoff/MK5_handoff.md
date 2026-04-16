@@ -271,3 +271,15 @@ anchor만 들어간 상태다.
 1. `model_edge_assertion`의 실제 대화 E2E 검증 및 회귀 테스트 추가
 2. `proposed_connect_type` 누적-승격 정책(임계치 기반) 구현
 3. connect_type/semantics가 contradiction/revision 규칙에 미치는 영향 고도화
+
+---
+
+## 2026-04-16 문서 통합 반영
+- `MK5_전체정리.md`를 마스터 문서로 유지.
+- 기존 `설계초안_*` 문서는 아래 architecture 문서로 통합:
+  - `docs/architecture/identity_temporal_design.md`
+  - `docs/architecture/edge_family_connect_type_design.md`
+- 실행 문서는 2개로 축소:
+  - `docs/MK5_다음작업_로드맵.md` (중장기)
+  - `docs/현재작업.txt` (단기)
+- `docs/작업사항.md`는 통합 과정에서 제거됨.

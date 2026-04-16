@@ -1,31 +1,26 @@
 # MK5 Docs Index
 
-This directory is the canonical documentation set for MK5.
+## Master
+- `MK5_전체정리.md`
 
-## Start Here
-- `MK5_전체정리.md`: current system snapshot and priorities
-- `현재작업.txt`: active work log and near-term execution notes
-- `작업사항.md`: actionable implementation checklist
-- `handoff/MK5_handoff.md`: handoff-grade status for next coding session
+## Execution
+- `MK5_다음작업_로드맵.md` (중장기)
+- `현재작업.txt` (단기 실행)
+
+## Strategy
+- `MK5_검색_및_검증_전략.md`
+
+## Handoff
+- `handoff/MK5_handoff.md`
 
 ## Architecture
-- `architecture/MK5_overview.md`: high-level architecture overview
-- `architecture/thought_flow.md`: ingest -> activation -> thinking -> verbalization flow
-- `architecture/graph_model.md`: graph schema and semantics model
-- `architecture/trust_revision_rule.md`: trust/revision policy notes
+- `architecture/MK5_overview.md`
+- `architecture/thought_flow.md`
+- `architecture/graph_model.md`
+- `architecture/trust_revision_rule.md`
+- `architecture/identity_temporal_design.md`
+- `architecture/edge_family_connect_type_design.md`
 
-## Design Notes
-- `개념업데이트_정체성_시간성_그래프.md`
-- `설계초안_정체성엣지_시점역추적_파이프라인.md`
-- `설계초안_schema_edge_repository_마이그레이션.md`
-- `MK5_검색_및_검증_전략.md`
-- `MK5_다음작업_로드맵.md`
-
-## Policy
-- Canonical files are Korean-named documents above.
-- Legacy escaped-name duplicates (`#U...`) are not canonical and should not be reintroduced.
-- If architecture changes, update at least:
-  - `MK5_전체정리.md`
-  - `현재작업.txt`
-  - `작업사항.md`
-  - `handoff/MK5_handoff.md`
+## Notes
+- `설계초안_*` 문서는 `architecture/` 하위 문서로 통합되었다.
+- 실행 문서는 `로드맵 + 현재작업` 2개로 축소했다.
