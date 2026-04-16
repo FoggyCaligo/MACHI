@@ -22,9 +22,11 @@
 12. revision rule 로그 분석 도구 추가 (`tools/revision_rule_report.py`)
 13. 리포트 기반 임계치 추천 추가 (`--suggest`)
 14. ContradictionDetector 규칙을 family/kind 단위로 세분화
+15. 튜너 추가: 추천 결과를 preset(보수/중립/공격) 오버라이드로 변환
+16. StructureRevisionService에 `rule_overrides` 적용 경로 추가
 
 [다음 우선 작업]
-1. revision marker 기반 실행 규칙 테이블 고도화(규칙별 튜닝 자동화/로그 분석)
+1. revision marker 기반 실행 규칙 테이블 고도화(오버라이드 자동 적용 파이프라인)
 2. concept/relation + connect_type 조합별 충돌 정책 정교화
 3. E2E 회귀 테스트 확대(충돌 누적, deactivation, merge, promotion)
 

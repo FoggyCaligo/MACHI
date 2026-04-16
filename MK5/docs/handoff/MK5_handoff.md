@@ -15,6 +15,10 @@
   - 추천 모드: `python tools/revision_rule_report.py --db data/memory.db --limit 2000 --suggest`
 - `ContradictionDetector` 규칙을 connect_type 단일 기준에서 family/kind 분기까지 확장
   - 예: `concept_conflict_connect_type`, `relation_conflict_connect_type`, `opposite_hierarchy_conflict`
+- 튜닝 자동화 1차
+  - `core/thinking/revision_rule_tuner.py`에서 추천 -> rule override 변환
+  - `tools/revision_rule_report.py --suggest --preset <conservative|balanced|aggressive> --overrides-out <path>` 지원
+  - `StructureRevisionService(rule_overrides=...)`로 기본 규칙에 오버라이드 적용 가능
 - `SqliteEdgeRepository`의 업데이트 계열에서 `updated_at` 갱신 보강
   - `update_relation_detail`, `update_connect_type`, `deactivate`
 

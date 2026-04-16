@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from uuid import uuid4
 
 from core.entities.conclusion import RevisionAction
@@ -67,6 +67,7 @@ class StructureRevisionService:
     node_merge_service: NodeMergeService | None = None
     revision_edge_service: RevisionEdgeService = field(default_factory=RevisionEdgeService)
     execution_rules: tuple[RevisionExecutionRule, ...] | None = None
+    rule_overrides: dict[str, dict[str, object]] | None = None
 
     def review_candidates(
         self,
@@ -385,7 +386,7 @@ class StructureRevisionService:
         return self._default_rule(name='fallback')
 
     def _rules(self) -> tuple[RevisionExecutionRule, ...]:
-        return self.execution_rules or (
+        base_rules = self.execution_rules or (
             self._default_rule(
                 name='concept_conflict',
                 edge_families=('concept',),
@@ -472,6 +473,7 @@ class StructureRevisionService:
             self._default_rule(name='relation_any', edge_families=('relation',)),
             self._default_rule(name='fallback'),
         )
+        return self._apply_rule_overrides(base_rules)
 
     def _default_rule(
         self,
@@ -571,3 +573,51 @@ class StructureRevisionService:
                 else marker_conflict_evidence_threshold_for_merge
             ),
         )
+
+    def _apply_rule_overrides(
+        self,
+        rules: tuple[RevisionExecutionRule, ...],
+    ) -> tuple[RevisionExecutionRule, ...]:
+        overrides = dict(self.rule_overrides or {})
+        if not overrides:
+            return rules
+        result: list[RevisionExecutionRule] = []
+        valid_keys = set(RevisionExecutionRule.__dataclass_fields__.keys()) - {'name'}
+        for rule in rules:
+            raw_override = dict(overrides.get(rule.name) or {})
+            if not raw_override:
+                result.append(rule)
+                continue
+            updates: dict[str, object] = {}
+            for key, raw_value in raw_override.items():
+                if key not in valid_keys:
+                    continue
+                coerced = self._coerce_override_value(getattr(rule, key), raw_value)
+                if coerced is not None:
+                    updates[key] = coerced
+            result.append(replace(rule, **updates) if updates else rule)
+        return tuple(result)
+
+    def _coerce_override_value(self, current: object, raw_value: object) -> object | None:
+        try:
+            if isinstance(current, bool):
+                if isinstance(raw_value, bool):
+                    return raw_value
+                token = str(raw_value or '').strip().lower()
+                if token in {'true', '1', 'yes'}:
+                    return True
+                if token in {'false', '0', 'no'}:
+                    return False
+                return None
+            if isinstance(current, int) and not isinstance(current, bool):
+                return int(raw_value)
+            if isinstance(current, float):
+                return float(raw_value)
+            if isinstance(current, tuple):
+                if isinstance(raw_value, (list, tuple)):
+                    return tuple(str(item) for item in raw_value if str(item).strip())
+                token = str(raw_value or '').strip()
+                return tuple(item.strip() for item in token.split(',') if item.strip())
+            return raw_value
+        except (TypeError, ValueError):
+            return None

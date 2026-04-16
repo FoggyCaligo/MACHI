@@ -280,3 +280,50 @@ def test_structure_revision_uses_marker_evidence_threshold_when_support_count_is
         assert matched[0].action == 'edge_deactivated'
         evidence = (matched[0].metadata or {}).get('marker_evidence', {})
         assert float(evidence.get('conflict_assertion', 0.0)) >= 2.0
+
+
+def test_structure_revision_applies_rule_overrides_on_default_rules(tmp_path: Path) -> None:
+    db_path = tmp_path / 'memory.db'
+    schema_path = ROOT / 'storage' / 'schema.sql'
+    uow_factory = build_uow_factory(db_path, schema_path)
+
+    with uow_factory() as uow:
+        uow.nodes.add(Node(node_uid='ov1', address_hash='hov1', raw_value='A', normalized_value='a'))
+        uow.nodes.add(Node(node_uid='ov2', address_hash='hov2', raw_value='B', normalized_value='b'))
+        base_edge = uow.edges.add(
+            Edge(
+                edge_uid='edge-override-1',
+                source_node_id=1,
+                target_node_id=2,
+                edge_family='relation',
+                connect_type='neutral',
+                relation_detail={'kind': 'co_occurs_with'},
+                trust_score=0.9,
+                support_count=1,
+                conflict_count=0,
+                contradiction_pressure=0.0,
+            )
+        )
+        RevisionEdgeService().record_conflict_assertion(
+            uow,
+            base_edge=base_edge,
+            reason='override_check',
+            signal_score=0.95,
+            message_id=None,
+        )
+        uow.commit()
+
+    service = StructureRevisionService(
+        rule_overrides={
+            'relation_neutral': {
+                'marker_conflict_support_threshold_for_deactivate': 10,
+                'marker_conflict_evidence_threshold_for_deactivate': 2.0,
+            }
+        }
+    )
+    with uow_factory() as uow:
+        actions = service.review_candidates(uow, message_id=None, limit=20)
+        uow.commit()
+        matched = [action for action in actions if action.edge_id == (base_edge.id or 0)]
+        assert matched
+        assert matched[0].action == 'edge_deactivated'
