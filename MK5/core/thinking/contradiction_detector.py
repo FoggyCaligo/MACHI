@@ -12,8 +12,21 @@ class ConnectTypeSignalRule:
     reason: str
     base_severity: str
     base_score: float
+    edge_families: tuple[str, ...] = ()
+    relation_kinds: tuple[str, ...] = ()
     medium_pressure_offset: float = 0.0
     high_pressure_offset: float = 0.0
+
+    def matches(self, edge) -> bool:
+        if self.connect_type != str(edge.connect_type or '').strip().lower():
+            return False
+        if self.edge_families and str(edge.edge_family or '').strip().lower() not in self.edge_families:
+            return False
+        if self.relation_kinds:
+            kind = str((edge.relation_detail or {}).get('kind') or '').strip().lower()
+            if kind not in self.relation_kinds:
+                return False
+        return True
 
 
 @dataclass(slots=True)
@@ -23,6 +36,24 @@ class ContradictionDetector:
     medium_pressure_threshold: float = 1.5
     high_pressure_threshold: float = 2.5
     connect_type_rules: tuple[ConnectTypeSignalRule, ...] = (
+        ConnectTypeSignalRule(
+            connect_type='conflict',
+            edge_families=('concept',),
+            reason='concept_conflict_connect_type',
+            base_severity='medium',
+            base_score=0.5,
+            medium_pressure_offset=-0.6,
+            high_pressure_offset=-0.6,
+        ),
+        ConnectTypeSignalRule(
+            connect_type='conflict',
+            edge_families=('relation',),
+            reason='relation_conflict_connect_type',
+            base_severity='medium',
+            base_score=0.42,
+            medium_pressure_offset=-0.4,
+            high_pressure_offset=-0.4,
+        ),
         ConnectTypeSignalRule(
             connect_type='conflict',
             reason='conflict_connect_type',
@@ -38,6 +69,16 @@ class ContradictionDetector:
             base_score=0.4,
             medium_pressure_offset=-0.3,
             high_pressure_offset=-0.3,
+        ),
+        ConnectTypeSignalRule(
+            connect_type='opposite',
+            edge_families=('concept',),
+            relation_kinds=('subtype_of', 'is_a', 'contains', 'part_of'),
+            reason='opposite_hierarchy_conflict',
+            base_severity='high',
+            base_score=0.72,
+            medium_pressure_offset=-0.7,
+            high_pressure_offset=-0.7,
         ),
     )
 
@@ -61,7 +102,7 @@ class ContradictionDetector:
         medium_pressure_threshold = self.medium_pressure_threshold
         high_pressure_threshold = self.high_pressure_threshold
 
-        rule = self._match_connect_type_rule(edge.connect_type)
+        rule = self._match_connect_type_rule(edge)
         if rule is not None:
             medium_pressure_threshold = max(1.0, self.medium_pressure_threshold + rule.medium_pressure_offset)
             high_pressure_threshold = max(2.0, self.high_pressure_threshold + rule.high_pressure_offset)
@@ -109,9 +150,8 @@ class ContradictionDetector:
             },
         )
 
-    def _match_connect_type_rule(self, connect_type: str) -> ConnectTypeSignalRule | None:
-        token = str(connect_type or '').strip().lower()
+    def _match_connect_type_rule(self, edge) -> ConnectTypeSignalRule | None:
         for rule in self.connect_type_rules:
-            if rule.connect_type == token:
+            if rule.matches(edge):
                 return rule
         return None

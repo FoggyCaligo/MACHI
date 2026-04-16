@@ -140,6 +140,9 @@ def main() -> None:
             assert moved is not None and moved.id == (carried.id or 0)
             event_types = {event.event_type for event in uow.graph_events.list_recent(limit=20)}
             assert 'node_merged' in event_types
+            merge_events = [event for event in uow.graph_events.list_recent(limit=40) if event.event_type == 'edge_revision_merge_executed']
+            assert merge_events
+            assert merge_events[0].effect.get('rule_name')
 
         print('PASS: revision-driven node merge')
 

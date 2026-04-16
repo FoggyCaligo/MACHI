@@ -164,6 +164,23 @@ class RevisionEdgeService:
                 summary[kind] += support
         return summary
 
+    def summarize_base_edge_marker_evidence(self, uow: UnitOfWork, *, base_edge: Edge) -> dict[str, float]:
+        rows = self._list_markers_for_base_edge(uow, base_edge=base_edge)
+        summary = {
+            'total_evidence': 0.0,
+            REVISION_KIND_CONFLICT_ASSERTION: 0.0,
+            REVISION_KIND_PENDING: 0.0,
+            REVISION_KIND_DEACTIVATE_CANDIDATE: 0.0,
+            REVISION_KIND_MERGE_CANDIDATE: 0.0,
+        }
+        for marker in rows:
+            evidence = self._marker_evidence_score(marker)
+            summary['total_evidence'] += evidence
+            kind = str((marker.relation_detail or {}).get('kind') or '').strip()
+            if kind in summary:
+                summary[kind] += evidence
+        return {key: round(float(value), 6) for key, value in summary.items()}
+
     def _find_existing_revision_edge(
         self,
         uow: UnitOfWork,
@@ -276,3 +293,24 @@ class RevisionEdgeService:
                 continue
             rows.append(edge)
         return rows
+
+    def _marker_evidence_score(self, marker: Edge) -> float:
+        detail = dict(marker.relation_detail or {})
+        kind = str(detail.get('kind') or '').strip()
+        status = str(detail.get('status') or '').strip().lower()
+        raw_signal = detail.get('latest_signal_score')
+
+        support_factor = max(1.0, float(marker.support_count))
+        trust_factor = max(0.1, min(1.6, 0.5 + float(marker.trust_score)))
+        status_factor = 1.12 if status == 'executed' else 1.0
+        kind_factor = 1.1 if kind == REVISION_KIND_CONFLICT_ASSERTION else 1.0
+
+        signal_factor = 1.0
+        if raw_signal is not None:
+            try:
+                signal = float(raw_signal)
+            except (TypeError, ValueError):
+                signal = 0.0
+            signal_factor = 0.85 + max(0.0, min(1.0, signal)) * 0.45
+
+        return support_factor * trust_factor * status_factor * kind_factor * signal_factor

@@ -218,7 +218,12 @@ def test_conflict_connect_type_triggers_contradiction_without_contradicts_semant
     signals = ContradictionDetector().inspect(thought_view)
 
     assert len(signals) == 1
-    assert signals[0].reason in {'conflict_connect_type', 'medium_contradiction_pressure', 'conflict_outweighs_support'}
+    assert signals[0].reason in {
+        'relation_conflict_connect_type',
+        'conflict_connect_type',
+        'medium_contradiction_pressure',
+        'conflict_outweighs_support',
+    }
 
 
 def test_conflict_connect_type_triggers_contradiction_without_conflict_counters() -> None:
@@ -242,4 +247,4 @@ def test_conflict_connect_type_triggers_contradiction_without_conflict_counters(
     signals = ContradictionDetector().inspect(thought_view)
 
     assert len(signals) == 1
-    assert signals[0].reason == 'conflict_connect_type'
+    assert signals[0].reason in {'relation_conflict_connect_type', 'conflict_connect_type'}

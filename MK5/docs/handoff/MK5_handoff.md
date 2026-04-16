@@ -10,6 +10,11 @@
 - 기본 rule 세분화 완료
   - `concept_conflict`, `relation_conflict`, `concept_opposite`, `concept_flow`, `concept_neutral`, `relation_neutral`
   - 규칙별로 trust/pressure/conflict/marker 임계치를 분리
+  - marker `support_count`뿐 아니라 evidence score(지원량/신뢰도/신호강도 가중치)도 gate에 반영
+  - 규칙 관측용 리포트 도구 추가: `python tools/revision_rule_report.py --db data/memory.db --limit 2000`
+  - 추천 모드: `python tools/revision_rule_report.py --db data/memory.db --limit 2000 --suggest`
+- `ContradictionDetector` 규칙을 connect_type 단일 기준에서 family/kind 분기까지 확장
+  - 예: `concept_conflict_connect_type`, `relation_conflict_connect_type`, `opposite_hierarchy_conflict`
 - `SqliteEdgeRepository`의 업데이트 계열에서 `updated_at` 갱신 보강
   - `update_relation_detail`, `update_connect_type`, `deactivate`
 

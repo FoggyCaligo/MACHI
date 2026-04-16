@@ -34,6 +34,10 @@ class RevisionExecutionRule:
     marker_conflict_support_threshold_for_deactivate: int = 6
     marker_merge_support_threshold: int = 2
     marker_conflict_support_threshold_for_merge: int = 4
+    marker_deactivate_evidence_threshold: float = 999.0
+    marker_conflict_evidence_threshold_for_deactivate: float = 999.0
+    marker_merge_evidence_threshold: float = 999.0
+    marker_conflict_evidence_threshold_for_merge: float = 999.0
 
     def matches(self, edge: Edge) -> bool:
         if self.edge_families and edge.edge_family not in self.edge_families:
@@ -56,6 +60,10 @@ class StructureRevisionService:
     marker_conflict_support_threshold_for_deactivate: int = 6
     marker_merge_support_threshold: int = 2
     marker_conflict_support_threshold_for_merge: int = 4
+    marker_deactivate_evidence_threshold: float = 999.0
+    marker_conflict_evidence_threshold_for_deactivate: float = 999.0
+    marker_merge_evidence_threshold: float = 999.0
+    marker_conflict_evidence_threshold_for_merge: float = 999.0
     node_merge_service: NodeMergeService | None = None
     revision_edge_service: RevisionEdgeService = field(default_factory=RevisionEdgeService)
     execution_rules: tuple[RevisionExecutionRule, ...] | None = None
@@ -94,11 +102,13 @@ class StructureRevisionService:
         rule = self._resolve_rule(edge)
 
         marker_summary = self.revision_edge_service.summarize_base_edge_markers(uow, base_edge=edge)
+        marker_evidence = self.revision_edge_service.summarize_base_edge_marker_evidence(uow, base_edge=edge)
         merge_action = self._maybe_merge_nodes(
             uow,
             edge_id=edge_id,
             message_id=message_id,
             marker_summary=marker_summary,
+            marker_evidence=marker_evidence,
             rule=rule,
         )
         if merge_action is not None:
@@ -110,6 +120,8 @@ class StructureRevisionService:
             or edge.conflict_count >= rule.deactivate_conflict_threshold
             or marker_summary.get(REVISION_KIND_DEACTIVATE_CANDIDATE, 0) >= rule.marker_deactivate_support_threshold
             or marker_summary.get(REVISION_KIND_CONFLICT_ASSERTION, 0) >= rule.marker_conflict_support_threshold_for_deactivate
+            or float(marker_evidence.get(REVISION_KIND_DEACTIVATE_CANDIDATE, 0.0)) >= rule.marker_deactivate_evidence_threshold
+            or float(marker_evidence.get(REVISION_KIND_CONFLICT_ASSERTION, 0.0)) >= rule.marker_conflict_evidence_threshold_for_deactivate
         )
 
         if not should_deactivate:
@@ -137,6 +149,7 @@ class StructureRevisionService:
                         'trust_score': edge.trust_score,
                         'contradiction_pressure': edge.contradiction_pressure,
                         'conflict_count': edge.conflict_count,
+                        'marker_evidence': marker_evidence,
                     },
                     note='Revision candidate reviewed but kept active.',
                 )
@@ -150,7 +163,7 @@ class StructureRevisionService:
                 before_pressure=edge.contradiction_pressure,
                 after_pressure=edge.contradiction_pressure,
                 deactivated=False,
-                metadata={'rule_name': rule.name},
+                metadata={'rule_name': rule.name, 'marker_evidence': marker_evidence},
             )
 
         uow.edges.deactivate(edge_id)
@@ -179,6 +192,7 @@ class StructureRevisionService:
                     'before_trust': edge.trust_score,
                     'after_active': False,
                     'contradiction_pressure': edge.contradiction_pressure,
+                    'marker_evidence': marker_evidence,
                 },
                 note='Repeated contradiction pressure crossed the revision floor; edge was deactivated.',
             )
@@ -192,6 +206,7 @@ class StructureRevisionService:
             before_pressure=edge.contradiction_pressure,
             after_pressure=deactivated.contradiction_pressure,
             deactivated=True,
+            metadata={'rule_name': rule.name, 'marker_evidence': marker_evidence},
         )
 
     def _maybe_merge_nodes(
@@ -201,13 +216,19 @@ class StructureRevisionService:
         edge_id: int,
         message_id: int | None = None,
         marker_summary: dict[str, int] | None = None,
+        marker_evidence: dict[str, float] | None = None,
         rule: RevisionExecutionRule | None = None,
     ) -> RevisionAction | None:
         edge = uow.edges.get_by_id(edge_id)
         if edge is None or not edge.is_active:
             return None
         resolved_rule = rule or self._resolve_rule(edge)
-        if not self._merge_gate(edge, marker_summary=marker_summary, rule=resolved_rule):
+        if not self._merge_gate(
+            edge,
+            marker_summary=marker_summary,
+            marker_evidence=marker_evidence,
+            rule=resolved_rule,
+        ):
             return None
 
         source = uow.nodes.get_by_id(edge.source_node_id)
@@ -245,6 +266,21 @@ class StructureRevisionService:
                 'absorbed_node_id': absorbed.id,
             },
         )
+        uow.graph_events.add(
+            GraphEvent(
+                event_uid=f'evt_{uuid4().hex}',
+                event_type='edge_revision_merge_executed',
+                message_id=message_id,
+                trigger_edge_id=edge_id,
+                effect={
+                    'rule_name': resolved_rule.name,
+                    'canonical_node_id': canonical.id,
+                    'absorbed_node_id': absorbed.id,
+                    'marker_evidence': marker_evidence or {},
+                },
+                note='Revision merge executed under rule-gated thresholds.',
+            )
+        )
         return RevisionAction(
             edge_id=edge_id,
             action='node_merged',
@@ -263,6 +299,8 @@ class StructureRevisionService:
                 'merged_pointer_ids': list(result.merged_pointer_ids),
                 'rewired_pointer_ids': list(result.rewired_pointer_ids),
                 'deactivated_pointer_ids': list(result.deactivated_pointer_ids),
+                'rule_name': resolved_rule.name,
+                'marker_evidence': marker_evidence or {},
             },
         )
 
@@ -271,17 +309,21 @@ class StructureRevisionService:
         edge: Edge,
         *,
         marker_summary: dict[str, int] | None = None,
+        marker_evidence: dict[str, float] | None = None,
         rule: RevisionExecutionRule,
     ) -> bool:
         if not self._edge_allows_merge(edge, rule=rule):
             return False
         marker_summary = marker_summary or {}
+        marker_evidence = marker_evidence or {}
         return (
             edge.contradiction_pressure >= rule.merge_candidate_pressure_threshold
             or edge.conflict_count >= rule.merge_candidate_conflict_threshold
             or edge.trust_score <= rule.merge_candidate_trust_threshold
             or marker_summary.get(REVISION_KIND_MERGE_CANDIDATE, 0) >= rule.marker_merge_support_threshold
             or marker_summary.get(REVISION_KIND_CONFLICT_ASSERTION, 0) >= rule.marker_conflict_support_threshold_for_merge
+            or float(marker_evidence.get(REVISION_KIND_MERGE_CANDIDATE, 0.0)) >= rule.marker_merge_evidence_threshold
+            or float(marker_evidence.get(REVISION_KIND_CONFLICT_ASSERTION, 0.0)) >= rule.marker_conflict_evidence_threshold_for_merge
         )
 
     def _edge_allows_merge(self, edge: Edge, *, rule: RevisionExecutionRule) -> bool:
@@ -354,6 +396,8 @@ class StructureRevisionService:
                 deactivate_conflict_threshold=2,
                 marker_deactivate_support_threshold=1,
                 marker_conflict_support_threshold_for_deactivate=2,
+                marker_deactivate_evidence_threshold=1.9,
+                marker_conflict_evidence_threshold_for_deactivate=1.6,
             ),
             self._default_rule(
                 name='relation_conflict',
@@ -365,6 +409,8 @@ class StructureRevisionService:
                 deactivate_conflict_threshold=3,
                 marker_deactivate_support_threshold=2,
                 marker_conflict_support_threshold_for_deactivate=3,
+                marker_deactivate_evidence_threshold=2.6,
+                marker_conflict_evidence_threshold_for_deactivate=2.2,
             ),
             self._default_rule(
                 name='concept_opposite',
@@ -375,6 +421,7 @@ class StructureRevisionService:
                 deactivate_pressure_threshold=2.8,
                 deactivate_conflict_threshold=2,
                 marker_conflict_support_threshold_for_deactivate=3,
+                marker_conflict_evidence_threshold_for_deactivate=2.0,
             ),
             self._default_rule(
                 name='concept_flow',
@@ -389,6 +436,8 @@ class StructureRevisionService:
                 merge_candidate_trust_threshold=0.38,
                 marker_merge_support_threshold=3,
                 marker_conflict_support_threshold_for_merge=5,
+                marker_merge_evidence_threshold=4.8,
+                marker_conflict_evidence_threshold_for_merge=4.2,
             ),
             self._default_rule(
                 name='concept_neutral',
@@ -401,6 +450,7 @@ class StructureRevisionService:
                 merge_candidate_pressure_threshold=2.0,
                 merge_candidate_conflict_threshold=2,
                 merge_candidate_trust_threshold=0.42,
+                marker_merge_evidence_threshold=3.6,
             ),
             self._default_rule(
                 name='relation_neutral',
@@ -415,6 +465,8 @@ class StructureRevisionService:
                 merge_candidate_pressure_threshold=2.2,
                 merge_candidate_conflict_threshold=2,
                 merge_candidate_trust_threshold=0.4,
+                marker_deactivate_evidence_threshold=3.0,
+                marker_merge_evidence_threshold=4.2,
             ),
             self._default_rule(name='concept_any', edge_families=('concept',)),
             self._default_rule(name='relation_any', edge_families=('relation',)),
@@ -438,6 +490,10 @@ class StructureRevisionService:
         marker_conflict_support_threshold_for_deactivate: int | None = None,
         marker_merge_support_threshold: int | None = None,
         marker_conflict_support_threshold_for_merge: int | None = None,
+        marker_deactivate_evidence_threshold: float | None = None,
+        marker_conflict_evidence_threshold_for_deactivate: float | None = None,
+        marker_merge_evidence_threshold: float | None = None,
+        marker_conflict_evidence_threshold_for_merge: float | None = None,
     ) -> RevisionExecutionRule:
         return RevisionExecutionRule(
             name=name,
@@ -493,5 +549,25 @@ class StructureRevisionService:
                 self.marker_conflict_support_threshold_for_merge
                 if marker_conflict_support_threshold_for_merge is None
                 else marker_conflict_support_threshold_for_merge
+            ),
+            marker_deactivate_evidence_threshold=(
+                self.marker_deactivate_evidence_threshold
+                if marker_deactivate_evidence_threshold is None
+                else marker_deactivate_evidence_threshold
+            ),
+            marker_conflict_evidence_threshold_for_deactivate=(
+                self.marker_conflict_evidence_threshold_for_deactivate
+                if marker_conflict_evidence_threshold_for_deactivate is None
+                else marker_conflict_evidence_threshold_for_deactivate
+            ),
+            marker_merge_evidence_threshold=(
+                self.marker_merge_evidence_threshold
+                if marker_merge_evidence_threshold is None
+                else marker_merge_evidence_threshold
+            ),
+            marker_conflict_evidence_threshold_for_merge=(
+                self.marker_conflict_evidence_threshold_for_merge
+                if marker_conflict_evidence_threshold_for_merge is None
+                else marker_conflict_evidence_threshold_for_merge
             ),
         )

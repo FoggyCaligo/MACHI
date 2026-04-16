@@ -17,9 +17,14 @@
 7. `topic_continuity=shifted_topic` & `topic_overlap_count=0`일 때 temporary edge 자동 정리
 8. `RevisionExecutionRule` 기본 규칙을 조합별로 세분화
 9. 규칙 분기 검증 테스트 추가 (`concept/conflict` vs `relation/neutral`)
+10. revision marker 판단에 evidence(신뢰도/지원량/신호강도 가중치) 결합
+11. support count가 낮아도 evidence 임계치로 deactivation 가능한 테스트 추가
+12. revision rule 로그 분석 도구 추가 (`tools/revision_rule_report.py`)
+13. 리포트 기반 임계치 추천 추가 (`--suggest`)
+14. ContradictionDetector 규칙을 family/kind 단위로 세분화
 
 [다음 우선 작업]
-1. revision marker 기반 실행 규칙 테이블 고도화(가중치/근거량 결합)
+1. revision marker 기반 실행 규칙 테이블 고도화(규칙별 튜닝 자동화/로그 분석)
 2. concept/relation + connect_type 조합별 충돌 정책 정교화
 3. E2E 회귀 테스트 확대(충돌 누적, deactivation, merge, promotion)
 
