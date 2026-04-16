@@ -7,6 +7,9 @@
 - revision 실행을 marker edge 중심으로 정리
 - `StructureRevisionService`에 `RevisionExecutionRule` 테이블 도입
   - family/connect_type별 deactivation/merge 임계치 분기 가능
+- 기본 rule 세분화 완료
+  - `concept_conflict`, `relation_conflict`, `concept_opposite`, `concept_flow`, `concept_neutral`, `relation_neutral`
+  - 규칙별로 trust/pressure/conflict/marker 임계치를 분리
 - `SqliteEdgeRepository`의 업데이트 계열에서 `updated_at` 갱신 보강
   - `update_relation_detail`, `update_connect_type`, `deactivate`
 
@@ -36,4 +39,3 @@
 ## 주의 사항
 - 기존 `memory.db` 재사용 대신 새 DB로 시작하는 정책과 현재 구조가 잘 맞음
 - Windows에서 pytest temp/cache 권한 이슈(`WinError 5`)가 간헐적으로 발생
-

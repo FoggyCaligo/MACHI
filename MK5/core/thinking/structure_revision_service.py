@@ -133,6 +133,7 @@ class StructureRevisionService:
                     message_id=message_id,
                     trigger_edge_id=edge_id,
                     effect={
+                        'rule_name': rule.name,
                         'trust_score': edge.trust_score,
                         'contradiction_pressure': edge.contradiction_pressure,
                         'conflict_count': edge.conflict_count,
@@ -149,6 +150,7 @@ class StructureRevisionService:
                 before_pressure=edge.contradiction_pressure,
                 after_pressure=edge.contradiction_pressure,
                 deactivated=False,
+                metadata={'rule_name': rule.name},
             )
 
         uow.edges.deactivate(edge_id)
@@ -173,6 +175,7 @@ class StructureRevisionService:
                 message_id=message_id,
                 trigger_edge_id=edge_id,
                 effect={
+                    'rule_name': rule.name,
                     'before_trust': edge.trust_score,
                     'after_active': False,
                     'contradiction_pressure': edge.contradiction_pressure,
@@ -341,8 +344,78 @@ class StructureRevisionService:
 
     def _rules(self) -> tuple[RevisionExecutionRule, ...]:
         return self.execution_rules or (
-            self._default_rule(name='concept_conflict', edge_families=('concept',), connect_types=('conflict',), allow_merge=False),
-            self._default_rule(name='relation_conflict', edge_families=('relation',), connect_types=('conflict',), allow_merge=False),
+            self._default_rule(
+                name='concept_conflict',
+                edge_families=('concept',),
+                connect_types=('conflict',),
+                allow_merge=False,
+                deactivate_trust_threshold=0.32,
+                deactivate_pressure_threshold=2.4,
+                deactivate_conflict_threshold=2,
+                marker_deactivate_support_threshold=1,
+                marker_conflict_support_threshold_for_deactivate=2,
+            ),
+            self._default_rule(
+                name='relation_conflict',
+                edge_families=('relation',),
+                connect_types=('conflict',),
+                allow_merge=False,
+                deactivate_trust_threshold=0.28,
+                deactivate_pressure_threshold=3.0,
+                deactivate_conflict_threshold=3,
+                marker_deactivate_support_threshold=2,
+                marker_conflict_support_threshold_for_deactivate=3,
+            ),
+            self._default_rule(
+                name='concept_opposite',
+                edge_families=('concept',),
+                connect_types=('opposite',),
+                allow_merge=False,
+                deactivate_trust_threshold=0.3,
+                deactivate_pressure_threshold=2.8,
+                deactivate_conflict_threshold=2,
+                marker_conflict_support_threshold_for_deactivate=3,
+            ),
+            self._default_rule(
+                name='concept_flow',
+                edge_families=('concept',),
+                connect_types=('flow',),
+                allow_merge=True,
+                deactivate_trust_threshold=0.2,
+                deactivate_pressure_threshold=4.2,
+                deactivate_conflict_threshold=4,
+                merge_candidate_pressure_threshold=2.4,
+                merge_candidate_conflict_threshold=3,
+                merge_candidate_trust_threshold=0.38,
+                marker_merge_support_threshold=3,
+                marker_conflict_support_threshold_for_merge=5,
+            ),
+            self._default_rule(
+                name='concept_neutral',
+                edge_families=('concept',),
+                connect_types=('neutral',),
+                allow_merge=True,
+                deactivate_trust_threshold=0.22,
+                deactivate_pressure_threshold=3.8,
+                deactivate_conflict_threshold=3,
+                merge_candidate_pressure_threshold=2.0,
+                merge_candidate_conflict_threshold=2,
+                merge_candidate_trust_threshold=0.42,
+            ),
+            self._default_rule(
+                name='relation_neutral',
+                edge_families=('relation',),
+                connect_types=('neutral',),
+                allow_merge=True,
+                deactivate_trust_threshold=0.18,
+                deactivate_pressure_threshold=4.6,
+                deactivate_conflict_threshold=5,
+                marker_deactivate_support_threshold=2,
+                marker_conflict_support_threshold_for_deactivate=6,
+                merge_candidate_pressure_threshold=2.2,
+                merge_candidate_conflict_threshold=2,
+                merge_candidate_trust_threshold=0.4,
+            ),
             self._default_rule(name='concept_any', edge_families=('concept',)),
             self._default_rule(name='relation_any', edge_families=('relation',)),
             self._default_rule(name='fallback'),
@@ -355,20 +428,70 @@ class StructureRevisionService:
         edge_families: tuple[str, ...] = (),
         connect_types: tuple[str, ...] = (),
         allow_merge: bool = True,
+        deactivate_trust_threshold: float | None = None,
+        deactivate_pressure_threshold: float | None = None,
+        deactivate_conflict_threshold: int | None = None,
+        merge_candidate_pressure_threshold: float | None = None,
+        merge_candidate_conflict_threshold: int | None = None,
+        merge_candidate_trust_threshold: float | None = None,
+        marker_deactivate_support_threshold: int | None = None,
+        marker_conflict_support_threshold_for_deactivate: int | None = None,
+        marker_merge_support_threshold: int | None = None,
+        marker_conflict_support_threshold_for_merge: int | None = None,
     ) -> RevisionExecutionRule:
         return RevisionExecutionRule(
             name=name,
             edge_families=edge_families,
             connect_types=connect_types,
             allow_merge=allow_merge,
-            deactivate_trust_threshold=self.deactivate_trust_threshold,
-            deactivate_pressure_threshold=self.deactivate_pressure_threshold,
-            deactivate_conflict_threshold=self.deactivate_conflict_threshold,
-            merge_candidate_pressure_threshold=self.merge_candidate_pressure_threshold,
-            merge_candidate_conflict_threshold=self.merge_candidate_conflict_threshold,
-            merge_candidate_trust_threshold=self.merge_candidate_trust_threshold,
-            marker_deactivate_support_threshold=self.marker_deactivate_support_threshold,
-            marker_conflict_support_threshold_for_deactivate=self.marker_conflict_support_threshold_for_deactivate,
-            marker_merge_support_threshold=self.marker_merge_support_threshold,
-            marker_conflict_support_threshold_for_merge=self.marker_conflict_support_threshold_for_merge,
+            deactivate_trust_threshold=(
+                self.deactivate_trust_threshold
+                if deactivate_trust_threshold is None
+                else deactivate_trust_threshold
+            ),
+            deactivate_pressure_threshold=(
+                self.deactivate_pressure_threshold
+                if deactivate_pressure_threshold is None
+                else deactivate_pressure_threshold
+            ),
+            deactivate_conflict_threshold=(
+                self.deactivate_conflict_threshold
+                if deactivate_conflict_threshold is None
+                else deactivate_conflict_threshold
+            ),
+            merge_candidate_pressure_threshold=(
+                self.merge_candidate_pressure_threshold
+                if merge_candidate_pressure_threshold is None
+                else merge_candidate_pressure_threshold
+            ),
+            merge_candidate_conflict_threshold=(
+                self.merge_candidate_conflict_threshold
+                if merge_candidate_conflict_threshold is None
+                else merge_candidate_conflict_threshold
+            ),
+            merge_candidate_trust_threshold=(
+                self.merge_candidate_trust_threshold
+                if merge_candidate_trust_threshold is None
+                else merge_candidate_trust_threshold
+            ),
+            marker_deactivate_support_threshold=(
+                self.marker_deactivate_support_threshold
+                if marker_deactivate_support_threshold is None
+                else marker_deactivate_support_threshold
+            ),
+            marker_conflict_support_threshold_for_deactivate=(
+                self.marker_conflict_support_threshold_for_deactivate
+                if marker_conflict_support_threshold_for_deactivate is None
+                else marker_conflict_support_threshold_for_deactivate
+            ),
+            marker_merge_support_threshold=(
+                self.marker_merge_support_threshold
+                if marker_merge_support_threshold is None
+                else marker_merge_support_threshold
+            ),
+            marker_conflict_support_threshold_for_merge=(
+                self.marker_conflict_support_threshold_for_merge
+                if marker_conflict_support_threshold_for_merge is None
+                else marker_conflict_support_threshold_for_merge
+            ),
         )

@@ -156,3 +156,74 @@ def test_structure_revision_uses_execution_rule_table_for_thresholds(tmp_path: P
         actions = service.review_candidates(uow, message_id=None, limit=20)
         uow.commit()
         assert any(action.edge_id == (base_edge.id or 0) and action.action == 'edge_deactivated' for action in actions)
+
+
+def test_structure_revision_default_rules_branch_by_family_and_connect_type(tmp_path: Path) -> None:
+    db_path = tmp_path / 'memory.db'
+    schema_path = ROOT / 'storage' / 'schema.sql'
+    uow_factory = build_uow_factory(db_path, schema_path)
+
+    with uow_factory() as uow:
+        uow.nodes.add(Node(node_uid='a1', address_hash='ha1', raw_value='A1', normalized_value='a1'))
+        uow.nodes.add(Node(node_uid='a2', address_hash='ha2', raw_value='A2', normalized_value='a2'))
+        uow.nodes.add(Node(node_uid='b1', address_hash='hb1', raw_value='B1', normalized_value='b1'))
+        uow.nodes.add(Node(node_uid='b2', address_hash='hb2', raw_value='B2', normalized_value='b2'))
+
+        concept_conflict = uow.edges.add(
+            Edge(
+                edge_uid='edge-concept-conflict',
+                source_node_id=1,
+                target_node_id=2,
+                edge_family='concept',
+                connect_type='conflict',
+                relation_detail={'kind': 'conflict_assertion'},
+                trust_score=0.30,
+                support_count=1,
+                conflict_count=1,
+                contradiction_pressure=1.0,
+            )
+        )
+        relation_neutral = uow.edges.add(
+            Edge(
+                edge_uid='edge-relation-neutral',
+                source_node_id=3,
+                target_node_id=4,
+                edge_family='relation',
+                connect_type='neutral',
+                relation_detail={'kind': 'co_occurs_with'},
+                trust_score=0.30,
+                support_count=1,
+                conflict_count=1,
+                contradiction_pressure=1.0,
+            )
+        )
+
+        marker_service = RevisionEdgeService()
+        marker_service.record_conflict_assertion(
+            uow,
+            base_edge=concept_conflict,
+            reason='rule-branch-check',
+            signal_score=0.6,
+            message_id=None,
+        )
+        marker_service.record_conflict_assertion(
+            uow,
+            base_edge=relation_neutral,
+            reason='rule-branch-check',
+            signal_score=0.6,
+            message_id=None,
+        )
+        uow.commit()
+
+    with uow_factory() as uow:
+        actions = StructureRevisionService().review_candidates(uow, message_id=99, limit=20)
+        uow.commit()
+        by_edge = {action.edge_id: action for action in actions}
+        concept_action = by_edge.get(concept_conflict.id or 0)
+        relation_action = by_edge.get(relation_neutral.id or 0)
+        assert concept_action is not None
+        assert relation_action is not None
+        assert concept_action.action == 'edge_deactivated'
+        assert relation_action.action == 'revision_pending'
+        assert (concept_action.metadata or {}).get('rule_name') == 'concept_conflict'
+        assert (relation_action.metadata or {}).get('rule_name') == 'relation_neutral'

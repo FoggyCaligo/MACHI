@@ -15,9 +15,11 @@
 5. family/connect_type별 deactivation/merge 임계치를 규칙으로 결정
 6. identity anchor 링크를 `session_temporary` edge로 저장
 7. `topic_continuity=shifted_topic` & `topic_overlap_count=0`일 때 temporary edge 자동 정리
+8. `RevisionExecutionRule` 기본 규칙을 조합별로 세분화
+9. 규칙 분기 검증 테스트 추가 (`concept/conflict` vs `relation/neutral`)
 
 [다음 우선 작업]
-1. revision marker 기반 실행 규칙 테이블 고도화(규칙 추가/튜닝)
+1. revision marker 기반 실행 규칙 테이블 고도화(가중치/근거량 결합)
 2. concept/relation + connect_type 조합별 충돌 정책 정교화
 3. E2E 회귀 테스트 확대(충돌 누적, deactivation, merge, promotion)
 
