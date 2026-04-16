@@ -45,10 +45,10 @@ def main() -> None:
                 Node(
                     node_uid="node-1",
                     address_hash="hash-a",
-                    node_kind="concept",
+                    node_kind="node",
                     raw_value="안녕",
                     normalized_value="안녕",
-                    payload={"kind": "greeting"},
+                    payload={'note': 'greeting node'},
                     created_from_event_id=event.id,
                 )
             )
@@ -56,10 +56,10 @@ def main() -> None:
                 Node(
                     node_uid="node-2",
                     address_hash="hash-b",
-                    node_kind="concept",
+                    node_kind="node",
                     raw_value="인사",
                     normalized_value="인사",
-                    payload={"kind": "category"},
+                    payload={'note': 'category node'},
                     created_from_event_id=event.id,
                 )
             )
@@ -70,7 +70,7 @@ def main() -> None:
                     target_node_id=node_b.id or 0,
                     edge_family="concept",
                     connect_type="flow",
-                    relation_detail={"connect_semantics": "is_a", "reason": "smoke"},
+                    relation_detail={'note': 'smoke relation'},
                     created_from_event_id=event.id,
                 )
             )
@@ -92,7 +92,6 @@ def main() -> None:
                 node_b.id or 0,
                 edge_family="concept",
                 connect_type="flow",
-                connect_semantics="is_a",
             ) is not None
             assert uow.node_pointers.find_active(node_a.id or 0, node_b.id or 0, "support_reference") is not None
 

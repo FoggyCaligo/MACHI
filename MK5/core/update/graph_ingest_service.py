@@ -105,7 +105,7 @@ class GraphIngestService:
                 'sentence_count': len(self.segmenter.split_sentences(request.content)),
                 'blocks': [
                     {
-                        'kind': block.block_kind,
+                        'block_kind': block.block_kind,
                         'text': block.text,
                         'normalized_text': block.normalized_text,
                         'sentence_index': block.sentence_index,
@@ -150,7 +150,7 @@ class GraphIngestService:
                         Node(
                             node_uid=self._new_uid('node'),
                             address_hash=lookup.address_hash,
-                            node_kind=block.block_kind,
+                            node_kind='node',
                             raw_value=block.text,
                             normalized_value=block.normalized_text,
                             payload={
@@ -176,7 +176,7 @@ class GraphIngestService:
                             trigger_node_id=node.id,
                             input_text=block.text,
                             parsed_input={
-                                'kind': block.block_kind,
+                                'block_kind': block.block_kind,
                                 'normalized_text': block.normalized_text,
                                 'source_type': source_type,
                                 'claim_domain': claim_domain,
@@ -201,7 +201,7 @@ class GraphIngestService:
                             trigger_node_id=node.id,
                             input_text=block.text,
                             parsed_input={
-                                'kind': block.block_kind,
+                                'block_kind': block.block_kind,
                                 'normalized_text': block.normalized_text,
                                 'source_type': source_type,
                                 'claim_domain': claim_domain,
@@ -304,7 +304,6 @@ class GraphIngestService:
                     target_id,
                     edge_family='relation',
                     connect_type='neutral',
-                    connect_semantics='same_sentence_co_occurrence',
                 )
                 if existing is None:
                     edge = uow.edges.add(
@@ -315,8 +314,8 @@ class GraphIngestService:
                             edge_family='relation',
                             connect_type='neutral',
                             relation_detail={
-                                'connect_semantics': 'same_sentence_co_occurrence',
                                 'scope': 'sentence',
+                                'note': 'Weak same-sentence co-occurrence relation.',
                                 'sentence_index': sentence_index,
                                 'message_id': message.id,
                                 'source_type': source_type,
@@ -344,7 +343,6 @@ class GraphIngestService:
                             effect={
                                 'edge_family': 'relation',
                                 'connect_type': 'neutral',
-                                'connect_semantics': 'same_sentence_co_occurrence',
                                 'source_node_id': source_id,
                                 'target_node_id': target_id,
                                 'initial_trust': profile.initial_edge_trust,
@@ -490,7 +488,7 @@ class GraphIngestService:
             Node(
                 node_uid=self._new_uid('node'),
                 address_hash=address_hash,
-                node_kind='identity_anchor',
+                node_kind='node',
                 raw_value=anchor_key,
                 normalized_value=anchor_key,
                 payload={
@@ -536,7 +534,6 @@ class GraphIngestService:
         profile,
     ) -> None:
         seen_target_ids: set[int] = set()
-        semantics = self._identity_anchor_semantics(source_type=source_type)
         for _block, node in resolved:
             if node.id is None or anchor_node.id is None or node.id == anchor_node.id or node.id in seen_target_ids:
                 continue
@@ -546,7 +543,6 @@ class GraphIngestService:
                 node.id,
                 edge_family='relation',
                 connect_type='flow',
-                connect_semantics=semantics,
             )
             if existing is None:
                 edge = uow.edges.add(
@@ -557,11 +553,11 @@ class GraphIngestService:
                         edge_family='relation',
                         connect_type='flow',
                         relation_detail={
-                            'connect_semantics': semantics,
                             'message_id': message.id,
                             'source_type': source_type,
                             'claim_domain': claim_domain,
                             'anchor_key': anchor_node.normalized_value,
+                            'note': 'Session identity anchor linked to message-derived node.',
                             'source_counts': {source_type: 1},
                         },
                         edge_weight=max(0.15, profile.edge_weight),
@@ -586,7 +582,6 @@ class GraphIngestService:
                         effect={
                             'edge_family': 'relation',
                             'connect_type': 'flow',
-                            'connect_semantics': semantics,
                         },
                         note='Identity anchor linked to message-derived node.',
                     )
@@ -613,16 +608,6 @@ class GraphIngestService:
         if normalized_role == 'search' or normalized_source == 'search':
             return 'search_source_self'
         return ''
-
-    def _identity_anchor_semantics(self, *, source_type: str) -> str:
-        normalized_source = ' '.join(str(source_type or '').split()).strip().lower()
-        if normalized_source == 'user':
-            return 'user_authored_node'
-        if normalized_source == 'assistant':
-            return 'assistant_authored_node'
-        if normalized_source == 'search':
-            return 'search_evidence_node'
-        return 'source_authored_node'
 
     def _identity_anchor_address(self, *, session_id: str, anchor_key: str) -> str:
         payload = f'identity_anchor::{session_id}::{anchor_key}'

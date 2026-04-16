@@ -9,7 +9,7 @@ class Node:
     id: int | None = None
     node_uid: str = ""
     address_hash: str = ""
-    node_kind: str = "concept"
+    node_kind: str = "node"
     raw_value: str = ""
     normalized_value: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
@@ -20,3 +20,11 @@ class Node:
     created_at: str | None = None
     updated_at: str | None = None
     is_active: bool = True
+
+    @property
+    def data(self) -> dict[str, Any]:
+        return self.payload
+
+    @property
+    def note(self) -> str:
+        return ' '.join(str(self.payload.get('note') or '').split()).strip()

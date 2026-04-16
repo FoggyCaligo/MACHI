@@ -27,5 +27,5 @@ class HashResolver:
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[: self.digest_size * 2]
 
     def address_for(self, block: MeaningBlock) -> str:
-        payload = f"{block.block_kind}::{block.normalized_text}"
+        payload = block.normalized_text
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[: self.digest_size * 2]

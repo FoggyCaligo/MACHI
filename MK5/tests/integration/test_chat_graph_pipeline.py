@@ -56,7 +56,7 @@ def main() -> None:
             assert user_anchor_nodes, "Session-scoped user identity anchor should exist"
             authored_edges = [
                 edge for edge in uow.edges.list_outgoing(user_anchor_nodes[0].id or 0, active_only=True)
-                if edge.connect_semantics == 'user_authored_node'
+                if edge.edge_family == 'relation' and edge.connect_type == 'flow'
             ]
             assert authored_edges, "Identity anchor should link to message-derived nodes"
 

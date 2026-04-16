@@ -177,8 +177,6 @@ class StructureRevisionService:
         )
 
     def _nodes_are_merge_compatible(self, source: Node, target: Node) -> bool:
-        if source.node_kind != target.node_kind:
-            return False
         if source.address_hash == target.address_hash:
             return True
 

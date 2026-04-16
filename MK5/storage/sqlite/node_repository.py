@@ -27,7 +27,7 @@ class SqliteNodeRepository(NodeRepository):
             (
                 node.node_uid,
                 node.address_hash,
-                node.node_kind,
+                "node",
                 node.raw_value,
                 node.normalized_value,
                 dumps_json(node.payload),
@@ -78,15 +78,11 @@ class SqliteNodeRepository(NodeRepository):
         self,
         normalized_value: str,
         *,
-        node_kinds: Sequence[str] | None = None,
         active_only: bool = True,
         limit: int = 20,
     ) -> Sequence[Node]:
         clauses = ["normalized_value = ?"]
         params: list[object] = [normalized_value]
-        if node_kinds:
-            clauses.append(f"node_kind IN ({placeholders(node_kinds)})")
-            params.extend(node_kinds)
         if active_only:
             clauses.append("is_active = 1")
         params.append(limit)
@@ -145,7 +141,7 @@ def _row_to_node(row: sqlite3.Row) -> Node:
         id=int(row["id"]),
         node_uid=str(row["node_uid"]),
         address_hash=str(row["address_hash"]),
-        node_kind=str(row["node_kind"]),
+        node_kind="node",
         raw_value=str(row["raw_value"]),
         normalized_value=row["normalized_value"],
         payload=loads_json(row["payload_json"], default={}),

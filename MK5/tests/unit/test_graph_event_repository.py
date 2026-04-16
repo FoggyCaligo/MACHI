@@ -90,7 +90,7 @@ def test_graph_event_repository_caps_edge_history_but_keeps_edge_created(tmp_pat
             Node(
                 node_uid="node-1",
                 address_hash="hash-1",
-                node_kind="concept",
+                node_kind="node",
                 raw_value="사람",
                 normalized_value="사람",
             )
@@ -99,7 +99,7 @@ def test_graph_event_repository_caps_edge_history_but_keeps_edge_created(tmp_pat
             Node(
                 node_uid="node-2",
                 address_hash="hash-2",
-                node_kind="concept",
+                node_kind="node",
                 raw_value="재용",
                 normalized_value="재용",
             )
@@ -111,7 +111,6 @@ def test_graph_event_repository_caps_edge_history_but_keeps_edge_created(tmp_pat
                 target_node_id=target.id or 0,
                 edge_family="concept",
                 connect_type="flow",
-                relation_detail={"connect_semantics": "specialized_concept"},
             )
         )
         created = uow.graph_events.add(

@@ -27,13 +27,17 @@ class Edge:
     is_active: bool = True
 
     @property
-    def connect_semantics(self) -> str:
-        value = self.relation_detail.get("connect_semantics")
-        return ' '.join(str(value or '').split()).strip()
+    def data(self) -> dict[str, Any]:
+        return self.relation_detail
+
+    @property
+    def note(self) -> str:
+        return ' '.join(str(self.relation_detail.get('note') or '').split()).strip()
 
     @property
     def display_label(self) -> str:
-        semantics = self.connect_semantics
-        if semantics:
-            return f"{self.edge_family}/{self.connect_type}/{semantics}"
         return f"{self.edge_family}/{self.connect_type}"
+
+    @property
+    def is_conflict(self) -> bool:
+        return self.connect_type == 'conflict'

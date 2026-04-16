@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_uid TEXT NOT NULL UNIQUE,
     address_hash TEXT NOT NULL UNIQUE,
-    node_kind TEXT NOT NULL,
+    node_kind TEXT NOT NULL DEFAULT 'node',
     raw_value TEXT NOT NULL,
     normalized_value TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',

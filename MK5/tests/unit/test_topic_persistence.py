@@ -66,7 +66,7 @@ def _node(node_id: int, value: str) -> Node:
         id=node_id,
         node_uid=f'node_{node_id}',
         address_hash=f'hash_{node_id}',
-        node_kind='noun_phrase',
+        node_kind='node',
         raw_value=value,
         normalized_value=value,
         trust_score=0.8,

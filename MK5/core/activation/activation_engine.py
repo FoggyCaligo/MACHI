@@ -311,6 +311,5 @@ class ActivationEngine:
     def _seed_score(self, node: Node, block: MeaningBlock, *, reused_via: str | None) -> float:
         base = node.trust_score * 0.45 + node.stability_score * 0.35
         via_bonus = 0.15 if reused_via == 'address_hash' else 0.08
-        kind_bonus = 0.05 if node.node_kind == block.block_kind else 0.0
         exact_bonus = 0.05 if (node.normalized_value or '') == block.normalized_text else 0.0
-        return round(base + via_bonus + kind_bonus + exact_bonus, 6)
+        return round(base + via_bonus + exact_bonus, 6)

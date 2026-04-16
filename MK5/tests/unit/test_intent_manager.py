@@ -57,7 +57,7 @@ def _node(node_id: int) -> Node:
         id=node_id,
         node_uid=f'node_{node_id}',
         address_hash=f'hash_{node_id}',
-        node_kind='noun_phrase',
+        node_kind='node',
         raw_value=f'value_{node_id}',
         normalized_value=f'value_{node_id}',
         trust_score=0.7,
@@ -73,7 +73,7 @@ def _edge(edge_id: int, source: int, target: int) -> Edge:
         target_node_id=target,
         edge_family='relation',
         connect_type='neutral',
-        relation_detail={'connect_semantics': 'related_to'},
+        relation_detail={'note': 'fixture relation edge'},
         edge_weight=0.4,
         support_count=1,
         conflict_count=0,
@@ -195,3 +195,51 @@ def test_intent_manager_shifts_to_structure_review_when_previous_path_breaks() -
     assert snapshot.shifted is True
     assert snapshot.shift_reason == 'contradiction_or_revision_forced_shift'
     assert snapshot.topic_continuity == 'shifted_topic'
+
+
+def test_conflict_connect_type_triggers_contradiction_without_contradicts_semantics() -> None:
+    from core.entities.edge import Edge
+    from core.entities.thought_view import ThoughtView
+    from core.thinking.contradiction_detector import ContradictionDetector
+
+    edge = Edge(
+        id=99,
+        source_node_id=1,
+        target_node_id=2,
+        edge_family='relation',
+        connect_type='conflict',
+        support_count=0,
+        conflict_count=1,
+        contradiction_pressure=1.1,
+        trust_score=0.5,
+    )
+    thought_view = ThoughtView(session_id='s1', message_text='x', nodes=[], edges=[edge], pointers=[])
+
+    signals = ContradictionDetector().inspect(thought_view)
+
+    assert len(signals) == 1
+    assert signals[0].reason in {'conflict_connect_type', 'medium_contradiction_pressure', 'conflict_outweighs_support'}
+
+
+def test_conflict_connect_type_triggers_contradiction_without_conflict_counters() -> None:
+    from core.entities.edge import Edge
+    from core.entities.thought_view import ThoughtView
+    from core.thinking.contradiction_detector import ContradictionDetector
+
+    edge = Edge(
+        id=100,
+        source_node_id=1,
+        target_node_id=2,
+        edge_family='relation',
+        connect_type='conflict',
+        support_count=1,
+        conflict_count=0,
+        contradiction_pressure=0.0,
+        trust_score=0.7,
+    )
+    thought_view = ThoughtView(session_id='s1', message_text='x', nodes=[], edges=[edge], pointers=[])
+
+    signals = ContradictionDetector().inspect(thought_view)
+
+    assert len(signals) == 1
+    assert signals[0].reason == 'conflict_connect_type'

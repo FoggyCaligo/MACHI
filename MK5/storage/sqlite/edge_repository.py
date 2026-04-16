@@ -60,8 +60,7 @@ class SqliteEdgeRepository(EdgeRepository):
         target_node_id: int,
         *,
         edge_family: str,
-        connect_type: str,
-        connect_semantics: str | None = None,
+        connect_type: str
     ) -> Edge | None:
         row = fetch_one(
             self.connection,
@@ -73,37 +72,12 @@ class SqliteEdgeRepository(EdgeRepository):
               AND edge_family = ?
               AND connect_type = ?
               AND is_active = 1
-            """,
-            (source_node_id, target_node_id, edge_family, connect_type),
-        )
-        if row is None:
-            return None
-        candidate = _row_to_edge(row)
-        if connect_semantics is None:
-            return candidate
-        semantics = ' '.join(str(connect_semantics or '').split()).strip()
-        if candidate.connect_semantics == semantics:
-            return candidate
-
-        rows = fetch_all(
-            self.connection,
-            """
-            SELECT *
-            FROM edges
-            WHERE source_node_id = ?
-              AND target_node_id = ?
-              AND edge_family = ?
-              AND connect_type = ?
-              AND is_active = 1
             ORDER BY trust_score DESC, edge_weight DESC, id ASC
+            LIMIT 1
             """,
             (source_node_id, target_node_id, edge_family, connect_type),
         )
-        for item in rows:
-            edge = _row_to_edge(item)
-            if edge.connect_semantics == semantics:
-                return edge
-        return None
+        return _row_to_edge(row) if row else None
 
     def list_outgoing(
         self,

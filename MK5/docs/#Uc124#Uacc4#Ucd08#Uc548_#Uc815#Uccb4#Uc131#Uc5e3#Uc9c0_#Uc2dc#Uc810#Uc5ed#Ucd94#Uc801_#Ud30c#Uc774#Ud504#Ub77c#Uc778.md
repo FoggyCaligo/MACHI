@@ -1,0 +1,329 @@
+# MK5 설계 초안: 정체성 Edge, 시점 역추적, 파이프라인 연결
+
+기준 시점: 2026-04-16
+
+## 1. 목적
+이 문서는 다음 세 가지를 한 번에 정리하기 위한 초안이다.
+
+- Node / Edge의 시점 정보를 어떻게 다룰지
+- `edge_family`, `connect_type`, Edge data를 어떤 의미로 쓸지
+- 이 구조를 MK5 파이프라인 어디에 연결할지
+
+이번 초안의 기준은 "구현을 바로 시작할 수 있을 정도로 구체적이되, 아직 코드를 확정하지는 않는 수준"이다.
+
+## 2. 현재 스키마에서 이미 있는 것
+현재 `storage/schema.sql` 기준으로 시간성과 관련해 이미 들어가 있는 것은 다음과 같다.
+
+### nodes
+- `created_from_event_id`
+- `created_at`
+- `updated_at`
+
+### edges
+- `created_from_event_id`
+- `last_supported_at`
+- `last_conflicted_at`
+- `created_at`
+- `updated_at`
+
+즉 완전히 0에서 시작할 필요는 없다. 오히려 지금 해야 할 일은 다음 두 가지다.
+
+- 이미 있는 시간 필드와 event reference를 "역추적 가능한 기준 정보"로 격상한다.
+- identity / naming / relation 계열 Edge를 어떤 구조로 넣을지 정의한다.
+
+## 3. 시점 역추적의 최소 설계
+Machi는 "2026년 3월의 Machi"를 새 subtype 노드로 만들지 않는다. 같은 `Machi` Node와 관련 Edge를 과거 시점 기준으로 다시 읽는다.
+
+이를 위해 필요한 최소 규칙은 다음과 같다.
+
+### Node 시점 규칙
+- `created_at`: 노드가 그래프에 처음 등장한 시점
+- `updated_at`: 노드 payload / score / revision state가 마지막으로 갱신된 시점
+- `created_from_event_id`: 최초 생성 event
+
+### Edge 시점 규칙
+- `created_at`: 엣지가 처음 생성된 시점
+- `updated_at`: 엣지 전체 상태가 마지막으로 갱신된 시점
+- `last_supported_at`: 마지막 support 반영 시점
+- `last_conflicted_at`: 마지막 conflict 반영 시점
+- `created_from_event_id`: 최초 생성 event
+
+### 추가 고려 대상
+현 시점에서 꼭 필요하지는 않지만, 다음 필드는 장기적으로 유용하다.
+
+- nodes
+  - `last_updated_event_id`
+- edges
+  - `last_supported_event_id`
+  - `last_conflicted_event_id`
+  - `last_updated_event_id`
+
+이 필드들이 있으면 "특정 시점 이전의 상태만 읽기"가 더 안정적이 된다. 하지만 1차 구현에서는 현재 `*_at`와 `created_from_event_id`만으로도 역추적 방향을 먼저 세울 수 있다.
+
+## 4. 역추적이 실제로 의미하는 것
+역추적은 새 노드를 만드는 작업이 아니라, 조회 시점에서 상태를 잘라 읽는 작업이다.
+
+예:
+
+- "2026-03-15 시점의 Machi"
+- "turn_index 18 이전의 Jay 관련 관계"
+- "event_id 4200 이전까지의 사람/AI 분화 상태"
+
+이때 조회 로직은 대략 이런 질문을 할 수 있어야 한다.
+
+- 이 Node는 내가 보려는 시점 이전에 이미 존재했는가
+- 이 Edge는 내가 보려는 시점보다 뒤에 생긴 것인가
+- 이 Edge의 최신 update는 내가 보려는 시점 이후인가
+- 그렇다면 현재 상태를 그대로 믿지 말고 더 이전 event / timestamp 기준으로 읽어야 하는가
+
+즉 시점성은 "새 객체 생성"이 아니라 "현재 상태를 그대로 볼지, 더 이전 상태 기준으로 볼지"의 문제다.
+
+## 5. Edge 구조 초안
+
+### A. Edge의 기본 골격
+Edge는 최소한 다음 세 층으로 읽는다.
+
+- `edge_family`
+  - `concept`
+  - `relation`
+- `connect_type`
+  - 초기값: `flow`, `neutral`, `opposite`
+- `relation_detail`
+  - 세부 의미, confidence, provenance, 설명 데이터
+
+핵심은 세부 관계명을 Edge 타입으로 무한정 늘리는 대신, 큰 종류와 연결 성격은 구조값으로 두고, 더 자세한 의미는 Edge data 안에 넣는 것이다.
+
+### B. ConnectType의 의미
+
+- `flow`
+  - 개념 분화, 관계 흐름, 영향 방향처럼 한쪽에서 다른 쪽으로 이어지는 연결
+- `neutral`
+  - 이름 표상, 동류성, 상호적 연결처럼 대칭적인 연결
+- `opposite`
+  - 같은 축 안에서 서로 반대편에 놓이는 연결
+
+이 구조는 `Direction`보다 넓다. Machi는 "위/아래"보다 "이 연결이 어떤 성격을 갖는가"를 먼저 읽는다.
+
+### C. 같은 Edge의 양방향 탐색
+Edge는 한 번 저장되면 양쪽 Node에서 모두 탐색 가능해야 한다.
+
+예:
+
+```text
+EdgeID: 1
+EdgeFamily: concept
+ConnectType: flow
+from: 사람NodeID
+to: 재용NodeID
+relation_detail.note: "분화된 개념"
+```
+
+이 경우:
+
+- `사람`에서 읽으면 "재용은 사람에서 더 구체화된 개념"
+- `재용`에서 읽으면 "사람은 재용의 상위 쪽 개념"
+
+즉 저장은 한 방향 정보지만, 탐색은 양방향 가능하다.
+
+### D. 같은 두 Node 사이의 복수 Edge
+같은 `from` / `to` Node 사이에도 여러 Edge가 동시에 존재할 수 있어야 한다.
+
+예:
+
+- `재용 --[concept / flow]--> Machi`
+- `재용 --[relation / flow]--> Machi`
+- `재용 --[relation / neutral]--> Machi`
+
+이들은 서로 다른 층위의 사실을 담는다.
+
+- 개념적 연결
+- 관계적 연결
+- 상호작용적 연결
+
+따라서 dedupe 기준은 단순 `source-target`가 아니라, 최소한 `edge_family`, `connect_type`, 그리고 세부 semantics까지 고려해야 한다.
+
+## 6. 정체성/존재 계층 Edge 규칙
+
+### A. 존재 계층
+존재 계층은 `concept / flow`로 연결한다.
+
+예:
+
+- `지성체 --[concept / flow]--> 사람`
+- `지성체 --[concept / flow]--> AI`
+- `사람 --[concept / flow]--> 나`
+- `AI --[concept / flow]--> Machi`
+
+원칙:
+
+- 상위 개념에서 하위 개념으로 더 좁아지는 분화에만 사용
+- 이름, 호칭, 별칭, 관계 상태를 같은 flow로 섞지 않음
+- 갑옷 분화와 동일한 일반 개념 분화 원리로 다룸
+
+### B. 이름 / 별칭 / 호칭 표상
+이름 계열은 `concept / neutral` 축으로 먼저 다룬다.
+
+예:
+
+- `신재용 --[concept / neutral]--> Jay`
+- `신재용 --[concept / neutral]--> 재용`
+- `나 --[concept / neutral]--> 신재용`
+- `나 --[concept / neutral]--> Jay`
+
+원칙:
+
+- 같은 존재를 가리키는 표상 군집
+- 아직 강한 동일성 단정 전의 구조적 연결
+- 존재 계층의 flow와는 분리
+
+### C. 관계 / 역할 / 상태
+관계와 상태는 `relation` family로 둔다.
+
+예:
+
+- `신재용 --[relation / flow]--> Machi`
+- `Machi --[relation / flow]--> Jay`
+- `Machi --[relation / flow]--> 나`
+- `현재대화 --[relation / flow]--> 그래프`
+
+원칙:
+
+- 존재는 Node
+- 연결 방식은 Edge
+- 현재 관계 상태는 Edge와 그 update history로 표현
+- 더 자세한 의미는 `relation_detail.connect_semantics`, `confidence`, provenance 같은 데이터로 남긴다
+
+## 7. ConnectType 확장 원칙
+초기 Machi는 `flow / neutral / opposite` 정도의 작은 집합으로 시작한다.
+
+하지만 모델이 성숙하면서 기존 connect type으로 설명되지 않는 연결 패턴이 발견될 수 있다.
+
+그 경우 바로 정식 타입으로 늘리지 않고, 우선 Edge data 안에 후보를 남긴다.
+
+예:
+
+- `relation_detail.proposed_connect_type`
+- `relation_detail.proposal_reason`
+- `relation_detail.proposal_confidence`
+
+이 후보가 반복적으로 누적되고, 기존 `flow / neutral / opposite`로 설명이 계속 어색하면, 그때 새 `connect_type`을 정식 집합으로 승격한다.
+
+즉 connect type도 고정된 표가 아니라 그래프와 함께 성숙하는 구조다.
+
+## 8. Node 종류 초안
+현재 MK5는 `node_kind`를 주로 phrase segmentation 기준으로 사용한다. identity 계층을 본격 도입하려면 점진적으로 다음 축을 허용해야 한다.
+
+### 1차 도입 가능한 node_kind
+- `concept`
+- `identity`
+- `name_variant`
+- `relation_anchor`
+
+다만 1차 구현에서는 `node_kind`를 급격히 세분화하기보다:
+
+- 현재 phrase 기반 node 생성은 유지
+- identity 관련으로 새로 생성되는 노드만 `identity` / `name_variant` 사용
+
+처럼 최소 침습적으로 들어가는 편이 안전하다.
+
+## 9. 파이프라인 연결 지점
+
+### A. graph_ingest_service
+가장 중요한 1차 연결 지점이다.
+
+역할:
+
+- 입력에서 identity 관련 블록이 들어오면 관련 Node를 만든다
+- 존재 계층을 암시하는 구조가 있으면 `subtype_of` 생성 후보를 남긴다
+- 이름/호칭 표상 연결이 보이면 `same_kind` 또는 naming relation 후보를 남긴다
+- 이때도 문자열 휴리스틱 단정 대신, 명시적 입력과 누적 구조를 사용한다
+
+1차 구현 권장 범위:
+
+- assistant/user role metadata를 활용한 기본 identity anchor 생성
+  - session 내 `user_self`
+  - session 내 `assistant_self`
+- 이 anchor와 입력에서 나온 이름/호칭 노드를 `concept / neutral`로 연결하는 구조
+- 이후 존재 계층 `concept / flow`는 별도 identity refinement 단계에서 생성
+
+즉 첫 주입은 "존재 축 후보"와 "이름 표상 후보"를 그래프에 남기는 것이다.
+
+### B. activation_engine
+두 번째 핵심 연결 지점이다.
+
+역할:
+
+- 현재 질문과 관련된 identity cluster를 함께 불러온다
+- topic continuity뿐 아니라 identity continuity를 활성화 metadata로 올린다
+- 필요시 as-of cutoff 기반 조회로 확장될 자리를 만든다
+
+1차 구현 권장 범위:
+
+- 최근 assistant snapshot 기반 continuity 유지
+- user / assistant identity anchor를 활성화 후보에 포함
+- `current_topic_terms`와 별도로 `active_identity_terms` 메타데이터 도입 검토
+
+장기 확장:
+
+- `ActivationRequest(as_of_turn=..., as_of_event_id=...)`
+- cutoff 이전 기준으로 Node / Edge를 제한해 과거 시점 재구성
+
+### C. intent_manager / thought_engine / conclusion_builder
+이 구간은 "정체성/시간 구조를 실제 추론에 쓰는 층"이다.
+
+역할:
+
+- memory_probe일 때 최근 문자열 목록이 아니라 identity / relation / topic cluster를 근거로 결론 생성
+- "나는 누구인가", "너는 누구인가", "우리가 뭐라고 부르기로 했는가"를 그래프 상태로 설명
+- 향후 "과거 시점의 Machi" 같은 질의가 들어오면 시점 cutoff 기반 설명 가능
+
+1차 구현 권장 범위:
+
+- `CoreConclusion.metadata`에 recent memory 대신 `identity_context`를 점진적으로 추가
+- 현재 임시 세션 메모리 보강층은 남겨두되, 장기적으로는 identity cluster 기반으로 대체
+
+### D. verbalization
+verbalizer는 생성 주체가 아니라 표현 계층이다.
+
+역할:
+
+- 그래프에서 만들어진 identity / time conclusion을 사용자 문장으로 풀어준다
+- prompt에서 identity를 꾸며내지 않는다
+- 그래프에 없는 이름/관계/시간 정보는 절대 보강하지 않는다
+
+## 10. 구현 우선순위
+
+### 1단계: 스키마/엔티티 최소 보강
+- Node / Edge 시점 정보 사용 원칙 확정
+- 필요 시 entity dataclass에 event-id 계열 필드 추가 초안
+- 문서 기준으로 repository read/write 영향 범위 점검
+
+### 2단계: identity anchor 1차 도입
+- user_self / assistant_self 계열 identity anchor 개념 도입
+- 이름/호칭 노드와 `concept / neutral` 연결
+- 관계 Edge 일부 도입
+
+### 3단계: 개념 flow 계층 도입
+- `지성체`, `사람`, `AI`, `나`, `Machi` 축을 일반 개념 분화처럼 연결
+- hardcoded special-case가 아니라 identity refinement 계층으로 처리
+
+### 4단계: as-of 조회 기반 마련
+- activation / repository 계층에 cutoff 인자 초안
+- 특정 시점 이전 상태를 읽는 기반 도입
+
+## 11. 한 턴에서 둘 다 잡는다는 것의 의미
+이번 설계에서 "둘 다"는 다음을 뜻한다.
+
+- 시점 정보는 새 노드를 만드는 대신 역추적 가능한 조회 기준을 준다.
+- identity edge 규칙은 어떤 Node와 Edge를 그래프에 남길지 결정한다.
+
+이 둘은 분리된 과제가 아니라 하나의 구조다. 존재가 무엇인지와, 그 존재를 어느 시점의 상태로 볼 것인지가 함께 정의되어야 Machi의 그래프 철학이 유지된다.
+
+## 12. 바로 구현으로 내려갈 때의 기준
+실제 코드 작업은 다음 기준을 만족해야 한다.
+
+- 문자열 기반 사람/AI 추측 휴리스틱 금지
+- prompt 기반 identity 유지 금지
+- identity / naming / relation / time을 그래프 구조로 남길 것
+- 기존 phrase 기반 ingest를 깨지 않고 점진적으로 붙일 것
+- retrieval은 "새 subtype 생성"이 아니라 "same node, earlier state" 방향으로 갈 것

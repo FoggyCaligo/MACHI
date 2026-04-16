@@ -23,8 +23,8 @@ class TestActivationEngineIntegration(unittest.TestCase):
                 Node(id=3, raw_value='Node 3')
             ],
             edges=[
-                Edge(id=1, source_node_id=1, target_node_id=2, edge_family='relation', connect_type='flow', relation_detail={'connect_semantics': 'connects'}),
-                Edge(id=2, source_node_id=2, target_node_id=3, edge_family='relation', connect_type='flow', relation_detail={'connect_semantics': 'connects'})
+                Edge(id=1, source_node_id=1, target_node_id=2, edge_family='relation', connect_type='flow', relation_detail={'note': 'connects'}),
+                Edge(id=2, source_node_id=2, target_node_id=3, edge_family='relation', connect_type='flow', relation_detail={'note': 'connects'})
             ]
         )
 

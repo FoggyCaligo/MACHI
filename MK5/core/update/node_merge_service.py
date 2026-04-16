@@ -146,7 +146,6 @@ class NodeMergeService:
                 canonical_node_id=canonical_node_id,
                 edge_family=edge.edge_family,
                 connect_type=edge.connect_type,
-                connect_semantics=edge.connect_semantics,
             )
             rewired.extend(action['rewired'])
             merged.extend(action['merged'])
@@ -167,7 +166,6 @@ class NodeMergeService:
                 canonical_node_id=canonical_node_id,
                 edge_family=edge.edge_family,
                 connect_type=edge.connect_type,
-                connect_semantics=edge.connect_semantics,
             )
             rewired.extend(action['rewired'])
             merged.extend(action['merged'])
@@ -187,8 +185,7 @@ class NodeMergeService:
         merged_node_id: int,
         canonical_node_id: int,
         edge_family: str,
-        connect_type: str,
-        connect_semantics: str,
+        connect_type: str
     ) -> dict[str, list[int]]:
         edge = uow.edges.get_by_id(edge_id)
         if edge is None or not edge.is_active:
@@ -201,8 +198,7 @@ class NodeMergeService:
             new_source,
             new_target,
             edge_family=edge_family,
-            connect_type=connect_type,
-            connect_semantics=connect_semantics or None,
+            connect_type=connect_type
         )
         if duplicate is not None and duplicate.id != edge_id:
             merged_detail = self._merge_relation_detail(duplicate.relation_detail, edge.relation_detail, merged_edge_id=edge_id)

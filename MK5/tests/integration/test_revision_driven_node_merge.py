@@ -76,7 +76,7 @@ def main() -> None:
                     target_node_id=node_b.id or 0,
                     edge_family='concept',
                     connect_type='opposite',
-                    relation_detail={'connect_semantics': 'contradicts', 'fixture': True},
+                    relation_detail={'fixture': True, 'note': 'opposite fixture'},
                     edge_weight=0.2,
                     trust_score=0.39,
                     support_count=1,
@@ -93,7 +93,7 @@ def main() -> None:
                     target_node_id=target.id or 0,
                     edge_family='relation',
                     connect_type='flow',
-                    relation_detail={'connect_semantics': 'support_relation', 'fixture': 'carried'},
+                    relation_detail={'fixture': 'carried', 'note': 'carried relation'},
                     edge_weight=0.6,
                     trust_score=0.7,
                     support_count=1,
@@ -124,7 +124,6 @@ def main() -> None:
                 target.id or 0,
                 edge_family='relation',
                 connect_type='flow',
-                connect_semantics='support_relation',
             )
             assert moved is not None and moved.id == (carried.id or 0)
             event_types = {event.event_type for event in uow.graph_events.list_recent(limit=20)}

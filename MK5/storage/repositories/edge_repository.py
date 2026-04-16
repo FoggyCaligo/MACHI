@@ -27,10 +27,9 @@ class EdgeRepository(Repository, ABC):
         target_node_id: int,
         *,
         edge_family: str,
-        connect_type: str,
-        connect_semantics: str | None = None,
+        connect_type: str
     ) -> Edge | None:
-        """Return the currently active edge for the exact relation triple."""
+        """Return the currently active edge for the exact relation shape."""
 
     @abstractmethod
     def list_outgoing(

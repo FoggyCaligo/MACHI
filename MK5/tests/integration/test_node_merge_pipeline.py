@@ -88,7 +88,7 @@ def main() -> None:
                     target_node_id=target.id or 0,
                     edge_family='relation',
                     connect_type='neutral',
-                    relation_detail={'connect_semantics': 'same_sentence_co_occurrence', 'source_counts': {'user': 1}},
+                    relation_detail={'source_counts': {'user': 1}, 'note': 'same sentence user'},
                     edge_weight=0.2,
                     trust_score=0.5,
                     support_count=2,
@@ -102,7 +102,7 @@ def main() -> None:
                     target_node_id=target.id or 0,
                     edge_family='relation',
                     connect_type='neutral',
-                    relation_detail={'connect_semantics': 'same_sentence_co_occurrence', 'source_counts': {'search': 1}},
+                    relation_detail={'source_counts': {'search': 1}, 'note': 'same sentence search'},
                     edge_weight=0.4,
                     trust_score=0.8,
                     support_count=3,
@@ -116,7 +116,7 @@ def main() -> None:
                     target_node_id=absorbed.id or 0,
                     edge_family='relation',
                     connect_type='flow',
-                    relation_detail={'connect_semantics': 'support_relation', 'reason': 'fixture'},
+                    relation_detail={'reason': 'fixture', 'note': 'fixture support relation'},
                     edge_weight=0.3,
                     trust_score=0.6,
                     support_count=1,
@@ -193,7 +193,6 @@ def main() -> None:
                 target.id or 0,
                 edge_family='relation',
                 connect_type='neutral',
-                connect_semantics='same_sentence_co_occurrence',
             )
             assert surviving_edge is not None
             assert surviving_edge.support_count == 5
@@ -207,7 +206,6 @@ def main() -> None:
                 canonical.id or 0,
                 edge_family='relation',
                 connect_type='flow',
-                connect_semantics='support_relation',
             )
             assert moved_edge is not None and moved_edge.id == rewired_edge.id
             assert moved_edge.relation_detail['rewrite_history'][0]['from_node_id'] == (absorbed.id or 0)

@@ -74,6 +74,7 @@ def main() -> None:
             recent_events = list(uow.graph_events.list_recent(limit=20))
             event_types = {event.event_type for event in recent_events}
             assert 'edge_conflict_registered' in event_types
+            assert {'conflict_edge_created', 'conflict_edge_supported'} & event_types
             assert 'edge_deactivated_for_revision' in event_types
 
         print('PASS: thinking revision pipeline')
