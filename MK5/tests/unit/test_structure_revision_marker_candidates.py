@@ -40,7 +40,6 @@ def test_structure_revision_uses_revision_marker_candidates_without_flag(tmp_pat
                 trust_score=0.65,
                 support_count=2,
                 contradiction_pressure=0.1,
-                revision_candidate_flag=False,
             )
         )
         RevisionEdgeService().record_conflict_assertion(
@@ -80,7 +79,6 @@ def test_structure_revision_deactivates_when_deactivate_marker_support_accumulat
                 support_count=3,
                 contradiction_pressure=0.1,
                 conflict_count=0,
-                revision_candidate_flag=False,
             )
         )
         service = RevisionEdgeService()

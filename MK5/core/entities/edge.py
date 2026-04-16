@@ -18,7 +18,6 @@ class Edge:
     support_count: int = 0
     conflict_count: int = 0
     contradiction_pressure: float = 0.0
-    revision_candidate_flag: bool = False
     created_from_event_id: int | None = None
     last_supported_at: str | None = None
     last_conflicted_at: str | None = None

@@ -21,9 +21,9 @@ class SqliteEdgeRepository(EdgeRepository):
             INSERT INTO edges (
                 edge_uid, source_node_id, target_node_id, edge_family, connect_type, relation_detail_json,
                 edge_weight, trust_score, support_count, conflict_count,
-                contradiction_pressure, revision_candidate_flag, created_from_event_id,
+                contradiction_pressure, created_from_event_id,
                 last_supported_at, last_conflicted_at, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 edge.edge_uid,
@@ -37,7 +37,6 @@ class SqliteEdgeRepository(EdgeRepository):
                 edge.support_count,
                 edge.conflict_count,
                 edge.contradiction_pressure,
-                int(edge.revision_candidate_flag),
                 edge.created_from_event_id,
                 edge.last_supported_at,
                 edge.last_conflicted_at,
@@ -329,7 +328,6 @@ def _row_to_edge(row: sqlite3.Row) -> Edge:
         support_count=int(row["support_count"]),
         conflict_count=int(row["conflict_count"]),
         contradiction_pressure=float(row["contradiction_pressure"]),
-        revision_candidate_flag=as_bool(row["revision_candidate_flag"]),
         created_from_event_id=row["created_from_event_id"],
         last_supported_at=row["last_supported_at"],
         last_conflicted_at=row["last_conflicted_at"],

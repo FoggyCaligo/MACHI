@@ -73,7 +73,6 @@ CREATE TABLE IF NOT EXISTS edges (
     support_count INTEGER NOT NULL DEFAULT 0,
     conflict_count INTEGER NOT NULL DEFAULT 0,
     contradiction_pressure REAL NOT NULL DEFAULT 0.0,
-    revision_candidate_flag INTEGER NOT NULL DEFAULT 0,
     created_from_event_id INTEGER,
     last_supported_at TEXT,
     last_conflicted_at TEXT,
@@ -88,7 +87,6 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_node_id, is_active, edge_family, connect_type);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_node_id, is_active, edge_family, connect_type);
 CREATE INDEX IF NOT EXISTS idx_edges_pair_type ON edges(source_node_id, target_node_id, edge_family, connect_type, is_active);
-CREATE INDEX IF NOT EXISTS idx_edges_revision ON edges(revision_candidate_flag, contradiction_pressure DESC, id);
 
 CREATE TABLE IF NOT EXISTS node_pointers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
