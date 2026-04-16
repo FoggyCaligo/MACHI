@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from core.entities.conclusion import ThoughtResult
 from core.entities.thought_view import ThoughtView
+from core.thinking.concept_differentiation_service import ConceptDifferentiationService
 from core.thinking.conclusion_builder import ConclusionBuilder
 from core.thinking.contradiction_detector import ContradictionDetector
 from core.thinking.intent_manager import IntentManager
@@ -29,6 +30,7 @@ class ThoughtEngine:
         contradiction_detector: ContradictionDetector | None = None,
         trust_manager: TrustManager | None = None,
         structure_revision_service: StructureRevisionService | None = None,
+        concept_differentiation_service: ConceptDifferentiationService | None = None,
         conclusion_builder: ConclusionBuilder | None = None,
         intent_manager: IntentManager | None = None,
     ) -> None:
@@ -37,6 +39,9 @@ class ThoughtEngine:
         self.trust_manager = trust_manager or TrustManager()
         self.structure_revision_service = structure_revision_service or StructureRevisionService(
             node_merge_service=NodeMergeService(uow_factory),
+        )
+        self.concept_differentiation_service = (
+            concept_differentiation_service or ConceptDifferentiationService()
         )
         self.conclusion_builder = conclusion_builder or ConclusionBuilder()
         self.intent_manager = intent_manager or IntentManager()
@@ -52,6 +57,15 @@ class ThoughtEngine:
             revision_actions = self.structure_revision_service.review_candidates(
                 uow,
                 message_id=request.message_id,
+            )
+            # 개념 분화: trust/revision 이후, intent 결정 이전
+            # partial_reuse 누적 → concept/flow, 공유 이웃 → concept/neutral
+            # 고강도 contradiction signal → concept/conflict
+            differentiation_result = self.concept_differentiation_service.differentiate(
+                uow,
+                thought_view=thought_view,
+                message_id=request.message_id,
+                contradiction_signals=signals,
             )
             intent_snapshot = self.intent_manager.resolve(
                 uow,
@@ -87,6 +101,7 @@ class ThoughtEngine:
                 'signal_count': len(signals),
                 'trust_update_count': len(trust_updates),
                 'revision_action_count': len(revision_actions),
+                'differentiation': differentiation_result.to_metadata(),
                 'intent_snapshot': intent_snapshot.to_metadata(),
             },
         )

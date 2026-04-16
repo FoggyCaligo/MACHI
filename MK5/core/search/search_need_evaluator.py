@@ -50,12 +50,22 @@ class SearchNeedEvaluator:
             )
 
         if slot_plan is None:
-            sparse_graph = len(conclusion.activated_concepts) <= 2 and len(conclusion.key_relations) <= 1
+            has_seed_coverage = len(thought_view.seed_nodes) > 0
+            concept_edge_count = sum(
+                1 for e in thought_view.edges
+                if e.edge_family == 'concept' and e.is_active
+            )
+            sparse_graph = (
+                not has_seed_coverage
+                and concept_edge_count == 0
+                and len(conclusion.activated_concepts) <= 2
+                and len(conclusion.key_relations) <= 1
+            )
             unresolved_conflict = bool(conclusion.detected_conflicts)
             need_search = sparse_graph or unresolved_conflict
             reason = 'graph_too_sparse_for_answer' if sparse_graph else 'graph_conflict_requires_grounding' if unresolved_conflict else 'graph_sufficient_without_search'
             gap_summary = (
-                '현재 활성화된 개념과 관계만으로는 질문에 답할 근거가 충분하지 않다.' if sparse_graph else
+                '현재 사고 그래프에 시드 노드가 없고 활성화된 개념 구조도 부족해 질문에 답할 근거가 충분하지 않다.' if sparse_graph else
                 '현재 사고 그래프에 충돌이 남아 있어 외부 근거로 현재 주제를 확인할 필요가 있다.' if unresolved_conflict else
                 '현재 활성화된 개념과 관계만으로도 질문에 직접 답할 수 있다.'
             )

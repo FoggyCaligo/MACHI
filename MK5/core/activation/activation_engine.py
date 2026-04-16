@@ -152,7 +152,7 @@ class ActivationEngine:
         return items[-6:]
 
     def _session_identity_nodes(self, uow: UnitOfWork, session_id: str) -> list[Node]:
-        anchor_keys = ('user_self', 'assistant_self', 'search_source_self')
+        anchor_keys = ('participant_user', 'participant_assistant', 'participant_search')
         address_hashes = [self._identity_anchor_address(session_id=session_id, anchor_key=key) for key in anchor_keys]
         rows = list(uow.nodes.list_by_address_hashes(address_hashes))
         return [row for row in rows if row is not None]

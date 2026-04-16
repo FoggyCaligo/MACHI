@@ -602,11 +602,11 @@ class GraphIngestService:
         normalized_role = ' '.join(str(role or '').split()).strip().lower()
         normalized_source = ' '.join(str(source_type or '').split()).strip().lower()
         if normalized_role == 'user' or normalized_source == 'user':
-            return 'user_self'
+            return 'participant_user'
         if normalized_role == 'assistant' or normalized_source == 'assistant':
-            return 'assistant_self'
+            return 'participant_assistant'
         if normalized_role == 'search' or normalized_source == 'search':
-            return 'search_source_self'
+            return 'participant_search'
         return ''
 
     def _identity_anchor_address(self, *, session_id: str, anchor_key: str) -> str:
