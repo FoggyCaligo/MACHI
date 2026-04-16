@@ -223,7 +223,6 @@ def test_hierarchical_concept_flow_is_not_merged_during_revision(tmp_path: Path)
                 support_count=1,
                 conflict_count=1,
                 contradiction_pressure=1.7,
-                revision_candidate_flag=True,
             )
         )
         uow.commit()

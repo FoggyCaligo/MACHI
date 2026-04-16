@@ -41,8 +41,8 @@ def main() -> None:
         )
 
         with uow_factory() as uow:
-            edges = list(uow.edges.list_revision_candidates(min_contradiction_pressure=0.0, limit=50))
-            assert len(edges) == 0
+            markers = list(uow.edges.list_active_revision_markers(limit=50))
+            assert len(markers) == 0
             local_edges = list(uow.edges.list_edges_for_nodes([1, 2, 3, 4, 5, 6], active_only=True))
             assert local_edges, 'ingest should create at least one co_occurs_with edge'
             edge = local_edges[0]

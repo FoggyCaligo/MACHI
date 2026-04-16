@@ -83,7 +83,6 @@ def main() -> None:
                     support_count=1,
                     conflict_count=2,
                     contradiction_pressure=2.2,
-                    revision_candidate_flag=True,
                     created_from_event_id=event.id,
                 )
             )

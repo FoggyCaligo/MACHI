@@ -96,8 +96,25 @@ def main() -> None:
             assert uow.node_pointers.find_active(node_a.id or 0, node_b.id or 0, "support_reference") is not None
 
             uow.edges.bump_conflict(edge.id or 0, trust_delta=-0.2)
-            uow.edges.set_revision_candidate(edge.id or 0, flag=True)
-            revised = uow.edges.list_revision_candidates(min_contradiction_pressure=1.0, limit=10)
+            revision_marker = uow.edges.add(
+                Edge(
+                    edge_uid="edge-revision-marker-1",
+                    source_node_id=node_a.id or 0,
+                    target_node_id=node_b.id or 0,
+                    edge_family="concept",
+                    connect_type="conflict",
+                    relation_detail={
+                        "purpose": "revision",
+                        "kind": "conflict_assertion",
+                        "source_edge_ids": [edge.id],
+                        "reasons": ["smoke"],
+                    },
+                    support_count=1,
+                    trust_score=0.6,
+                )
+            )
+            assert revision_marker.id is not None
+            revised = uow.edges.list_active_revision_markers(limit=10)
             assert revised
             uow.nodes.update_scores(node_a.id or 0, trust_score=0.8, revision_state="under_review")
             reviewed = uow.nodes.get_by_id(node_a.id or 0)

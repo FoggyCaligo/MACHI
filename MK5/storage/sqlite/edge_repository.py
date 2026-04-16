@@ -179,12 +179,6 @@ class SqliteEdgeRepository(EdgeRepository):
             (delta, pressure_delta, trust_delta, edge_id),
         )
 
-    def set_revision_candidate(self, edge_id: int, *, flag: bool) -> None:
-        self.connection.execute(
-            "UPDATE edges SET revision_candidate_flag = ? WHERE id = ?",
-            (int(flag), edge_id),
-        )
-
     def update_relation_detail(self, edge_id: int, relation_detail: dict) -> None:
         self.connection.execute(
             "UPDATE edges SET relation_detail_json = ? WHERE id = ?",
@@ -254,27 +248,6 @@ class SqliteEdgeRepository(EdgeRepository):
             return
         params.append(edge_id)
         self.connection.execute(f"UPDATE edges SET {', '.join(updates)} WHERE id = ?", params)
-
-    def list_revision_candidates(
-        self,
-        *,
-        min_contradiction_pressure: float = 0.0,
-        limit: int = 100,
-    ) -> Sequence[Edge]:
-        rows = fetch_all(
-            self.connection,
-            """
-            SELECT *
-            FROM edges
-            WHERE revision_candidate_flag = 1
-              AND contradiction_pressure >= ?
-              AND is_active = 1
-            ORDER BY contradiction_pressure DESC, trust_score ASC, id ASC
-            LIMIT ?
-            """,
-            (min_contradiction_pressure, limit),
-        )
-        return [_row_to_edge(row) for row in rows]
 
     def deactivate(self, edge_id: int) -> None:
         self.connection.execute("UPDATE edges SET is_active = 0 WHERE id = ?", (edge_id,))

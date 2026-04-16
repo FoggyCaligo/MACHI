@@ -6,12 +6,40 @@ from core.entities.conclusion import ContradictionSignal
 from core.entities.thought_view import ThoughtView
 
 
+@dataclass(frozen=True, slots=True)
+class ConnectTypeSignalRule:
+    connect_type: str
+    reason: str
+    base_severity: str
+    base_score: float
+    medium_pressure_offset: float = 0.0
+    high_pressure_offset: float = 0.0
+
+
 @dataclass(slots=True)
 class ContradictionDetector:
     medium_trust_threshold: float = 0.40
     high_trust_threshold: float = 0.25
     medium_pressure_threshold: float = 1.5
     high_pressure_threshold: float = 2.5
+    connect_type_rules: tuple[ConnectTypeSignalRule, ...] = (
+        ConnectTypeSignalRule(
+            connect_type='conflict',
+            reason='conflict_connect_type',
+            base_severity='medium',
+            base_score=0.45,
+            medium_pressure_offset=-0.5,
+            high_pressure_offset=-0.5,
+        ),
+        ConnectTypeSignalRule(
+            connect_type='opposite',
+            reason='opposite_connect_type',
+            base_severity='medium',
+            base_score=0.4,
+            medium_pressure_offset=-0.3,
+            high_pressure_offset=-0.3,
+        ),
+    )
 
     def inspect(self, thought_view: ThoughtView) -> list[ContradictionSignal]:
         signals: list[ContradictionSignal] = []
@@ -33,20 +61,14 @@ class ContradictionDetector:
         medium_pressure_threshold = self.medium_pressure_threshold
         high_pressure_threshold = self.high_pressure_threshold
 
-        if edge.is_conflict:
-            medium_pressure_threshold = max(1.0, self.medium_pressure_threshold - 0.5)
-            high_pressure_threshold = max(2.0, self.high_pressure_threshold - 0.5)
+        rule = self._match_connect_type_rule(edge.connect_type)
+        if rule is not None:
+            medium_pressure_threshold = max(1.0, self.medium_pressure_threshold + rule.medium_pressure_offset)
+            high_pressure_threshold = max(2.0, self.high_pressure_threshold + rule.high_pressure_offset)
             if edge.support_count > 0 or edge.conflict_count > 0 or edge.contradiction_pressure > 0:
-                severity = 'medium'
-                reason = 'conflict_connect_type'
-                score = max(score, 0.45)
-        elif edge.connect_type == 'opposite':
-            medium_pressure_threshold = max(1.2, self.medium_pressure_threshold - 0.3)
-            high_pressure_threshold = max(2.2, self.high_pressure_threshold - 0.3)
-            if edge.support_count > 0 or edge.conflict_count > 0 or edge.contradiction_pressure > 0:
-                severity = 'medium'
-                reason = 'opposite_connect_type'
-                score = max(score, 0.4)
+                severity = rule.base_severity
+                reason = rule.reason
+                score = max(score, rule.base_score)
 
         if edge.conflict_count > edge.support_count and edge.conflict_count >= 2:
             severity = 'high' if edge.conflict_count - edge.support_count >= 2 else (severity or 'medium')
@@ -86,3 +108,10 @@ class ContradictionDetector:
                 'trust_score': edge.trust_score,
             },
         )
+
+    def _match_connect_type_rule(self, connect_type: str) -> ConnectTypeSignalRule | None:
+        token = str(connect_type or '').strip().lower()
+        for rule in self.connect_type_rules:
+            if rule.connect_type == token:
+                return rule
+        return None

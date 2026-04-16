@@ -63,8 +63,8 @@ def main() -> None:
             events = uow.graph_events.list_for_message(first.message_id)
             assert events, "Ingest should leave message-scoped graph events"
 
-            revision_candidates = uow.edges.list_revision_candidates(min_contradiction_pressure=0.0, limit=50)
-            assert isinstance(revision_candidates, list)
+            revision_markers = uow.edges.list_active_revision_markers(limit=50)
+            assert isinstance(revision_markers, list)
 
 
 if __name__ == "__main__":

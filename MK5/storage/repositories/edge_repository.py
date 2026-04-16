@@ -86,10 +86,6 @@ class EdgeRepository(Repository, ABC):
         """Raise conflict pressure and optionally lower trust."""
 
     @abstractmethod
-    def set_revision_candidate(self, edge_id: int, *, flag: bool) -> None:
-        """Mark or unmark an edge for structure revision review."""
-
-    @abstractmethod
     def update_relation_detail(self, edge_id: int, relation_detail: dict) -> None:
         """Replace relation detail JSON after reasoning/refinement."""
 
@@ -123,15 +119,6 @@ class EdgeRepository(Repository, ABC):
         target_node_id: int | None = None,
     ) -> None:
         """Rewrite one or both endpoints without recreating the edge row."""
-
-    @abstractmethod
-    def list_revision_candidates(
-        self,
-        *,
-        min_contradiction_pressure: float = 0.0,
-        limit: int = 100,
-    ) -> Sequence[Edge]:
-        """Return edges that are ready for structure revision review."""
 
     @abstractmethod
     def deactivate(self, edge_id: int) -> None:
