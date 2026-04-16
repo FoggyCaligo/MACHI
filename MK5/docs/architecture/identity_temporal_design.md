@@ -25,6 +25,13 @@ Keep identity continuity and topic continuity in the graph layer, not prompt-onl
 - Session identity anchors are introduced in ingest/activation path.
 - `ActivationEngine` includes concept-priority sorting and concept 2-hop expansion.
 - Debug metadata includes identity and concept-hop signals.
+- Identity-anchor-to-message bindings are stored as `session_temporary` relation edges.
+- Temporary binding edges are cleared when `topic_continuity=shifted_topic` and `topic_overlap_count=0`.
+
+## Pronoun Policy
+- Pronouns (`나`, `너`, `그사람`) are not hard-coded by string heuristics.
+- Base interpretation is delegated to model/thinking pipeline.
+- Graph-layer temporary edges are used only for context binding when graph reasoning needs it.
 
 ## Next Steps
 1. Strengthen identity-specific contradiction/revision rules.

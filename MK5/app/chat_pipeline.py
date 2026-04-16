@@ -12,6 +12,7 @@ from core.update.graph_commit_service import GraphCommitService
 from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestResult, GraphIngestService
 from core.update.model_edge_assertion_service import ModelEdgeAssertionResult, ModelEdgeAssertionService
 from core.update.model_feedback_service import ModelFeedbackResult, ModelFeedbackService
+from core.update.temporary_edge_service import TemporaryEdgeCleanupResult, TemporaryEdgeService
 from core.verbalization.verbalizer import Verbalizer
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
 
@@ -48,6 +49,7 @@ class ChatPipeline:
         model_edge_assertion_service: ModelEdgeAssertionService | None = None,
         connect_type_promotion_service: ConnectTypePromotionService | None = None,
         graph_commit_service: GraphCommitService | None = None,
+        temporary_edge_service: TemporaryEdgeService | None = None,
     ) -> None:
         self.db_path = db_path
         self.schema_path = schema_path
@@ -60,6 +62,7 @@ class ChatPipeline:
         self.model_edge_assertion_service = model_edge_assertion_service or ModelEdgeAssertionService(self._uow_factory)
         self.connect_type_promotion_service = connect_type_promotion_service or ConnectTypePromotionService()
         self.graph_commit_service = graph_commit_service or GraphCommitService(self._uow_factory)
+        self.temporary_edge_service = temporary_edge_service or TemporaryEdgeService()
 
     def _uow_factory(self) -> SqliteUnitOfWork:
         return SqliteUnitOfWork(self.db_path, schema_path=self.schema_path, initialize_schema=True)
@@ -150,6 +153,14 @@ class ChatPipeline:
                     conclusion=thought_result.core_conclusion,
                     slot_plan=search_run.slot_plan,
                 )
+
+        intent_snapshot_meta = dict(thought_result.metadata.get('intent_snapshot', {}) or {})
+        temporary_edge_cleanup_result: TemporaryEdgeCleanupResult = self.temporary_edge_service.cleanup_on_topic_shift(
+            self._uow_factory,
+            session_id=request.session_id,
+            current_turn_index=request.turn_index,
+            intent_snapshot=intent_snapshot_meta,
+        )
 
         # ── Model feedback: LLM이 본 그래프 상태를 기반으로 엣지 trust를 조정 ──────
         # Ollama 모델이 선택된 경우에만 실행. mk5-graph-core는 no-op.
@@ -310,6 +321,7 @@ class ChatPipeline:
             'model_feedback': model_feedback_result.to_debug(),
             'model_edge_assertion': model_edge_assertion_result.to_debug(),
             'connect_type_promotion': connect_type_promotion_result.to_debug(),
+            'temporary_edge_cleanup': temporary_edge_cleanup_result.to_debug(),
             'ingest': {
                 'message_id': ingest_result.message_id,
                 'root_event_id': ingest_result.root_event_id,

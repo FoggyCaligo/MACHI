@@ -11,13 +11,16 @@
 1. `update_relation_detail` 호출 시 `edges.updated_at` 갱신
 2. `update_connect_type` 호출 시 `edges.updated_at` 갱신
 3. `deactivate` 호출 시 `edges.updated_at` 갱신
+4. `StructureRevisionService`에 `RevisionExecutionRule` 테이블 도입
+5. family/connect_type별 deactivation/merge 임계치를 규칙으로 결정
+6. identity anchor 링크를 `session_temporary` edge로 저장
+7. `topic_continuity=shifted_topic` & `topic_overlap_count=0`일 때 temporary edge 자동 정리
 
 [다음 우선 작업]
-1. revision marker 기반 실행 규칙 테이블화
+1. revision marker 기반 실행 규칙 테이블 고도화(규칙 추가/튜닝)
 2. concept/relation + connect_type 조합별 충돌 정책 정교화
 3. E2E 회귀 테스트 확대(충돌 누적, deactivation, merge, promotion)
 
 [리스크/메모]
 1. 로컬 Windows 환경에서 pytest temp/cache 권한 이슈가 간헐적으로 발생
 2. 테스트 실패 시 우선 `compileall` + 제한된 스모크 경로로 회귀 확인
-

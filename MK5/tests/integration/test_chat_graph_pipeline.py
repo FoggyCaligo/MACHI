@@ -52,13 +52,18 @@ def main() -> None:
         with make_uow() as uow:
             mk5_nodes = uow.nodes.search_by_normalized_value("mk5", limit=10)
             assert mk5_nodes, "The reusable block 'mk5' should exist as a durable node"
-            user_anchor_nodes = uow.nodes.search_by_normalized_value("user_self", limit=10)
+            user_anchor_nodes = uow.nodes.search_by_normalized_value("participant_user", limit=10)
             assert user_anchor_nodes, "Session-scoped user identity anchor should exist"
             authored_edges = [
                 edge for edge in uow.edges.list_outgoing(user_anchor_nodes[0].id or 0, active_only=True)
                 if edge.edge_family == 'relation' and edge.connect_type == 'flow'
             ]
             assert authored_edges, "Identity anchor should link to message-derived nodes"
+            assert any(
+                bool((edge.relation_detail or {}).get('temporary_edge'))
+                and (edge.relation_detail or {}).get('scope') == 'session_temporary'
+                for edge in authored_edges
+            ), "Identity anchor edges should be temporary session-scoped bindings"
 
             events = uow.graph_events.list_for_message(first.message_id)
             assert events, "Ingest should leave message-scoped graph events"

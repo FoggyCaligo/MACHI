@@ -236,6 +236,7 @@ class GraphIngestService:
                     message=message,
                     root_event=root_event,
                     result=result,
+                    session_id=request.session_id,
                     source_type=source_type,
                     claim_domain=claim_domain,
                     profile=profile,
@@ -529,6 +530,7 @@ class GraphIngestService:
         message: ChatMessage,
         root_event: GraphEvent,
         result: GraphIngestResult,
+        session_id: str,
         source_type: str,
         claim_domain: str,
         profile,
@@ -554,9 +556,15 @@ class GraphIngestService:
                         connect_type='flow',
                         relation_detail={
                             'message_id': message.id,
+                            'turn_index': message.turn_index,
+                            'session_id': session_id,
                             'source_type': source_type,
                             'claim_domain': claim_domain,
                             'anchor_key': anchor_node.normalized_value,
+                            'scope': 'session_temporary',
+                            'temporary_edge': True,
+                            'temporary_kind': 'identity_anchor_binding',
+                            'temporary_policy': 'clear_on_topic_shift',
                             'note': 'Session identity anchor linked to message-derived node.',
                             'source_counts': {source_type: 1},
                         },
@@ -593,7 +601,13 @@ class GraphIngestService:
                 source_counts[source_type] = int(source_counts.get(source_type, 0)) + 1
                 relation_detail['source_counts'] = source_counts
                 relation_detail['last_message_id'] = message.id
+                relation_detail['last_turn_index'] = message.turn_index
                 relation_detail['last_claim_domain'] = claim_domain
+                relation_detail['session_id'] = session_id
+                relation_detail['scope'] = 'session_temporary'
+                relation_detail['temporary_edge'] = True
+                relation_detail['temporary_kind'] = 'identity_anchor_binding'
+                relation_detail['temporary_policy'] = 'clear_on_topic_shift'
                 uow.edges.update_relation_detail(existing.id or 0, relation_detail)
                 uow.edges.bump_support(existing.id or 0, delta=1, trust_delta=profile.edge_support_trust_delta)
                 result.supported_edge_ids.append(existing.id or 0)

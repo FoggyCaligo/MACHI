@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
 
 from core.entities.edge import Edge
 from core.entities.node import Node
-from core.thinking.structure_revision_service import StructureRevisionService
+from core.thinking.structure_revision_service import RevisionExecutionRule, StructureRevisionService
 from core.update.revision_edge_service import RevisionEdgeService
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
 
@@ -107,3 +107,52 @@ def test_structure_revision_deactivates_when_deactivate_marker_support_accumulat
         updated = uow.edges.get_by_id(base_edge.id or 0)
         assert updated is not None
         assert updated.is_active is False
+
+
+def test_structure_revision_uses_execution_rule_table_for_thresholds(tmp_path: Path) -> None:
+    db_path = tmp_path / 'memory.db'
+    schema_path = ROOT / 'storage' / 'schema.sql'
+    uow_factory = build_uow_factory(db_path, schema_path)
+
+    with uow_factory() as uow:
+        uow.nodes.add(Node(node_uid='n10', address_hash='h10', raw_value='A', normalized_value='a'))
+        uow.nodes.add(Node(node_uid='n20', address_hash='h20', raw_value='B', normalized_value='b'))
+        base_edge = uow.edges.add(
+            Edge(
+                edge_uid='base-rule-1',
+                source_node_id=1,
+                target_node_id=2,
+                edge_family='relation',
+                connect_type='neutral',
+                relation_detail={'kind': 'co_occurs_with'},
+                trust_score=0.9,
+                support_count=2,
+                contradiction_pressure=0.0,
+                conflict_count=0,
+            )
+        )
+        RevisionEdgeService().record_revision_marker(
+            uow,
+            base_edge=base_edge,
+            kind='deactivate_candidate',
+            reason='single_vote',
+            message_id=None,
+            status='open',
+        )
+        uow.commit()
+
+    custom_rules = (
+        RevisionExecutionRule(
+            name='relation-neutral-fast-deactivate',
+            edge_families=('relation',),
+            connect_types=('neutral',),
+            marker_deactivate_support_threshold=1,
+        ),
+        RevisionExecutionRule(name='fallback'),
+    )
+    service = StructureRevisionService(execution_rules=custom_rules)
+
+    with uow_factory() as uow:
+        actions = service.review_candidates(uow, message_id=None, limit=20)
+        uow.commit()
+        assert any(action.edge_id == (base_edge.id or 0) and action.action == 'edge_deactivated' for action in actions)
