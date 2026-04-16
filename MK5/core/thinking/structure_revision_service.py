@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 from core.entities.conclusion import RevisionAction
 from core.entities.graph_event import GraphEvent
 from core.entities.node import Node
 from core.update.node_merge_service import NodeMergeRequest, NodeMergeService
+from core.update.revision_edge_service import (
+    REVISION_KIND_DEACTIVATE_CANDIDATE,
+    REVISION_KIND_MERGE_CANDIDATE,
+    REVISION_KIND_PENDING,
+    RevisionEdgeService,
+)
 from storage.unit_of_work import UnitOfWork
 
 
@@ -20,6 +26,7 @@ class StructureRevisionService:
     merge_candidate_conflict_threshold: int = 2
     merge_candidate_trust_threshold: float = 0.42
     node_merge_service: NodeMergeService | None = None
+    revision_edge_service: RevisionEdgeService = field(default_factory=RevisionEdgeService)
 
     def review_candidates(
         self,
@@ -60,6 +67,19 @@ class StructureRevisionService:
         )
 
         if not should_deactivate:
+            self.revision_edge_service.record_revision_marker(
+                uow,
+                base_edge=edge,
+                kind=REVISION_KIND_PENDING,
+                reason='candidate_but_not_below_floor',
+                message_id=message_id,
+                status='open',
+                metadata={
+                    'trust_score': edge.trust_score,
+                    'contradiction_pressure': edge.contradiction_pressure,
+                    'conflict_count': edge.conflict_count,
+                },
+            )
             uow.graph_events.add(
                 GraphEvent(
                     event_uid=f'evt_{uuid4().hex}',
@@ -87,6 +107,19 @@ class StructureRevisionService:
 
         uow.edges.deactivate(edge_id)
         deactivated = uow.edges.get_by_id(edge_id) or edge
+        self.revision_edge_service.record_revision_marker(
+            uow,
+            base_edge=edge,
+            kind=REVISION_KIND_DEACTIVATE_CANDIDATE,
+            reason='trust_floor_or_pressure_floor_reached',
+            message_id=message_id,
+            status='executed',
+            metadata={
+                'before_trust': edge.trust_score,
+                'contradiction_pressure': edge.contradiction_pressure,
+                'conflict_count': edge.conflict_count,
+            },
+        )
         uow.graph_events.add(
             GraphEvent(
                 event_uid=f'evt_{uuid4().hex}',
@@ -147,6 +180,18 @@ class StructureRevisionService:
                 merge_reason='revision_shallow_duplicate_merge',
                 note='Revision-stage merge triggered under shallow cumulative duplicate threshold.',
             ),
+        )
+        self.revision_edge_service.record_revision_marker(
+            uow,
+            base_edge=edge,
+            kind=REVISION_KIND_MERGE_CANDIDATE,
+            reason='duplicate_like_nodes_merged_during_revision',
+            message_id=message_id,
+            status='executed',
+            metadata={
+                'canonical_node_id': canonical.id,
+                'absorbed_node_id': absorbed.id,
+            },
         )
         return RevisionAction(
             edge_id=edge_id,

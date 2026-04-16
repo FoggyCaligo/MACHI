@@ -120,7 +120,7 @@ def test_connect_type_promotion_promotes_repeated_candidate(tmp_path: Path) -> N
 
     service = ConnectTypePromotionService(threshold=3, max_scan=50)
     with uow_factory() as uow:
-        result = service.promote(uow, message_id=1)
+        result = service.promote(uow, message_id=None)
         uow.commit()
         assert result.attempted is True
         assert result.promotions
@@ -132,6 +132,76 @@ def test_connect_type_promotion_promotes_repeated_candidate(tmp_path: Path) -> N
         out = uow.edges.list_outgoing(1, active_only=True)
         assert any(edge.connect_type == 'reflective' for edge in out)
 
+
+def test_connect_type_promotion_respects_trust_and_source_weight(tmp_path: Path) -> None:
+    db_path = tmp_path / 'memory.db'
+    schema_path = ROOT / 'storage' / 'schema.sql'
+    uow_factory = build_uow_factory(db_path, schema_path)
+    with uow_factory() as uow:
+        for idx in range(1, 5):
+            uow.nodes.add(
+                Node(node_uid=f'n{idx}', address_hash=f'h{idx}', raw_value=f'N{idx}', normalized_value=f'n{idx}')
+            )
+        # Low trust and no strong source hint: should not pass threshold=5.
+        uow.edges.add(
+            Edge(
+                edge_uid='weak-1',
+                source_node_id=1,
+                target_node_id=2,
+                edge_family='concept',
+                connect_type='neutral',
+                relation_detail={'kind': 'name_variant', 'proposed_connect_type': 'reflective', 'inferred_from': 'assistant'},
+                support_count=2,
+                trust_score=0.20,
+            )
+        )
+        uow.edges.add(
+            Edge(
+                edge_uid='weak-2',
+                source_node_id=2,
+                target_node_id=3,
+                edge_family='concept',
+                connect_type='neutral',
+                relation_detail={'kind': 'name_variant', 'proposed_connect_type': 'reflective', 'inferred_from': 'assistant'},
+                support_count=2,
+                trust_score=0.20,
+            )
+        )
+        uow.commit()
+
+    strict_service = ConnectTypePromotionService(threshold=5, max_scan=50)
+    with uow_factory() as uow:
+        weak_result = strict_service.promote(uow, message_id=None)
+        uow.commit()
+        assert weak_result.attempted is True
+        assert len(weak_result.promotions) == 0
+
+    with uow_factory() as uow:
+        # Add one strong search-grounded edge; weighted evidence should pass threshold now.
+        uow.edges.add(
+            Edge(
+                edge_uid='strong-1',
+                source_node_id=3,
+                target_node_id=4,
+                edge_family='concept',
+                connect_type='neutral',
+                relation_detail={
+                    'kind': 'name_variant',
+                    'proposed_connect_type': 'reflective',
+                    'inferred_from': 'search',
+                    'source_type': 'search',
+                    'claim_domain': 'world_fact',
+                },
+                support_count=3,
+                trust_score=0.90,
+            )
+        )
+        uow.commit()
+
+    with uow_factory() as uow:
+        strong_result = strict_service.promote(uow, message_id=None)
+        uow.commit()
+        assert len(strong_result.promotions) >= 1
 
 def test_hierarchical_concept_flow_is_not_merged_during_revision(tmp_path: Path) -> None:
     db_path = tmp_path / 'memory.db'
@@ -169,8 +239,13 @@ def test_hierarchical_concept_flow_is_not_merged_during_revision(tmp_path: Path)
     with uow_factory() as uow:
         actions = service.review_candidates(uow, message_id=1, limit=10)
         uow.commit()
-        assert actions
         assert all(action.action != 'node_merged' for action in actions)
+
+    with uow_factory() as uow:
+        kept = uow.edges.get_by_id(edge.id)
+        assert kept is not None
+        assert kept.is_active is True
+        assert kept.connect_type == 'flow'
 
 
 def test_opposite_connect_type_emits_dedicated_contradiction_reason() -> None:
