@@ -156,6 +156,8 @@ class GraphIngestService:
                             payload={
                                 'source_sentence': block.source_sentence,
                                 'source': block.metadata.get('source'),
+                                'address_scope': self.hash_resolver.scope_for_block(block),
+                                'block_kind': block.block_kind,
                                 'sentence_index': block.sentence_index,
                                 'block_index': block.block_index,
                                 'source_type': source_type,

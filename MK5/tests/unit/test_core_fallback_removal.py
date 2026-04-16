@@ -110,3 +110,27 @@ def test_input_segmenter_does_not_drop_tokens_via_stopword_list() -> None:
     assert '그리고' in normalized
     assert '지금' in normalized
     assert '기준' in normalized
+
+
+def test_hash_resolver_distinguishes_structural_scope_for_same_text() -> None:
+    resolver = HashResolver()
+    sentence_block = MeaningBlock(
+        text='갑옷',
+        normalized_text='갑옷',
+        block_kind='statement_phrase',
+        sentence_index=0,
+        block_index=0,
+        source_sentence='갑옷',
+        metadata={'source': 'sentence_structure'},
+    )
+    token_block = MeaningBlock(
+        text='갑옷',
+        normalized_text='갑옷',
+        block_kind='noun_phrase',
+        sentence_index=0,
+        block_index=1,
+        source_sentence='갑옷',
+        metadata={'source': 'token_rule'},
+    )
+
+    assert resolver.address_for(sentence_block) != resolver.address_for(token_block)

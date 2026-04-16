@@ -340,14 +340,16 @@ class StructureRevisionService:
         if source.address_hash == target.address_hash:
             return True
 
-        source_norm = (source.normalized_value or '').strip()
-        target_norm = (target.normalized_value or '').strip()
-        if source_norm and target_norm and source_norm == target_norm:
-            return True
-
         source_aliases = self._alias_set(source)
         target_aliases = self._alias_set(target)
-        return bool(source_aliases and target_aliases and source_aliases.intersection(target_aliases))
+        if not source_aliases or not target_aliases or not source_aliases.intersection(target_aliases):
+            return False
+
+        if self._shared_address_scope(source, target):
+            return True
+        if self._lineage_links(source, target):
+            return True
+        return False
 
     def _choose_merge_roles(self, source: Node, target: Node) -> tuple[Node, Node]:
         ranked = sorted(
@@ -369,6 +371,40 @@ class StructureRevisionService:
             if value:
                 aliases.add(value)
         return aliases
+
+    def _shared_address_scope(self, source: Node, target: Node) -> bool:
+        source_scope = self._address_scope(source)
+        target_scope = self._address_scope(target)
+        return bool(source_scope and target_scope and source_scope == target_scope)
+
+    def _address_scope(self, node: Node) -> str:
+        payload = dict(node.payload or {})
+        for candidate in [payload.get('address_scope'), payload.get('source'), payload.get('block_kind')]:
+            value = str(candidate or '').strip().lower()
+            if value:
+                return value
+        return ''
+
+    def _lineage_links(self, source: Node, target: Node) -> bool:
+        source_lineage = self._lineage_keys(source)
+        target_lineage = self._lineage_keys(target)
+        if not source_lineage or not target_lineage:
+            return False
+        return bool(source_lineage.intersection(target_lineage))
+
+    def _lineage_keys(self, node: Node) -> set[str]:
+        keys: set[str] = set()
+        payload = dict(node.payload or {})
+        for candidate in [node.node_uid, node.address_hash, node.normalized_value]:
+            value = str(candidate or '').strip().lower()
+            if value:
+                keys.add(value)
+        for row in list(payload.get('merged_from') or []):
+            for field in ('node_uid', 'address_hash', 'normalized_value'):
+                value = str(dict(row).get(field) or '').strip().lower()
+                if value:
+                    keys.add(value)
+        return keys
 
     def _source_count(self, node: Node) -> int:
         payload = dict(node.payload or {})
