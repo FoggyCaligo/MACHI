@@ -9,7 +9,6 @@ from core.cognition.meaning_block import MeaningBlock
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?:\r?\n)+|(?<=[.!?])\s+")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_+\-./#]+|[가-힣]{2,}")
-_RELATION_SYMBOLS = ("->", "→", "=", "/")
 
 
 @dataclass(slots=True)
@@ -47,7 +46,7 @@ class InputSegmenter:
             if not normalized_sentence:
                 continue
 
-            sentence_kind = self._sentence_level_kind(sentence)
+            sentence_kind = "statement_phrase"
             key = (sentence_index, sentence_kind, normalized_sentence)
             if key not in seen:
                 blocks.append(
@@ -90,14 +89,6 @@ class InputSegmenter:
                 block_index += 1
 
         return blocks
-
-    def _sentence_level_kind(self, sentence: str) -> str:
-        stripped = sentence.strip()
-        if stripped.endswith('?') or stripped.endswith('？'):
-            return 'inquiry_phrase'
-        if any(symbol in stripped for symbol in _RELATION_SYMBOLS):
-            return 'relation_phrase'
-        return 'statement_phrase'
 
     def _extract_token_candidates(self, sentence: str) -> list[str]:
         return _TOKEN_RE.findall(sentence)

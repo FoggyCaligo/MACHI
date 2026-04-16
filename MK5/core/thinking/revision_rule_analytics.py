@@ -71,9 +71,9 @@ def aggregate_revision_rule_events(events: list[Any]) -> list[RevisionRuleAggreg
             agg.merged_count += 1
 
         evidence = dict(effect.get('marker_evidence') or {})
-        agg.conflict_evidence_sum += _as_float(evidence.get('conflict_assertion'))
-        agg.deactivate_evidence_sum += _as_float(evidence.get('deactivate_candidate'))
-        agg.merge_evidence_sum += _as_float(evidence.get('merge_candidate'))
+        agg.conflict_evidence_sum += _as_float(evidence.get('conflict_support'))
+        agg.deactivate_evidence_sum += _as_float(evidence.get('total_evidence'))
+        agg.merge_evidence_sum += _as_float(evidence.get('total_evidence'))
 
     ordered = sorted(
         by_rule.values(),

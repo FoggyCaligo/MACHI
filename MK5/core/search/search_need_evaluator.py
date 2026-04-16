@@ -34,26 +34,15 @@ class SearchNeedEvaluator:
         conclusion: CoreConclusion,
         slot_plan: QuestionSlotPlan | None = None,
     ) -> SearchNeedDecision:
-        explicit_memory_probe = conclusion.inferred_intent == 'memory_probe'
         scope_nodes = self._grounding_scope_nodes(thought_view)
         target_terms = self._collect_target_terms(thought_view, scope_nodes=scope_nodes)
         target_node_ids = [node.id for node in scope_nodes if node.id is not None]
 
-        if explicit_memory_probe:
-            return SearchNeedDecision(
-                need_search=False,
-                reason='memory_probe_no_external_search',
-                gap_summary='기억 여부를 묻는 질문이라 외부 검색보다 현재 세션 상태를 직접 답하는 편이 맞다.',
-                target_node_ids=target_node_ids,
-                target_terms=target_terms,
-                metadata={'grounding_scope_node_ids': target_node_ids},
-            )
-
         if slot_plan is None:
             has_seed_coverage = len(thought_view.seed_nodes) > 0
             concept_edge_count = sum(
-                1 for e in thought_view.edges
-                if e.edge_family == 'concept' and e.is_active
+                1 for edge in thought_view.edges
+                if edge.edge_family == 'concept' and edge.is_active
             )
             sparse_graph = (
                 not has_seed_coverage
@@ -63,11 +52,19 @@ class SearchNeedEvaluator:
             )
             unresolved_conflict = bool(conclusion.detected_conflicts)
             need_search = sparse_graph or unresolved_conflict
-            reason = 'graph_too_sparse_for_answer' if sparse_graph else 'graph_conflict_requires_grounding' if unresolved_conflict else 'graph_sufficient_without_search'
+            reason = (
+                'graph_too_sparse_for_answer'
+                if sparse_graph
+                else 'graph_conflict_requires_grounding'
+                if unresolved_conflict
+                else 'graph_sufficient_without_search'
+            )
             gap_summary = (
-                '현재 사고 그래프에 시드 노드가 없고 활성화된 개념 구조도 부족해 질문에 답할 근거가 충분하지 않다.' if sparse_graph else
-                '현재 사고 그래프에 충돌이 남아 있어 외부 근거로 현재 주제를 확인할 필요가 있다.' if unresolved_conflict else
-                '현재 활성화된 개념과 관계만으로도 질문에 직접 답할 수 있다.'
+                '현재 사고 그래프에 시드 노드가 적고 활성 개념 구조가 부족해 질문을 풀 근거가 충분하지 않다.'
+                if sparse_graph
+                else '현재 사고 그래프에 충돌이 남아 있어 외부 근거로 현재 주제를 확인할 필요가 있다.'
+                if unresolved_conflict
+                else '현재 활성 개념과 관계만으로도 질문을 직접 풀 수 있다.'
             )
             return SearchNeedDecision(
                 need_search=need_search,
@@ -97,10 +94,13 @@ class SearchNeedEvaluator:
         if need_search:
             reason = 'missing_slot_grounding'
             missing_labels = ', '.join(slot.label for slot in missing[:4])
-            gap_summary = f'현재 질문의 일부 요구 슬롯이 아직 비어 있어 외부 근거가 더 필요하다: {missing_labels}'
+            gap_summary = (
+                '현재 질문의 일부 요구 슬롯이 아직 비어 있어 외부 근거가 더 필요하다: '
+                f'{missing_labels}'
+            )
         else:
             reason = 'slot_coverage_sufficient'
-            gap_summary = '현재 질문에서 요구한 개념과 비교 축이 현재 그래프 범위 안에서 이미 충분히 커버된다.'
+            gap_summary = '현재 질문에서 요구한 개념과 비교 축이 현재 그래프 범위 안에서 이미 충분히 커버됐다.'
 
         return SearchNeedDecision(
             need_search=need_search,
@@ -121,7 +121,6 @@ class SearchNeedEvaluator:
     def _grounding_scope_nodes(self, thought_view: ThoughtView) -> list[Node]:
         scope: list[Node] = []
         seen_ids: set[int] = set()
-        # Seed nodes are the current-question anchors, so never clip them by the generic scope limit.
         for activated in thought_view.seed_nodes:
             node = activated.node
             if node.id is None or node.id in seen_ids:
@@ -171,7 +170,11 @@ class SearchNeedEvaluator:
         claim_domain = str(payload.get('claim_domain') or '').strip()
         if source_type == 'search' or claim_domain == 'world_fact':
             return True
-        return bool(source_type and source_type not in {'user', 'assistant'} and node.trust_score >= 0.8 and node.stability_score >= 0.7)
+        return bool(
+            source_type and source_type not in {'user', 'assistant'}
+            and node.trust_score >= 0.8
+            and node.stability_score >= 0.7
+        )
 
     def _node_text(self, node: Node) -> str:
         payload = node.payload if isinstance(node.payload, dict) else {}

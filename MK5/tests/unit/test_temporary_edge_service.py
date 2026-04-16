@@ -76,7 +76,7 @@ def test_temporary_edge_cleanup_triggers_on_shifted_topic(tmp_path: Path) -> Non
         uow_factory,
         session_id=session_id,
         current_turn_index=7,
-        intent_snapshot={'topic_continuity': 'shifted_topic', 'topic_overlap_count': 0},
+        intent_snapshot={'shifted': True, 'topic_continuity': 'shifted_topic', 'topic_overlap_count': 0},
     )
     assert result.triggered is True
     assert (temp_edge.id or 0) in result.deactivated_edge_ids
@@ -127,7 +127,7 @@ def test_temporary_edge_cleanup_skips_when_topic_not_shifted(tmp_path: Path) -> 
         uow_factory,
         session_id=session_id,
         current_turn_index=3,
-        intent_snapshot={'topic_continuity': 'related_topic', 'topic_overlap_count': 1},
+        intent_snapshot={'shifted': False, 'topic_continuity': 'related_topic', 'topic_overlap_count': 1},
     )
     assert result.triggered is False
     assert result.deactivated_edge_ids == []

@@ -45,13 +45,14 @@ class TemporaryEdgeService:
         snapshot = dict(intent_snapshot or {})
         topic_continuity = ' '.join(str(snapshot.get('topic_continuity') or '').split()).strip()
         topic_overlap_count = int(snapshot.get('topic_overlap_count') or 0)
-        if topic_continuity != 'shifted_topic' or topic_overlap_count != 0:
+        shifted = bool(snapshot.get('shifted'))
+        if not shifted or topic_overlap_count != 0:
             return TemporaryEdgeCleanupResult(
                 attempted=True,
                 triggered=False,
                 topic_continuity=topic_continuity or 'unknown',
                 topic_overlap_count=topic_overlap_count,
-                reason='topic_shift_not_triggered',
+                reason='shift_cleanup_not_triggered',
             )
 
         deactivated_edge_ids: list[int] = []
@@ -77,7 +78,7 @@ class TemporaryEdgeService:
             topic_continuity=topic_continuity,
             topic_overlap_count=topic_overlap_count,
             deactivated_edge_ids=deactivated_edge_ids,
-            reason='topic_shift_cleanup_executed',
+            reason='shift_cleanup_executed',
         )
 
     def _session_identity_anchor_ids(self, uow: UnitOfWork, *, session_id: str) -> list[int]:

@@ -277,8 +277,6 @@ class SearchSidecar:
         model_name: str,
     ) -> SearchRunResult:
         coarse_decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
-        if conclusion.inferred_intent == 'memory_probe':
-            return SearchRunResult(attempted=False, decision=coarse_decision, planning_attempted=False)
 
         try:
             slot_plan = self.slot_planner.plan(
@@ -356,7 +354,7 @@ class SearchSidecar:
         *,
         conclusion: CoreConclusion,
     ) -> SearchNeedDecision:
-        if conclusion.inferred_intent in {'graph_grounded_reasoning', 'relation_synthesis_request', 'open_information_request'}:
+        if coarse_decision.need_search:
             target_terms = list(coarse_decision.target_terms)
             complex_request = len(target_terms) >= 3 or len(conclusion.activated_concepts) >= 4
             if complex_request:
