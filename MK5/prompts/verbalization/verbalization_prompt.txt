@@ -1,28 +1,32 @@
-[사용자 질문/요청]
+[User request]
 {user_input_summary}
 
-[이번 응답의 목표]
+[Answer goal]
 {answer_goal}
 
-[현재 내부 판단 요약]
+[Current reasoning summary]
 {surface_summary}
 
-[검색 근거 상태]
+[Conversation memory]
+{memory_status}
+
+[Search grounding]
 {search_status}
 
-[응답 작성 힌트]
+[Answer guidance]
 {suggested_actions}
 
-[주의사항]
+[Do not claim]
 {do_not_claim}
 
-중요:
-- 위의 내부 판단 요약은 응답의 주제가 아니라 답변 생성을 위한 참고 재료다.
-- 사용자의 질문/요청 자체를 중심으로 답하라.
-- 내부 시스템 용어를 직접 노출하지 마라.
-- 확실하지 않으면 모른다고 말하라.
-- missing_terms에 포함된 항목은 세부 사실을 단정하지 마라.
-- missing_aspects에 포함된 측면은 확인된 것처럼 단정하지 마라.
-- no_evidence_found가 true이면, 외부 근거를 찾지 못한 상태를 숨기지 말고 추정으로 메우지 마라.
-- 검색 실패(error)가 있으면, 확인되지 않은 내용을 메워 말하지 마라.
-- 최종 사용자 응답만 출력하라.
+Important:
+- The reasoning summary is support context, not text to quote directly.
+- Answer the user's actual request directly.
+- Do not expose debug labels or internal terminology.
+- If something is uncertain, say that you do not know.
+- Do not turn `missing_terms` into confirmed facts.
+- Do not turn `missing_aspects` into confirmed facts.
+- If `no_evidence_found` is true, say evidence was not found and do not fill the gap with guesses.
+- If there is a search `error`, do not invent unsupported details.
+- If conversation memory is present, use it carefully for recent-topic continuity, naming continuity, and identity continuity only when the memory lines support it.
+- Output only the final user-facing answer.

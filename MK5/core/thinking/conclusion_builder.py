@@ -81,6 +81,12 @@ class ConclusionBuilder:
                 'pattern_count': len(thought_view.activated_patterns),
                 'intent_basis': 'intent_manager_graph_state',
                 'activated_concepts': activated_concepts,
+                'topic_terms': list(intent_snapshot.topic_terms),
+                'previous_topic_terms': list(intent_snapshot.previous_topic_terms),
+                'topic_continuity': intent_snapshot.topic_continuity,
+                'previous_tone_hint': intent_snapshot.previous_tone_hint,
+                'recent_memory_messages': list((thought_view.metadata or {}).get('recent_memory_messages') or []),
+                'recent_memory_count': int((thought_view.metadata or {}).get('recent_memory_count') or 0),
                 'intent_snapshot': intent_snapshot.to_metadata(),
             },
         )
@@ -202,8 +208,8 @@ class ConclusionBuilder:
             )
         elif revision_actions:
             summary = (
-                f"'{topic}'와 관련된 기존 이해를 다시 점검하는 흐름이 있어, "
-                '확실한 부분만 짧게 답하는 편이 맞다.'
+                f"'{topic}'와 관련한 기존 이해를 다시 점검하는 흐름이 있어, "
+                '확실한 부분만 짚는 편이 맞다.'
             )
         elif has_context:
             summary = (
@@ -212,14 +218,27 @@ class ConclusionBuilder:
             )
         else:
             summary = (
-                f"'{topic}'에 답하기 위한 맥락이 아직 충분하지 않아, "
-                '가능한 범위만 신중하게 말하는 편이 맞다.'
+                f"'{topic}'를 다루기 위한 맥락이 아직 충분하지 않아, "
+                '가능한 범위만 조심스럽게 말하는 편이 맞다.'
             )
 
         if intent_snapshot and intent_snapshot.shifted and intent_snapshot.shift_reason and not has_uncertainty:
-            summary += ' 이전 흐름과는 조금 다른 주제로 넘어온 상태다.'
+            summary += ' 이전 흐름과는 조금 다른 주제로 옮겨간 상태다.'
+        if intent_snapshot and intent_snapshot.topic_continuity == 'continued_topic' and not has_uncertainty:
+            summary += ' 이전 턴과 같은 주제를 이어서 보고 있다.'
+        elif intent_snapshot and intent_snapshot.topic_continuity == 'related_topic' and not has_uncertainty:
+            summary += ' 이전 주제와 일부 이어지지만 초점은 조금 달라졌다.'
+        elif intent_snapshot and intent_snapshot.topic_continuity == 'shifted_topic' and not has_uncertainty:
+            summary += ' 이전 턴과는 다른 주제로 넘어간 상태다.'
 
         if intent_snapshot and intent_snapshot.should_stop and has_context and not has_uncertainty:
             summary += ' 지금은 더 크게 억지 해석을 덧붙이지 않는 편이 낫다.'
+
+        recent_memory_count = int((thought_view.metadata or {}).get('recent_memory_count') or 0)
+        if intent_snapshot and intent_snapshot.snapshot_intent == 'memory_probe':
+            if recent_memory_count > 0:
+                summary += f' Recent session memory is available from {recent_memory_count} recent conversation turns.'
+            else:
+                summary += ' No recent session memory was activated for this turn.'
 
         return summary

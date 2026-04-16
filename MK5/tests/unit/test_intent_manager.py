@@ -137,6 +137,8 @@ def test_intent_manager_keeps_previous_intent_when_overlap_continues() -> None:
                 'snapshot_intent': 'relation_synthesis_request',
                 'shifted': False,
                 'sufficiency_score': 0.71,
+                'topic_terms': ['value_1', 'value_2'],
+                'tone_hint': 'steady_plain_korean',
                 'metadata': {'activated_concepts': [1, 2, 3]},
             }
         },
@@ -154,6 +156,9 @@ def test_intent_manager_keeps_previous_intent_when_overlap_continues() -> None:
     assert snapshot.snapshot_intent == 'relation_synthesis_request'
     assert snapshot.continuation is True
     assert snapshot.previous_snapshot_intent == 'relation_synthesis_request'
+    assert snapshot.topic_continuity in {'continued_topic', 'related_topic'}
+    assert snapshot.topic_overlap_count >= 1
+    assert snapshot.tone_hint == 'steady_plain_korean'
 
 
 def test_intent_manager_shifts_to_structure_review_when_previous_path_breaks() -> None:
@@ -169,6 +174,7 @@ def test_intent_manager_shifts_to_structure_review_when_previous_path_breaks() -
                 'snapshot_intent': 'graph_grounded_reasoning',
                 'shifted': False,
                 'sufficiency_score': 0.80,
+                'topic_terms': ['value_9'],
                 'metadata': {'activated_concepts': [1]},
             }
         },
@@ -186,3 +192,4 @@ def test_intent_manager_shifts_to_structure_review_when_previous_path_breaks() -
     assert snapshot.snapshot_intent == 'structure_review'
     assert snapshot.shifted is True
     assert snapshot.shift_reason == 'contradiction_or_revision_forced_shift'
+    assert snapshot.topic_continuity == 'shifted_topic'

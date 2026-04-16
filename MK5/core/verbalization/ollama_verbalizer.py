@@ -76,12 +76,14 @@ class OllamaVerbalizer:
         return load_prompt_text(self.system_prompt_path)
 
     def _build_user_prompt(self, conclusion: CoreConclusion, action_layer: DerivedActionLayer) -> str:
-        search_context = conclusion.metadata.get('search_context', {}) if isinstance(conclusion.metadata, dict) else {}
+        metadata = conclusion.metadata if isinstance(conclusion.metadata, dict) else {}
+        search_context = metadata.get('search_context', {}) if isinstance(metadata, dict) else {}
         template = load_prompt_text(self.user_prompt_path)
         return template.format(
             user_input_summary=conclusion.user_input_summary,
             answer_goal=action_layer.answer_goal,
-            surface_summary=conclusion.explanation_summary or '- 없음',
+            surface_summary=conclusion.explanation_summary or '- none',
+            memory_status=self._format_memory_status(metadata),
             suggested_actions=self._format_lines(action_layer.suggested_actions),
             do_not_claim=self._format_lines(action_layer.do_not_claim),
             search_status=self._format_search_status(search_context),
@@ -89,12 +91,39 @@ class OllamaVerbalizer:
 
     def _format_lines(self, items: list[str]) -> str:
         if not items:
-            return '- 없음'
+            return '- none'
         return '\n'.join(f'- {self._truncate(item, 120)}' for item in items[:6])
+
+    def _format_memory_status(self, metadata: dict[str, Any]) -> str:
+        recent_memory_messages = list(metadata.get('recent_memory_messages') or [])
+        recent_memory_count = int(metadata.get('recent_memory_count') or len(recent_memory_messages))
+        topic_terms = [self._truncate(item, 40) for item in (metadata.get('topic_terms') or [])[:3]]
+        previous_topic_terms = [self._truncate(item, 40) for item in (metadata.get('previous_topic_terms') or [])[:3]]
+        lines: list[str] = [f'- recent_memory_count: {recent_memory_count}']
+        if metadata.get('topic_continuity'):
+            lines.append(f"- topic_continuity: {self._truncate(metadata.get('topic_continuity'), 40)}")
+        if topic_terms:
+            lines.append(f"- topic_terms: {' | '.join(topic_terms)}")
+        if previous_topic_terms:
+            lines.append(f"- previous_topic_terms: {' | '.join(previous_topic_terms)}")
+
+        for item in recent_memory_messages[-4:]:
+            role = self._truncate(item.get('role', '-'), 16)
+            turn_index = item.get('turn_index', '-')
+            content = self._truncate(item.get('content', ''), 140)
+            lines.append(f'- memory: turn={turn_index} role={role} content={content}')
+            snapshot = item.get('intent_snapshot') or {}
+            if isinstance(snapshot, dict) and snapshot.get('snapshot_intent'):
+                topic_snapshot_terms = [self._truncate(term, 28) for term in (snapshot.get('topic_terms') or [])[:2]]
+                snapshot_line = f"- memory_snapshot: {self._truncate(snapshot.get('snapshot_intent'), 32)}"
+                if topic_snapshot_terms:
+                    snapshot_line += f" | {' | '.join(topic_snapshot_terms)}"
+                lines.append(snapshot_line)
+        return '\n'.join(lines) if lines else '- no memory context'
 
     def _format_search_status(self, search_context: dict[str, Any]) -> str:
         if not search_context:
-            return '- 검색 정보 없음'
+            return '- search_context: none'
 
         grounded_terms = [self._truncate(item, 40) for item in (search_context.get('grounded_terms') or [])[:3]]
         missing_terms = [self._truncate(item, 40) for item in (search_context.get('missing_terms') or [])[:3]]
@@ -127,7 +156,7 @@ class OllamaVerbalizer:
                 f"- evidence: {self._truncate(item.get('title', '-'), 60)} ({self._truncate(item.get('provider', '-'), 24)}): {self._truncate(item.get('snippet', ''), 140)}"
             )
 
-        return '\n'.join(lines) if lines else '- 검색 정보 없음'
+        return '\n'.join(lines) if lines else '- search_context: none'
 
     def _truncate(self, value: Any, limit: int) -> str:
         text = ' '.join(str(value or '').split()).strip()

@@ -63,6 +63,12 @@ class IntentManager:
             drive_name=self.drive_name,
             live_intent=current_name,
             snapshot_intent=current_name,
+            topic_terms=list(features['current_topic_terms']),
+            previous_topic_terms=list(features['previous_topic_terms']),
+            topic_continuity=str(features['topic_continuity']),
+            topic_overlap_count=int(features['topic_overlap']),
+            tone_hint=str(features['previous_tone_hint'] or 'natural_concise_korean'),
+            previous_tone_hint=str(features['previous_tone_hint']),
             previous_snapshot_intent=previous_name,
             shifted=shifted,
             continuation=continuation,
@@ -74,6 +80,10 @@ class IntentManager:
             metadata={
                 'candidate_scores': {key: round(value, 6) for key, value in scores.items()},
                 'features': self._serialize_features(features),
+                'topic_terms': list(features['current_topic_terms']),
+                'previous_topic_terms': list(features['previous_topic_terms']),
+                'topic_continuity': features['topic_continuity'],
+                'previous_tone_hint': features['previous_tone_hint'],
             },
         )
         self._record_snapshot_event(uow, request=request, snapshot=snapshot)
@@ -94,6 +104,22 @@ class IntentManager:
             return None
         name = snapshot_metadata.get('snapshot_intent')
         return str(name) if isinstance(name, str) and name else None
+
+    def _previous_topic_terms(self, snapshot_metadata: dict[str, Any] | None) -> list[str]:
+        if not snapshot_metadata:
+            return []
+        tokens: list[str] = []
+        for item in snapshot_metadata.get('topic_terms') or []:
+            token = ' '.join(str(item or '').split()).strip()
+            if not token or token in tokens:
+                continue
+            tokens.append(token)
+        return tokens[:6]
+
+    def _previous_tone_hint(self, snapshot_metadata: dict[str, Any] | None) -> str:
+        if not snapshot_metadata:
+            return ''
+        return ' '.join(str(snapshot_metadata.get('tone_hint') or '').split()).strip()
 
     def _collect_features(
         self,
@@ -124,6 +150,15 @@ class IntentManager:
         current_activated = [node.id for node in thought_view.nodes if node.id is not None]
         current_seed_ids = [item.node.id for item in thought_view.seed_nodes if item.node.id is not None]
         overlap_count = len(previous_activated.intersection(current_seed_ids)) if previous_activated else 0
+        current_topic_terms = self._extract_topic_terms(thought_view)
+        previous_topic_terms = self._previous_topic_terms(previous_snapshot_meta)
+        topic_overlap = len(set(current_topic_terms).intersection(previous_topic_terms))
+        topic_continuity = self._topic_continuity_label(
+            current_topic_terms=current_topic_terms,
+            previous_topic_terms=previous_topic_terms,
+            topic_overlap=topic_overlap,
+        )
+        previous_tone_hint = self._previous_tone_hint(previous_snapshot_meta)
 
         return {
             'inquiry_count': inquiry_count,
@@ -143,6 +178,11 @@ class IntentManager:
             'pattern_rich': pattern_rich,
             'pointer_backed': pointer_backed,
             'overlap_count': overlap_count,
+            'current_topic_terms': current_topic_terms,
+            'previous_topic_terms': previous_topic_terms,
+            'topic_overlap': topic_overlap,
+            'topic_continuity': topic_continuity,
+            'previous_tone_hint': previous_tone_hint,
             'current_activated': current_activated,
             'current_seed_ids': current_seed_ids,
             'previous_snapshot_meta': previous_snapshot_meta or {},
@@ -191,6 +231,8 @@ class IntentManager:
         previous_name = self._previous_intent_name(features['previous_snapshot_meta'])
         if previous_name in scores and features['overlap_count'] > 0 and not features['contradiction_count']:
             scores[previous_name] += 0.12
+        if previous_name in scores and features['topic_overlap'] > 0 and not features['contradiction_count']:
+            scores[previous_name] += min(features['topic_overlap'] * 0.04, 0.12)
         return scores
 
     def _choose_snapshot_intent(
@@ -214,6 +256,8 @@ class IntentManager:
 
         if features['overlap_count'] > 0 and not features['contradiction_count'] and not features['revision_count']:
             return previous_name, False, None
+        if features['topic_overlap'] > 0 and not features['contradiction_count'] and not features['revision_count']:
+            return previous_name, False, None
         return best_name, False, None
 
     def _requires_forced_shift(self, best_name: str, previous_name: str, features: dict[str, Any]) -> bool:
@@ -227,6 +271,7 @@ class IntentManager:
         score += min(features['edge_count'], 6) * 0.05
         score += min(features['pattern_count'], 3) * 0.06
         score += min(features['overlap_count'], 2) * 0.05
+        score += min(features['topic_overlap'], 2) * 0.04
         if continuation:
             score += 0.06
         if features['pointer_backed'] and features['graph_sparse']:
@@ -292,6 +337,12 @@ class IntentManager:
             evidence.append(f"pointers:{features['pointer_count']}")
         if features['overlap_count']:
             evidence.append(f"overlap_with_previous:{features['overlap_count']}")
+        if features['topic_overlap']:
+            evidence.append(f"topic_overlap:{features['topic_overlap']}")
+        if features['current_topic_terms']:
+            evidence.append(f"topic_terms:{'|'.join(features['current_topic_terms'][:3])}")
+        if features['topic_continuity'] not in {'unknown', 'new_topic'}:
+            evidence.append(f"topic_continuity:{features['topic_continuity']}")
         if previous_name:
             evidence.append(f"previous_snapshot:{previous_name}")
         if shifted:
@@ -307,6 +358,43 @@ class IntentManager:
             serialized['previous_snapshot_intent'] = previous_meta.get('snapshot_intent')
             serialized['previous_shifted'] = previous_meta.get('shifted')
         return serialized
+
+    def _extract_topic_terms(self, thought_view: ThoughtView) -> list[str]:
+        metadata_terms = (thought_view.metadata or {}).get('current_topic_terms') or []
+        tokens: list[str] = []
+        for item in metadata_terms:
+            token = ' '.join(str(item or '').split()).strip()
+            if not token or token in tokens:
+                continue
+            tokens.append(token)
+        if tokens:
+            return tokens[:6]
+
+        for activated in thought_view.seed_nodes:
+            label = str(getattr(activated.node, 'normalized_value', '') or getattr(activated.node, 'raw_value', '') or '').strip()
+            if not label or label in tokens:
+                continue
+            tokens.append(label)
+            if len(tokens) >= 6:
+                break
+        return tokens
+
+    def _topic_continuity_label(
+        self,
+        *,
+        current_topic_terms: list[str],
+        previous_topic_terms: list[str],
+        topic_overlap: int,
+    ) -> str:
+        if not previous_topic_terms and current_topic_terms:
+            return 'new_topic'
+        if not current_topic_terms:
+            return 'unknown'
+        if topic_overlap >= 2:
+            return 'continued_topic'
+        if topic_overlap == 1:
+            return 'related_topic'
+        return 'shifted_topic'
 
     def _record_snapshot_event(self, uow: UnitOfWork, *, request, snapshot: IntentSnapshot) -> None:
         uow.graph_events.add(

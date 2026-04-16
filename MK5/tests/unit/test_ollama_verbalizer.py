@@ -89,6 +89,7 @@ def test_ollama_verbalizer_compacts_search_context_in_prompt() -> None:
         DerivedActionLayer(response_mode='structured_explanation', answer_goal='Answer with grounded comparison.'),
     )
 
+    assert '- recent_memory_count: 0' in prompt
     assert '- grounded_terms: plate armor | mail armor | lamellar' in prompt
     assert 'scale armor' not in prompt
     assert '- missing_terms: brigandine | gambeson | leather armor' in prompt
@@ -97,3 +98,40 @@ def test_ollama_verbalizer_compacts_search_context_in_prompt() -> None:
     assert 'cost' not in prompt
     assert prompt.count('- provider_error:') == 2
     assert prompt.count('- evidence:') == 2
+
+
+def test_ollama_verbalizer_includes_recent_memory_context() -> None:
+    verbalizer = OllamaVerbalizer()
+    prompt = verbalizer._build_user_prompt(
+        CoreConclusion(
+            session_id='s1',
+            message_id=2,
+            user_input_summary='Do you remember my name?',
+            inferred_intent='memory_probe',
+            explanation_summary='Recent session memory is available.',
+            metadata={
+                'recent_memory_count': 2,
+                'topic_continuity': 'continued_topic',
+                'topic_terms': ['Jay', 'Machi'],
+                'previous_topic_terms': ['Jay'],
+                'recent_memory_messages': [
+                    {'role': 'user', 'turn_index': 4, 'content': 'Call me Jay.'},
+                    {
+                        'role': 'assistant',
+                        'turn_index': 4,
+                        'content': 'I will call you Jay.',
+                        'intent_snapshot': {
+                            'snapshot_intent': 'memory_probe',
+                            'topic_terms': ['Jay', 'Machi'],
+                        },
+                    },
+                ],
+            },
+        ),
+        DerivedActionLayer(response_mode='structured_explanation', answer_goal='Use recent conversation memory.'),
+    )
+
+    assert '- recent_memory_count: 2' in prompt
+    assert '- topic_terms: Jay | Machi' in prompt
+    assert '- memory: turn=4 role=user content=Call me Jay.' in prompt
+    assert '- memory_snapshot: memory_probe | Jay | Machi' in prompt

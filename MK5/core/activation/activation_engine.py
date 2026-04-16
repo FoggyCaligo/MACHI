@@ -58,6 +58,11 @@ class ActivationEngine:
         with self.uow_factory() as uow:
             seed_nodes = self._resolve_seed_nodes(uow, seed_blocks, request.max_seed_nodes)
             seed_node_ids = [seed.node.id for seed in seed_nodes if seed.node.id is not None]
+            previous_topic_terms = self._latest_topic_terms(uow, request.session_id)
+            previous_tone_hint = self._latest_tone_hint(uow, request.session_id)
+            current_topic_terms = self._extract_topic_terms(seed_blocks, seed_nodes)
+            topic_overlap_count = len(set(previous_topic_terms).intersection(current_topic_terms))
+            recent_memory_messages = self._recent_conversation_memory(uow, request.session_id)
 
             local_edges = self._collect_neighbor_edges(uow, seed_node_ids, request.max_neighbor_edges)
             neighbor_nodes = self._collect_neighbor_nodes(uow, seed_nodes, local_edges, request.max_neighbors)
@@ -69,6 +74,12 @@ class ActivationEngine:
                 'seed_node_count': len(seed_nodes),
                 'neighbor_edge_count': len(local_edges),
                 'pointer_count': len(pointers),
+                'current_topic_terms': current_topic_terms,
+                'previous_topic_terms': previous_topic_terms,
+                'previous_tone_hint': previous_tone_hint,
+                'topic_overlap_count': topic_overlap_count,
+                'recent_memory_messages': recent_memory_messages,
+                'recent_memory_count': len(recent_memory_messages),
             }
             thought_view = self.thought_view_builder.build(
                 session_id=request.session_id,
@@ -86,6 +97,89 @@ class ActivationEngine:
             thought_view.activated_patterns = activated_patterns
 
             return thought_view
+
+    def _latest_topic_terms(self, uow: UnitOfWork, session_id: str) -> list[str]:
+        recent_messages = list(uow.chat_messages.list_by_session(session_id, limit=24))
+        for message in reversed(recent_messages):
+            if getattr(message, 'role', None) != 'assistant':
+                continue
+            metadata = getattr(message, 'metadata', {}) or {}
+            snapshot = metadata.get('intent_snapshot') or {}
+            topic_terms = self._normalize_terms(snapshot.get('topic_terms') or [])
+            if topic_terms:
+                return topic_terms
+        return []
+
+    def _latest_tone_hint(self, uow: UnitOfWork, session_id: str) -> str:
+        recent_messages = list(uow.chat_messages.list_by_session(session_id, limit=24))
+        for message in reversed(recent_messages):
+            if getattr(message, 'role', None) != 'assistant':
+                continue
+            metadata = getattr(message, 'metadata', {}) or {}
+            snapshot = metadata.get('intent_snapshot') or {}
+            tone_hint = ' '.join(str(snapshot.get('tone_hint') or '').split()).strip()
+            if tone_hint:
+                return tone_hint
+        return ''
+
+    def _recent_conversation_memory(self, uow: UnitOfWork, session_id: str) -> list[dict[str, object]]:
+        rows = list(uow.chat_messages.list_by_session(session_id, limit=12))
+        items: list[dict[str, object]] = []
+        for message in rows:
+            metadata = getattr(message, 'metadata', {}) or {}
+            source_type = str(metadata.get('source_type') or message.role or '').strip()
+            if source_type == 'search' or getattr(message, 'role', None) == 'search':
+                continue
+            item: dict[str, object] = {
+                'role': getattr(message, 'role', ''),
+                'turn_index': getattr(message, 'turn_index', 0),
+                'content': self._compact_text(getattr(message, 'content', ''), limit=140),
+            }
+            if source_type:
+                item['source_type'] = source_type
+            snapshot = metadata.get('intent_snapshot') or {}
+            if isinstance(snapshot, dict) and snapshot:
+                item['intent_snapshot'] = {
+                    'snapshot_intent': snapshot.get('snapshot_intent'),
+                    'topic_terms': self._normalize_terms(snapshot.get('topic_terms') or []),
+                    'tone_hint': ' '.join(str(snapshot.get('tone_hint') or '').split()).strip(),
+                }
+            items.append(item)
+        return items[-6:]
+
+    def _extract_topic_terms(self, seed_blocks: list[MeaningBlock], seed_nodes: list[ActivatedNode]) -> list[str]:
+        tokens: list[str] = []
+        for block in seed_blocks:
+            if block.block_kind not in {'noun_phrase', 'statement_phrase', 'relation_phrase'}:
+                continue
+            self._append_topic_token(tokens, block.normalized_text or block.text)
+        for activated in seed_nodes:
+            self._append_topic_token(
+                tokens,
+                getattr(activated.node, 'normalized_value', '') or getattr(activated.node, 'raw_value', ''),
+            )
+        return tokens[:6]
+
+    def _append_topic_token(self, tokens: list[str], value: str) -> None:
+        normalized = ' '.join(str(value or '').split()).strip()
+        if len(normalized) < 2 or normalized in tokens:
+            return
+        tokens.append(normalized)
+
+    def _normalize_terms(self, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in values or []:
+            token = ' '.join(str(item or '').split()).strip()
+            if not token or token in normalized:
+                continue
+            normalized.append(token)
+        return normalized[:6]
+
+    def _compact_text(self, value: str, *, limit: int) -> str:
+        text = ' '.join(str(value or '').split()).strip()
+        if len(text) <= limit:
+            return text
+        return f'{text[: max(0, limit - 3)]}...'
 
     def _resolve_seed_nodes(
         self,

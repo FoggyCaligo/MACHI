@@ -1,0 +1,98 @@
+응. 정리 부탁할게. 그리고 답변의 품질 최적화는 내부 구조를 바꾸거나 개선할 때마다 떨어질 테지만, 일정수준 이하로는 떨어지지 않을 테니, 아예 개념적인 기능 부분을 모두 확장 한 뒤에 답변품질을 개선시키는 게 더 나을 것 같아.
+오전 9:02
+
+
+
+그 방향에 동의합니다. MK5는 지금 “답변 품질만 미세 조정할 단계”라기보다, 개념적 기능을 먼저 다 펼친 뒤 그 위에서 품질을 끌어올리는 단계에 더 가깝습니다. 내부 구조를 건드릴 때마다 답변 품질이 일시적으로 흔들리는 건 자연스럽고, 지금은 그 흔들림을 감수하고서라도 그래프 중심 기능을 더 완성하는 편이 장기적으로 훨씬 이득입니다.
+
+그래서 지금 시점의 우선순위를 코드 레벨로 정리하면 이렇게 보는 게 맞습니다.
+
+1. 주제 지속성과 대화 상태 관리 강화
+핵심 파일:
+
+core/activation/activation_engine.py
+core/activation/thought_view_builder.py
+core/thinking/intent_manager.py
+core/entities/thought_view.py
+지금 그래프는 관련 개념을 활성화하는 건 되지만, “이 대화의 현재 주제”, “직전 턴과의 주제 연속성”, “주제가 전환됐는지 유지됐는지”를 명시적으로 관리하는 계층은 약합니다.
+다음 확장 포인트는:
+
+주제 노드 또는 topic snapshot 개념 도입
+현재 턴의 주제와 이전 턴 주제의 연결 유지
+activation 시 “단순 키워드 근접”이 아니라 “대화 주제 우선” 가중치 반영
+2. 검색 결과의 장기 기억화 정책 강화
+핵심 파일:
+
+core/search/search_sidecar.py
+core/update/graph_ingest_service.py
+core/update/source_trust_policy.py
+지금은 검색 결과를 이번 턴에서 활용하는 건 꽤 되지만, “외부 근거가 이후에도 의미 있는 내부 그래프 지식으로 남는가”는 아직 초기형입니다.
+확장 포인트는:
+
+검색 evidence의 수명 관리
+일회성 evidence와 장기 retained knowledge 구분
+provider/source/domain별 trust 반영 강화
+동일 주제에 대한 반복 검색 결과를 누적/정리하는 정책
+3. edge 의미와 revision 정책 정교화
+핵심 파일:
+
+core/thinking/contradiction_detector.py
+core/thinking/trust_manager.py
+core/thinking/structure_revision_service.py
+core/update/edge_update_service.py
+여기가 그래프 엔진의 핵심 성장 포인트입니다.
+지금은 trust/revision이 존재하지만, 더 풍부한 relation semantics와 update policy가 필요합니다.
+
+비교 관계, 포함 관계, 동치 관계, 반례 관계 등의 의미 구분 강화
+support/conflict 누적 규칙 정교화
+edge 상태 전이 규칙 분리
+향후 edge_update_service를 실제 구현해서 edge 생애주기 관리 전담
+4. 그래프 변경의 commit 단위 정리
+핵심 파일:
+
+core/update/graph_commit_service.py
+storage/sqlite/graph_event_repository.py
+이건 지금 당장 급하진 않지만, 기능 확장이 쌓이면 반드시 필요해집니다.
+
+이번 턴에서 발생한 그래프 변경을 하나의 commit/event 묶음으로 다루기
+partial update와 final commit 구분
+디버그와 replay 가능성 강화
+5. 주제 기반 conclusion 생성 강화
+핵심 파일:
+
+core/thinking/conclusion_builder.py
+core/thinking/thought_engine.py
+지금 conclusion은 그래프 기반으로 잘 나오고 있지만, 이후엔:
+
+주제 단위 요약
+비교 축 단위 요약
+확정 가능 정보 / 미확정 정보 분리
+장기 대화에서의 주제 상태 반영
+이 더 강해져야 합니다.
+6. verbalization은 지금처럼 최소 안전장치만 유지
+관련 파일:
+
+core/verbalization/verbalizer.py
+core/verbalization/meaning_preserver.py
+core/verbalization/ollama_verbalizer.py
+이 부분은 지금처럼:
+
+timeout 방지
+grounding 부족 시 보수 응답
+meaning preservation
+정도만 유지하면 충분합니다.
+즉 지금은 verbalizer를 정교하게 다듬는 것보다, 그래프 코어가 더 많은 개념 기능을 맡도록 키우는 게 맞습니다.
+정리하면, 지금 전략은 이렇게 가면 좋습니다.
+
+그래프의 주제 관리 능력 확장
+검색 결과의 장기 반영 정책 확장
+edge/trust/revision 정책 확장
+commit/event 구조 확장
+conclusion 생성 구조 확장
+그 다음에야 답변 품질 튜닝 집중
+이 순서가 좋은 이유는, 지금 답변 품질은 결국 상류 구조의 한계에 많이 묶여 있기 때문입니다. 상류가 약한 상태에서 verbalizer만 다듬으면 일시적으로는 좋아 보여도 곧 한계가 옵니다. 반대로 그래프와 thinking 구조가 강해지면, 나중의 품질 개선은 훨씬 더 안정적으로 먹힙니다.
+
+한 줄로 요약하면:
+지금 MK5는 “답변을 잘 말하게 만드는 단계”보다 “생각할 수 있는 개념 구조를 더 많이 갖추는 단계”가 우선입니다.
+
+원하시면 다음으로는 이 우선순위를 기준으로, 실제 다음 작업 3개를 더 구체적으로 쪼개서 바로 착수 가능한 단위로 정리해드릴게요.

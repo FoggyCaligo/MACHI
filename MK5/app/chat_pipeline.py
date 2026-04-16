@@ -156,6 +156,14 @@ class ChatPipeline:
             )
 
         thought_result.derived_action = verbalized.derived_action
+        intent_snapshot_metadata = dict(thought_result.metadata.get('intent_snapshot', {}) or {})
+        if verbalized.derived_action is not None:
+            intent_snapshot_metadata['tone_hint'] = verbalized.derived_action.tone_hint
+            intent_snapshot_metadata['response_mode'] = verbalized.derived_action.response_mode
+            intent_snapshot_metadata['answer_goal'] = verbalized.derived_action.answer_goal
+            if thought_result.core_conclusion is not None and isinstance(thought_result.core_conclusion.metadata, dict):
+                thought_result.core_conclusion.metadata['previous_tone_hint'] = verbalized.derived_action.tone_hint
+        thought_result.metadata['intent_snapshot'] = intent_snapshot_metadata
 
         assistant_claim_domain = self.ingest_service.trust_policy.infer_claim_domain(
             verbalized.user_response,
@@ -170,7 +178,7 @@ class ChatPipeline:
                 metadata={
                     'source': 'assistant_reply',
                     'model_name': request.model_name,
-                    'intent_snapshot': thought_result.metadata.get('intent_snapshot', {}),
+                    'intent_snapshot': intent_snapshot_metadata,
                 },
                 source_type='assistant',
                 claim_domain=assistant_claim_domain,

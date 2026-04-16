@@ -87,3 +87,24 @@ def test_ollama_verbalizer_prompt_includes_search_context() -> None:
     assert '- attempted: true' in prompt
     assert '- result_count: 1' in prompt
     assert '- evidence: Chain mail (wikipedia-ko): Armor made from interlinked metal rings.' in prompt
+
+
+def test_action_layer_builder_prefers_recent_memory_for_memory_probe() -> None:
+    conclusion = CoreConclusion(
+        session_id='s1',
+        message_id=2,
+        user_input_summary='What do you remember about me?',
+        inferred_intent='memory_probe',
+        explanation_summary='Memory recall turn.',
+        metadata={
+            'recent_memory_count': 3,
+            'recent_memory_messages': [
+                {'role': 'user', 'turn_index': 1, 'content': 'My name is Jay.'},
+                {'role': 'assistant', 'turn_index': 1, 'content': 'I will call you Jay.'},
+            ],
+        },
+    )
+    action = ActionLayerBuilder().build(conclusion)
+    assert action.response_mode == 'structured_explanation'
+    assert 'recent conversation history' in action.answer_goal
+    assert action.metadata['recent_memory_count'] == 3
