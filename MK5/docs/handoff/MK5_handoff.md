@@ -3,48 +3,40 @@
 업데이트: 2026-04-16
 
 ## 이번 세션 핵심 변경
-- `revision_candidate_flag` 기반 잔재 제거(패턴 레이어 포함)
-- revision 실행을 marker edge 중심으로 정리
-- `StructureRevisionService`에 `RevisionExecutionRule` 테이블 도입
-  - family/connect_type별 deactivation/merge 임계치 분기 가능
-- 기본 rule 세분화 완료
-  - `concept_conflict`, `relation_conflict`, `concept_opposite`, `concept_flow`, `concept_neutral`, `relation_neutral`
-  - 규칙별로 trust/pressure/conflict/marker 임계치를 분리
-  - marker `support_count`뿐 아니라 evidence score(지원량/신뢰도/신호강도 가중치)도 gate에 반영
-  - 규칙 관측용 리포트 도구 추가: `python tools/revision_rule_report.py --db data/memory.db --limit 2000`
-  - 추천 모드: `python tools/revision_rule_report.py --db data/memory.db --limit 2000 --suggest`
-- `ContradictionDetector` 규칙을 connect_type 단일 기준에서 family/kind 분기까지 확장
-  - 예: `concept_conflict_connect_type`, `relation_conflict_connect_type`, `opposite_hierarchy_conflict`
-- 튜닝 자동화 1차
-  - `core/thinking/revision_rule_tuner.py`에서 추천 -> rule override 변환
-  - `tools/revision_rule_report.py --suggest --preset <conservative|balanced|aggressive> --overrides-out <path>` 지원
-  - `StructureRevisionService(rule_overrides=...)`로 기본 규칙에 오버라이드 적용 가능
-- `SqliteEdgeRepository`의 업데이트 계열에서 `updated_at` 갱신 보강
-  - `update_relation_detail`, `update_connect_type`, `deactivate`
+- Edge-first 정책을 유지한 상태로 `RevisionExecutionRule` 기반 실행 규칙을 확장.
+- conflict/opposite/connect_type 분기 규칙과 evidence 가중치 기반 게이트를 강화.
+- `TemporaryEdgeService`로 topic shift 시 `session_temporary` edge 자동 정리 경로를 유지.
+- `ModelFeedbackService`/`ModelEdgeAssertionService`/`ConnectTypePromotionService` 연계 구조를 계속 사용.
 
-## 임시 Edge 정책 반영
-- identity anchor 링크 edge를 `session_temporary`로 저장
-  - `relation_detail.temporary_edge=true`
-  - `relation_detail.scope=session_temporary`
-- topic 전환 시 정리 조건
-  - `topic_continuity=shifted_topic`
-  - `topic_overlap_count=0`
-  - 위 조건이면 session temporary edge를 자동 deactivate
-- 구현 위치
-  - `core/update/temporary_edge_service.py`
-  - `core/update/graph_ingest_service.py`
-  - `app/chat_pipeline.py`
+## 신규 반영: revision rule override 자동 적용
+- `app/chat_pipeline.py`가 시작 시 override JSON을 자동 로드해 `StructureRevisionService(rule_overrides=...)`에 주입.
+- 설정 키:
+  - `REVISION_RULE_OVERRIDES_PATH`
+  - `REVISION_RULE_PROFILE`
+  - `REVISION_RULE_OVERRIDES_STRICT`
+- 동작:
+  - strict=false(기본): override 파일이 깨져도 서비스는 계속 동작, 오류는 디버그에 노출.
+  - strict=true: override 로드 실패를 런타임 오류로 즉시 처리.
 
-## 대명사 정책
-- `나/너/그사람`은 문자열 휴리스틱으로 고정 해석하지 않음
-- 기본 해석은 모델/사고 파이프라인에 맡김
-- 그래프는 필요한 경우에만 임시 문맥 바인딩 edge를 사용
+## 디버그 노출
+- `debug.revision_policy.profile`
+- `debug.revision_policy.override_path`
+- `debug.revision_policy.override_load_error`
+- `debug.revision_policy.override_rule_count`
+- `debug.revision_policy.overrides_loaded`
 
-## 현재 남은 우선 작업
-1. `RevisionExecutionRule` 고도화(세부 임계치/가중치)
-2. concept/relation + connect_type 조합별 충돌 정책 정교화
-3. E2E 회귀 테스트 확대(충돌/수정/승격/temporary cleanup)
+## 테스트/검증 메모
+- Windows 환경에서 `pytest` temp/cache 디렉터리 권한(`WinError 5`) 이슈가 간헐적으로 발생.
+- 이번 반영은 `py_compile` + 스모크 스크립트로 로딩/엄격모드 동작을 우선 검증.
 
-## 주의 사항
-- 기존 `memory.db` 재사용 대신 새 DB로 시작하는 정책과 현재 구조가 잘 맞음
-- Windows에서 pytest temp/cache 권한 이슈(`WinError 5`)가 간헐적으로 발생
+## 다음 우선순위
+1. override 프로필(`conservative/balanced/aggressive`) 전환을 API/운영 파라미터로 연결.
+2. E2E 회귀에서 rule override가 실제 deactivation/merge 분기 결과를 바꾸는지 시나리오 추가 확대.
+3. 필요 시 cron/스케줄러로 자동 생성 주기 운영화.
+
+## 운영 실행 예시
+```bash
+python tools/revision_rule_apply_overrides.py --db data/memory.db --preset balanced
+```
+- 기본 출력 파일: `data/revision_rule_overrides.auto.json`
+- `ChatPipeline`은 시작 시 해당 파일을 자동 로드한다.

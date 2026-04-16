@@ -35,6 +35,17 @@ def _env_optional_int(name: str) -> int | None:
     return value if value > 0 else None
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, '').strip().lower()
+    if not raw:
+        return default
+    if raw in {'1', 'true', 'yes', 'on'}:
+        return True
+    if raw in {'0', 'false', 'no', 'off'}:
+        return False
+    return default
+
+
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434').rstrip('/')
 OLLAMA_TIMEOUT_SECONDS = _env_float('OLLAMA_TIMEOUT_SECONDS', 120.0)
 MODEL_DISCOVERY_TIMEOUT_SECONDS = _env_float('MODEL_DISCOVERY_TIMEOUT_SECONDS', 1.5)
@@ -66,6 +77,12 @@ CONNECT_TYPE_PROMOTION_THRESHOLD = _env_int('CONNECT_TYPE_PROMOTION_THRESHOLD', 
 CONNECT_TYPE_PROMOTION_MAX_SCAN = _env_int('CONNECT_TYPE_PROMOTION_MAX_SCAN', 500)
 
 REQUEST_TIMEOUT_MS = _env_int('REQUEST_TIMEOUT_MS', 300000)
+REVISION_RULE_OVERRIDES_PATH = os.getenv(
+    'REVISION_RULE_OVERRIDES_PATH',
+    'data/revision_rule_overrides.auto.json',
+).strip()
+REVISION_RULE_PROFILE = os.getenv('REVISION_RULE_PROFILE', '').strip()
+REVISION_RULE_OVERRIDES_STRICT = _env_bool('REVISION_RULE_OVERRIDES_STRICT', False)
 
 
 def build_ollama_options(*, temperature: float, num_predict: int | None = None) -> dict[str, Any]:

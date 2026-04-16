@@ -2,34 +2,29 @@
 업데이트: 2026-04-16
 
 [완료]
-1. pattern 레이어의 `revision_candidate_flag`/관련 API 제거
-2. revision marker edge 기반 후보 수집/실행 경로 정착
-3. connect_type 승격에 신뢰도/출처 가중치 반영
-4. conflict connect_type을 edge 모델에 반영
+1. revision marker edge 기반 deactivation/merge 실행 규칙 강화
+2. connect_type/family/kind 분기형 contradiction rule 확장
+3. evidence(신뢰도/출처/신호강도) 가중치 기반 revision gate 반영
+4. temporary edge(session_temporary) topic-shift 자동 정리
+5. revision rule analytics + tuner + report 도구 추가
+6. ChatPipeline에서 revision rule override JSON 자동 로딩/주입 연결
 
 [이번 턴 반영]
-1. `update_relation_detail` 호출 시 `edges.updated_at` 갱신
-2. `update_connect_type` 호출 시 `edges.updated_at` 갱신
-3. `deactivate` 호출 시 `edges.updated_at` 갱신
-4. `StructureRevisionService`에 `RevisionExecutionRule` 테이블 도입
-5. family/connect_type별 deactivation/merge 임계치를 규칙으로 결정
-6. identity anchor 링크를 `session_temporary` edge로 저장
-7. `topic_continuity=shifted_topic` & `topic_overlap_count=0`일 때 temporary edge 자동 정리
-8. `RevisionExecutionRule` 기본 규칙을 조합별로 세분화
-9. 규칙 분기 검증 테스트 추가 (`concept/conflict` vs `relation/neutral`)
-10. revision marker 판단에 evidence(신뢰도/지원량/신호강도 가중치) 결합
-11. support count가 낮아도 evidence 임계치로 deactivation 가능한 테스트 추가
-12. revision rule 로그 분석 도구 추가 (`tools/revision_rule_report.py`)
-13. 리포트 기반 임계치 추천 추가 (`--suggest`)
-14. ContradictionDetector 규칙을 family/kind 단위로 세분화
-15. 튜너 추가: 추천 결과를 preset(보수/중립/공격) 오버라이드로 변환
-16. StructureRevisionService에 `rule_overrides` 적용 경로 추가
+1. `REVISION_RULE_OVERRIDES_PATH` / `REVISION_RULE_PROFILE` / `REVISION_RULE_OVERRIDES_STRICT` 설정 추가
+2. override JSON 로딩 실패 시 non-strict는 계속 진행, strict는 즉시 오류 처리
+3. `debug.revision_policy` 섹션으로 적용 정책 상태 노출
+4. override 로딩 검증 테스트 파일 추가
+   - `tests/unit/test_chat_pipeline_revision_policy.py`
+5. report 기반 override 자동 적용 도구 추가
+   - `tools/revision_rule_apply_overrides.py`
+6. override on/off 결과 차이 E2E 회귀 추가
+   - `tests/integration/test_revision_rule_override_e2e.py`
 
-[다음 우선 작업]
-1. revision marker 기반 실행 규칙 테이블 고도화(오버라이드 자동 적용 파이프라인)
-2. concept/relation + connect_type 조합별 충돌 정책 정교화
-3. E2E 회귀 테스트 확대(충돌 누적, deactivation, merge, promotion)
+[다음 우선작업]
+1. override 프로필 전환과 실험(A/B) 경로 정리
+2. E2E 회귀 테스트 보강 (다중 rule/family/connect_type 케이스)
+3. 주기 실행(cron/작업 스케줄러) 운영화
 
 [리스크/메모]
-1. 로컬 Windows 환경에서 pytest temp/cache 권한 이슈가 간헐적으로 발생
-2. 테스트 실패 시 우선 `compileall` + 제한된 스모크 경로로 회귀 확인
+1. Windows에서 pytest temp/cache 권한 이슈(`WinError 5`)가 간헐적으로 발생
+2. 필요 시 `py_compile` + 스모크 검증을 병행

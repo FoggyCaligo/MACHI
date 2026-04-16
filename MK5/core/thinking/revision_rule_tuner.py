@@ -49,11 +49,13 @@ def _apply_recommendation(target: dict[str, float], *, recommendation: str, step
 
 
 def _increase(target: dict[str, float], key: str, delta: float) -> None:
-    target[key] = round(max(0.05, float(target.get(key, 0.0)) + delta), 6)
+    base = _baseline_for_key(key, current=target.get(key))
+    target[key] = round(max(0.05, base + delta), 6)
 
 
 def _decrease(target: dict[str, float], key: str, delta: float) -> None:
-    target[key] = round(max(0.05, float(target.get(key, 0.0)) - delta), 6)
+    base = _baseline_for_key(key, current=target.get(key))
+    target[key] = round(max(0.05, base - delta), 6)
 
 
 def _as_dict(item: object) -> dict[str, Any]:
@@ -63,3 +65,20 @@ def _as_dict(item: object) -> dict[str, Any]:
         return dict(asdict(item))
     return {}
 
+
+def _baseline_for_key(key: str, *, current: object) -> float:
+    if current is not None:
+        try:
+            return float(current)
+        except (TypeError, ValueError):
+            pass
+    token = str(key or '').strip()
+    if token == 'marker_conflict_evidence_threshold_for_deactivate':
+        return 2.2
+    if token == 'marker_deactivate_evidence_threshold':
+        return 2.6
+    if token == 'marker_conflict_evidence_threshold_for_merge':
+        return 3.0
+    if token == 'marker_merge_evidence_threshold':
+        return 3.6
+    return 1.0

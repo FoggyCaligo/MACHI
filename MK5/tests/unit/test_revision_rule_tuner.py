@@ -41,3 +41,12 @@ def test_revision_rule_tuner_aggressive_has_smaller_delta_than_conservative() ->
     a = aggressive['relation_neutral']['marker_conflict_evidence_threshold_for_deactivate']
     c = conservative['relation_neutral']['marker_conflict_evidence_threshold_for_deactivate']
     assert c > a
+
+
+def test_revision_rule_tuner_uses_non_zero_baseline_for_new_override_keys() -> None:
+    suggestions = [
+        {'rule_name': 'relation_neutral', 'recommendation': 'raise_deactivate_evidence_threshold'}
+    ]
+    overrides = build_rule_overrides_from_suggestions(suggestions, preset='balanced')
+    assert overrides['relation_neutral']['marker_conflict_evidence_threshold_for_deactivate'] > 2.2
+    assert overrides['relation_neutral']['marker_deactivate_evidence_threshold'] > 2.6

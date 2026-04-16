@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from config import REVISION_RULE_OVERRIDES_PATH, REVISION_RULE_OVERRIDES_STRICT, REVISION_RULE_PROFILE
 from core.activation.activation_engine import ActivationEngine, ActivationRequest
 from core.search.search_sidecar import SearchEvidence, SearchRunResult, SearchSidecar
+from core.thinking.structure_revision_service import StructureRevisionService
 from core.thinking.thought_engine import ThoughtEngine, ThoughtRequest
 from core.update.connect_type_promotion_service import ConnectTypePromotionResult, ConnectTypePromotionService
 from core.update.graph_commit_service import GraphCommitService
 from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestResult, GraphIngestService
 from core.update.model_edge_assertion_service import ModelEdgeAssertionResult, ModelEdgeAssertionService
 from core.update.model_feedback_service import ModelFeedbackResult, ModelFeedbackService
+from core.update.node_merge_service import NodeMergeService
 from core.update.temporary_edge_service import TemporaryEdgeCleanupResult, TemporaryEdgeService
 from core.verbalization.verbalizer import Verbalizer
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
@@ -50,12 +54,32 @@ class ChatPipeline:
         connect_type_promotion_service: ConnectTypePromotionService | None = None,
         graph_commit_service: GraphCommitService | None = None,
         temporary_edge_service: TemporaryEdgeService | None = None,
+        revision_rule_overrides_path: str | Path | None = None,
+        revision_rule_profile: str = REVISION_RULE_PROFILE,
+        revision_rule_overrides_strict: bool = REVISION_RULE_OVERRIDES_STRICT,
     ) -> None:
         self.db_path = db_path
         self.schema_path = schema_path
+        (
+            self.revision_rule_overrides,
+            self.revision_rule_override_path,
+            self.revision_rule_override_load_error,
+        ) = self._load_revision_rule_overrides(
+            revision_rule_overrides_path
+            if revision_rule_overrides_path is not None
+            else REVISION_RULE_OVERRIDES_PATH,
+            strict=revision_rule_overrides_strict,
+        )
+        self.revision_rule_profile = revision_rule_profile or ''
         self.ingest_service = GraphIngestService(self._uow_factory)
         self.activation_engine = ActivationEngine(self._uow_factory)
-        self.thought_engine = ThoughtEngine(self._uow_factory)
+        self.thought_engine = ThoughtEngine(
+            self._uow_factory,
+            structure_revision_service=StructureRevisionService(
+                node_merge_service=NodeMergeService(self._uow_factory),
+                rule_overrides=self.revision_rule_overrides,
+            ),
+        )
         self.verbalizer = verbalizer or Verbalizer()
         self.search_sidecar = search_sidecar or SearchSidecar()
         self.model_feedback_service = model_feedback_service or ModelFeedbackService()
@@ -322,6 +346,7 @@ class ChatPipeline:
             'model_edge_assertion': model_edge_assertion_result.to_debug(),
             'connect_type_promotion': connect_type_promotion_result.to_debug(),
             'temporary_edge_cleanup': temporary_edge_cleanup_result.to_debug(),
+            'revision_policy': self._revision_policy_debug(),
             'ingest': {
                 'message_id': ingest_result.message_id,
                 'root_event_id': ingest_result.root_event_id,
@@ -450,3 +475,56 @@ class ChatPipeline:
                 continue
             values.append(token)
         return values
+
+    def _load_revision_rule_overrides(
+        self,
+        path_token: str | Path | None,
+        *,
+        strict: bool,
+    ) -> tuple[dict[str, dict[str, object]], str, str]:
+        raw_path = str(path_token or '').strip()
+        if not raw_path:
+            return {}, '', ''
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = (PROJECT_ROOT / candidate).resolve()
+        display_path = str(candidate)
+        try:
+            if not candidate.exists():
+                return {}, display_path, ''
+            payload = json.loads(candidate.read_text(encoding='utf-8'))
+            normalized = self._normalize_rule_overrides(payload)
+            if not normalized:
+                raise ValueError('override file exists but no valid rule override entries were found')
+            return normalized, display_path, ''
+        except Exception as exc:  # pragma: no cover - defensive path
+            if strict:
+                raise RuntimeError(f'failed to load revision rule overrides: {exc}') from exc
+            return {}, display_path, str(exc)
+
+    def _normalize_rule_overrides(self, payload: object) -> dict[str, dict[str, object]]:
+        if not isinstance(payload, dict):
+            return {}
+        result: dict[str, dict[str, object]] = {}
+        for rule_name, override in payload.items():
+            name = ' '.join(str(rule_name or '').split()).strip()
+            if not name or not isinstance(override, dict):
+                continue
+            normalized: dict[str, object] = {}
+            for key, value in override.items():
+                token = ' '.join(str(key or '').split()).strip()
+                if not token:
+                    continue
+                normalized[token] = value
+            if normalized:
+                result[name] = normalized
+        return result
+
+    def _revision_policy_debug(self) -> dict[str, Any]:
+        return {
+            'profile': self.revision_rule_profile,
+            'override_path': self.revision_rule_override_path,
+            'override_load_error': self.revision_rule_override_load_error or None,
+            'override_rule_count': len(self.revision_rule_overrides),
+            'overrides_loaded': bool(self.revision_rule_overrides),
+        }
