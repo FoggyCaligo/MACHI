@@ -22,9 +22,9 @@ class SqlitePatternRepository(PatternRepository):
                 pattern_uid, pattern_type, node_ids_json, edge_ids_json,
                 topology_hash, cardinality, edge_count,
                 pattern_trust, backing_evidence_count, conflict_count,
-                conflict_pressure, revision_candidate_flag, is_active,
+                conflict_pressure, is_active,
                 payload_json, created_from_event_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 pattern.pattern_uid,
@@ -38,7 +38,6 @@ class SqlitePatternRepository(PatternRepository):
                 pattern.backing_evidence_count,
                 pattern.conflict_count,
                 pattern.conflict_pressure,
-                int(pattern.revision_candidate_flag),
                 int(pattern.is_active),
                 dumps_json(pattern.payload),
                 pattern.created_from_event_id,
@@ -122,24 +121,6 @@ class SqlitePatternRepository(PatternRepository):
             params.append(limit)
         
         rows = fetch_all(self.connection, sql, params)
-        return [_row_to_pattern(row) for row in rows]
-
-    def list_revision_candidates(
-        self,
-        *,
-        min_conflict_pressure: float = 0.0,
-        limit: int = 100,
-    ) -> Sequence[SubgraphPattern]:
-        rows = fetch_all(
-            self.connection,
-            """
-            SELECT * FROM subgraph_patterns
-            WHERE revision_candidate_flag = 1 AND is_active = 1 AND conflict_pressure >= ?
-            ORDER BY conflict_pressure DESC, pattern_trust ASC, id ASC
-            LIMIT ?
-            """,
-            (min_conflict_pressure, limit),
-        )
         return [_row_to_pattern(row) for row in rows]
 
     def update_payload(self, pattern_id: int, payload: dict) -> None:
@@ -230,12 +211,6 @@ class SqlitePatternRepository(PatternRepository):
             (delta, pressure_delta, new_trust, pattern_id),
         )
 
-    def set_revision_candidate(self, pattern_id: int, *, flag: bool) -> None:
-        self.connection.execute(
-            "UPDATE subgraph_patterns SET revision_candidate_flag = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (int(flag), pattern_id),
-        )
-
     def set_superseded(self, pattern_id: int, *, superseded_by: str) -> None:
         self.connection.execute(
             "UPDATE subgraph_patterns SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -264,11 +239,10 @@ def _row_to_pattern(row: tuple) -> SubgraphPattern:
         backing_evidence_count=row[9],
         conflict_count=row[10],
         conflict_pressure=row[11],
-        is_active=bool(row[13]),
-        revision_candidate_flag=bool(row[12]),
-        superseded_by=row[14],
-        payload=loads_json(row[15], default={}) if row[15] else {},
-        created_from_event_id=row[16],
-        created_at=row[17],
-        updated_at=row[18],
+        is_active=bool(row[12]),
+        superseded_by=row[13],
+        payload=loads_json(row[14], default={}) if row[14] else {},
+        created_from_event_id=row[15],
+        created_at=row[16],
+        updated_at=row[17],
     )

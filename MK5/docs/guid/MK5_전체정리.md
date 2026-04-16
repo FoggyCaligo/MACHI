@@ -1,37 +1,46 @@
-# MK5 전체정리 (Master)
+# MK5 전체정리 (마스터 문서)
 
 업데이트: 2026-04-16
 
-## 1. 프로젝트 정의
-MK5는 그래프를 사고의 중심으로 두는 graph-first cognition 시스템이다.  
-입력은 그래프에 누적되고, activation/thinking/revision을 거친 뒤 verbalization이 마지막에 수행된다.
+## 1) 현재 아키텍처 요약
+- MK5는 `graph-first cognition`을 지향한다.
+- 입력(사용자/검색/어시스턴트)은 모두 그래프에 적재되고, 사고는 `ThoughtView` 기반으로 수행된다.
+- LLM은 주로 언어화/판정/제안 모듈로 쓰이며, 세계 상태의 1차 저장소는 그래프다.
 
-## 2. 현재 파이프라인
-1. ingest: `GraphIngestService`
-2. activation: `ActivationEngine` (concept 2-hop 포함)
-3. thinking: `ThoughtEngine` (contradiction/trust/revision/intent/conclusion)
-4. search enrichment: `SearchSidecar` + re-think
-5. verbalization: `Verbalizer`
-6. assistant reply ingest
+## 2) Edge 모델 (edge-first)
+- Edge 핵심 축
+  - `edge_family`: `concept` | `relation`
+  - `connect_type`: `flow` | `neutral` | `opposite` | `conflict`
+  - `relation_detail`: 의미 상세(`kind`, provenance, proposal 등)
+- 충돌/수정 압력은 별도 플래그가 아니라 edge 기반으로 누적/판정한다.
 
-## 3. 최근 반영 핵심
-- `connect_type`: `flow`, `neutral`, `opposite`, `conflict`
-- `ModelFeedbackService` + `GraphCommitService` 연동
-- `ModelEdgeAssertionService` 연동
-- `proposed_connect_type` 승격 정책 구현
-  - 단순 카운트가 아니라 `support + trust + source/domain` 가중치 기반
-- `revision-purpose edge` 표준화 도입
-  - `relation_detail.purpose = "revision"`
-  - `kind = conflict_assertion | revision_pending | deactivate_candidate | merge_candidate`
-  - `TrustManager`, `StructureRevisionService`가 revision marker edge를 기록
+## 3) 충돌 처리와 구조 수정 파이프라인
+1. `ContradictionDetector`가 충돌 시그널을 감지
+2. `TrustManager`가 base edge의 `conflict_count / contradiction_pressure / trust_score`를 갱신
+3. 동시에 `RevisionEdgeService`가 revision-purpose marker edge(`kind=conflict_assertion` 등)를 기록/누적
+4. `StructureRevisionService`가 marker 요약 + 임계치로 `revision_pending / edge_deactivated / node_merged` 실행
+5. 실행 결과는 `graph_events`로 남음
 
-## 4. 현재 구조의 의미
-- 충돌은 더 이상 이벤트 로그에만 남지 않고 `connect_type=conflict`와 revision marker edge로 그래프에 남는다.
-- 구조 개정 판단은 기존 pressure/trust 기준을 유지하되, 근거를 그래프 edge로 명시한다.
-- 모델의 비허용 `connect_type` 제안은 즉시 확장하지 않고 `proposed_connect_type`으로 누적 후 승격한다.
+핵심: `revision_candidate_flag` 중심 로직은 제거되고, marker edge 중심 실행기로 전환됨.
 
-## 5. 문서 체계
-- 단기 실행: [현재작업.txt](/c:/Users/bigla/Documents/git/MACHI/MK5/docs/todo/현재작업.txt)
-- 중장기 로드맵: [MK5_다음작업_로드맵.md](/c:/Users/bigla/Documents/git/MACHI/MK5/docs/todo/MK5_다음작업_로드맵.md)
-- 검색/검증 전략: [MK5_검색_및_검증_전략.md](/c:/Users/bigla/Documents/git/MACHI/MK5/docs/guid/MK5_검색_및_검증_전략.md)
-- 인수인계: [MK5_handoff.md](/c:/Users/bigla/Documents/git/MACHI/MK5/docs/handoff/MK5_handoff.md)
+## 4) 모델 제안 connect_type 승격
+- `ModelEdgeAssertionService`: 모델이 edge 제안을 생성 (허용 집합 밖 connect_type은 즉시 반영하지 않고 `proposed_connect_type`으로 저장)
+- `ConnectTypePromotionService`: 반복/신뢰/출처 가중치 기반 evidence score로 승격
+- 승격 시 `connect_type_promoted` 이벤트 기록
+
+## 5) 검색/응답 경로
+- 검색 필요 판단: 슬롯 기반(`entity` 우선), 결과에서 `aspect`를 회수하는 방향
+- 검색 결과는 그래프에 재적재 후 재사고
+- 모델 미선택 등 사용자 액션 가능한 오류는 `UserFacingChatError`로 명시 반환
+
+## 6) 현재 강점
+- Edge-first 정렬로 정책 일관성 증가
+- 충돌/수정 이력이 marker edge로 남아 추적 가능
+- connect_type 확장 제안과 승격 경로가 분리되어 안전함
+
+## 7) 현재 남은 핵심 과제
+- revision marker 규칙의 deterministic table 고도화
+- concept/relation별 충돌 정책을 더 세밀하게 분기
+- identity/topic continuity를 그래프 추론에서 더 직접 사용하도록 강화
+- Windows 테스트 환경 권한 이슈(임시 경로) 안정화
+

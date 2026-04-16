@@ -180,7 +180,7 @@ class SqliteEdgeRepository(EdgeRepository):
 
     def update_relation_detail(self, edge_id: int, relation_detail: dict) -> None:
         self.connection.execute(
-            "UPDATE edges SET relation_detail_json = ? WHERE id = ?",
+            "UPDATE edges SET relation_detail_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (dumps_json(relation_detail), edge_id),
         )
 
@@ -249,7 +249,10 @@ class SqliteEdgeRepository(EdgeRepository):
         self.connection.execute(f"UPDATE edges SET {', '.join(updates)} WHERE id = ?", params)
 
     def deactivate(self, edge_id: int) -> None:
-        self.connection.execute("UPDATE edges SET is_active = 0 WHERE id = ?", (edge_id,))
+        self.connection.execute(
+            "UPDATE edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (edge_id,),
+        )
 
     def update_connect_type(
         self,
@@ -260,12 +263,12 @@ class SqliteEdgeRepository(EdgeRepository):
     ) -> None:
         if relation_detail is None:
             self.connection.execute(
-                "UPDATE edges SET connect_type = ? WHERE id = ?",
+                "UPDATE edges SET connect_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (connect_type, edge_id),
             )
             return
         self.connection.execute(
-            "UPDATE edges SET connect_type = ?, relation_detail_json = ? WHERE id = ?",
+            "UPDATE edges SET connect_type = ?, relation_detail_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (connect_type, dumps_json(relation_detail), edge_id),
         )
 

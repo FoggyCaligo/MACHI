@@ -33,7 +33,6 @@ class SubgraphPattern:
     
     # Activation and revision
     is_active: bool = True
-    revision_candidate_flag: bool = False
     superseded_by: str | None = None  # If this pattern lost, which pattern replaced it
     
     # Metadata

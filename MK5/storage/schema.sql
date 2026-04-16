@@ -121,7 +121,6 @@ CREATE TABLE IF NOT EXISTS subgraph_patterns (
     backing_evidence_count INTEGER NOT NULL DEFAULT 0,
     conflict_count INTEGER NOT NULL DEFAULT 0,
     conflict_pressure REAL NOT NULL DEFAULT 0.0,
-    revision_candidate_flag INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     superseded_by TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',
@@ -133,7 +132,7 @@ CREATE TABLE IF NOT EXISTS subgraph_patterns (
 
 CREATE INDEX IF NOT EXISTS idx_patterns_type_active ON subgraph_patterns(pattern_type, is_active);
 CREATE INDEX IF NOT EXISTS idx_patterns_trust ON subgraph_patterns(pattern_trust DESC, backing_evidence_count DESC);
-CREATE INDEX IF NOT EXISTS idx_patterns_revision ON subgraph_patterns(revision_candidate_flag, conflict_pressure DESC, id);
+CREATE INDEX IF NOT EXISTS idx_patterns_conflict ON subgraph_patterns(conflict_pressure DESC, id);
 CREATE INDEX IF NOT EXISTS idx_patterns_topology ON subgraph_patterns(topology_hash, is_active);
 CREATE INDEX IF NOT EXISTS idx_patterns_active ON subgraph_patterns(is_active, pattern_trust DESC);
 

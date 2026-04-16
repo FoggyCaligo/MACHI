@@ -88,29 +88,13 @@ def test_pattern_repository_smoke() -> None:
             assert abs(updated.conflict_pressure - 1.5) < 0.001
             assert abs(updated.pattern_trust - 0.7) < 0.001
 
-        # Test 7: Set as revision candidate
-        with SqliteUnitOfWork(db_path) as uow:
-            uow.patterns.set_revision_candidate(pattern_id, flag=True)
-            uow.commit()
-
-        with SqliteUnitOfWork(db_path) as uow:
-            updated = uow.patterns.get_by_id(pattern_id)
-            assert updated is not None
-            assert updated.revision_candidate_flag is True
-
-        # Test 8: List revision candidates
-        with SqliteUnitOfWork(db_path) as uow:
-            candidates = uow.patterns.list_revision_candidates(min_conflict_pressure=1.0)
-            assert len(candidates) > 0
-            assert any(c.id == pattern_id for c in candidates)
-
-        # Test 9: List active patterns
+        # Test 7: List active patterns
         with SqliteUnitOfWork(db_path) as uow:
             active = uow.patterns.list_active_patterns(pattern_types=["chain"])
             assert len(active) > 0
             assert any(p.id == pattern_id for p in active)
 
-        # Test 10: Deactivate pattern
+        # Test 8: Deactivate pattern
         with SqliteUnitOfWork(db_path) as uow:
             uow.patterns.deactivate(pattern_id)
             uow.commit()

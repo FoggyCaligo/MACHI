@@ -56,15 +56,6 @@ class PatternRepository(Repository, ABC):
         """Return active patterns, optionally filtered by type and trust."""
 
     @abstractmethod
-    def list_revision_candidates(
-        self,
-        *,
-        min_conflict_pressure: float = 0.0,
-        limit: int = 100,
-    ) -> Sequence[SubgraphPattern]:
-        """Return patterns marked for potential revision due to conflicts."""
-
-    @abstractmethod
     def update_payload(self, pattern_id: int, payload: dict) -> None:
         """Replace the pattern payload with updated metadata."""
 
@@ -100,10 +91,6 @@ class PatternRepository(Repository, ABC):
         trust_delta: float = 0.0,
     ) -> None:
         """Increase conflict counts and adjust trust/pressure."""
-
-    @abstractmethod
-    def set_revision_candidate(self, pattern_id: int, *, flag: bool) -> None:
-        """Mark or unmark a pattern for structure revision review."""
 
     @abstractmethod
     def set_superseded(self, pattern_id: int, *, superseded_by: str) -> None:
