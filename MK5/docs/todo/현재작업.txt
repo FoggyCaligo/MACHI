@@ -19,11 +19,14 @@
    - `tools/revision_rule_apply_overrides.py`
 6. override on/off 결과 차이 E2E 회귀 추가
    - `tests/integration/test_revision_rule_override_e2e.py`
+7. Windows 운영 스케줄러 스크립트 추가
+   - `tools/run_revision_rule_override_job.ps1`
+   - `tools/setup_revision_rule_scheduler.ps1`
 
 [다음 우선작업]
 1. override 프로필 전환과 실험(A/B) 경로 정리
 2. E2E 회귀 테스트 보강 (다중 rule/family/connect_type 케이스)
-3. 주기 실행(cron/작업 스케줄러) 운영화
+3. Linux cron 대응 스크립트/운영 가이드 추가
 
 [리스크/메모]
 1. Windows에서 pytest temp/cache 권한 이슈(`WinError 5`)가 간헐적으로 발생

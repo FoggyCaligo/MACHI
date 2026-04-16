@@ -23,6 +23,9 @@
 - `architecture/identity_temporal_design.md`
 - `architecture/edge_family_connect_type_design.md`
 
+## Troubleshooting
+- `troubleshooting/revision_rule_scheduler.md`
+
 ## Notes
-- 실행 문서는 `로드맵 + 현재작업` 2개로 유지한다.
-- 설계 상세는 `architecture/`로 수렴한다.
+- 실행 문서는 `로드맵 + 현재작업` 2개로 유지.
+- 스케줄 운영은 `tools/*.ps1` + `troubleshooting/revision_rule_scheduler.md` 기준으로 관리.

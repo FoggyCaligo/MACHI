@@ -1,0 +1,6 @@
+{
+  "relation_neutral": {
+    "marker_conflict_evidence_threshold_for_deactivate": 1.95,
+    "marker_deactivate_evidence_threshold": 2.4
+  }
+}

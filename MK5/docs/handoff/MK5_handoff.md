@@ -40,3 +40,17 @@ python tools/revision_rule_apply_overrides.py --db data/memory.db --preset balan
 ```
 - 기본 출력 파일: `data/revision_rule_overrides.auto.json`
 - `ChatPipeline`은 시작 시 해당 파일을 자동 로드한다.
+
+## 운영 스케줄러(Windows Task Scheduler)
+- 1회 실행:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run_revision_rule_override_job.ps1 -ProjectRoot . -Preset balanced
+```
+- 스케줄 등록(매일 03:30):
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\setup_revision_rule_scheduler.ps1 -ProjectRoot . -TaskName "MACHI-MK5-RevisionRuleOverride" -DailyTime "03:30" -Preset balanced
+```
+- 스케줄 등록(30분 주기):
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\setup_revision_rule_scheduler.ps1 -ProjectRoot . -TaskName "MACHI-MK5-RevisionRuleOverride" -RepeatMinutes 30 -Preset balanced
+```
