@@ -1,34 +1,35 @@
 # Edge Family And Connect Type Design
 
-Updated: 2026-04-16
+업데이트: 2026-04-16
 
 ## Core Shape
 - `edge_family`: `concept` | `relation`
 - `connect_type`: `flow` | `neutral` | `opposite` | `conflict`
-- `relation_detail.kind`: fine-grained semantics (for example: `subtype_of`, `name_variant`, `creator_of`)
+- `relation_detail.kind`: 세부 의미 (`subtype_of`, `name_variant`, `creator_of` 등)
 
-## Why This Split
-- Keep high-level edge behavior stable (`family`, `type`).
-- Keep detailed meaning flexible (`relation_detail.kind`).
-- Allow multiple edges between the same node pair when semantics differ.
+## 이유
+- behavior 축(`family/type`)과 의미 축(`kind`)을 분리한다.
+- 동일 node pair에도 의미가 다르면 다중 edge 공존을 허용한다.
 
-## Proposal Path For New Types
-- If model proposes unknown `connect_type`, store edge with:
-  - `connect_type=neutral`
-  - `relation_detail.proposed_connect_type=<candidate>`
-  - `relation_detail.proposal_reason=<reason>`
-- Promote candidates to official type only after repeated evidence.
+## 새로운 connect_type 제안 경로
+모델이 allowlist 밖 타입을 제안하면 즉시 확장하지 않고:
+- 저장은 `connect_type=neutral`
+- `relation_detail.proposed_connect_type`에 후보 보존
+- `relation_detail.proposal_reason` 기록
 
-## Write-Back Paths
-- `ModelFeedbackService`: adjusts support/conflict pressure on existing edges.
-- `ModelEdgeAssertionService`: creates or reinforces structural edges from model assertions.
+## 승격 정책(현재 구현)
+- `ConnectTypePromotionService`가 후보를 스캔한다.
+- 단순 count가 아니라 가중치 점수 기반으로 승격한다.
+  - support_count
+  - trust_score
+  - inferred/source_type/claim_domain 가중치
 
-## Activation And Reasoning Impact
-- Concept edges are prioritized in neighbor selection.
-- Concept 2-hop expansion reduces hierarchy loss under edge budget.
-- Contradiction/revision policy should consume `family/type/kind` together.
+## 쓰기 경로
+- `ModelFeedbackService` + `GraphCommitService`: 기존 edge support/conflict 업데이트
+- `ModelEdgeAssertionService`: 구조 edge 생성/강화
+- `RevisionEdgeService`: revision-purpose marker edge 생성/강화
 
-## Next Steps
-1. Define promotion threshold for proposed connect types.
-2. Add deterministic revision rules by `family/type/kind`.
-3. Add tests for same-pair multi-edge coexistence.
+## 남은 과제
+1. 승격 정책을 kind별로 더 세분화
+2. revision rule에서 family/type/kind 해석 규칙 강화
+3. 같은 node pair 다중 edge의 우선순위/읽기 규칙 명문화

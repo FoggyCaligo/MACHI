@@ -23,6 +23,7 @@ class RevisionEdgeUpsertResult:
 @dataclass(slots=True)
 class RevisionEdgeService:
     max_reasons: int = 12
+    marker_scan_limit: int = 400
 
     def record_conflict_assertion(
         self,
@@ -120,6 +121,49 @@ class RevisionEdgeService:
             uow.edges.bump_support(existing.id, delta=1, trust_delta=trust_delta)
         return RevisionEdgeUpsertResult(edge_id=existing.id, action='supported')
 
+    def list_candidate_base_edge_ids(
+        self,
+        uow: UnitOfWork,
+        *,
+        limit: int = 200,
+    ) -> list[int]:
+        marker_edges = uow.edges.list_active_revision_markers(
+            kinds=[
+                REVISION_KIND_CONFLICT_ASSERTION,
+                REVISION_KIND_PENDING,
+                REVISION_KIND_DEACTIVATE_CANDIDATE,
+                REVISION_KIND_MERGE_CANDIDATE,
+            ],
+            limit=max(limit * 4, self.marker_scan_limit),
+        )
+        collected: list[int] = []
+        for marker in marker_edges:
+            base_id = self._extract_primary_source_edge_id(marker.relation_detail)
+            if base_id is None:
+                continue
+            if base_id not in collected:
+                collected.append(base_id)
+            if len(collected) >= limit:
+                break
+        return collected
+
+    def summarize_base_edge_markers(self, uow: UnitOfWork, *, base_edge: Edge) -> dict[str, int]:
+        rows = self._list_markers_for_base_edge(uow, base_edge=base_edge)
+        summary = {
+            'total_support': 0,
+            REVISION_KIND_CONFLICT_ASSERTION: 0,
+            REVISION_KIND_PENDING: 0,
+            REVISION_KIND_DEACTIVATE_CANDIDATE: 0,
+            REVISION_KIND_MERGE_CANDIDATE: 0,
+        }
+        for marker in rows:
+            support = max(1, int(marker.support_count))
+            summary['total_support'] += support
+            kind = str((marker.relation_detail or {}).get('kind') or '').strip()
+            if kind in summary:
+                summary[kind] += support
+        return summary
+
     def _find_existing_revision_edge(
         self,
         uow: UnitOfWork,
@@ -197,3 +241,38 @@ class RevisionEdgeService:
         if not merged.get('latest_reason'):
             merged['latest_reason'] = reasons[-1] if reasons else ''
         return merged
+
+    def _extract_primary_source_edge_id(self, detail: dict[str, Any] | None) -> int | None:
+        payload = dict(detail or {})
+        source_edge_ids = list(payload.get('source_edge_ids') or [])
+        for item in source_edge_ids:
+            try:
+                value = int(item)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
+    def _list_markers_for_base_edge(self, uow: UnitOfWork, *, base_edge: Edge) -> list[Edge]:
+        if base_edge.id is None:
+            return []
+        candidates = uow.edges.list_outgoing(
+            base_edge.source_node_id,
+            edge_families=[base_edge.edge_family],
+            connect_types=['neutral', 'conflict'],
+            active_only=True,
+            limit=self.marker_scan_limit,
+        )
+        rows: list[Edge] = []
+        for edge in candidates:
+            if edge.target_node_id != base_edge.target_node_id:
+                continue
+            detail = dict(edge.relation_detail or {})
+            if detail.get('purpose') != REVISION_PURPOSE:
+                continue
+            source_ids = list(detail.get('source_edge_ids') or [])
+            if base_edge.id not in source_ids:
+                continue
+            rows.append(edge)
+        return rows

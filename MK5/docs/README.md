@@ -1,14 +1,16 @@
 # MK5 Docs Index
 
+업데이트: 2026-04-16
+
 ## Master
-- `MK5_전체정리.md`
+- `guid/MK5_전체정리.md`
 
 ## Execution
-- `MK5_다음작업_로드맵.md` (중장기)
-- `현재작업.txt` (단기 실행)
+- `todo/MK5_다음작업_로드맵.md` (중장기)
+- `todo/현재작업.txt` (단기 실행)
 
 ## Strategy
-- `MK5_검색_및_검증_전략.md`
+- `guid/MK5_검색_및_검증_전략.md`
 
 ## Handoff
 - `handoff/MK5_handoff.md`
@@ -22,5 +24,5 @@
 - `architecture/edge_family_connect_type_design.md`
 
 ## Notes
-- `설계초안_*` 문서는 `architecture/` 하위 문서로 통합되었다.
-- 실행 문서는 `로드맵 + 현재작업` 2개로 축소했다.
+- 실행 문서는 `로드맵 + 현재작업` 2개로 유지한다.
+- 설계 상세는 `architecture/`로 수렴한다.

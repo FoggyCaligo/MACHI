@@ -48,10 +48,6 @@ class ContradictionDetector:
                 reason = 'opposite_connect_type'
                 score = max(score, 0.4)
 
-        if edge.revision_candidate_flag:
-            severity = 'high'
-            reason = 'revision_candidate_flagged'
-            score = max(score, 0.9)
         if edge.conflict_count > edge.support_count and edge.conflict_count >= 2:
             severity = 'high' if edge.conflict_count - edge.support_count >= 2 else (severity or 'medium')
             reason = reason or 'conflict_outweighs_support'

@@ -154,3 +154,12 @@ class EdgeRepository(Repository, ABC):
         limit: int = 500,
     ) -> Sequence[Edge]:
         """Return active edges that carry proposed_connect_type in relation_detail."""
+
+    @abstractmethod
+    def list_active_revision_markers(
+        self,
+        *,
+        kinds: Sequence[str] | None = None,
+        limit: int = 500,
+    ) -> Sequence[Edge]:
+        """Return active revision-purpose marker edges."""

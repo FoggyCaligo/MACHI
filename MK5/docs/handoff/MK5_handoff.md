@@ -1,5 +1,23 @@
 # MK5 handoff
 
+## 2026-04-16 추가 업데이트 (최신)
+- `revision-purpose edge` 표준 도입:
+  - 구현: `core/update/revision_edge_service.py`
+  - 표준 detail:
+    - `purpose=revision`
+    - `kind=conflict_assertion | revision_pending | deactivate_candidate | merge_candidate`
+- `TrustManager`는 충돌 시그널을 받을 때 원본 edge 압력 업데이트와 함께
+  revision marker edge를 기록한다.
+- `StructureRevisionService`는 pending/deactivate/merge 판단 시
+  대응되는 revision marker edge를 기록한다.
+- `proposed_connect_type` 승격 정책은 단순 카운트 기반이 아니라
+  신뢰도/출처 가중치 기반(`evidence_score`)으로 동작한다.
+
+### 현재 남은 핵심 과제
+1. `revision_candidate_flag` 중심 실행을 marker edge 임계치 기반 실행기로 전환
+2. `edge_family + connect_type + relation_detail.kind` 규칙 테이블 고도화
+3. identity/topic continuity 회귀 테스트 확장
+
 기준 시점: 2026-04-16
 
 ## 프로젝트 정체

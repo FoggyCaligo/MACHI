@@ -1,25 +1,22 @@
 # 현재작업 (단기 실행)
 
-Updated: 2026-04-16
+업데이트: 2026-04-16
 
-## 이번 턴 직후 상태
-- `ModelFeedbackService`와 `ModelEdgeAssertionService`가 ChatPipeline에 연결됨
-- Activation에서 concept 2-hop 확장이 동작함
-- connect_type allowlist: flow/neutral/opposite/conflict
-- 비허용 connect_type은 proposed 후보로 누적됨
+## 완료(최근)
+- `proposed_connect_type` 승격 정책을 가중치 기반으로 반영
+  - evidence_score = support_count + trust_score + source/domain weight
+- 승격 정책 E2E 회귀 테스트 보강
+- `revision-purpose edge` 표준 서비스 도입 (`revision_edge_service.py`)
+- `TrustManager`, `StructureRevisionService`에 revision marker edge 기록 연결
 
 ## 이번 주 우선순위
-1. 대화 E2E에서 `model_edge_assertion` 생성/강화 로그 확인
-2. assertion 결과에 대한 테스트 2종 추가
-   - 신규 엣지 생성
-   - 기존 엣지(kind 동일) 강화
-3. proposed connect_type 누적 카운트 설계
-4. 승격 정책 초안 구현 (임계치 기반)
+1. 구조 변경 실행을 edge-first로 한 단계 더 이동
+   - 목표: deactivate/merge 실행 조건을 revision marker edge 누적 기준으로 전환
+2. revision marker edge를 읽는 규칙 정교화
+   - `family/type/kind` 조합별 deterministic rule 추가
+3. 사용자 체감 품질 회귀 방지
+   - topic/identity continuity 질문셋 추가
 
-## 리스크/메모
-- Windows `.pytest_tmp` 권한 이슈로 일부 pytest 종료 정리 실패 가능
-- pytest 실행 시 basetemp/cache 경로를 워크스페이스 내부로 고정 권장
-
-## 문서 운영 규칙
-- 중장기 계획은 `MK5_다음작업_로드맵.md`에서만 관리
-- 이 파일은 실행 단위(짧은 체크리스트)만 유지
+## 리스크
+- Windows 환경에서 pytest 임시 디렉터리 권한 충돌이 간헐적으로 발생한다.
+- 검색/모델/그래프를 동시에 바꾸는 턴에서는 원인 분리가 어려워진다.

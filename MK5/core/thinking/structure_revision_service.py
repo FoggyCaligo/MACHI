@@ -8,6 +8,7 @@ from core.entities.graph_event import GraphEvent
 from core.entities.node import Node
 from core.update.node_merge_service import NodeMergeRequest, NodeMergeService
 from core.update.revision_edge_service import (
+    REVISION_KIND_CONFLICT_ASSERTION,
     REVISION_KIND_DEACTIVATE_CANDIDATE,
     REVISION_KIND_MERGE_CANDIDATE,
     REVISION_KIND_PENDING,
@@ -25,6 +26,10 @@ class StructureRevisionService:
     merge_candidate_pressure_threshold: float = 2.0
     merge_candidate_conflict_threshold: int = 2
     merge_candidate_trust_threshold: float = 0.42
+    marker_deactivate_support_threshold: int = 2
+    marker_conflict_support_threshold_for_deactivate: int = 6
+    marker_merge_support_threshold: int = 2
+    marker_conflict_support_threshold_for_merge: int = 4
     node_merge_service: NodeMergeService | None = None
     revision_edge_service: RevisionEdgeService = field(default_factory=RevisionEdgeService)
 
@@ -35,15 +40,19 @@ class StructureRevisionService:
         message_id: int | None = None,
         limit: int = 100,
     ) -> list[RevisionAction]:
+        candidate_ids = self._collect_candidate_edge_ids(uow, limit=limit)
+        if not candidate_ids:
+            return []
         actions: list[RevisionAction] = []
-        for edge in uow.edges.list_revision_candidates(
-            min_contradiction_pressure=self.min_candidate_pressure,
-            limit=limit,
-        ):
-            action = self._review_one(uow, edge.id or 0, message_id=message_id)
+        for edge_id in candidate_ids:
+            action = self._review_one(uow, edge_id, message_id=message_id)
             if action is not None:
                 actions.append(action)
         return actions
+
+    def _collect_candidate_edge_ids(self, uow: UnitOfWork, *, limit: int) -> list[int]:
+        # Marker-edge only: edge-first 정책의 기준 후보 소스
+        return self.revision_edge_service.list_candidate_base_edge_ids(uow, limit=limit)
 
     def _review_one(
         self,
@@ -56,7 +65,13 @@ class StructureRevisionService:
         if edge is None or not edge.is_active:
             return None
 
-        merge_action = self._maybe_merge_nodes(uow, edge_id=edge_id, message_id=message_id)
+        marker_summary = self.revision_edge_service.summarize_base_edge_markers(uow, base_edge=edge)
+        merge_action = self._maybe_merge_nodes(
+            uow,
+            edge_id=edge_id,
+            message_id=message_id,
+            marker_summary=marker_summary,
+        )
         if merge_action is not None:
             return merge_action
 
@@ -64,6 +79,8 @@ class StructureRevisionService:
             edge.trust_score <= self.deactivate_trust_threshold
             or edge.contradiction_pressure >= self.deactivate_pressure_threshold
             or edge.conflict_count >= self.deactivate_conflict_threshold
+            or marker_summary.get(REVISION_KIND_DEACTIVATE_CANDIDATE, 0) >= self.marker_deactivate_support_threshold
+            or marker_summary.get(REVISION_KIND_CONFLICT_ASSERTION, 0) >= self.marker_conflict_support_threshold_for_deactivate
         )
 
         if not should_deactivate:
@@ -151,11 +168,12 @@ class StructureRevisionService:
         *,
         edge_id: int,
         message_id: int | None = None,
+        marker_summary: dict[str, int] | None = None,
     ) -> RevisionAction | None:
         edge = uow.edges.get_by_id(edge_id)
         if edge is None or not edge.is_active:
             return None
-        if not self._merge_gate(edge):
+        if not self._merge_gate(edge, marker_summary=marker_summary):
             return None
 
         source = uow.nodes.get_by_id(edge.source_node_id)
@@ -214,13 +232,16 @@ class StructureRevisionService:
             },
         )
 
-    def _merge_gate(self, edge) -> bool:
+    def _merge_gate(self, edge, *, marker_summary: dict[str, int] | None = None) -> bool:
         if not self._edge_allows_merge(edge):
             return False
+        marker_summary = marker_summary or {}
         return (
             edge.contradiction_pressure >= self.merge_candidate_pressure_threshold
             or edge.conflict_count >= self.merge_candidate_conflict_threshold
             or edge.trust_score <= self.merge_candidate_trust_threshold
+            or marker_summary.get(REVISION_KIND_MERGE_CANDIDATE, 0) >= self.marker_merge_support_threshold
+            or marker_summary.get(REVISION_KIND_CONFLICT_ASSERTION, 0) >= self.marker_conflict_support_threshold_for_merge
         )
 
     def _edge_allows_merge(self, edge) -> bool:

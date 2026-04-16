@@ -22,7 +22,6 @@ class EdgeUpdateService:
     conflict_trust_delta: float = -0.030
     conflict_pressure_delta: float = 1.0
     deactivation_trust_threshold: float = 0.08
-    revision_pressure_threshold: float = 2.0
 
     def apply_support(
         self,
@@ -62,14 +61,6 @@ class EdgeUpdateService:
             pressure_delta=actual_pressure,
             trust_delta=actual_trust,
         )
-        # Auto-flag as revision candidate when pressure accumulates
-        edge = uow.edges.get_by_id(edge_id)
-        if edge is not None and edge.is_active and not edge.revision_candidate_flag:
-            if (
-                edge.contradiction_pressure >= self.revision_pressure_threshold
-                or edge.conflict_count > edge.support_count
-            ):
-                uow.edges.set_revision_candidate(edge_id, flag=True)
 
         uow.graph_events.add(GraphEvent(
             event_uid=f'evt-{uuid4().hex}',

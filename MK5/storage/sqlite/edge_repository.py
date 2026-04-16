@@ -312,6 +312,35 @@ class SqliteEdgeRepository(EdgeRepository):
         )
         return [_row_to_edge(row) for row in rows]
 
+    def list_active_revision_markers(
+        self,
+        *,
+        kinds: Sequence[str] | None = None,
+        limit: int = 500,
+    ) -> Sequence[Edge]:
+        rows = fetch_all(
+            self.connection,
+            """
+            SELECT *
+            FROM edges
+            WHERE is_active = 1
+              AND relation_detail_json LIKE '%"purpose":"revision"%'
+            ORDER BY support_count DESC, trust_score DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        edges = [_row_to_edge(row) for row in rows]
+        if not kinds:
+            return edges
+        kind_set = {str(item or '').strip() for item in kinds if str(item or '').strip()}
+        if not kind_set:
+            return edges
+        return [
+            edge for edge in edges
+            if str((edge.relation_detail or {}).get('kind') or '').strip() in kind_set
+        ]
+
 
 def _row_to_edge(row: sqlite3.Row) -> Edge:
     return Edge(

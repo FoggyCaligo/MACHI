@@ -13,6 +13,7 @@ from core.entities.graph_event import GraphEvent
 from core.entities.node import Node
 from core.thinking.structure_revision_service import StructureRevisionService
 from core.update.node_merge_service import NodeMergeService
+from core.update.revision_edge_service import RevisionEdgeService
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
 
 
@@ -99,6 +100,18 @@ def main() -> None:
                     support_count=1,
                     created_from_event_id=event.id,
                 )
+            )
+            uow.commit()
+
+        with uow_factory() as uow:
+            edge_for_marker = uow.edges.get_by_id(edge.id or 0)
+            assert edge_for_marker is not None
+            RevisionEdgeService().record_conflict_assertion(
+                uow,
+                base_edge=edge_for_marker,
+                reason='conflict_outweighs_support',
+                signal_score=0.8,
+                message_id=None,
             )
             uow.commit()
 

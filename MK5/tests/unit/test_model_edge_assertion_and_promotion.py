@@ -15,6 +15,7 @@ from core.thinking.contradiction_detector import ContradictionDetector
 from core.thinking.structure_revision_service import StructureRevisionService
 from core.update.connect_type_promotion_service import ConnectTypePromotionService
 from core.update.model_edge_assertion_service import ModelEdgeAssertionService
+from core.update.revision_edge_service import RevisionEdgeService
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
 
 
@@ -224,6 +225,18 @@ def test_hierarchical_concept_flow_is_not_merged_during_revision(tmp_path: Path)
                 contradiction_pressure=1.7,
                 revision_candidate_flag=True,
             )
+        )
+        uow.commit()
+
+    with uow_factory() as uow:
+        edge_for_marker = uow.edges.get_by_id(edge.id or 0)
+        assert edge_for_marker is not None
+        RevisionEdgeService().record_conflict_assertion(
+            uow,
+            base_edge=edge_for_marker,
+            reason='conflict_outweighs_support',
+            signal_score=0.75,
+            message_id=None,
         )
         uow.commit()
 
