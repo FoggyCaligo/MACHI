@@ -7,6 +7,16 @@
 - conflict/opposite/connect_type 분기 규칙과 evidence 가중치 기반 게이트를 강화.
 - `TemporaryEdgeService`로 topic shift 시 `session_temporary` edge 자동 정리 경로를 유지.
 - `ModelFeedbackService`/`ModelEdgeAssertionService`/`ConnectTypePromotionService` 연계 구조를 계속 사용.
+- `relation_detail.kind`에 대한 코어 실행 의존을 제거.
+  - revision/contradiction/merge gate는 `edge_family + connect_type + purpose/status` 기반으로 동작.
+  - marker 집계 키도 kind 기반에서 `total_support/conflict_support` 축으로 전환.
+
+## 신규: 독립 revision review 실행 경로
+- `ThoughtEngine.run_revision_review(...)` 추가
+- `ChatPipeline.run_internal_revision_review(...)` 추가
+- API 추가: `POST /internal/revision-review`
+  - 메시지 입력 없이 system/internal 트리거로 revision cycle을 독립 실행 가능
+  - graph event `revision_review_cycle` 기록
 
 ## 신규 반영: revision rule override 자동 적용
 - `app/chat_pipeline.py`가 시작 시 override JSON을 자동 로드해 `StructureRevisionService(rule_overrides=...)`에 주입.

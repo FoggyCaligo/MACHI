@@ -61,7 +61,7 @@ def test_trust_manager_creates_and_supports_conflict_edge(tmp_path: Path) -> Non
         assert conflict_edge.support_count == 2
         assert conflict_edge.trust_score > 0.35
         assert conflict_edge.relation_detail['purpose'] == 'revision'
-        assert conflict_edge.relation_detail['kind'] == 'conflict_assertion'
+        assert conflict_edge.connect_type == 'conflict'
         assert conflict_edge.relation_detail['source_edge_ids'] == [edge.id]
         assert 'conflict_outweighs_support' in conflict_edge.relation_detail['reasons']
         recent_types = {event.event_type for event in uow.graph_events.list_recent(limit=20)}

@@ -9,10 +9,6 @@ from core.entities.graph_event import GraphEvent
 from core.entities.node import Node
 from core.update.node_merge_service import NodeMergeRequest, NodeMergeService
 from core.update.revision_edge_service import (
-    REVISION_KIND_CONFLICT_ASSERTION,
-    REVISION_KIND_DEACTIVATE_CANDIDATE,
-    REVISION_KIND_MERGE_CANDIDATE,
-    REVISION_KIND_PENDING,
     RevisionEdgeService,
 )
 from storage.unit_of_work import UnitOfWork
@@ -119,19 +115,19 @@ class StructureRevisionService:
             edge.trust_score <= rule.deactivate_trust_threshold
             or edge.contradiction_pressure >= rule.deactivate_pressure_threshold
             or edge.conflict_count >= rule.deactivate_conflict_threshold
-            or marker_summary.get(REVISION_KIND_DEACTIVATE_CANDIDATE, 0) >= rule.marker_deactivate_support_threshold
-            or marker_summary.get(REVISION_KIND_CONFLICT_ASSERTION, 0) >= rule.marker_conflict_support_threshold_for_deactivate
-            or float(marker_evidence.get(REVISION_KIND_DEACTIVATE_CANDIDATE, 0.0)) >= rule.marker_deactivate_evidence_threshold
-            or float(marker_evidence.get(REVISION_KIND_CONFLICT_ASSERTION, 0.0)) >= rule.marker_conflict_evidence_threshold_for_deactivate
+            or marker_summary.get('total_support', 0) >= rule.marker_deactivate_support_threshold
+            or marker_summary.get('conflict_support', 0) >= rule.marker_conflict_support_threshold_for_deactivate
+            or float(marker_evidence.get('total_evidence', 0.0)) >= rule.marker_deactivate_evidence_threshold
+            or float(marker_evidence.get('conflict_support', 0.0)) >= rule.marker_conflict_evidence_threshold_for_deactivate
         )
 
         if not should_deactivate:
             self.revision_edge_service.record_revision_marker(
                 uow,
                 base_edge=edge,
-                kind=REVISION_KIND_PENDING,
                 reason='candidate_but_not_below_floor',
                 message_id=message_id,
+                marker_role='neutral_support',
                 status='open',
                 metadata={
                     'trust_score': edge.trust_score,
@@ -172,9 +168,9 @@ class StructureRevisionService:
         self.revision_edge_service.record_revision_marker(
             uow,
             base_edge=edge,
-            kind=REVISION_KIND_DEACTIVATE_CANDIDATE,
             reason='trust_floor_or_pressure_floor_reached',
             message_id=message_id,
+            marker_role='neutral_support',
             status='executed',
             metadata={
                 'before_trust': edge.trust_score,
@@ -258,9 +254,9 @@ class StructureRevisionService:
         self.revision_edge_service.record_revision_marker(
             uow,
             base_edge=edge,
-            kind=REVISION_KIND_MERGE_CANDIDATE,
             reason='duplicate_like_nodes_merged_during_revision',
             message_id=message_id,
+            marker_role='neutral_support',
             status='executed',
             metadata={
                 'canonical_node_id': canonical.id,
@@ -321,20 +317,19 @@ class StructureRevisionService:
             edge.contradiction_pressure >= rule.merge_candidate_pressure_threshold
             or edge.conflict_count >= rule.merge_candidate_conflict_threshold
             or edge.trust_score <= rule.merge_candidate_trust_threshold
-            or marker_summary.get(REVISION_KIND_MERGE_CANDIDATE, 0) >= rule.marker_merge_support_threshold
-            or marker_summary.get(REVISION_KIND_CONFLICT_ASSERTION, 0) >= rule.marker_conflict_support_threshold_for_merge
-            or float(marker_evidence.get(REVISION_KIND_MERGE_CANDIDATE, 0.0)) >= rule.marker_merge_evidence_threshold
-            or float(marker_evidence.get(REVISION_KIND_CONFLICT_ASSERTION, 0.0)) >= rule.marker_conflict_evidence_threshold_for_merge
+            or marker_summary.get('total_support', 0) >= rule.marker_merge_support_threshold
+            or marker_summary.get('conflict_support', 0) >= rule.marker_conflict_support_threshold_for_merge
+            or float(marker_evidence.get('total_evidence', 0.0)) >= rule.marker_merge_evidence_threshold
+            or float(marker_evidence.get('conflict_support', 0.0)) >= rule.marker_conflict_evidence_threshold_for_merge
         )
 
     def _edge_allows_merge(self, edge: Edge, *, rule: RevisionExecutionRule) -> bool:
         if not rule.allow_merge:
             return False
-        kind = str((edge.relation_detail or {}).get('kind') or '').strip().lower()
         if edge.edge_family == 'concept':
             if edge.connect_type == 'conflict':
                 return False
-            if edge.connect_type == 'flow' and kind in {'subtype_of', 'is_a', 'contains', 'part_of'}:
+            if edge.connect_type == 'flow':
                 return False
             return True
         if edge.edge_family == 'relation':

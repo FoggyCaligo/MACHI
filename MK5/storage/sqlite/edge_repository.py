@@ -306,15 +306,9 @@ class SqliteEdgeRepository(EdgeRepository):
             (limit,),
         )
         edges = [_row_to_edge(row) for row in rows]
-        if not kinds:
-            return edges
-        kind_set = {str(item or '').strip() for item in kinds if str(item or '').strip()}
-        if not kind_set:
-            return edges
-        return [
-            edge for edge in edges
-            if str((edge.relation_detail or {}).get('kind') or '').strip() in kind_set
-        ]
+        # kind-based filtering is intentionally disabled in edge-first mode.
+        # Marker semantics are resolved from edge_family/connect_type/purpose.
+        return edges
 
 
 def _row_to_edge(row: sqlite3.Row) -> Edge:

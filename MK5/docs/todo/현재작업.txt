@@ -22,6 +22,13 @@
 7. Windows 운영 스케줄러 스크립트 추가
    - `tools/run_revision_rule_override_job.ps1`
    - `tools/setup_revision_rule_scheduler.ps1`
+8. kind 의존 제거(코어 로직)
+   - revision marker/집계/게이트에서 `relation_detail.kind` 사용 제거
+   - contradiction detector의 relation_kind 분기 제거
+9. 독립 revision review 경로 추가
+   - `ThoughtEngine.run_revision_review`
+   - `ChatPipeline.run_internal_revision_review`
+   - `POST /internal/revision-review`
 
 [다음 우선작업]
 1. override 프로필 전환과 실험(A/B) 경로 정리

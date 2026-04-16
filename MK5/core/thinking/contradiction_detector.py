@@ -13,7 +13,6 @@ class ConnectTypeSignalRule:
     base_severity: str
     base_score: float
     edge_families: tuple[str, ...] = ()
-    relation_kinds: tuple[str, ...] = ()
     medium_pressure_offset: float = 0.0
     high_pressure_offset: float = 0.0
 
@@ -22,10 +21,6 @@ class ConnectTypeSignalRule:
             return False
         if self.edge_families and str(edge.edge_family or '').strip().lower() not in self.edge_families:
             return False
-        if self.relation_kinds:
-            kind = str((edge.relation_detail or {}).get('kind') or '').strip().lower()
-            if kind not in self.relation_kinds:
-                return False
         return True
 
 
@@ -69,16 +64,6 @@ class ContradictionDetector:
             base_score=0.4,
             medium_pressure_offset=-0.3,
             high_pressure_offset=-0.3,
-        ),
-        ConnectTypeSignalRule(
-            connect_type='opposite',
-            edge_families=('concept',),
-            relation_kinds=('subtype_of', 'is_a', 'contains', 'part_of'),
-            reason='opposite_hierarchy_conflict',
-            base_severity='high',
-            base_score=0.72,
-            medium_pressure_offset=-0.7,
-            high_pressure_offset=-0.7,
         ),
     )
 

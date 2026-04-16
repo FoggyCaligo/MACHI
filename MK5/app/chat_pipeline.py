@@ -393,6 +393,24 @@ class ChatPipeline:
             rows = [row for row in uow.chat_messages.list_by_session(session_id, limit=100000) if row.role == 'user']
             return (rows[-1].turn_index + 1) if rows else 1
 
+    def run_internal_revision_review(
+        self,
+        *,
+        limit: int = 100,
+        trigger: str = 'system_internal',
+    ) -> dict[str, Any]:
+        actions = self.thought_engine.run_revision_review(
+            message_id=None,
+            limit=max(1, int(limit)),
+            trigger=trigger,
+        )
+        return {
+            'ok': True,
+            'action_count': len(actions),
+            'actions': [asdict(item) for item in actions],
+            'trigger': trigger,
+        }
+
     def _raise_if_search_requires_model_selection(
         self,
         *,

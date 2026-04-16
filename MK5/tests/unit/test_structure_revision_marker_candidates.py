@@ -279,7 +279,7 @@ def test_structure_revision_uses_marker_evidence_threshold_when_support_count_is
         assert matched
         assert matched[0].action == 'edge_deactivated'
         evidence = (matched[0].metadata or {}).get('marker_evidence', {})
-        assert float(evidence.get('conflict_assertion', 0.0)) >= 2.0
+        assert float(evidence.get('conflict_support', 0.0)) >= 2.0
 
 
 def test_structure_revision_applies_rule_overrides_on_default_rules(tmp_path: Path) -> None:

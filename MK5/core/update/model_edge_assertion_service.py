@@ -37,13 +37,12 @@ _SYSTEM_PROMPT = (
     '- Use ONLY node ids from the provided list.\n'
     '- edge_family must be "concept" or "relation".\n'
     '- connect_type must be "flow", "neutral", "opposite", or "conflict".\n'
-    '- relation_detail.kind: a short snake_case label (e.g. subtype_of, name_variant, '
-    'creator_of, used_for, located_in, opposes, member_of).\n'
+    '- relation_detail should be minimal and optional metadata only (e.g. note).\n'
     '- Only assert edges clearly implied by the user message. Do not invent.\n'
     'Output strict JSON only - no prose, no markdown:\n'
     '{"new_edges": [{"from_node_id": <int>, "to_node_id": <int>, '
     '"edge_family": <str>, "connect_type": <str>, '
-    '"relation_detail": {"kind": <str>, "note": <str>}}]}'
+    '"relation_detail": {"note": <str>}}]}'
 )
 
 _INITIAL_TRUST: float = 0.58
@@ -56,7 +55,6 @@ class AssertedEdgeResult:
     to_node_id: int
     edge_family: str
     connect_type: str
-    kind: str
     edge_id: int | None = None
     action: str = 'created'
 
@@ -90,7 +88,6 @@ class ModelEdgeAssertionResult:
                     'to_node_id': e.to_node_id,
                     'edge_family': e.edge_family,
                     'connect_type': e.connect_type,
-                    'kind': e.kind,
                     'edge_id': e.edge_id,
                 }
                 for e in self.asserted_edges
@@ -193,7 +190,6 @@ class ModelEdgeAssertionService:
         )
         edge_lines = '\n'.join(
             f'id={e.id} {e.edge_family}/{e.connect_type} node{e.source_node_id}->node{e.target_node_id}'
-            + (f' kind={e.relation_detail.get("kind", "")}' if e.relation_detail.get('kind') else '')
             for e in key_edges
         )
 
@@ -250,8 +246,7 @@ class ModelEdgeAssertionService:
 
             detail_raw = item.get('relation_detail') or {}
             relation_detail: dict[str, Any] = dict(detail_raw) if isinstance(detail_raw, dict) else {}
-            kind = str(relation_detail.get('kind', '')).strip() or 'unspecified'
-            relation_detail['kind'] = kind
+            relation_detail.pop('kind', None)
             relation_detail.setdefault('note', '')
             relation_detail['inferred_from'] = 'model_assertion'
 
@@ -274,7 +269,7 @@ class ModelEdgeAssertionService:
 
     def _apply(self, assertions: list[dict[str, Any]]) -> list[AssertedEdgeResult]:
         results: list[AssertedEdgeResult] = []
-        seen_pairs: set[tuple[int, int, str, str, str]] = set()
+        seen_pairs: set[tuple[int, int, str, str]] = set()
 
         with self.uow_factory() as uow:
             for assertion in assertions:
@@ -283,16 +278,14 @@ class ModelEdgeAssertionService:
                 edge_family: str = assertion['edge_family']
                 connect_type: str = assertion['connect_type']
                 relation_detail: dict[str, Any] = assertion['relation_detail']
-                kind: str = relation_detail['kind']
 
-                dedup_key = (from_id, to_id, edge_family, connect_type, kind)
+                dedup_key = (from_id, to_id, edge_family, connect_type)
                 if dedup_key in seen_pairs:
                     results.append(AssertedEdgeResult(
                         from_node_id=from_id,
                         to_node_id=to_id,
                         edge_family=edge_family,
                         connect_type=connect_type,
-                        kind=kind,
                         action='skipped',
                     ))
                     continue
@@ -304,26 +297,9 @@ class ModelEdgeAssertionService:
                     edge_family=edge_family,
                     connect_type=connect_type,
                 )
-                same_kind_existing = existing
-                if same_kind_existing is None or (same_kind_existing.relation_detail.get('kind') or '') != kind:
-                    outgoing_same_shape = uow.edges.list_outgoing(
-                        from_id,
-                        edge_families=[edge_family],
-                        connect_types=[connect_type],
-                        active_only=True,
-                    )
-                    same_kind_existing = next(
-                        (
-                            edge
-                            for edge in outgoing_same_shape
-                            if edge.target_node_id == to_id and (edge.relation_detail.get('kind') or '') == kind
-                        ),
-                        None,
-                    )
-
-                if same_kind_existing is not None and same_kind_existing.id is not None:
+                if existing is not None and existing.id is not None:
                     uow.edges.bump_support(
-                        same_kind_existing.id,
+                        existing.id,
                         delta=1,
                         trust_delta=self.reinforce_trust_delta,
                     )
@@ -332,8 +308,7 @@ class ModelEdgeAssertionService:
                         to_node_id=to_id,
                         edge_family=edge_family,
                         connect_type=connect_type,
-                        kind=kind,
-                        edge_id=same_kind_existing.id,
+                        edge_id=existing.id,
                         action='reinforced',
                     ))
                     continue
@@ -341,13 +316,12 @@ class ModelEdgeAssertionService:
                 event = uow.graph_events.add(GraphEvent(
                     event_uid=f'evt-{uuid4().hex}',
                     event_type='model_edge_asserted',
-                    parsed_input={
-                        'from_node_id': from_id,
-                        'to_node_id': to_id,
-                        'edge_family': edge_family,
-                        'connect_type': connect_type,
-                        'kind': kind,
-                    },
+                        parsed_input={
+                            'from_node_id': from_id,
+                            'to_node_id': to_id,
+                            'edge_family': edge_family,
+                            'connect_type': connect_type,
+                        },
                     effect={
                         'initial_trust': _INITIAL_TRUST,
                         'inferred_from': 'model_assertion',
@@ -373,7 +347,6 @@ class ModelEdgeAssertionService:
                     to_node_id=to_id,
                     edge_family=edge_family,
                     connect_type=connect_type,
-                    kind=kind,
                     edge_id=new_edge.id,
                     action='created',
                 ))

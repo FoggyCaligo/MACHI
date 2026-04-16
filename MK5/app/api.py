@@ -72,3 +72,18 @@ def register_routes(app: Flask) -> None:
             return jsonify({'detail': str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({'detail': str(exc)}), 500
+
+    @app.post('/internal/revision-review')
+    def internal_revision_review():
+        body = request.get_json(silent=True) if request.is_json else {}
+        raw_limit = (request.form.get('limit') or (body or {}).get('limit') or '100')
+        raw_trigger = (request.form.get('trigger') or (body or {}).get('trigger') or 'system_internal')
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return jsonify({'detail': 'limit must be integer'}), 400
+        result = pipeline.run_internal_revision_review(
+            limit=max(1, limit),
+            trigger=' '.join(str(raw_trigger or '').split())[:80] or 'system_internal',
+        )
+        return jsonify(result)

@@ -74,6 +74,6 @@ def test_revision_marker_upserts_with_standard_detail(tmp_path: Path) -> None:
         assert marker.connect_type == 'neutral'
         assert marker.support_count >= 2
         assert marker.relation_detail.get('purpose') == 'revision'
-        assert marker.relation_detail.get('kind') == REVISION_KIND_PENDING
+        assert marker.relation_detail.get('marker_role') == REVISION_KIND_PENDING
         assert marker.relation_detail.get('status') == 'open'
         assert marker.relation_detail.get('source_edge_ids') == [base.id]

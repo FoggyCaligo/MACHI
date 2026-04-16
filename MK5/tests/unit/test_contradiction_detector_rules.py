@@ -48,7 +48,7 @@ def test_contradiction_detector_distinguishes_concept_vs_relation_conflict_reaso
     assert by_edge[2].reason == 'relation_conflict_connect_type'
 
 
-def test_contradiction_detector_raises_opposite_hierarchy_conflict_reason() -> None:
+def test_contradiction_detector_uses_opposite_connect_type_reason() -> None:
     edge = Edge(
         id=10,
         edge_uid='o1',
@@ -66,4 +66,4 @@ def test_contradiction_detector_raises_opposite_hierarchy_conflict_reason() -> N
     view = ThoughtView(session_id='s', message_text='x', edges=[edge])
     signals = ContradictionDetector().inspect(view)
     assert signals
-    assert signals[0].reason == 'opposite_hierarchy_conflict'
+    assert signals[0].reason == 'opposite_connect_type'

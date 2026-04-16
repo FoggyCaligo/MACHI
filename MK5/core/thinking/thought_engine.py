@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from uuid import uuid4
 
 from core.entities.conclusion import ThoughtResult
+from core.entities.graph_event import GraphEvent
 from core.entities.thought_view import ThoughtView
 from core.thinking.concept_differentiation_service import ConceptDifferentiationService
 from core.thinking.conclusion_builder import ConclusionBuilder
@@ -105,3 +107,35 @@ class ThoughtEngine:
                 'intent_snapshot': intent_snapshot.to_metadata(),
             },
         )
+
+    def run_revision_review(
+        self,
+        *,
+        message_id: int | None = None,
+        limit: int = 100,
+        trigger: str = 'system_internal',
+    ) -> list:
+        with self.uow_factory() as uow:
+            actions = self.structure_revision_service.review_candidates(
+                uow,
+                message_id=message_id,
+                limit=limit,
+            )
+            uow.graph_events.add(
+                GraphEvent(
+                    event_uid=f'evt_{uuid4().hex}',
+                    event_type='revision_review_cycle',
+                    message_id=message_id,
+                    parsed_input={
+                        'trigger': trigger,
+                        'limit': limit,
+                    },
+                    effect={
+                        'action_count': len(actions),
+                        'actions': [item.action for item in actions],
+                    },
+                    note='Independent revision review cycle executed.',
+                )
+            )
+            uow.commit()
+        return actions
