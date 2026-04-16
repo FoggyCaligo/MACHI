@@ -136,3 +136,21 @@ class EdgeRepository(Repository, ABC):
     @abstractmethod
     def deactivate(self, edge_id: int) -> None:
         """Deactivate one edge while preserving its history row."""
+
+    @abstractmethod
+    def update_connect_type(
+        self,
+        edge_id: int,
+        *,
+        connect_type: str,
+        relation_detail: dict | None = None,
+    ) -> None:
+        """Update connect_type and optionally relation detail."""
+
+    @abstractmethod
+    def list_active_with_proposed_connect_type(
+        self,
+        *,
+        limit: int = 500,
+    ) -> Sequence[Edge]:
+        """Return active edges that carry proposed_connect_type in relation_detail."""

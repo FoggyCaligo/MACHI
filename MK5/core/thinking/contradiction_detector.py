@@ -40,6 +40,13 @@ class ContradictionDetector:
                 severity = 'medium'
                 reason = 'conflict_connect_type'
                 score = max(score, 0.45)
+        elif edge.connect_type == 'opposite':
+            medium_pressure_threshold = max(1.2, self.medium_pressure_threshold - 0.3)
+            high_pressure_threshold = max(2.2, self.high_pressure_threshold - 0.3)
+            if edge.support_count > 0 or edge.conflict_count > 0 or edge.contradiction_pressure > 0:
+                severity = 'medium'
+                reason = 'opposite_connect_type'
+                score = max(score, 0.4)
 
         if edge.revision_candidate_flag:
             severity = 'high'
@@ -83,4 +90,3 @@ class ContradictionDetector:
                 'trust_score': edge.trust_score,
             },
         )
-

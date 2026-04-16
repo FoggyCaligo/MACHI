@@ -193,6 +193,8 @@ class TrustManager:
         return existing.id
 
     def _deltas_for(self, signal: ContradictionSignal) -> tuple[float, float]:
+        if signal.reason == 'opposite_connect_type':
+            return self.medium_trust_delta * 0.75, self.medium_pressure_delta * 0.8
         if signal.severity == 'high':
             return self.high_trust_delta, self.high_pressure_delta
         return self.medium_trust_delta, self.medium_pressure_delta

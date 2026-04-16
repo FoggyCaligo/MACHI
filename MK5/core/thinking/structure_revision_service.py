@@ -170,11 +170,25 @@ class StructureRevisionService:
         )
 
     def _merge_gate(self, edge) -> bool:
+        if not self._edge_allows_merge(edge):
+            return False
         return (
             edge.contradiction_pressure >= self.merge_candidate_pressure_threshold
             or edge.conflict_count >= self.merge_candidate_conflict_threshold
             or edge.trust_score <= self.merge_candidate_trust_threshold
         )
+
+    def _edge_allows_merge(self, edge) -> bool:
+        kind = str((edge.relation_detail or {}).get('kind') or '').strip().lower()
+        if edge.edge_family == 'concept':
+            if edge.connect_type == 'conflict':
+                return False
+            if edge.connect_type == 'flow' and kind in {'subtype_of', 'is_a', 'contains', 'part_of'}:
+                return False
+            return True
+        if edge.edge_family == 'relation':
+            return edge.connect_type != 'conflict'
+        return False
 
     def _nodes_are_merge_compatible(self, source: Node, target: Node) -> bool:
         if source.address_hash == target.address_hash:

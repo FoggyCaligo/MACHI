@@ -279,6 +279,39 @@ class SqliteEdgeRepository(EdgeRepository):
     def deactivate(self, edge_id: int) -> None:
         self.connection.execute("UPDATE edges SET is_active = 0 WHERE id = ?", (edge_id,))
 
+    def update_connect_type(
+        self,
+        edge_id: int,
+        *,
+        connect_type: str,
+        relation_detail: dict | None = None,
+    ) -> None:
+        if relation_detail is None:
+            self.connection.execute(
+                "UPDATE edges SET connect_type = ? WHERE id = ?",
+                (connect_type, edge_id),
+            )
+            return
+        self.connection.execute(
+            "UPDATE edges SET connect_type = ?, relation_detail_json = ? WHERE id = ?",
+            (connect_type, dumps_json(relation_detail), edge_id),
+        )
+
+    def list_active_with_proposed_connect_type(self, *, limit: int = 500) -> Sequence[Edge]:
+        rows = fetch_all(
+            self.connection,
+            """
+            SELECT *
+            FROM edges
+            WHERE is_active = 1
+              AND relation_detail_json LIKE '%"proposed_connect_type"%'
+            ORDER BY trust_score DESC, support_count DESC, id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [_row_to_edge(row) for row in rows]
+
 
 def _row_to_edge(row: sqlite3.Row) -> Edge:
     return Edge(
