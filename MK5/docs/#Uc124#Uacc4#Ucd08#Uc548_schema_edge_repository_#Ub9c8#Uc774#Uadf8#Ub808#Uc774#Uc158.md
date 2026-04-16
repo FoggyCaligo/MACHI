@@ -264,3 +264,11 @@ find_active_relation(
 
 ## 9. 한 줄 요약
 1차 마이그레이션의 목표는 `edge_type`를 즉시 없애는 것이 아니라, `edge_family`와 `connect_type`를 추가해 Machi가 개념/관계와 flow/neutral/opposite 구조를 안정적으로 저장하고, 같은 두 Node 사이의 복수 Edge 공존까지 허용하는 기반을 만드는 것이다.
+
+---
+
+## 2026-04-16 Sync Note
+- ChatPipeline now includes both `model_feedback` and `model_edge_assertion` passes.
+- Activation includes concept 2-hop expansion and `concept_hop_edge_count` metadata.
+- Current connect_type allowlist: `flow`, `neutral`, `opposite`, `conflict`.
+- Out-of-allowlist connect_type proposals are preserved in `relation_detail.proposed_connect_type` with neutral fallback.

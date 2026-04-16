@@ -327,3 +327,11 @@ verbalizer는 생성 주체가 아니라 표현 계층이다.
 - identity / naming / relation / time을 그래프 구조로 남길 것
 - 기존 phrase 기반 ingest를 깨지 않고 점진적으로 붙일 것
 - retrieval은 "새 subtype 생성"이 아니라 "same node, earlier state" 방향으로 갈 것
+
+---
+
+## 2026-04-16 Sync Note
+- ChatPipeline now includes both `model_feedback` and `model_edge_assertion` passes.
+- Activation includes concept 2-hop expansion and `concept_hop_edge_count` metadata.
+- Current connect_type allowlist: `flow`, `neutral`, `opposite`, `conflict`.
+- Out-of-allowlist connect_type proposals are preserved in `relation_detail.proposed_connect_type` with neutral fallback.

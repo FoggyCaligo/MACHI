@@ -7,7 +7,10 @@ from typing import Any
 from core.activation.activation_engine import ActivationEngine, ActivationRequest
 from core.search.search_sidecar import SearchEvidence, SearchRunResult, SearchSidecar
 from core.thinking.thought_engine import ThoughtEngine, ThoughtRequest
+from core.update.graph_commit_service import GraphCommitService
 from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestResult, GraphIngestService
+from core.update.model_edge_assertion_service import ModelEdgeAssertionResult, ModelEdgeAssertionService
+from core.update.model_feedback_service import ModelFeedbackResult, ModelFeedbackService
 from core.verbalization.verbalizer import Verbalizer
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
 
@@ -40,6 +43,9 @@ class ChatPipeline:
         *,
         verbalizer: Verbalizer | None = None,
         search_sidecar: SearchSidecar | None = None,
+        model_feedback_service: ModelFeedbackService | None = None,
+        model_edge_assertion_service: ModelEdgeAssertionService | None = None,
+        graph_commit_service: GraphCommitService | None = None,
     ) -> None:
         self.db_path = db_path
         self.schema_path = schema_path
@@ -48,6 +54,9 @@ class ChatPipeline:
         self.thought_engine = ThoughtEngine(self._uow_factory)
         self.verbalizer = verbalizer or Verbalizer()
         self.search_sidecar = search_sidecar or SearchSidecar()
+        self.model_feedback_service = model_feedback_service or ModelFeedbackService()
+        self.model_edge_assertion_service = model_edge_assertion_service or ModelEdgeAssertionService(self._uow_factory)
+        self.graph_commit_service = graph_commit_service or GraphCommitService(self._uow_factory)
 
     def _uow_factory(self) -> SqliteUnitOfWork:
         return SqliteUnitOfWork(self.db_path, schema_path=self.schema_path, initialize_schema=True)
@@ -138,6 +147,23 @@ class ChatPipeline:
                     conclusion=thought_result.core_conclusion,
                     slot_plan=search_run.slot_plan,
                 )
+
+        # ── Model feedback: LLM이 본 그래프 상태를 기반으로 엣지 trust를 조정 ──────
+        # Ollama 모델이 선택된 경우에만 실행. mk5-graph-core는 no-op.
+        model_feedback_result = self.model_feedback_service.extract(
+            model_name=request.model_name,
+            message=request.message,
+            thought_view=thought_view,
+            conclusion=thought_result.core_conclusion,
+        )
+        if model_feedback_result.plan is not None:
+            self.graph_commit_service.commit(model_feedback_result.plan)
+
+        model_edge_assertion_result: ModelEdgeAssertionResult = self.model_edge_assertion_service.assert_edges(
+            model_name=request.model_name,
+            message=request.message,
+            thought_view=thought_view,
+        )
 
         self._attach_search_context(thought_result.core_conclusion, search_run=search_run)
 
@@ -271,6 +297,8 @@ class ChatPipeline:
         }
 
         debug_payload = {
+            'model_feedback': model_feedback_result.to_debug(),
+            'model_edge_assertion': model_edge_assertion_result.to_debug(),
             'ingest': {
                 'message_id': ingest_result.message_id,
                 'root_event_id': ingest_result.root_event_id,

@@ -67,7 +67,13 @@ class ActivationEngine:
             identity_nodes = self._session_identity_nodes(uow, request.session_id)
 
             local_edges = self._collect_neighbor_edges(uow, seed_node_ids, request.max_neighbor_edges)
-            neighbor_nodes = self._collect_neighbor_nodes(uow, seed_nodes, local_edges, request.max_neighbors)
+            concept_hop_edges = self._expand_concept_hops(
+                uow,
+                seed_node_ids=seed_node_ids,
+                existing_edges=local_edges,
+            )
+            all_edges = local_edges + concept_hop_edges
+            neighbor_nodes = self._collect_neighbor_nodes(uow, seed_nodes, all_edges, request.max_neighbors)
             all_nodes = self._merge_nodes(seed_nodes, neighbor_nodes + identity_nodes)
             pointers = self._collect_pointers(uow, all_nodes, request.include_pointer_expansion)
 
@@ -75,6 +81,7 @@ class ActivationEngine:
                 'seed_block_count': len(seed_blocks),
                 'seed_node_count': len(seed_nodes),
                 'neighbor_edge_count': len(local_edges),
+                'concept_hop_edge_count': len(concept_hop_edges),
                 'pointer_count': len(pointers),
                 'current_topic_terms': current_topic_terms,
                 'previous_topic_terms': previous_topic_terms,
@@ -91,7 +98,7 @@ class ActivationEngine:
                 seed_blocks=seed_blocks,
                 seed_nodes=seed_nodes,
                 nodes=all_nodes,
-                edges=local_edges,
+                edges=all_edges,
                 pointers=pointers,
                 metadata=metadata,
             )
@@ -250,6 +257,9 @@ class ActivationEngine:
         edges = list(uow.edges.list_edges_for_nodes(seed_node_ids, active_only=True))
         edges.sort(
             key=lambda edge: (
+                # concept 엣지(hierarchy/same-kind/conflict)는 항상 앞으로
+                # — max_neighbor_edges 한도에서 relation 엣지에 밀리지 않도록
+                1 if edge.edge_family == 'concept' else 0,
                 edge.trust_score,
                 edge.edge_weight,
                 edge.support_count,
@@ -307,6 +317,54 @@ class ActivationEngine:
                     collected.append(pointer)
                     seen_ids.add(pointer.id)
         return collected
+
+    def _expand_concept_hops(
+        self,
+        uow: UnitOfWork,
+        *,
+        seed_node_ids: list[int],
+        existing_edges: list[Edge],
+        max_extra_edges: int = 24,
+    ) -> list[Edge]:
+        """Follow concept edges one additional hop beyond the seed boundary.
+
+        After the first hop, concept-hierarchy nodes appear as edge endpoints but
+        their OWN concept connections are not yet fetched.  This method collects
+        concept edges for those nodes so that model-asserted concept structure
+        (subtype_of, name_variant, etc.) is visible during reasoning.
+
+        Only concept edges are fetched in this pass — relation edges for the
+        expanded nodes would add too much noise and are already bounded by the
+        seed's own 1-hop expansion.
+        """
+        seed_id_set = set(seed_node_ids)
+        existing_edge_ids: set[int] = {e.id for e in existing_edges if e.id is not None}
+
+        # Concept-adjacent nodes that are NOT seeds (they haven't had their
+        # own edges fetched yet).
+        concept_node_ids: list[int] = []
+        for edge in existing_edges:
+            if edge.edge_family != 'concept' or not edge.is_active:
+                continue
+            for nid in (edge.source_node_id, edge.target_node_id):
+                if nid and nid not in seed_id_set and nid not in concept_node_ids:
+                    concept_node_ids.append(nid)
+
+        if not concept_node_ids:
+            return []
+
+        extra: list[Edge] = []
+        for edge in uow.edges.list_edges_for_nodes(concept_node_ids, active_only=True):
+            if edge.edge_family != 'concept':
+                continue
+            if edge.id is None or edge.id in existing_edge_ids:
+                continue
+            extra.append(edge)
+            existing_edge_ids.add(edge.id)
+            if len(extra) >= max_extra_edges:
+                break
+
+        return extra
 
     def _seed_score(self, node: Node, block: MeaningBlock, *, reused_via: str | None) -> float:
         base = node.trust_score * 0.45 + node.stability_score * 0.35
