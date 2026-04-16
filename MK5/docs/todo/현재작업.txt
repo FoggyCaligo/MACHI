@@ -1,40 +1,26 @@
 현재작업 (단기 실행)
 업데이트: 2026-04-16
 
-[완료]
-1. revision marker edge 기반 deactivation/merge 실행 규칙 강화
-2. connect_type/family/kind 분기형 contradiction rule 확장
-3. evidence(신뢰도/출처/신호강도) 가중치 기반 revision gate 반영
-4. temporary edge(session_temporary) topic-shift 자동 정리
-5. revision rule analytics + tuner + report 도구 추가
-6. ChatPipeline에서 revision rule override JSON 자동 로딩/주입 연결
+[문서 기준 정리 완료]
+1. `edge_type` 중심 설계 폐기 방향 확정
+2. `relation_detail.kind` / `connect_semantics` 중심 의미론 폐기 방향 확정
+3. `connect_type = flow / neutral / opposite / conflict` 기준 정리
+4. 일반 node + edge 구조 중심으로 문서 기준 재정렬
+5. local activation / direct access / bounded log / 기준시점 재형성 방향 정리
 
-[이번 턴 반영]
-1. `REVISION_RULE_OVERRIDES_PATH` / `REVISION_RULE_PROFILE` / `REVISION_RULE_OVERRIDES_STRICT` 설정 추가
-2. override JSON 로딩 실패 시 non-strict는 계속 진행, strict는 즉시 오류 처리
-3. `debug.revision_policy` 섹션으로 적용 정책 상태 노출
-4. override 로딩 검증 테스트 파일 추가
-   - `tests/unit/test_chat_pipeline_revision_policy.py`
-5. report 기반 override 자동 적용 도구 추가
-   - `tools/revision_rule_apply_overrides.py`
-6. override on/off 결과 차이 E2E 회귀 추가
-   - `tests/integration/test_revision_rule_override_e2e.py`
-7. Windows 운영 스케줄러 스크립트 추가
-   - `tools/run_revision_rule_override_job.ps1`
-   - `tools/setup_revision_rule_scheduler.ps1`
-8. kind 의존 제거(코어 로직)
-   - revision marker/집계/게이트에서 `relation_detail.kind` 사용 제거
-   - contradiction detector의 relation_kind 분기 제거
-9. 독립 revision review 경로 추가
-   - `ThoughtEngine.run_revision_review`
-   - `ChatPipeline.run_internal_revision_review`
-   - `POST /internal/revision-review`
+[현재 코드 관찰]
+1. revision/promotion/model-edge-assertion 쪽 진척은 있음
+2. 하지만 일부 코드/문서가 다시 `kind` 문자열 ontology에 기대기 시작함
+3. revision/event 흐름과 현재 상위 철학 사이에 불일치가 생김
 
 [다음 우선작업]
-1. override 프로필 전환과 실험(A/B) 경로 정리
-2. E2E 회귀 테스트 보강 (다중 rule/family/connect_type 케이스)
-3. Linux cron 대응 스크립트/운영 가이드 추가
+1. 코드 전반의 `kind` 의존 제거
+2. conflict edge 생성/강화 정책 정리
+3. direct access 계약 정리
+4. bounded log 기반 기준시점 재형성 계약 정리
+5. ingest에서 `concept/flow`, `concept/neutral`, `relation/conflict` 형성 강화
 
 [리스크/메모]
-1. Windows에서 pytest temp/cache 권한 이슈(`WinError 5`)가 간헐적으로 발생
-2. 필요 시 `py_compile` + 스모크 검증을 병행
+1. override/revision 운영 도구가 현재 철학을 덮어쓰지 않도록 주의 필요
+2. Windows에서 pytest temp/cache 권한 이슈(`WinError 5`)가 간헐적으로 발생
+3. 필요 시 `py_compile` + 스모크 검증을 병행

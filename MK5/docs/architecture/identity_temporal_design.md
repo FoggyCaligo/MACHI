@@ -3,37 +3,36 @@
 Updated: 2026-04-16
 
 ## Goal
-Keep identity continuity and topic continuity in the graph layer, not prompt-only behavior.
+Keep identity continuity and temporal continuity in the graph layer, not prompt-only behavior.
 
 ## Identity Modeling
-- Represent entities as nodes.
-- Keep hierarchy with `concept/flow` edges.
-- Keep naming/alias links with `concept/neutral` edges.
-- Keep interaction state with `relation/*` edges.
+- Entities are represented as nodes.
+- Hierarchy is read through `concept/flow` edges.
+- Naming/alias/display variants are read through `concept/neutral` edges.
+- Interaction state is read through `relation/*` edges.
+- Identity should not depend on string hard-coding or prompt-only persistence.
+
+## Pronoun And Session Overlay
+- Pronouns like `나`, `너` are not treated as permanent hard-coded identity nodes.
+- Session-specific references may be represented as temporary bindings on top of long-lived graph nodes.
+- The long-lived graph keeps stable identity anchors; the current conversation can overlay temporary reference edges when needed.
 
 ## Temporal Handling
 - Do not create a new subtype node for every time slice.
-- Track changes through Node/Edge timestamps and event lineage.
-- Use history traversal to answer "past vs current state" queries.
+- Keep the same node/edge, accumulate updates, and use event history for reconstruction.
+- When past state is needed, reconstruct a past **local active graph** from the current node/edge and bounded logs.
 
 ## Activation Requirements
-- Identity anchors must be visible in local thought view.
+- Identity anchors must be visible in the local thought view when relevant.
 - Concept hierarchy must survive edge budget limits.
-- Concept 2-hop expansion is required for better continuity.
+- The graph should support both local activation reasoning and direct node access.
 
-## Current Implementation Notes
-- Session identity anchors are introduced in ingest/activation path.
-- `ActivationEngine` includes concept-priority sorting and concept 2-hop expansion.
-- Debug metadata includes identity and concept-hop signals.
-- Identity-anchor-to-message bindings are stored as `session_temporary` relation edges.
-- Temporary binding edges are cleared when `topic_continuity=shifted_topic` and `topic_overlap_count=0`.
-
-## Pronoun Policy
-- Pronouns (`나`, `너`, `그사람`) are not hard-coded by string heuristics.
-- Base interpretation is delegated to model/thinking pipeline.
-- Graph-layer temporary edges are used only for context binding when graph reasoning needs it.
+## Current Direction
+- Session identity anchors may exist, but they should not become a prompt-only substitute for graph structure.
+- `concept/flow`, `concept/neutral`, `relation/*` should remain readable from graph structure itself.
+- Temporary bindings should be cleared when they are no longer contextually active.
 
 ## Next Steps
-1. Strengthen identity-specific contradiction/revision rules.
-2. Add explicit as-of traversal contract.
-3. Add regression tests for name continuity and self/other distinction.
+1. Strengthen identity-specific contradiction/revision rules using graph structure, not string labels.
+2. Define the explicit direct-access + local-activation contract.
+3. Define the bounded-log based temporal reconstruction contract.
