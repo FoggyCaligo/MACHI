@@ -130,9 +130,7 @@ class IntentManager:
         revision_actions: list,
         previous_snapshot_meta: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        inquiry_count = sum(1 for block in thought_view.seed_blocks if block.block_kind == 'inquiry_phrase')
-        relation_phrase_count = sum(1 for block in thought_view.seed_blocks if block.block_kind == 'relation_phrase')
-        statement_count = sum(1 for block in thought_view.seed_blocks if block.block_kind == 'statement_phrase')
+        statement_count = len(thought_view.seed_blocks)
         pattern_count = len(thought_view.activated_patterns)
         seed_count = len(thought_view.seed_nodes)
         local_node_count = len(thought_view.nodes)
@@ -161,8 +159,6 @@ class IntentManager:
         previous_tone_hint = self._previous_tone_hint(previous_snapshot_meta)
 
         return {
-            'inquiry_count': inquiry_count,
-            'relation_phrase_count': relation_phrase_count,
             'statement_count': statement_count,
             'pattern_count': pattern_count,
             'seed_count': seed_count,
@@ -202,30 +198,30 @@ class IntentManager:
             scores['graph_grounded_reasoning'] -= 0.05
         scores['structure_review'] += min(features['trust_update_count'] * 0.08, 0.16)
 
-        if features['inquiry_count']:
-            scores['open_information_request'] += 0.42
         if features['graph_sparse']:
-            scores['open_information_request'] += 0.16
-        if features['inquiry_count'] and features['graph_dense']:
-            scores['relation_synthesis_request'] += 0.12
+            scores['open_information_request'] += 0.28
+        if features['seed_count'] <= 1 and not features['pointer_backed']:
+            scores['open_information_request'] += 0.12
+        if features['graph_sparse'] and not features['pattern_rich']:
+            scores['open_information_request'] += 0.06
 
         if features['pointer_backed'] and features['graph_sparse']:
             scores['memory_probe'] += 0.42
         if features['overlap_count'] > 0:
             scores['memory_probe'] += min(features['overlap_count'] * 0.08, 0.16)
 
-        if features['relation_phrase_count']:
-            scores['relation_synthesis_request'] += 0.28
         if features['pattern_rich']:
-            scores['relation_synthesis_request'] += 0.24
+            scores['relation_synthesis_request'] += 0.30
         if features['graph_dense']:
-            scores['relation_synthesis_request'] += 0.16
+            scores['relation_synthesis_request'] += 0.20
+        if features['edge_count'] >= 2 and features['local_node_count'] >= 2:
+            scores['relation_synthesis_request'] += 0.10
 
         if features['local_node_count'] > 0:
             scores['graph_grounded_reasoning'] += 0.18
         if features['edge_count'] > 0:
             scores['graph_grounded_reasoning'] += 0.14
-        if not features['inquiry_count'] and not features['contradiction_count']:
+        if not features['contradiction_count']:
             scores['graph_grounded_reasoning'] += 0.06
 
         previous_name = self._previous_intent_name(features['previous_snapshot_meta'])
@@ -280,7 +276,7 @@ class IntentManager:
             score -= 0.22
         if features['revision_count']:
             score -= 0.16
-        if features['graph_sparse'] and features['inquiry_count']:
+        if features['graph_sparse'] and not features['pointer_backed']:
             score -= 0.08
         score += min(chosen_score * 0.18, 0.18)
         return round(max(0.0, min(1.0, score)), 6)
@@ -289,7 +285,7 @@ class IntentManager:
         threshold = self.base_stop_threshold
         if features['contradiction_count'] or features['revision_count']:
             threshold += 0.12
-        if features['graph_sparse'] and features['inquiry_count']:
+        if features['graph_sparse'] and not features['pointer_backed']:
             threshold += 0.05
         if previous_snapshot_meta:
             previous_shifted = bool(previous_snapshot_meta.get('shifted'))
@@ -327,10 +323,8 @@ class IntentManager:
             evidence.append(f"contradictions:{features['contradiction_count']}")
         if features['revision_count']:
             evidence.append(f"revisions:{features['revision_count']}")
-        if features['inquiry_count']:
-            evidence.append(f"inquiry_blocks:{features['inquiry_count']}")
-        if features['relation_phrase_count']:
-            evidence.append(f"relation_blocks:{features['relation_phrase_count']}")
+        if features['statement_count']:
+            evidence.append(f"seed_blocks:{features['statement_count']}")
         if features['pattern_count']:
             evidence.append(f"patterns:{features['pattern_count']}")
         if features['pointer_count']:

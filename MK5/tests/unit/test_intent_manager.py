@@ -83,19 +83,13 @@ def _edge(edge_id: int, source: int, target: int) -> Edge:
     )
 
 
-def _view(*, inquiry=False, relation=False, pointers=0, edges=0, patterns=0, seed_ids=(1,), node_ids=(1,)) -> ThoughtView:
+def _view(*, pointers=0, edges=0, patterns=0, seed_ids=(1,), node_ids=(1,)) -> ThoughtView:
     seed_nodes = [ActivatedNode(node=_node(node_id), activation_score=0.8, activated_by='seed') for node_id in seed_ids]
     nodes = [_node(node_id) for node_id in node_ids]
     edge_rows = [_edge(i + 1, node_ids[0], node_ids[min(1, len(node_ids)-1)]) for i in range(edges)] if edges else []
     pointer_rows = [type('Pointer', (), {'id': i + 1})() for i in range(pointers)]
     activated_patterns = [type('Pattern', (), {'pattern_name': f'p{i}'})() for i in range(patterns)]
-    blocks = []
-    if inquiry:
-        blocks.append(_block('?', 'inquiry_phrase', 0))
-    if relation:
-        blocks.append(_block('a->b', 'relation_phrase', 1))
-    if not blocks:
-        blocks.append(_block('stmt', 'statement_phrase', 0))
+    blocks = [_block('stmt', 'statement_phrase', 0)]
     return ThoughtView(
         session_id='s1',
         message_text='msg',
@@ -150,7 +144,7 @@ def test_intent_manager_keeps_previous_intent_when_overlap_continues() -> None:
     snapshot = manager.resolve(
         uow,
         request=Request(session_id='s1', message_id=11, message_text='msg'),
-        thought_view=_view(relation=True, edges=4, patterns=1, seed_ids=(1, 2), node_ids=(1, 2, 3)),
+        thought_view=_view(edges=4, patterns=1, seed_ids=(1, 2), node_ids=(1, 2, 3)),
         contradiction_signals=[],
         trust_updates=[],
         revision_actions=[],

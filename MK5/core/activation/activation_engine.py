@@ -167,8 +167,6 @@ class ActivationEngine:
     def _extract_topic_terms(self, seed_blocks: list[MeaningBlock], seed_nodes: list[ActivatedNode]) -> list[str]:
         tokens: list[str] = []
         for block in seed_blocks:
-            if block.block_kind not in {'noun_phrase', 'statement_phrase', 'relation_phrase'}:
-                continue
             self._append_topic_token(tokens, block.normalized_text or block.text)
         for activated in seed_nodes:
             self._append_topic_token(
