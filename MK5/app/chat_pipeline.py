@@ -185,6 +185,25 @@ class ChatPipeline:
             current_turn_index=request.turn_index,
             intent_snapshot=intent_snapshot_meta,
         )
+        if temporary_edge_cleanup_result.triggered and temporary_edge_cleanup_result.deactivated_edge_ids:
+            # Temporary edge cleanup happens after we already built the first thought view.
+            # Rebuild once so the current-turn answer is generated from the cleaned graph state.
+            thought_view = self.activation_engine.build_view(
+                ActivationRequest(
+                    session_id=request.session_id,
+                    content=request.message,
+                )
+            )
+            thought_result = self.thought_engine.think(
+                ThoughtRequest(
+                    session_id=request.session_id,
+                    message_id=ingest_result.message_id,
+                    message_text=request.message,
+                ),
+                thought_view,
+            )
+            if thought_result.core_conclusion is None:
+                raise RuntimeError('ThoughtEngine did not produce core_conclusion after temporary edge cleanup')
 
         # ── Model feedback: LLM이 본 그래프 상태를 기반으로 엣지 trust를 조정 ──────
         # Ollama 모델이 선택된 경우에만 실행. mk5-graph-core는 no-op.
