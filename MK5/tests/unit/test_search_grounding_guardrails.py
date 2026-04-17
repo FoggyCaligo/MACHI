@@ -8,13 +8,14 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config import QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS, SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS
+from config import QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS, SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS, SEARCH_SCOPE_GATE_TIMEOUT_SECONDS
 from app.chat_pipeline import ChatPipeline
 from core.entities.conclusion import CoreConclusion
 from core.search.question_slot_planner import QuestionSlotPlanner
 from core.search.search_coverage_refiner import SearchCoverageRefiner
 from core.search.search_need_evaluator import SearchNeedDecision
 from core.search.search_query_planner import SearchPlan, SearchQueryPlanner
+from core.search.search_scope_gate import SearchScopeGate
 from core.search.search_sidecar import (
     CompositeSearchBackend,
     SearchBackendResult,
@@ -90,21 +91,28 @@ def test_question_slot_planner_supports_structured_search_aspects() -> None:
 def test_search_llm_helpers_use_bounded_default_timeouts() -> None:
     planner = QuestionSlotPlanner()
     refiner = SearchCoverageRefiner()
+    scope_gate = SearchScopeGate()
 
     assert planner.client is not None
     assert refiner.client is not None
+    assert scope_gate.client is not None
     assert planner.client.timeout_seconds == QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS
     assert refiner.client.timeout_seconds == SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS
+    assert scope_gate.client.timeout_seconds == SEARCH_SCOPE_GATE_TIMEOUT_SECONDS
 
 
-def test_search_coverage_refiner_marks_aspects_from_evidence_summaries() -> None:
+def test_search_coverage_refiner_marks_aspects_from_evidence_passages() -> None:
     refiner = SearchCoverageRefiner(
         client=FakeClient(
             json.dumps(
                 {
-                    'covered_slot_labels': ['plate armor', 'plate armor:construction'],
-                    'missing_slot_labels': ['mail armor', 'mail armor:construction'],
-                    'reason': 'Only plate armor evidence includes a construction summary.',
+                    'slot_support': [
+                        {'slot_label': 'plate armor', 'supported': True, 'evidence_indices': [1]},
+                        {'slot_label': 'plate armor:construction', 'supported': True, 'evidence_indices': [1]},
+                        {'slot_label': 'mail armor', 'supported': False, 'evidence_indices': []},
+                        {'slot_label': 'mail armor:construction', 'supported': False, 'evidence_indices': []},
+                    ],
+                    'reason': 'Only plate armor evidence includes a construction passage.',
                 }
             )
         )
@@ -147,6 +155,7 @@ def test_search_coverage_refiner_marks_aspects_from_evidence_summaries() -> None
             SearchEvidence(
                 title='Plate armor',
                 snippet='Plate armor uses large rigid plates.',
+                passages=['Plate armor uses large rigid steel plates joined together.'],
                 url='https://example.test/plate',
                 provider='provider-a',
             )
@@ -155,9 +164,10 @@ def test_search_coverage_refiner_marks_aspects_from_evidence_summaries() -> None
 
     assert analysis.covered_slot_labels == ['plate armor', 'plate armor:construction']
     assert analysis.missing_slot_labels == ['mail armor', 'mail armor:construction']
+    assert analysis.slot_supports[0].evidence_indices == [1]
 
 
-def test_search_query_planner_uses_structured_missing_slots() -> None:
+def test_search_query_planner_uses_entity_aspect_queries() -> None:
     planner = SearchQueryPlanner()
     decision = SearchNeedDecision(
         need_search=True,
@@ -184,7 +194,7 @@ def test_search_query_planner_uses_structured_missing_slots() -> None:
         decision=decision,
     )
 
-    assert plan.queries == ['plate armor', 'mail armor']
+    assert plan.queries == ['plate armor construction', 'plate armor', 'mail armor construction', 'mail armor']
     assert plan.metadata['planned_aspect_extraction'] == [
         {'entity': 'plate armor', 'aspects': ['construction']},
         {'entity': 'mail armor', 'aspects': ['construction']},
@@ -220,7 +230,7 @@ def test_chat_pipeline_marks_no_evidence_when_search_returns_no_results(tmp_path
             ],
         ),
         plan=SearchPlan(
-            queries=['plate armor', 'mail armor'],
+            queries=['plate armor construction', 'mail armor construction'],
             reason='test plan',
             focus_terms=['plate armor', 'mail armor'],
         ),
@@ -271,6 +281,7 @@ def test_composite_search_backend_merges_results_and_provider_errors() -> None:
                     SearchEvidence(
                         title='Plate armor',
                         snippet='Rigid metal plates.',
+                        passages=['Plate armor consists of rigid metal plates.'],
                         url='https://example.test/plate',
                         provider='provider-a',
                     )
@@ -282,6 +293,7 @@ def test_composite_search_backend_merges_results_and_provider_errors() -> None:
                     SearchEvidence(
                         title='Mail armor',
                         snippet='Interlinked rings.',
+                        passages=['Mail armor uses many interlinked metal rings.'],
                         url='https://example.test/mail',
                         provider='provider-b',
                     )

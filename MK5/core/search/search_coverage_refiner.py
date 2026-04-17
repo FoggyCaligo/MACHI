@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from config import (
@@ -29,10 +29,24 @@ class SearchCoverageRefinerError(RuntimeError):
 
 
 @dataclass(slots=True)
+class SlotCoverageSupport:
+    slot_label: str
+    supported: bool
+    evidence_indices: list[int] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class SearchCoverageAnalysis:
-    covered_slot_labels: list[str]
-    missing_slot_labels: list[str]
+    slot_supports: list[SlotCoverageSupport]
     reason: str
+
+    @property
+    def covered_slot_labels(self) -> list[str]:
+        return [item.slot_label for item in self.slot_supports if item.supported]
+
+    @property
+    def missing_slot_labels(self) -> list[str]:
+        return [item.slot_label for item in self.slot_supports if not item.supported]
 
 
 @dataclass(slots=True)
@@ -85,18 +99,15 @@ class SearchCoverageRefiner:
 
         payload = self._parse_json(result.content)
         requested_labels = [slot.label for slot in slot_plan.requested_slots]
-        covered_labels = self._normalize_labels(payload.get('covered_slot_labels') or [], requested_labels)
-        missing_labels = self._normalize_labels(payload.get('missing_slot_labels') or [], requested_labels)
+        slot_supports = self._normalize_slot_supports(
+            payload=payload,
+            requested_labels=requested_labels,
+            evidence_count=len(evidences),
+        )
 
-        if not missing_labels:
-            missing_labels = [label for label in requested_labels if label not in covered_labels]
-        if not covered_labels:
-            covered_labels = [label for label in requested_labels if label not in missing_labels]
-
-        reason = ' '.join(str(payload.get('reason') or '').split()).strip() or 'search evidence based slot coverage refinement'
+        reason = ' '.join(str(payload.get('reason') or '').split()).strip() or 'search evidence passage based slot coverage refinement'
         return SearchCoverageAnalysis(
-            covered_slot_labels=covered_labels,
-            missing_slot_labels=missing_labels,
+            slot_supports=slot_supports,
             reason=reason,
         )
 
@@ -117,8 +128,7 @@ class SearchCoverageRefiner:
             inferred_intent=conclusion.inferred_intent,
             requested_slots=self._format_requested_slots(slot_plan.requested_slots),
             comparison_axes=self._format_lines(slot_plan.comparison_axes),
-            evidence_summaries=self._format_evidences(evidences),
-            current_summary=conclusion.explanation_summary or '- 없음',
+            evidence_payload=self._format_evidences(evidences),
         )
 
     def _format_requested_slots(self, slots: list[RequestedSlot]) -> str:
@@ -136,10 +146,93 @@ class SearchCoverageRefiner:
             return '- 없음'
         lines: list[str] = []
         for index, item in enumerate(evidences[:6], start=1):
-            lines.append(
-                f'{index}. [{item.provider or "-"}] {item.title or "-"} | {item.snippet or "-"}'
-            )
+            lines.append(f'{index}. [{item.provider or "-"}] {item.title or "-"}')
+            lines.append(f'   - url: {item.url or "-"}')
+            lines.append(f'   - snippet: {item.snippet or "-"}')
+            passages = list(item.passages[:2]) if getattr(item, 'passages', None) else []
+            if passages:
+                for passage in passages:
+                    lines.append(f'   - passage: {passage}')
+            else:
+                lines.append('   - passage: -')
         return '\n'.join(lines)
+
+    def _normalize_slot_supports(
+        self,
+        *,
+        payload: dict[str, Any],
+        requested_labels: list[str],
+        evidence_count: int,
+    ) -> list[SlotCoverageSupport]:
+        raw_supports = payload.get('slot_support') or payload.get('slot_supports') or []
+        normalized: list[SlotCoverageSupport] = []
+        seen: set[str] = set()
+        if isinstance(raw_supports, list):
+            for item in raw_supports:
+                if not isinstance(item, dict):
+                    continue
+                label = self._normalize_label(item.get('slot_label') or item.get('label') or '', requested_labels)
+                if not label or label in seen:
+                    continue
+                evidence_indices = self._normalize_evidence_indices(item.get('evidence_indices') or [], evidence_count=evidence_count)
+                supported = bool(item.get('supported')) and bool(evidence_indices)
+                normalized.append(
+                    SlotCoverageSupport(
+                        slot_label=label,
+                        supported=supported,
+                        evidence_indices=evidence_indices if supported else [],
+                    )
+                )
+                seen.add(label)
+
+        if not normalized:
+            covered_labels = self._normalize_labels(payload.get('covered_slot_labels') or [], requested_labels)
+            missing_labels = self._normalize_labels(payload.get('missing_slot_labels') or [], requested_labels)
+            for label in requested_labels:
+                if label in covered_labels:
+                    normalized.append(SlotCoverageSupport(slot_label=label, supported=True, evidence_indices=[1] if evidence_count > 0 else []))
+                elif label in missing_labels:
+                    normalized.append(SlotCoverageSupport(slot_label=label, supported=False, evidence_indices=[]))
+
+        support_by_label = {item.slot_label: item for item in normalized}
+        finalized: list[SlotCoverageSupport] = []
+        for label in requested_labels:
+            existing = support_by_label.get(label)
+            if existing is None:
+                finalized.append(SlotCoverageSupport(slot_label=label, supported=False, evidence_indices=[]))
+                continue
+            if existing.supported and not existing.evidence_indices:
+                finalized.append(SlotCoverageSupport(slot_label=label, supported=False, evidence_indices=[]))
+                continue
+            finalized.append(existing)
+        return finalized
+
+    def _normalize_labels(self, labels: list[Any], requested_labels: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in labels:
+            label = self._normalize_label(item, requested_labels)
+            if not label or label in normalized:
+                continue
+            normalized.append(label)
+        return normalized
+
+    def _normalize_label(self, value: Any, requested_labels: list[str]) -> str:
+        candidate = ' '.join(str(value or '').split()).strip()
+        return candidate if candidate in requested_labels else ''
+
+    def _normalize_evidence_indices(self, values: Any, *, evidence_count: int) -> list[int]:
+        if not isinstance(values, list):
+            return []
+        indices: list[int] = []
+        for value in values:
+            try:
+                index = int(value)
+            except (TypeError, ValueError):
+                continue
+            if index < 1 or index > evidence_count or index in indices:
+                continue
+            indices.append(index)
+        return indices
 
     def _parse_json(self, text: str) -> dict[str, Any]:
         raw = str(text or '').strip()
@@ -181,13 +274,3 @@ class SearchCoverageRefiner:
         if start == -1 or end == -1 or end <= start:
             return ''
         return text[start:end + 1]
-
-    def _normalize_labels(self, values: list[Any], requested_labels: list[str]) -> list[str]:
-        normalized: list[str] = []
-        allowed = set(requested_labels)
-        for item in values:
-            label = ' '.join(str(item or '').split()).strip()
-            if not label or label not in allowed or label in normalized:
-                continue
-            normalized.append(label)
-        return normalized

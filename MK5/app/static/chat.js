@@ -456,6 +456,7 @@ function summarizeSearch(search) {
   const results = Array.isArray(search.results) ? search.results : [];
   const ingest = Array.isArray(search.ingest) ? search.ingest : [];
 
+  const scopeGate = decision.scope_gate || search.scope_gate || null;
   const lines = [
     "search debug",
     `- planning_attempted: ${search.planning_attempted ? "true" : "false"}`,
@@ -464,6 +465,9 @@ function summarizeSearch(search) {
     `- decision_reason: ${decision.reason || "-"}`,
     `- gap_summary: ${decision.gap_summary || "-"}`,
     `- target_terms: ${(decision.target_terms || []).join(" | ") || "없음"}`,
+    `- scope_gate_attempted: ${decision.scope_gate_attempted ? "true" : "false"}`,
+    `- scope_gate_scope: ${scopeGate?.scope || "-"}`,
+    `- scope_gate_reason: ${scopeGate?.reason || decision.scope_gate_error || search.scope_gate_error || "-"}`,
   ];
 
   if (plan) {
@@ -482,6 +486,12 @@ function summarizeSearch(search) {
     const requestedSlots = (decision.requested_slots || []).map((slot) => slot.label || `${slot.entity || "-"}:${slot.aspect || ""}`).join(" | ");
     const coveredSlots = (decision.covered_slots || []).map((slot) => slot.label || `${slot.entity || "-"}:${slot.aspect || ""}`).join(" | ");
     const missingSlots = (decision.missing_slots || []).map((slot) => slot.label || `${slot.entity || "-"}:${slot.aspect || ""}`).join(" | ");
+    const slotSupports = (decision.slot_supports || [])
+      .map((item) => {
+        const indices = Array.isArray(item?.evidence_indices) ? item.evidence_indices.join(",") : "";
+        return `${item?.slot_label || "-"}:${item?.supported ? "supported" : "missing"}${indices ? `@${indices}` : ""}`;
+      })
+      .join(" | ");
     const issuedSlotQueries = (plan.issued_slot_queries || [])
       .map((item) => {
         const entity = item?.entity || "-";
@@ -496,6 +506,7 @@ function summarizeSearch(search) {
     lines.push(`- requested_slots: ${requestedSlots || "없음"}`);
     lines.push(`- covered_slots: ${coveredSlots || "없음"}`);
     lines.push(`- missing_slots: ${missingSlots || "없음"}`);
+    lines.push(`- slot_supports: ${slotSupports || "없음"}`);
     lines.push(`- issued_slot_queries: ${issuedSlotQueries || "없음"}`);
   } else {
     lines.push(`- planned_queries: 없음`);
@@ -515,6 +526,8 @@ function summarizeSearch(search) {
     lines.push(
       `${index + 1}. [${item.provider || "-"} | trust=${item.trust_hint ?? "-"} | provenance=${item.source_provenance || "-"}] ${item.title || "(제목 없음)"}`
     );
+    const passages = Array.isArray(item.passages) ? item.passages.filter(Boolean).slice(0, 2) : [];
+    passages.forEach((passage) => lines.push(`   - passage: ${passage}`));
   });
 
   if (Array.isArray(search.provider_errors) && search.provider_errors.length > 0) {

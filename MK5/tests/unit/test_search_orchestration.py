@@ -8,6 +8,7 @@ from core.entities.thought_view import ActivatedNode, ThoughtView
 from core.search.question_slot_planner import QuestionSlotPlanner
 from core.search.search_need_evaluator import SearchNeedEvaluator
 from core.search.search_query_planner import SearchQueryPlanner
+from core.search.search_scope_gate import SearchScopeGateDecision, SearchScopeGateError
 from core.search.search_sidecar import SearchEvidence, SearchSidecar
 
 
@@ -36,10 +37,32 @@ class FakeBackend:
             SearchEvidence(
                 title=query,
                 snippet='result',
+                passages=[f'{query} passage'],
                 url=f'https://example.test/{query}',
                 provider='fake-backend',
             )
         ]
+
+
+class FakeScopeGate:
+    def __init__(self, *, needs_external_search: bool, reason: str = 'scope gate decision') -> None:
+        self.needs_external_search = needs_external_search
+        self.reason = reason
+        self.call_count = 0
+
+    def decide(self, *, model_name, message, thought_view, conclusion, target_terms):
+        self.call_count += 1
+        return SearchScopeGateDecision(
+            needs_external_search=self.needs_external_search,
+            scope='world_grounding' if self.needs_external_search else 'local_graph_only',
+            reason=self.reason,
+            confidence='high',
+        )
+
+
+class ErrorScopeGate:
+    def decide(self, *, model_name, message, thought_view, conclusion, target_terms):
+        raise SearchScopeGateError('scope gate failed')
 
 
 def _thought_view() -> ThoughtView:
@@ -122,7 +145,20 @@ def test_search_sidecar_runs_missing_slot_queries() -> None:
         'aspects': ['구조', '방어력', '기동성'],
         'reason': '비교 대상과 비교 축을 슬롯으로 분리한다.',
     }))
-    sidecar = SearchSidecar(slot_planner=QuestionSlotPlanner(client=slot_client), query_planner=SearchQueryPlanner(), backend=FakeBackend())
+    coverage_client = FakeClient(json.dumps({
+        'slot_support': [
+            {'slot_label': '판금갑옷', 'supported': True, 'evidence_indices': [1]},
+            {'slot_label': '판금갑옷:구조', 'supported': True, 'evidence_indices': [1]},
+        ],
+        'reason': '첫 번째 evidence가 판금갑옷과 구조를 직접 뒷받침한다.',
+    }))
+    sidecar = SearchSidecar(
+        scope_gate=FakeScopeGate(needs_external_search=True),
+        slot_planner=QuestionSlotPlanner(client=slot_client),
+        coverage_refiner=__import__('core.search.search_coverage_refiner', fromlist=['SearchCoverageRefiner']).SearchCoverageRefiner(client=coverage_client),
+        query_planner=SearchQueryPlanner(),
+        backend=FakeBackend(),
+    )
     result = sidecar.run(
         message=_conclusion().user_input_summary,
         thought_view=_thought_view(),
@@ -135,11 +171,12 @@ def test_search_sidecar_runs_missing_slot_queries() -> None:
     assert result.plan is not None
     assert result.plan.queries
     assert result.results
+    assert result.decision.slot_supports
 
 
 def test_search_sidecar_fails_open_when_slot_planner_returns_invalid_json() -> None:
     slot_client = FakeClient('not-json-at-all')
-    sidecar = SearchSidecar(slot_planner=QuestionSlotPlanner(client=slot_client), query_planner=SearchQueryPlanner(), backend=FakeBackend())
+    sidecar = SearchSidecar(scope_gate=FakeScopeGate(needs_external_search=True), slot_planner=QuestionSlotPlanner(client=slot_client), query_planner=SearchQueryPlanner(), backend=FakeBackend())
     result = sidecar.run(
         message=_conclusion().user_input_summary,
         thought_view=_thought_view(),
@@ -151,3 +188,48 @@ def test_search_sidecar_fails_open_when_slot_planner_returns_invalid_json() -> N
     assert result.decision.need_search is True
     assert result.decision.reason == 'slot_planner_failed_needs_grounding'
     assert result.error == 'question slot planner returned invalid JSON'
+
+
+def test_search_sidecar_blocks_local_graph_only_requests_before_slot_planner() -> None:
+    sidecar = SearchSidecar(
+        scope_gate=FakeScopeGate(needs_external_search=False, reason='현재 대화와 내부 반응 범위에서 답하는 편이 맞다.'),
+        slot_planner=QuestionSlotPlanner(client=FakeClient('not-json-at-all')),
+        query_planner=SearchQueryPlanner(),
+        backend=FakeBackend(),
+    )
+    result = sidecar.run(
+        message='지금 너도 그 시스템이 적용되었는데, 느껴지는 게 있니?',
+        thought_view=_thought_view(),
+        conclusion=_conclusion(),
+        model_name='gemma3:4b',
+    )
+    assert result.attempted is False
+    assert result.planning_attempted is False
+    assert result.decision.need_search is False
+    assert result.decision.reason == 'external_grounding_not_needed'
+    assert result.error is None
+    assert result.decision.metadata.get('scope_gate_blocked') is True
+
+
+def test_search_sidecar_fails_open_when_scope_gate_errors() -> None:
+    slot_client = FakeClient(json.dumps({
+        'entities': ['판금갑옷'],
+        'aspects': ['구조'],
+        'reason': '비교 대상과 비교 축을 슬롯으로 분리한다.',
+    }))
+    sidecar = SearchSidecar(
+        scope_gate=ErrorScopeGate(),
+        slot_planner=QuestionSlotPlanner(client=slot_client),
+        query_planner=SearchQueryPlanner(),
+        backend=FakeBackend(),
+    )
+    result = sidecar.run(
+        message='판금갑옷의 구조를 알려줘.',
+        thought_view=_thought_view(),
+        conclusion=_conclusion(),
+        model_name='gemma3:4b',
+    )
+    assert result.planning_attempted is True
+    assert result.slot_plan is not None
+    assert result.decision.metadata.get('scope_gate_attempted') is True
+    assert result.decision.metadata.get('scope_gate_error') == 'scope gate failed'

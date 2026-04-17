@@ -5,15 +5,19 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from config import SEARCH_BACKEND_TIMEOUT_SECONDS, SEARCH_MAX_RESULTS
 from core.entities.conclusion import CoreConclusion
-from core.search.search_coverage_refiner import SearchCoverageRefiner, SearchCoverageRefinerError
 from core.entities.thought_view import ThoughtView
 from core.search.question_slot_planner import QuestionSlotPlan, QuestionSlotPlanner, QuestionSlotPlannerError
+from core.search.search_scope_gate import SearchScopeGate, SearchScopeGateDecision, SearchScopeGateError
+from core.search.search_coverage_refiner import (
+    SearchCoverageRefiner,
+    SearchCoverageRefinerError,
+    SlotCoverageSupport,
+)
 from core.search.search_need_evaluator import SearchNeedDecision, SearchNeedEvaluator
 from core.search.search_query_planner import SearchPlan, SearchQueryPlanner, SearchQueryPlannerError
 
@@ -29,10 +33,13 @@ class SearchEvidence:
     claim_domain: str = 'world_fact'
     trust_hint: str = ''
     source_provenance: str = ''
+    passages: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def text_for_graph(self) -> str:
+        if self.passages:
+            return f'{self.title}: {self.passages[0]}'
         if self.snippet:
             return f'{self.title}: {self.snippet}'
         return self.title
@@ -106,6 +113,7 @@ class WikipediaSearchBackend:
             url = urls[index] if index < len(urls) else ''
             if not title:
                 continue
+            passages = self._fetch_summary_passages(title=str(title), lang=lang, timeout_seconds=timeout_seconds)
             evidences.append(
                 SearchEvidence(
                     title=str(title),
@@ -115,10 +123,23 @@ class WikipediaSearchBackend:
                     domain='wikipedia.org',
                     trust_hint='reference',
                     source_provenance=f'wikipedia:{lang}',
+                    passages=passages,
                     metadata={'query': query, 'lang': lang},
                 )
             )
         return evidences, None
+
+    def _fetch_summary_passages(self, *, title: str, lang: str, timeout_seconds: float) -> list[str]:
+        safe_title = quote(title.replace(' ', '_'))
+        summary_url = f'https://{lang}.wikipedia.org/api/rest_v1/page/summary/{safe_title}'
+        request = Request(summary_url, headers={'User-Agent': 'MK5-SearchSidecar/0.1'})
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                payload = json.loads(response.read().decode('utf-8'))
+        except Exception:
+            return []
+        extract = ' '.join(str(payload.get('extract') or '').split()).strip()
+        return [extract] if extract else []
 
 
 @dataclass(slots=True)
@@ -230,8 +251,9 @@ class CompositeSearchBackend:
         provider_errors: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         seen_titles: set[str] = set()
+        per_backend_limit = max(1, max_results)
         for backend in self.backends:
-            response = backend.search(query, max_results=max_results, timeout_seconds=timeout_seconds)
+            response = backend.search(query, max_results=per_backend_limit, timeout_seconds=timeout_seconds)
             normalized = self._normalize_response(response)
             provider_errors.extend(normalized.provider_errors)
             for item in normalized.results:
@@ -259,10 +281,13 @@ class SearchSidecar:
     max_results: int = SEARCH_MAX_RESULTS
     timeout_seconds: float = SEARCH_BACKEND_TIMEOUT_SECONDS
     need_evaluator: SearchNeedEvaluator = field(default_factory=SearchNeedEvaluator)
+    scope_gate: SearchScopeGate = field(default_factory=SearchScopeGate)
     slot_planner: QuestionSlotPlanner = field(default_factory=QuestionSlotPlanner)
     query_planner: SearchQueryPlanner = field(default_factory=SearchQueryPlanner)
     coverage_refiner: SearchCoverageRefiner = field(default_factory=SearchCoverageRefiner)
     backend: SearchBackend = field(default_factory=CompositeSearchBackend)
+    evidence_passage_limit: int = 2
+    evidence_fetch_timeout_seconds: float = 3.0
 
     def should_search(self, message: str, thought_view: ThoughtView, conclusion: CoreConclusion) -> bool:
         decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
@@ -277,6 +302,33 @@ class SearchSidecar:
         model_name: str,
     ) -> SearchRunResult:
         coarse_decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
+        scope_gate_decision: SearchScopeGateDecision | None = None
+        scope_gate_error: str | None = None
+
+        if self._can_attempt_scope_gate(model_name):
+            try:
+                scope_gate_decision = self.scope_gate.decide(
+                    model_name=model_name,
+                    message=message,
+                    thought_view=thought_view,
+                    conclusion=conclusion,
+                    target_terms=coarse_decision.target_terms,
+                )
+            except SearchScopeGateError as exc:
+                scope_gate_error = str(exc)
+
+        scope_gate_metadata = self._build_scope_gate_metadata(
+            scope_gate_decision=scope_gate_decision,
+            scope_gate_error=scope_gate_error,
+        )
+
+        if scope_gate_decision is not None and not scope_gate_decision.needs_external_search:
+            blocked_decision = self._decision_after_scope_gate_block(
+                coarse_decision=coarse_decision,
+                scope_gate_decision=scope_gate_decision,
+            )
+            blocked_decision.metadata = {**blocked_decision.metadata, **scope_gate_metadata}
+            return SearchRunResult(attempted=False, decision=blocked_decision, planning_attempted=False)
 
         try:
             slot_plan = self.slot_planner.plan(
@@ -288,6 +340,7 @@ class SearchSidecar:
             )
         except QuestionSlotPlannerError as exc:
             failed_decision = self._decision_after_slot_planner_failure(coarse_decision, conclusion=conclusion)
+            failed_decision.metadata = {**failed_decision.metadata, **scope_gate_metadata}
             return SearchRunResult(
                 attempted=False,
                 decision=failed_decision,
@@ -301,6 +354,7 @@ class SearchSidecar:
             conclusion=conclusion,
             slot_plan=slot_plan,
         )
+        decision.metadata = {**decision.metadata, **scope_gate_metadata}
         if not decision.need_search:
             return SearchRunResult(attempted=False, decision=decision, slot_plan=slot_plan, planning_attempted=True)
 
@@ -329,8 +383,7 @@ class SearchSidecar:
                 post_search_decision = self._decision_after_search_refinement(
                     original_decision=decision,
                     slot_plan=slot_plan,
-                    covered_slot_labels=analysis.covered_slot_labels,
-                    missing_slot_labels=analysis.missing_slot_labels,
+                    slot_supports=analysis.slot_supports,
                     reason=analysis.reason,
                 )
             except SearchCoverageRefinerError as exc:
@@ -348,27 +401,68 @@ class SearchSidecar:
     def search(self, message: str, thought_view: ThoughtView, conclusion: CoreConclusion, *, model_name: str) -> list[SearchEvidence]:
         return self.run(message=message, thought_view=thought_view, conclusion=conclusion, model_name=model_name).results
 
+    def _can_attempt_scope_gate(self, model_name: str) -> bool:
+        token = str(model_name or '').strip()
+        return bool(token and token != 'mk5-graph-core')
+
+    def _build_scope_gate_metadata(
+        self,
+        *,
+        scope_gate_decision: SearchScopeGateDecision | None,
+        scope_gate_error: str | None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        if scope_gate_decision is not None or scope_gate_error is not None:
+            metadata['scope_gate_attempted'] = True
+        if scope_gate_decision is not None:
+            metadata['scope_gate'] = scope_gate_decision.to_metadata()
+        if scope_gate_error:
+            metadata['scope_gate_error'] = scope_gate_error
+        return metadata
+
+    def _decision_after_scope_gate_block(
+        self,
+        *,
+        coarse_decision: SearchNeedDecision,
+        scope_gate_decision: SearchScopeGateDecision,
+    ) -> SearchNeedDecision:
+        return SearchNeedDecision(
+            need_search=False,
+            reason='external_grounding_not_needed',
+            gap_summary=scope_gate_decision.reason,
+            target_node_ids=list(coarse_decision.target_node_ids),
+            target_terms=list(coarse_decision.target_terms),
+            requested_slots=list(coarse_decision.requested_slots),
+            covered_slots=list(coarse_decision.covered_slots),
+            missing_slots=list(coarse_decision.missing_slots),
+            slot_supports=list(coarse_decision.slot_supports),
+            metadata={
+                **coarse_decision.metadata,
+                'scope_gate_blocked': True,
+            },
+        )
+
     def _decision_after_slot_planner_failure(
         self,
         coarse_decision: SearchNeedDecision,
         *,
         conclusion: CoreConclusion,
     ) -> SearchNeedDecision:
-        if coarse_decision.need_search:
-            target_terms = list(coarse_decision.target_terms)
-            complex_request = len(target_terms) >= 3 or len(conclusion.activated_concepts) >= 4
-            if complex_request:
-                return SearchNeedDecision(
-                    need_search=True,
-                    reason='slot_planner_failed_needs_grounding',
-                    gap_summary='질문 구조 분해는 실패했지만 다중 개념/비교 요청이라 외부 근거 확인이 여전히 필요하다.',
-                    target_node_ids=list(coarse_decision.target_node_ids),
-                    target_terms=target_terms,
-                    requested_slots=list(coarse_decision.requested_slots),
-                    covered_slots=list(coarse_decision.covered_slots),
-                    missing_slots=list(coarse_decision.missing_slots),
-                    metadata={**coarse_decision.metadata, 'slot_planner_failed': True},
-                )
+        target_terms = list(coarse_decision.target_terms)
+        complex_request = len(target_terms) >= 3 or len(conclusion.activated_concepts) >= 4
+        if complex_request:
+            return SearchNeedDecision(
+                need_search=True,
+                reason='slot_planner_failed_needs_grounding',
+                gap_summary='질문 구조 분해는 실패했지만 다중 개념/비교 요청이라 외부 근거 확인이 여전히 필요하다.',
+                target_node_ids=list(coarse_decision.target_node_ids),
+                target_terms=target_terms,
+                requested_slots=list(coarse_decision.requested_slots),
+                covered_slots=list(coarse_decision.covered_slots),
+                missing_slots=list(coarse_decision.missing_slots),
+                slot_supports=list(coarse_decision.slot_supports),
+                metadata={**coarse_decision.metadata, 'slot_planner_failed': True},
+            )
         return coarse_decision
 
     def _execute_plan(self, plan: SearchPlan) -> tuple[list[SearchEvidence], list[dict[str, Any]]]:
@@ -390,10 +484,107 @@ class SearchSidecar:
                 if title_key:
                     seen_titles.add(title_key)
                 item.metadata = {**item.metadata, 'planned_query': query}
+                self._ensure_evidence_passages(item, query=query)
                 aggregated.append(item)
                 if len(aggregated) >= self.max_results:
                     return aggregated, provider_errors
         return aggregated, provider_errors
+
+    def _ensure_evidence_passages(self, item: SearchEvidence, *, query: str) -> None:
+        passages = self._dedupe_passages(list(item.passages or []))
+        if not passages and item.url and self._should_fetch_passages(item.url):
+            fetched = self._fetch_passages_from_url(item.url, query=query, title=item.title)
+            passages.extend(fetched)
+        if not passages and item.snippet:
+            passages.append(item.snippet)
+        item.passages = self._dedupe_passages(passages)[: self.evidence_passage_limit]
+
+    def _should_fetch_passages(self, url: str) -> bool:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or '').lower().strip()
+        if parsed.scheme not in {'http', 'https'}:
+            return False
+        if not hostname:
+            return False
+        if hostname == 'localhost' or hostname.endswith('.test'):
+            return False
+        return True
+
+    def _fetch_passages_from_url(self, url: str, *, query: str, title: str) -> list[str]:
+        request = Request(
+            url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; MK5-SearchSidecar/0.1)',
+                'Accept-Language': 'ko,en;q=0.8',
+            },
+        )
+        timeout = max(0.5, min(self.evidence_fetch_timeout_seconds, self.timeout_seconds))
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                content_type = str(response.headers.get('Content-Type') or '').lower()
+                raw = response.read(250000)
+        except Exception:
+            return []
+
+        text = self._decode_response_bytes(raw)
+        if 'html' in content_type or '<html' in text.lower():
+            return self._extract_html_passages(text=text, query=query, title=title)
+        return self._extract_text_passages(text=text, query=query, title=title)
+
+    def _decode_response_bytes(self, raw: bytes) -> str:
+        for encoding in ('utf-8', 'utf-8-sig', 'cp949', 'euc-kr', 'latin-1'):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode('utf-8', errors='ignore')
+
+    def _extract_html_passages(self, *, text: str, query: str, title: str) -> list[str]:
+        text = re.sub(r'<(script|style|noscript)[^>]*>.*?</\1>', ' ', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'</?(p|div|br|li|section|article|h1|h2|h3|h4|h5|h6|tr|ul|ol)[^>]*>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = html.unescape(text)
+        return self._extract_text_passages(text=text, query=query, title=title)
+
+    def _extract_text_passages(self, *, text: str, query: str, title: str) -> list[str]:
+        candidates: list[str] = []
+        for raw_line in re.split(r'\n+', text):
+            normalized = ' '.join(str(raw_line or '').split()).strip()
+            if len(normalized) < 40:
+                continue
+            candidates.append(normalized)
+        if not candidates:
+            return []
+        tokens = self._query_tokens([query, title])
+        scored: list[tuple[int, int, str]] = []
+        for candidate in candidates[:80]:
+            lowered = candidate.lower()
+            score = sum(1 for token in tokens if token in lowered)
+            scored.append((score, len(candidate), candidate))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        ordered = [item[2] for item in scored if item[0] > 0]
+        if not ordered:
+            ordered = [item[2] for item in scored]
+        return self._dedupe_passages(ordered)[: self.evidence_passage_limit]
+
+    def _query_tokens(self, values: list[str]) -> list[str]:
+        tokens: list[str] = []
+        for value in values:
+            for token in re.split(r'\s+', str(value or '').lower()):
+                token = token.strip()
+                if len(token) < 2 or token in tokens:
+                    continue
+                tokens.append(token)
+        return tokens
+
+    def _dedupe_passages(self, passages: list[str]) -> list[str]:
+        deduped: list[str] = []
+        for passage in passages:
+            normalized = ' '.join(str(passage or '').split()).strip()
+            if not normalized or normalized in deduped:
+                continue
+            deduped.append(normalized)
+        return deduped
 
     def _normalize_backend_response(
         self,
@@ -410,28 +601,35 @@ class SearchSidecar:
         *,
         original_decision: SearchNeedDecision,
         slot_plan: QuestionSlotPlan,
-        covered_slot_labels: list[str],
-        missing_slot_labels: list[str],
+        slot_supports: list[SlotCoverageSupport],
         reason: str,
     ) -> SearchNeedDecision:
         slot_by_label = {slot.label: slot for slot in slot_plan.requested_slots}
         covered = [
-            self.need_evaluator._slot_dict(slot_by_label[label])
-            for label in covered_slot_labels
-            if label in slot_by_label
+            self.need_evaluator._slot_dict(slot_by_label[item.slot_label])
+            for item in slot_supports
+            if item.supported and item.slot_label in slot_by_label
         ]
         missing = [
-            self.need_evaluator._slot_dict(slot_by_label[label])
-            for label in missing_slot_labels
-            if label in slot_by_label
+            self.need_evaluator._slot_dict(slot_by_label[item.slot_label])
+            for item in slot_supports
+            if not item.supported and item.slot_label in slot_by_label
+        ]
+        support_payload = [
+            {
+                'slot_label': item.slot_label,
+                'supported': item.supported,
+                'evidence_indices': list(item.evidence_indices),
+            }
+            for item in slot_supports
+            if item.slot_label in slot_by_label
         ]
         if not missing and len(covered) < len(slot_plan.requested_slots):
             missing = [
                 self.need_evaluator._slot_dict(slot)
                 for slot in slot_plan.requested_slots
-                if slot.label not in covered_slot_labels
+                if slot.label not in {item.slot_label for item in slot_supports if item.supported}
             ]
-
         need_search = bool(missing)
         gap_summary = (
             f'검색 결과를 반영해도 아직 비어 있는 슬롯이 있다: {", ".join(item["label"] for item in missing[:4])}'
@@ -447,6 +645,7 @@ class SearchSidecar:
             requested_slots=list(original_decision.requested_slots),
             covered_slots=covered,
             missing_slots=missing,
+            slot_supports=support_payload,
             metadata={
                 **original_decision.metadata,
                 'post_search_refined': True,

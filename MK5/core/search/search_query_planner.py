@@ -50,25 +50,26 @@ class SearchQueryPlanner:
         queries: list[str] = []
         issued_slot_queries: list[dict[str, Any]] = []
         planned_aspect_extraction: list[dict[str, Any]] = []
+        grounding_queries: list[str] = []
+        comparison_queries: list[str] = []
+
         for entity, info in grouped.items():
-            query = self._compact_query([entity])
-            if not query:
-                continue
-            if query not in queries:
+            aspects = list(info['aspects'][:4])
+            planned_aspect_extraction.append({'entity': entity, 'aspects': list(aspects)})
+            for query in self._build_queries_for_entity(entity=entity, aspects=aspects):
+                if query in queries:
+                    continue
                 queries.append(query)
-            issued_slot_queries.append(
-                {
-                    'entity': entity,
-                    'aspects': list(info['aspects'][:6]),
-                    'query': query,
-                }
-            )
-            planned_aspect_extraction.append(
-                {
-                    'entity': entity,
-                    'aspects': list(info['aspects'][:6]),
-                }
-            )
+                grounding_queries.append(query)
+                issued_slot_queries.append(
+                    {
+                        'entity': entity,
+                        'aspects': list(aspects),
+                        'query': query,
+                    }
+                )
+                if len(queries) >= self.max_queries:
+                    break
             if len(queries) >= self.max_queries:
                 break
 
@@ -76,7 +77,7 @@ class SearchQueryPlanner:
             raise SearchQueryPlannerError('search planner produced no usable entity queries')
 
         focus_terms = list(grouped.keys())[:6]
-        reason = 'missing slot은 우선 entity 단위로 검색하고, 필요한 aspect는 검색 결과 안에서 확인하도록 계획했다.'
+        reason = 'missing slot을 entity+aspect 조합 쿼리로 먼저 좁히고, 필요하면 entity 쿼리로 보강하도록 계획했다.'
         return SearchPlan(
             queries=queries,
             reason=reason,
@@ -85,8 +86,25 @@ class SearchQueryPlanner:
                 'issued_slot_queries': issued_slot_queries,
                 'planned_aspect_extraction': planned_aspect_extraction,
                 'missing_slots': missing_slots,
+                'grounding_queries': grounding_queries,
+                'comparison_queries': comparison_queries,
             },
         )
+
+    def _build_queries_for_entity(self, *, entity: str, aspects: list[str]) -> list[str]:
+        queries: list[str] = []
+        if aspects:
+            combined = self._compact_query([entity, *aspects[:2]])
+            if combined:
+                queries.append(combined)
+            for aspect in aspects[:3]:
+                detailed = self._compact_query([entity, aspect])
+                if detailed and detailed not in queries:
+                    queries.append(detailed)
+        entity_only = self._compact_query([entity])
+        if entity_only and entity_only not in queries:
+            queries.append(entity_only)
+        return queries
 
     def _compact_query(self, parts: list[str]) -> str:
         tokens: list[str] = []

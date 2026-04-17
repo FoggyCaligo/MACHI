@@ -19,6 +19,7 @@ class SearchNeedDecision:
     requested_slots: list[dict[str, str]] = field(default_factory=list)
     covered_slots: list[dict[str, str]] = field(default_factory=list)
     missing_slots: list[dict[str, str]] = field(default_factory=list)
+    slot_supports: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -111,6 +112,14 @@ class SearchNeedEvaluator:
             requested_slots=requested_slots,
             covered_slots=[self._slot_dict(slot) for slot in covered],
             missing_slots=[self._slot_dict(slot) for slot in missing],
+            slot_supports=[
+                {
+                    'slot_label': slot.label,
+                    'supported': slot.label not in {item.label for item in missing},
+                    'evidence_indices': [],
+                }
+                for slot in slot_plan.requested_slots
+            ],
             metadata={
                 'grounding_scope_node_ids': target_node_ids,
                 'slot_plan_reason': slot_plan.reason,
@@ -186,6 +195,9 @@ class SearchNeedEvaluator:
             str(payload.get('content') or ''),
             str(payload.get('summary') or ''),
         ]
+        passages = payload.get('passages') or []
+        if isinstance(passages, list):
+            parts.extend(str(item or '') for item in passages)
         aliases = payload.get('raw_aliases') or []
         if isinstance(aliases, list):
             parts.extend(str(item or '') for item in aliases)

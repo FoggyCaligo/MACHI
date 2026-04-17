@@ -315,6 +315,10 @@ class ChatPipeline:
                 'requested_slots': search_run.decision.requested_slots,
                 'covered_slots': search_run.decision.covered_slots,
                 'missing_slots': search_run.decision.missing_slots,
+                'slot_supports': search_run.decision.slot_supports,
+                'scope_gate_attempted': bool(search_run.decision.metadata.get('scope_gate_attempted')),
+                'scope_gate': search_run.decision.metadata.get('scope_gate'),
+                'scope_gate_error': search_run.decision.metadata.get('scope_gate_error'),
             },
             'slot_plan': {
                 'entities': search_run.slot_plan.entities,
@@ -462,6 +466,7 @@ class ChatPipeline:
             'requested_slots': search_run.decision.requested_slots,
             'covered_slots': search_run.decision.covered_slots,
             'missing_slots': search_run.decision.missing_slots,
+            'slot_supports': search_run.decision.slot_supports,
             'grounded_terms': search_grounding['grounded_terms'],
             'missing_terms': search_grounding['missing_terms'],
             'missing_aspects': search_grounding['missing_aspects'],
@@ -473,10 +478,14 @@ class ChatPipeline:
             'error': search_run.error,
             'provider_errors': search_grounding['provider_errors'],
             'no_evidence_found': search_grounding['no_evidence_found'],
+            'scope_gate_attempted': bool(search_run.decision.metadata.get('scope_gate_attempted')),
+            'scope_gate': search_run.decision.metadata.get('scope_gate'),
+            'scope_gate_error': search_run.decision.metadata.get('scope_gate_error'),
             'summaries': [
                 {
                     'title': item.title,
                     'snippet': item.snippet,
+                    'passages': list(item.passages[:2]),
                     'provider': item.provider,
                     'url': item.url,
                 }
