@@ -107,7 +107,10 @@ class OllamaVerbalizer:
         if previous_topic_terms:
             lines.append(f"- previous_topic_terms: {' | '.join(previous_topic_terms)}")
 
-        for item in recent_memory_messages[-4:]:
+        for item in recent_memory_messages[-6:]:
+            role_token = ' '.join(str(item.get('role') or '').split()).strip().lower()
+            if role_token != 'user':
+                continue
             role = self._truncate(item.get('role', '-'), 16)
             turn_index = item.get('turn_index', '-')
             content = self._truncate(item.get('content', ''), 140)

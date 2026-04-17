@@ -57,7 +57,7 @@ class ActionLayerBuilder:
             if recent_memory_count > 0:
                 answer_goal = 'State what is remembered from recent conversation history, and separate remembered details from anything still unknown.'
                 suggested_actions = [
-                    'Summarize the most recent user and assistant turns first.',
+                    'Summarize the most recent user turns first.',
                     'Reuse remembered names, roles, and ongoing topics only when they appear in recent session memory.',
                     'Say clearly when a requested detail is not present in current session memory.',
                 ]

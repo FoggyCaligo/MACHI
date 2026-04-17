@@ -134,4 +134,5 @@ def test_ollama_verbalizer_includes_recent_memory_context() -> None:
     assert '- recent_memory_count: 2' in prompt
     assert '- topic_terms: Jay | Machi' in prompt
     assert '- memory: turn=4 role=user content=Call me Jay.' in prompt
-    assert '- memory_snapshot: memory_probe | Jay | Machi' in prompt
+    assert 'role=assistant' not in prompt
+    assert '- memory_snapshot: memory_probe | Jay | Machi' not in prompt
