@@ -112,6 +112,7 @@ class ChatPipeline:
             ActivationRequest(
                 session_id=request.session_id,
                 content=request.message,
+                current_root_event_id=ingest_result.root_event_id,
             )
         )
         thought_result = self.thought_engine.think(
@@ -159,6 +160,7 @@ class ChatPipeline:
                 ActivationRequest(
                     session_id=request.session_id,
                     content=request.message,
+                    current_root_event_id=ingest_result.root_event_id,
                 )
             )
             thought_result = self.thought_engine.think(
@@ -171,13 +173,11 @@ class ChatPipeline:
             )
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
-            if search_run.slot_plan is not None and not search_run.decision.metadata.get('post_search_refined'):
-                search_run.decision = self.search_sidecar.need_evaluator.evaluate(
-                    message=request.message,
-                    thought_view=thought_view,
-                    conclusion=thought_result.core_conclusion,
-                    slot_plan=search_run.slot_plan,
-                )
+            search_run.decision = self.search_sidecar.need_evaluator.evaluate(
+                message=request.message,
+                thought_view=thought_view,
+                conclusion=thought_result.core_conclusion,
+            )
 
         temporary_edge_cleanup_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
         model_feedback_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
@@ -271,17 +271,8 @@ class ChatPipeline:
                 'covered_slots': search_run.decision.covered_slots,
                 'missing_slots': search_run.decision.missing_slots,
                 'slot_supports': search_run.decision.slot_supports,
-                'scope_gate_attempted': bool(search_run.decision.metadata.get('scope_gate_attempted')),
-                'scope_gate': search_run.decision.metadata.get('scope_gate'),
-                'scope_gate_error': search_run.decision.metadata.get('scope_gate_error'),
             },
-            'slot_plan': {
-                'entities': search_run.slot_plan.entities,
-                'aspects': search_run.slot_plan.aspects,
-                'comparison_axes': search_run.slot_plan.comparison_axes,
-                'requested_slots': [slot.label for slot in search_run.slot_plan.requested_slots],
-                'reason': search_run.slot_plan.reason,
-            } if search_run.slot_plan else None,
+            'slot_plan': None,
             'plan': {
                 'queries': search_run.plan.queries,
                 'reason': search_run.plan.reason,
@@ -425,17 +416,10 @@ class ChatPipeline:
             'grounded_terms': search_grounding['grounded_terms'],
             'missing_terms': search_grounding['missing_terms'],
             'missing_aspects': search_grounding['missing_aspects'],
-            'slot_entities': search_run.slot_plan.entities if search_run.slot_plan else [],
-            'slot_aspects': search_run.slot_plan.aspects if search_run.slot_plan else [],
-            'comparison_axes': search_run.slot_plan.comparison_axes if search_run.slot_plan else [],
             'planned_queries': search_run.plan.queries if search_run.plan else [],
-            'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []) if search_run.plan else [],
             'error': search_run.error,
             'provider_errors': search_grounding['provider_errors'],
             'no_evidence_found': search_grounding['no_evidence_found'],
-            'scope_gate_attempted': bool(search_run.decision.metadata.get('scope_gate_attempted')),
-            'scope_gate': search_run.decision.metadata.get('scope_gate'),
-            'scope_gate_error': search_run.decision.metadata.get('scope_gate_error'),
             'summaries': [
                 {
                     'title': item.title,

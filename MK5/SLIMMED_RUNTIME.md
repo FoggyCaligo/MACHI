@@ -1,37 +1,9 @@
-# MK5 Slimmed Runtime
+# Slimmed Runtime
 
-이 ZIP은 최신 기준본에서 핫패스를 다이어트한 버전입니다.
+현재 런타임은 concept-access 중심의 최소 루프로 정리되어 있습니다.
 
-## 런타임에서 제거/비활성화한 층
-- PatternDetector
-- IntentManager
-- ConceptDifferentiationService
-- TemporaryEdgeService
-- ModelFeedbackService
-- ModelEdgeAssertionService
-- ConnectTypePromotionService
-- revision rule analytics / tuner / scheduler / override automation
-
-## 유지한 핵심
-- GraphIngestService
-- ActivationEngine (seed/neighbor/pointer expansion)
-- ThoughtEngine의 최소 루프
-  - ContradictionDetector
-  - TrustManager
-  - StructureRevisionService
-  - ConclusionBuilder
-- StructureRevisionService 내부의 node merge / pointer rewrite
-- edge connect_type의 핵심 축
-  - flow / neutral / opposite / conflict
-- SearchSidecar와 검색 ingest 경로
-- Verbalizer
-
-## 구현 방식
-- 핫패스 wiring 제거
-- 관련 서비스 파일/도구/테스트 일부 제거
-- ThoughtEngine은 최소 IntentSnapshot만 직접 구성
-- ActivationEngine은 pattern detection 없이 local graph만 구성
-
-## 주의
-- 이전에 관련 기능을 검증하던 테스트/운영 스크립트 일부는 같이 제거됨
-- 답변 품질 보조층이 빠졌기 때문에, 이후 개선은 핫패스에 새 기능을 덕지덕지 붙이기보다 핵심 루프 설계를 다듬는 방향이 적합함
+- 현재 입력은 grounding 근거가 아니라 접근 키로만 사용
+- normalized concept 전체는 그래프에 들어갈 수 있음
+- search obligation/query emission은 핵심 concept 중심으로 제한
+- 개념 결합 검색은 사용하지 않음
+- 제거된 레이어: question_slot_planner, search_scope_gate, search_coverage_refiner

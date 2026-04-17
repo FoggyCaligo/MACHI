@@ -83,7 +83,7 @@ def test_chat_pipeline_raises_user_facing_error_when_verbalizer_times_out(tmp_pa
         db_path=db_path,
         schema_path=schema_path,
         verbalizer=TimeoutVerbalizer(),
-        search_sidecar=SearchSidecar(),
+        search_sidecar=NoSearchSidecar(),
     )
 
     with pytest.raises(UserFacingChatError) as exc_info:
@@ -97,3 +97,8 @@ def test_chat_pipeline_raises_user_facing_error_when_verbalizer_times_out(tmp_pa
         )
 
     assert '제한 시간' in str(exc_info.value)
+
+
+class NoSearchSidecar(SearchSidecar):
+    def run(self, *, message: str, thought_view, conclusion: CoreConclusion, model_name: str) -> SearchRunResult:
+        return SearchRunResult(attempted=False, planning_attempted=False, decision=SearchNeedDecision(need_search=False, reason='none', gap_summary='none'))

@@ -21,6 +21,7 @@ from storage.unit_of_work import UnitOfWork
 class ActivationRequest:
     session_id: str
     content: str
+    current_root_event_id: int | None = None
     max_seed_nodes: int = 12
     max_neighbor_edges: int = 64
     max_neighbors: int = 48
@@ -87,6 +88,7 @@ class ActivationEngine:
                 'recent_memory_count': len(recent_memory_messages),
                 'identity_node_ids': [node.id for node in identity_nodes if node.id is not None],
                 'identity_terms': self._extract_identity_terms(identity_nodes),
+                'current_root_event_id': request.current_root_event_id,
             }
             thought_view = self.thought_view_builder.build(
                 session_id=request.session_id,
