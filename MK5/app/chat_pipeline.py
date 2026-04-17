@@ -5,18 +5,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from config import REVISION_RULE_OVERRIDES_PATH, REVISION_RULE_OVERRIDES_STRICT, REVISION_RULE_PROFILE
 from core.activation.activation_engine import ActivationEngine, ActivationRequest
 from core.search.search_sidecar import SearchEvidence, SearchRunResult, SearchSidecar
 from core.thinking.structure_revision_service import StructureRevisionService
 from core.thinking.thought_engine import ThoughtEngine, ThoughtRequest
-from core.update.connect_type_promotion_service import ConnectTypePromotionResult, ConnectTypePromotionService
-from core.update.graph_commit_service import GraphCommitService
 from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestResult, GraphIngestService
-from core.update.model_edge_assertion_service import ModelEdgeAssertionResult, ModelEdgeAssertionService
-from core.update.model_feedback_service import ModelFeedbackResult, ModelFeedbackService
 from core.update.node_merge_service import NodeMergeService
-from core.update.temporary_edge_service import TemporaryEdgeCleanupResult, TemporaryEdgeService
 from core.verbalization.verbalizer import Verbalizer
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
 
@@ -49,44 +43,51 @@ class ChatPipeline:
         *,
         verbalizer: Verbalizer | None = None,
         search_sidecar: SearchSidecar | None = None,
-        model_feedback_service: ModelFeedbackService | None = None,
-        model_edge_assertion_service: ModelEdgeAssertionService | None = None,
-        connect_type_promotion_service: ConnectTypePromotionService | None = None,
-        graph_commit_service: GraphCommitService | None = None,
-        temporary_edge_service: TemporaryEdgeService | None = None,
+        model_feedback_service: object | None = None,
+        model_edge_assertion_service: object | None = None,
+        connect_type_promotion_service: object | None = None,
+        graph_commit_service: object | None = None,
+        temporary_edge_service: object | None = None,
         revision_rule_overrides_path: str | Path | None = None,
-        revision_rule_profile: str = REVISION_RULE_PROFILE,
-        revision_rule_overrides_strict: bool = REVISION_RULE_OVERRIDES_STRICT,
+        revision_rule_profile: str = '',
+        revision_rule_overrides_strict: bool = False,
     ) -> None:
         self.db_path = db_path
         self.schema_path = schema_path
-        (
-            self.revision_rule_overrides,
-            self.revision_rule_override_path,
-            self.revision_rule_override_load_error,
-        ) = self._load_revision_rule_overrides(
-            revision_rule_overrides_path
-            if revision_rule_overrides_path is not None
-            else REVISION_RULE_OVERRIDES_PATH,
-            strict=revision_rule_overrides_strict,
-        )
+        self.revision_rule_overrides = {}
+        self.revision_rule_override_path = str(revision_rule_overrides_path or '')
+        self.revision_rule_override_load_error = ''
         self.revision_rule_profile = revision_rule_profile or ''
+        self.slimmed_runtime = True
+        self.disabled_runtime_layers = [
+            'pattern_detector',
+            'intent_manager',
+            'concept_differentiation_service',
+            'temporary_edge_service',
+            'model_feedback_service',
+            'model_edge_assertion_service',
+            'connect_type_promotion_service',
+            'revision_rule_analytics',
+            'revision_rule_tuner',
+            'revision_rule_scheduler',
+            'revision_rule_override_automation',
+        ]
         self.ingest_service = GraphIngestService(self._uow_factory)
         self.activation_engine = ActivationEngine(self._uow_factory)
         self.thought_engine = ThoughtEngine(
             self._uow_factory,
             structure_revision_service=StructureRevisionService(
                 node_merge_service=NodeMergeService(self._uow_factory),
-                rule_overrides=self.revision_rule_overrides,
+                rule_overrides={},
             ),
         )
         self.verbalizer = verbalizer or Verbalizer()
         self.search_sidecar = search_sidecar or SearchSidecar()
-        self.model_feedback_service = model_feedback_service or ModelFeedbackService()
-        self.model_edge_assertion_service = model_edge_assertion_service or ModelEdgeAssertionService(self._uow_factory)
-        self.connect_type_promotion_service = connect_type_promotion_service or ConnectTypePromotionService()
-        self.graph_commit_service = graph_commit_service or GraphCommitService(self._uow_factory)
-        self.temporary_edge_service = temporary_edge_service or TemporaryEdgeService()
+        self.model_feedback_service = None
+        self.model_edge_assertion_service = None
+        self.connect_type_promotion_service = None
+        self.graph_commit_service = None
+        self.temporary_edge_service = None
 
     def _uow_factory(self) -> SqliteUnitOfWork:
         return SqliteUnitOfWork(self.db_path, schema_path=self.schema_path, initialize_schema=True)
@@ -178,56 +179,10 @@ class ChatPipeline:
                     slot_plan=search_run.slot_plan,
                 )
 
-        intent_snapshot_meta = dict(thought_result.metadata.get('intent_snapshot', {}) or {})
-        temporary_edge_cleanup_result: TemporaryEdgeCleanupResult = self.temporary_edge_service.cleanup_on_topic_shift(
-            self._uow_factory,
-            session_id=request.session_id,
-            current_turn_index=request.turn_index,
-            intent_snapshot=intent_snapshot_meta,
-        )
-        if temporary_edge_cleanup_result.triggered and temporary_edge_cleanup_result.deactivated_edge_ids:
-            # Temporary edge cleanup happens after we already built the first thought view.
-            # Rebuild once so the current-turn answer is generated from the cleaned graph state.
-            thought_view = self.activation_engine.build_view(
-                ActivationRequest(
-                    session_id=request.session_id,
-                    content=request.message,
-                )
-            )
-            thought_result = self.thought_engine.think(
-                ThoughtRequest(
-                    session_id=request.session_id,
-                    message_id=ingest_result.message_id,
-                    message_text=request.message,
-                ),
-                thought_view,
-            )
-            if thought_result.core_conclusion is None:
-                raise RuntimeError('ThoughtEngine did not produce core_conclusion after temporary edge cleanup')
-
-        # ── Model feedback: LLM이 본 그래프 상태를 기반으로 엣지 trust를 조정 ──────
-        # Ollama 모델이 선택된 경우에만 실행. mk5-graph-core는 no-op.
-        model_feedback_result = self.model_feedback_service.extract(
-            model_name=request.model_name,
-            message=request.message,
-            thought_view=thought_view,
-            conclusion=thought_result.core_conclusion,
-        )
-        if model_feedback_result.plan is not None:
-            self.graph_commit_service.commit(model_feedback_result.plan)
-
-        model_edge_assertion_result: ModelEdgeAssertionResult = self.model_edge_assertion_service.assert_edges(
-            model_name=request.model_name,
-            message=request.message,
-            thought_view=thought_view,
-        )
-        connect_type_promotion_result: ConnectTypePromotionResult
-        with self._uow_factory() as uow:
-            connect_type_promotion_result = self.connect_type_promotion_service.promote(
-                uow,
-                message_id=ingest_result.message_id,
-            )
-            uow.commit()
+        temporary_edge_cleanup_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
+        model_feedback_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
+        model_edge_assertion_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
+        connect_type_promotion_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
 
         self._attach_search_context(thought_result.core_conclusion, search_run=search_run)
 
@@ -365,10 +320,10 @@ class ChatPipeline:
         }
 
         debug_payload = {
-            'model_feedback': model_feedback_result.to_debug(),
-            'model_edge_assertion': model_edge_assertion_result.to_debug(),
-            'connect_type_promotion': connect_type_promotion_result.to_debug(),
-            'temporary_edge_cleanup': temporary_edge_cleanup_result.to_debug(),
+            'model_feedback': model_feedback_result,
+            'model_edge_assertion': model_edge_assertion_result,
+            'connect_type_promotion': connect_type_promotion_result,
+            'temporary_edge_cleanup': temporary_edge_cleanup_result,
             'revision_policy': self._revision_policy_debug(),
             'ingest': {
                 'message_id': ingest_result.message_id,

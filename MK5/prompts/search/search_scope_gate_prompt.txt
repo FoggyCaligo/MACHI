@@ -4,17 +4,6 @@
 [현재 의도]
 {inferred_intent}
 
-[현재 설명 요약]
-{explanation_summary}
-
-[target terms]
-{target_terms}
-
-[현재 그래프 상태 요약]
-- seed_block_count: {seed_block_count}
-- activated_concept_count: {activated_concept_count}
-- relation_count: {relation_count}
-
 판정 기준:
 - 지금 필요한 것이 외부 검색/외부 공적 근거 확인이면 needs_external_search=true
 - 현재 대화/현재 그래프/내부 반응만으로 처리하는 편이 맞으면 needs_external_search=false

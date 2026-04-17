@@ -100,7 +100,7 @@ class QuestionSlotPlanner:
             payload.get('search_aspects') or payload.get('aspects') or [],
             limit=6,
         )
-        comparison_axes = self._dedupe_items(payload.get('comparison_axes') or [], limit=6)
+        comparison_axes: list[str] = []
         if not entities:
             raise QuestionSlotPlannerError('question slot planner returned no usable entities')
 
@@ -120,7 +120,6 @@ class QuestionSlotPlanner:
             reason=reason,
             metadata={
                 'raw': payload,
-                'background_terms': self._dedupe_items(target_terms, limit=8),
             },
         )
 
@@ -131,8 +130,6 @@ class QuestionSlotPlanner:
         template = load_prompt_text(self.user_prompt_path)
         return template.format(
             user_input=message,
-            inferred_intent=conclusion.inferred_intent,
-            target_terms=self._format_lines(target_terms),
         )
 
     def _format_lines(self, items: list[str]) -> str:

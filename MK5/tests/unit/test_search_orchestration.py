@@ -186,7 +186,7 @@ def test_search_sidecar_fails_open_when_slot_planner_returns_invalid_json() -> N
     assert result.attempted is False
     assert result.planning_attempted is True
     assert result.decision.need_search is True
-    assert result.decision.reason == 'slot_planner_failed_needs_grounding'
+    assert result.decision.reason == 'slot_planner_failed_after_scope_allow'
     assert result.error == 'question slot planner returned invalid JSON'
 
 
@@ -210,6 +210,29 @@ def test_search_sidecar_blocks_local_graph_only_requests_before_slot_planner() -
     assert result.error is None
     assert result.decision.metadata.get('scope_gate_blocked') is True
 
+
+
+
+def test_search_sidecar_does_not_force_need_search_when_scope_gate_is_unavailable_and_slot_planner_fails() -> None:
+    slot_client = FakeClient('not-json-at-all')
+    sidecar = SearchSidecar(
+        scope_gate=ErrorScopeGate(),
+        slot_planner=QuestionSlotPlanner(client=slot_client),
+        query_planner=SearchQueryPlanner(),
+        backend=FakeBackend(),
+    )
+    result = sidecar.run(
+        message='지금 너도 그 시스템이 적용되었는데, 느껴지는 게 있니?',
+        thought_view=_thought_view(),
+        conclusion=_conclusion(),
+        model_name='gemma3:4b',
+    )
+    assert result.attempted is False
+    assert result.planning_attempted is True
+    assert result.decision.need_search is False
+    assert result.decision.reason == 'slot_planner_failed_search_not_confirmed'
+    assert result.decision.metadata.get('scope_gate_attempted') is True
+    assert result.decision.metadata.get('scope_gate_error') == 'scope gate failed'
 
 def test_search_sidecar_fails_open_when_scope_gate_errors() -> None:
     slot_client = FakeClient(json.dumps({

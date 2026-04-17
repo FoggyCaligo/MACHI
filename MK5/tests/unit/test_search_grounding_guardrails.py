@@ -79,7 +79,7 @@ def test_question_slot_planner_supports_structured_search_aspects() -> None:
 
     assert plan.entities == ['plate armor', 'mail armor']
     assert plan.aspects == ['construction']
-    assert plan.comparison_axes == ['mobility']
+    assert plan.comparison_axes == []
     assert [slot.label for slot in plan.requested_slots] == [
         'plate armor',
         'plate armor:construction',

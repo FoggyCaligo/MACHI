@@ -185,6 +185,25 @@ class ConclusionBuilder:
             metadata=dict(action.metadata),
         )
 
+    def _has_prior_context(
+        self,
+        thought_view: ThoughtView,
+        *,
+        intent_snapshot: IntentSnapshot | None,
+    ) -> bool:
+        metadata = thought_view.metadata or {}
+        topic_overlap_count = int(
+            metadata.get('topic_overlap_count')
+            or (getattr(intent_snapshot, 'topic_overlap_count', 0) if intent_snapshot else 0)
+            or 0
+        )
+        continuity = str(getattr(intent_snapshot, 'topic_continuity', 'unknown') or 'unknown') if intent_snapshot else 'unknown'
+        if continuity == 'continued_topic':
+            return True
+        if continuity == 'related_topic' and topic_overlap_count >= 2:
+            return True
+        return False
+
     def _build_explanation_summary(
         self,
         *,
@@ -198,7 +217,8 @@ class ConclusionBuilder:
         intent_snapshot: IntentSnapshot | None = None,
     ) -> str:
         topic = self._summarize_user_input(request.message_text)
-        has_context = bool(activated_concepts or key_relations)
+        has_graph_activation = bool(activated_concepts or key_relations)
+        has_prior_context = self._has_prior_context(thought_view, intent_snapshot=intent_snapshot)
         has_uncertainty = bool(contradiction_signals or revision_actions or trust_updates)
 
         if contradiction_signals:
@@ -211,10 +231,15 @@ class ConclusionBuilder:
                 f"'{topic}'와 관련한 기존 이해를 다시 점검하는 흐름이 있어, "
                 '확실한 부분만 짚는 편이 맞다.'
             )
-        elif has_context:
+        elif has_prior_context:
             summary = (
                 f"'{topic}'와 이어지는 기존 맥락이 일부 있어, "
                 '현재 확보된 범위 안에서 답을 정리할 수 있다.'
+            )
+        elif has_graph_activation:
+            summary = (
+                f"'{topic}'에 대해 현재 활성화된 단서를 바탕으로, "
+                '지금 확인 가능한 범위 안에서 답을 정리할 수 있다.'
             )
         else:
             summary = (
@@ -227,11 +252,11 @@ class ConclusionBuilder:
         if intent_snapshot and intent_snapshot.topic_continuity == 'continued_topic' and not has_uncertainty:
             summary += ' 이전 턴과 같은 주제를 이어서 보고 있다.'
         elif intent_snapshot and intent_snapshot.topic_continuity == 'related_topic' and not has_uncertainty:
-            summary += ' 이전 주제와 일부 이어지지만 초점은 조금 달라졌다.'
+            summary += ' 이전 턴과 겹치는 단서가 조금 있지만, 초점은 지금 질문 쪽으로 옮겨와 있다.'
         elif intent_snapshot and intent_snapshot.topic_continuity == 'shifted_topic' and not has_uncertainty:
             summary += ' 이전 턴과는 다른 주제로 넘어간 상태다.'
 
-        if intent_snapshot and intent_snapshot.should_stop and has_context and not has_uncertainty:
+        if intent_snapshot and intent_snapshot.should_stop and has_graph_activation and not has_uncertainty:
             summary += ' 지금은 더 크게 억지 해석을 덧붙이지 않는 편이 낫다.'
 
         recent_memory_count = int((thought_view.metadata or {}).get('recent_memory_count') or 0)

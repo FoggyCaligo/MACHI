@@ -339,7 +339,12 @@ class SearchSidecar:
                 target_terms=coarse_decision.target_terms,
             )
         except QuestionSlotPlannerError as exc:
-            failed_decision = self._decision_after_slot_planner_failure(coarse_decision, conclusion=conclusion)
+            failed_decision = self._decision_after_slot_planner_failure(
+                coarse_decision,
+                conclusion=conclusion,
+                scope_gate_decision=scope_gate_decision,
+                scope_gate_error=scope_gate_error,
+            )
             failed_decision.metadata = {**failed_decision.metadata, **scope_gate_metadata}
             return SearchRunResult(
                 attempted=False,
@@ -447,23 +452,45 @@ class SearchSidecar:
         coarse_decision: SearchNeedDecision,
         *,
         conclusion: CoreConclusion,
+        scope_gate_decision: SearchScopeGateDecision | None,
+        scope_gate_error: str | None,
     ) -> SearchNeedDecision:
         target_terms = list(coarse_decision.target_terms)
-        complex_request = len(target_terms) >= 3 or len(conclusion.activated_concepts) >= 4
-        if complex_request:
+        if scope_gate_decision is not None and scope_gate_decision.needs_external_search:
             return SearchNeedDecision(
                 need_search=True,
-                reason='slot_planner_failed_needs_grounding',
-                gap_summary='질문 구조 분해는 실패했지만 다중 개념/비교 요청이라 외부 근거 확인이 여전히 필요하다.',
+                reason='slot_planner_failed_after_scope_allow',
+                gap_summary='검색 범위 게이트는 외부 근거가 필요하다고 봤지만, 질문 구조 분해가 실패해 검색 계획을 만들지 못했다.',
                 target_node_ids=list(coarse_decision.target_node_ids),
                 target_terms=target_terms,
                 requested_slots=list(coarse_decision.requested_slots),
                 covered_slots=list(coarse_decision.covered_slots),
                 missing_slots=list(coarse_decision.missing_slots),
                 slot_supports=list(coarse_decision.slot_supports),
-                metadata={**coarse_decision.metadata, 'slot_planner_failed': True},
+                metadata={
+                    **coarse_decision.metadata,
+                    'slot_planner_failed': True,
+                    'search_confirmation': 'scope_gate_allowed',
+                },
             )
-        return coarse_decision
+
+        return SearchNeedDecision(
+            need_search=False,
+            reason='slot_planner_failed_search_not_confirmed',
+            gap_summary='질문 구조 분해에 실패해 외부 검색 필요성을 확정하지 못했다. 현재 확보된 범위 안에서 보수적으로 답한다.',
+            target_node_ids=list(coarse_decision.target_node_ids),
+            target_terms=target_terms,
+            requested_slots=list(coarse_decision.requested_slots),
+            covered_slots=list(coarse_decision.covered_slots),
+            missing_slots=list(coarse_decision.missing_slots),
+            slot_supports=list(coarse_decision.slot_supports),
+            metadata={
+                **coarse_decision.metadata,
+                'slot_planner_failed': True,
+                'search_confirmation': 'not_confirmed',
+                'scope_gate_unavailable': bool(scope_gate_error) and scope_gate_decision is None,
+            },
+        )
 
     def _execute_plan(self, plan: SearchPlan) -> tuple[list[SearchEvidence], list[dict[str, Any]]]:
         aggregated: list[SearchEvidence] = []

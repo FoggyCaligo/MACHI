@@ -5,7 +5,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 
-from core.activation.pattern_detector import PatternDetector
 from core.activation.thought_view_builder import ThoughtViewBuilder
 from core.cognition.direct_node_accessor import DirectNodeAccessor
 from core.cognition.hash_resolver import HashResolver
@@ -14,7 +13,6 @@ from core.cognition.meaning_block import MeaningBlock
 from core.entities.edge import Edge
 from core.entities.node import Node
 from core.entities.node_pointer import NodePointer
-from core.entities.subgraph_pattern import PatternMatch
 from core.entities.thought_view import ActivatedNode, ThoughtView
 from storage.unit_of_work import UnitOfWork
 
@@ -44,15 +42,13 @@ class ActivationEngine:
         hash_resolver: HashResolver | None = None,
         segmenter: InputSegmenter | None = None,
         accessor: DirectNodeAccessor | None = None,
-        thought_view_builder: ThoughtViewBuilder | None = None,
-        pattern_detector: PatternDetector | None = None,
+        thought_view_builder: ThoughtViewBuilder | None = None
     ) -> None:
         self.uow_factory = uow_factory
         self.hash_resolver = hash_resolver or HashResolver()
         self.segmenter = segmenter or InputSegmenter(hash_resolver=self.hash_resolver)
         self.accessor = accessor or DirectNodeAccessor(self.hash_resolver)
         self.thought_view_builder = thought_view_builder or ThoughtViewBuilder()
-        self.pattern_detector = pattern_detector or PatternDetector()
 
     def build_view(self, request: ActivationRequest) -> ThoughtView:
         seed_blocks = self.segmenter.segment(request.content)
@@ -103,9 +99,7 @@ class ActivationEngine:
                 metadata=metadata,
             )
 
-            # Detect and activate patterns in the thought view
-            activated_patterns = self.pattern_detector.detect_patterns(thought_view)
-            thought_view.activated_patterns = activated_patterns
+            thought_view.activated_patterns = []
 
             return thought_view
 

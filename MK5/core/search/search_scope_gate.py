@@ -129,11 +129,6 @@ class SearchScopeGate:
         return template.format(
             user_input=message,
             inferred_intent=conclusion.inferred_intent,
-            explanation_summary=conclusion.explanation_summary or '-',
-            target_terms=self._format_lines(target_terms),
-            seed_block_count=len(thought_view.seed_blocks or []),
-            activated_concept_count=len(conclusion.activated_concepts or []),
-            relation_count=len(conclusion.key_relations or []),
         )
 
     def _format_lines(self, items: list[str]) -> str:
