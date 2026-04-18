@@ -33,7 +33,7 @@ class FakeVerbalizer(Verbalizer):
 
 
 class FakeSearchSidecar(SearchSidecar):
-    def run(self, *, message: str, thought_view, conclusion: CoreConclusion, model_name: str) -> SearchRunResult:
+    def run(self, *, message: str, meaning_blocks, resolved_nodes, current_root_event_id: int | None, model_name: str) -> SearchRunResult:
         decision = SearchNeedDecision(
             need_search=('하데스' in message),
             reason='test',
@@ -45,11 +45,12 @@ class FakeSearchSidecar(SearchSidecar):
         return SearchRunResult(
             attempted=True,
             decision=decision,
-            plan=SearchPlan(queries=['하데스 장소 의미'], reason='test plan', focus_terms=['하데스']),
+            plan=SearchPlan(queries=['하데스'], reason='test plan', focus_terms=['하데스']),
             results=[
                 SearchEvidence(
                     title='하데스',
                     snippet='고대 그리스 신화에서 저승 세계를 가리키는 이름으로도 쓰인다.',
+                    passages=['고대 그리스 신화에서 저승 세계를 가리키는 이름으로도 쓰인다.'],
                     url='https://example.test/hades',
                     provider='fake-search',
                     trust_hint='high',
@@ -87,7 +88,7 @@ def main() -> None:
         assert 'debug' in response and 'activation' in response['debug']
         assert response['thinking']['derived_action']['answer_goal']
         assert response['verbalization']['used_llm'] is False
-        assert response['assistant_ingest']['message_id'] > 0
+        assert response['assistant_ingest']['enabled'] is False
 
         pipeline_with_fake_llm = ChatPipeline(
             db_path=db_path,
@@ -108,7 +109,7 @@ def main() -> None:
         assert response_with_model['verbalization']['used_llm'] is True
         assert response_with_model['search']['query_triggered'] is True
         assert response_with_model['search']['results']
-        assert response_with_model['assistant_ingest']['message_id'] > 0
+        assert response_with_model['assistant_ingest']['enabled'] is False
 
         print('PASS: end-to-end chat pipeline')
 

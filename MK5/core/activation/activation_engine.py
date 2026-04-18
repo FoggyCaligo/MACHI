@@ -21,6 +21,7 @@ from storage.unit_of_work import UnitOfWork
 class ActivationRequest:
     session_id: str
     content: str
+    seed_blocks: list[MeaningBlock] | None = None
     max_seed_nodes: int = 12
     max_neighbor_edges: int = 64
     max_neighbors: int = 48
@@ -52,7 +53,7 @@ class ActivationEngine:
         self.thought_view_builder = thought_view_builder or ThoughtViewBuilder()
 
     def build_view(self, request: ActivationRequest) -> ThoughtView:
-        seed_blocks = self.segmenter.segment(request.content)
+        seed_blocks = list(request.seed_blocks) if request.seed_blocks is not None else self.segmenter.segment(request.content)
         with self.uow_factory() as uow:
             seed_nodes = self._resolve_seed_nodes(uow, seed_blocks, request.max_seed_nodes)
             seed_node_ids = [seed.node.id for seed in seed_nodes if seed.node.id is not None]

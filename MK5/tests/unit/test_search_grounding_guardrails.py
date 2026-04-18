@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-from core.entities.conclusion import CoreConclusion
+from core.cognition.hash_resolver import HashResolver
+from core.cognition.input_segmenter import InputSegmenter
 from core.entities.node import Node
-from core.entities.thought_view import ThoughtView
 from core.search.search_need_evaluator import SearchNeedEvaluator
 from core.verbalization.verbalizer import Verbalizer
 
 
-def test_current_turn_nodes_do_not_count_as_grounding() -> None:
+def _blocks(message: str):
+    blocks = InputSegmenter(hash_resolver=HashResolver()).segment(message)
+    for block in blocks:
+        if block.block_kind == 'noun_phrase':
+            block.metadata.update({'importance': 'primary', 'search_policy': 'search_if_unusable', 'freshness_kind': 'timeless'})
+    return blocks
+
+
+def test_current_turn_nodes_do_not_count_as_usable_grounding() -> None:
     current_node = Node(
         id=1,
         raw_value='글록',
@@ -16,26 +24,18 @@ def test_current_turn_nodes_do_not_count_as_grounding() -> None:
         created_from_event_id=123,
         payload={'source_type': 'search', 'claim_domain': 'world_fact'},
     )
-    view = ThoughtView(
-        session_id='s1',
-        message_text='글록에 대해 알려줄래?',
-        seed_blocks=[],
-        seed_nodes=[],
-        nodes=[current_node],
-        edges=[],
-        pointers=[],
-        metadata={'current_root_event_id': 123},
-    )
     decision = SearchNeedEvaluator().evaluate(
         message='글록에 대해 알려줄래?',
-        thought_view=view,
-        conclusion=CoreConclusion(session_id='s1', message_id=1, user_input_summary='글록에 대해 알려줄래?', inferred_intent='open_information_request'),
+        meaning_blocks=_blocks('글록에 대해 알려줄래?'),
+        resolved_nodes={'글록': current_node},
+        current_root_event_id=123,
     )
-    assert decision.need_search is False or '글록' not in decision.metadata.get('grounded_terms', [])
+    assert decision.need_search is True
+    assert '글록' in decision.metadata.get('missing_terms', [])
 
 
 def test_verbalizer_forces_boundary_response_without_grounded_evidence() -> None:
-    conclusion = CoreConclusion(
+    conclusion = __import__('core.entities.conclusion', fromlist=['CoreConclusion']).CoreConclusion(
         session_id='s1',
         message_id=1,
         user_input_summary='글록에 대해 알려줄래?',

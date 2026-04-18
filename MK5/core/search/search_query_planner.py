@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.entities.conclusion import CoreConclusion
-from core.entities.thought_view import ThoughtView
 from core.search.search_need_evaluator import SearchNeedDecision
 
 
@@ -29,30 +27,32 @@ class SearchQueryPlanner:
         *,
         model_name: str,
         message: str,
-        thought_view: ThoughtView,
-        conclusion: CoreConclusion,
         decision: SearchNeedDecision,
     ) -> SearchPlan:
-        missing_terms = list(decision.metadata.get('missing_terms') or [])
-        focus_terms = missing_terms or list(decision.target_terms)
-        queries: list[str] = []
-        for term in focus_terms:
-            token = ' '.join(str(term or '').split()).strip()
-            if not token or token in queries:
+        term_states = list(decision.metadata.get('term_states') or [])
+        focus_terms: list[str] = []
+        freshness_map: dict[str, str] = {}
+        for item in term_states:
+            term = ' '.join(str(item.get('term') or '').split()).strip()
+            state = str(item.get('state') or '').strip()
+            if not term or state == 'grounded_and_usable' or state == 'local_only':
                 continue
-            queries.append(token)
-            if len(queries) >= self.max_queries:
+            if term in focus_terms:
+                continue
+            focus_terms.append(term)
+            freshness_map[term] = str(item.get('freshness_kind') or 'unknown').strip()
+            if len(focus_terms) >= self.max_queries:
                 break
-        if not queries:
+        if not focus_terms:
             raise SearchQueryPlannerError('no concept queries to search')
         return SearchPlan(
-            queries=queries,
-            reason='grounding이 없는 normalized concept를 개별 검색 쿼리로 발행한다.',
-            focus_terms=list(focus_terms[: self.max_queries]),
+            queries=list(focus_terms),
+            reason='usable하지 않은 핵심 meaning unit을 개별 검색 쿼리로 발행한다.',
+            focus_terms=list(focus_terms),
             metadata={
                 'issued_slot_queries': [
-                    {'entity': term, 'aspects': [], 'query': term}
-                    for term in queries
+                    {'entity': term, 'aspects': [], 'query': term, 'freshness_kind': freshness_map.get(term, 'unknown')}
+                    for term in focus_terms
                 ],
                 'planned_aspect_extraction': [],
             },

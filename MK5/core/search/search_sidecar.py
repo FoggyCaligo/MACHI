@@ -9,8 +9,8 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from config import SEARCH_BACKEND_TIMEOUT_SECONDS, SEARCH_MAX_RESULTS
-from core.entities.conclusion import CoreConclusion
-from core.entities.thought_view import ThoughtView
+from core.cognition.meaning_block import MeaningBlock
+from core.entities.node import Node
 from core.search.search_need_evaluator import SearchNeedDecision, SearchNeedEvaluator
 from core.search.search_query_planner import SearchPlan, SearchQueryPlanner, SearchQueryPlannerError
 
@@ -31,11 +31,12 @@ class SearchEvidence:
 
     @property
     def text_for_graph(self) -> str:
-        if self.passages:
-            return f'{self.title}: {self.passages[0]}'
-        if self.snippet:
-            return f'{self.title}: {self.snippet}'
-        return self.title
+        passage = self.passages[0] if self.passages else ''
+        core = passage or self.snippet or self.title
+        title = self.title.strip()
+        if title and core and core != title:
+            return f'{title}: {core}'
+        return core or title
 
 
 @dataclass(slots=True)
@@ -48,7 +49,6 @@ class SearchBackendResult:
 class SearchRunResult:
     attempted: bool
     decision: SearchNeedDecision
-    slot_plan: Any | None = None
     plan: SearchPlan | None = None
     results: list[SearchEvidence] = field(default_factory=list)
     error: str | None = None
@@ -75,20 +75,12 @@ class WikipediaSearchBackend:
             provider_errors.append({'provider': 'wikipedia-ko', 'query': query, 'error': ko_error})
         if ko_results:
             return SearchBackendResult(results=ko_results[:max_results], provider_errors=provider_errors)
-
         en_results, en_error = self._search_wikipedia(query, lang='en', max_results=max_results, timeout_seconds=timeout_seconds)
         if en_error:
             provider_errors.append({'provider': 'wikipedia-en', 'query': query, 'error': en_error})
         return SearchBackendResult(results=en_results[:max_results], provider_errors=provider_errors)
 
-    def _search_wikipedia(
-        self,
-        query: str,
-        *,
-        lang: str,
-        max_results: int,
-        timeout_seconds: float,
-    ) -> tuple[list[SearchEvidence], str | None]:
+    def _search_wikipedia(self, query: str, *, lang: str, max_results: int, timeout_seconds: float) -> tuple[list[SearchEvidence], str | None]:
         base = f'https://{lang}.wikipedia.org/w/api.php?action=opensearch&search={quote(query)}&limit={max_results}&namespace=0&format=json'
         request = Request(base, headers={'User-Agent': 'MK5-SearchSidecar/0.1'})
         try:
@@ -96,7 +88,6 @@ class WikipediaSearchBackend:
                 payload = json.loads(response.read().decode('utf-8'))
         except Exception as exc:
             return [], str(exc)
-
         titles = payload[1] if len(payload) > 1 else []
         descriptions = payload[2] if len(payload) > 2 else []
         urls = payload[3] if len(payload) > 3 else []
@@ -151,31 +142,16 @@ class DuckDuckGoSearchBackend:
             with urlopen(request, timeout=timeout_seconds) as response:
                 payload = response.read().decode('utf-8', errors='ignore')
         except Exception as exc:
-            return SearchBackendResult(
-                results=[],
-                provider_errors=[{'provider': 'duckduckgo-web', 'query': query, 'error': str(exc)}],
-            )
-
+            return SearchBackendResult(results=[], provider_errors=[{'provider': 'duckduckgo-web', 'query': query, 'error': str(exc)}])
         results = self._parse_results(payload, max_results=max_results)
         for item in results:
             item.metadata = {**item.metadata, 'query': query}
         return SearchBackendResult(results=results)
 
     def _parse_results(self, payload: str, *, max_results: int) -> list[SearchEvidence]:
-        anchor_pattern = re.compile(
-            r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
-            re.IGNORECASE | re.DOTALL,
-        )
-        snippet_pattern = re.compile(
-            r'<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|<div[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>',
-            re.IGNORECASE | re.DOTALL,
-        )
-
-        snippets = [
-            self._clean_html(match.group(1) or match.group(2) or '')
-            for match in snippet_pattern.finditer(payload)
-        ]
-
+        anchor_pattern = re.compile(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+        snippet_pattern = re.compile(r'<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|<div[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>', re.IGNORECASE | re.DOTALL)
+        snippets = [self._clean_html(match.group(1) or match.group(2) or '') for match in snippet_pattern.finditer(payload)]
         evidences: list[SearchEvidence] = []
         seen_urls: set[str] = set()
         for index, match in enumerate(anchor_pattern.finditer(payload)):
@@ -184,7 +160,6 @@ class DuckDuckGoSearchBackend:
             if not resolved_url or resolved_url in seen_urls:
                 continue
             seen_urls.add(resolved_url)
-
             title = self._clean_html(match.group(2))
             if not title:
                 continue
@@ -232,21 +207,15 @@ class DuckDuckGoSearchBackend:
 
 @dataclass(slots=True)
 class CompositeSearchBackend:
-    backends: list[SearchBackend] = field(
-        default_factory=lambda: [
-            WikipediaSearchBackend(),
-            DuckDuckGoSearchBackend(),
-        ]
-    )
+    backends: list[SearchBackend] = field(default_factory=lambda: [WikipediaSearchBackend(), DuckDuckGoSearchBackend()])
 
     def search(self, query: str, *, max_results: int, timeout_seconds: float) -> SearchBackendResult:
         merged: list[SearchEvidence] = []
         provider_errors: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         seen_titles: set[str] = set()
-        per_backend_limit = max(1, max_results)
         for backend in self.backends:
-            response = backend.search(query, max_results=per_backend_limit, timeout_seconds=timeout_seconds)
+            response = backend.search(query, max_results=max_results, timeout_seconds=timeout_seconds)
             normalized = self._normalize_response(response)
             provider_errors.extend(normalized.provider_errors)
             for item in normalized.results:
@@ -279,51 +248,36 @@ class SearchSidecar:
     evidence_passage_limit: int = 2
     evidence_fetch_timeout_seconds: float = 3.0
 
-    def should_search(self, message: str, thought_view: ThoughtView, conclusion: CoreConclusion) -> bool:
-        decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
-        return decision.need_search
-
     def run(
         self,
         *,
         message: str,
-        thought_view: ThoughtView,
-        conclusion: CoreConclusion,
+        meaning_blocks: list[MeaningBlock],
+        resolved_nodes: dict[str, Node | None],
+        current_root_event_id: int | None,
         model_name: str,
     ) -> SearchRunResult:
-        decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
+        decision = self.need_evaluator.evaluate(
+            message=message,
+            meaning_blocks=meaning_blocks,
+            resolved_nodes=resolved_nodes,
+            current_root_event_id=current_root_event_id,
+        )
         if not decision.need_search:
             return SearchRunResult(attempted=False, decision=decision, planning_attempted=True)
-
         try:
-            plan = self.query_planner.plan(
-                model_name=model_name,
-                message=message,
-                thought_view=thought_view,
-                conclusion=conclusion,
-                decision=decision,
-            )
+            plan = self.query_planner.plan(model_name=model_name, message=message, decision=decision)
         except SearchQueryPlannerError as exc:
             return SearchRunResult(attempted=False, decision=decision, error=str(exc), planning_attempted=True)
-
         results, provider_errors = self._execute_plan(plan)
-        post_search_decision = decision
-        if not results and provider_errors:
-            post_search_decision.metadata = {
-                **post_search_decision.metadata,
-                'provider_errors': provider_errors,
-            }
         return SearchRunResult(
             attempted=True,
-            decision=post_search_decision,
+            decision=decision,
             plan=plan,
             results=results,
             planning_attempted=True,
             provider_errors=provider_errors,
         )
-
-    def search(self, message: str, thought_view: ThoughtView, conclusion: CoreConclusion, *, model_name: str) -> list[SearchEvidence]:
-        return self.run(message=message, thought_view=thought_view, conclusion=conclusion, model_name=model_name).results
 
     def _execute_plan(self, plan: SearchPlan) -> tuple[list[SearchEvidence], list[dict[str, Any]]]:
         aggregated: list[SearchEvidence] = []
@@ -332,7 +286,7 @@ class SearchSidecar:
         seen_titles: set[str] = set()
         for query in plan.queries:
             response = self.backend.search(query, max_results=self.max_results, timeout_seconds=self.timeout_seconds)
-            normalized = self._normalize_backend_response(response, query=query)
+            normalized = self._normalize_backend_response(response)
             provider_errors.extend(normalized.provider_errors)
             for item in normalized.results:
                 title_key = item.title.strip().lower()
@@ -371,13 +325,7 @@ class SearchSidecar:
         return True
 
     def _fetch_passages_from_url(self, url: str, *, query: str, title: str) -> list[str]:
-        request = Request(
-            url,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (compatible; MK5-SearchSidecar/0.1)',
-                'Accept-Language': 'ko,en;q=0.8',
-            },
-        )
+        request = Request(url, headers={'User-Agent': 'Mozilla/5.0 (compatible; MK5-SearchSidecar/0.1)', 'Accept-Language': 'ko,en;q=0.8'})
         timeout = max(0.5, min(self.evidence_fetch_timeout_seconds, self.timeout_seconds))
         try:
             with urlopen(request, timeout=timeout) as response:
@@ -385,7 +333,6 @@ class SearchSidecar:
                 raw = response.read(250000)
         except Exception:
             return []
-
         text = self._decode_response_bytes(raw)
         if 'html' in content_type or '<html' in text.lower():
             return self._extract_html_passages(text=text, query=query, title=title)
@@ -422,9 +369,7 @@ class SearchSidecar:
             score = sum(1 for token in tokens if token in lowered)
             scored.append((score, len(candidate), candidate))
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        ordered = [item[2] for item in scored if item[0] > 0]
-        if not ordered:
-            ordered = [item[2] for item in scored]
+        ordered = [item[2] for item in scored if item[0] > 0] or [item[2] for item in scored]
         return self._dedupe_passages(ordered)[: self.evidence_passage_limit]
 
     def _query_tokens(self, values: list[str]) -> list[str]:
@@ -446,69 +391,7 @@ class SearchSidecar:
             deduped.append(normalized)
         return deduped
 
-    def _normalize_backend_response(
-        self,
-        response: SearchBackendResult | list[SearchEvidence],
-        *,
-        query: str,
-    ) -> SearchBackendResult:
+    def _normalize_backend_response(self, response: SearchBackendResult | list[SearchEvidence]) -> SearchBackendResult:
         if isinstance(response, SearchBackendResult):
             return response
         return SearchBackendResult(results=list(response or []), provider_errors=[])
-
-    def _decision_after_search_refinement(
-        self,
-        *,
-        original_decision: SearchNeedDecision,
-        slot_plan: QuestionSlotPlan,
-        slot_supports: list[SlotCoverageSupport],
-        reason: str,
-    ) -> SearchNeedDecision:
-        slot_by_label = {slot.label: slot for slot in slot_plan.requested_slots}
-        covered = [
-            self.need_evaluator._slot_dict(slot_by_label[item.slot_label])
-            for item in slot_supports
-            if item.supported and item.slot_label in slot_by_label
-        ]
-        missing = [
-            self.need_evaluator._slot_dict(slot_by_label[item.slot_label])
-            for item in slot_supports
-            if not item.supported and item.slot_label in slot_by_label
-        ]
-        support_payload = [
-            {
-                'slot_label': item.slot_label,
-                'supported': item.supported,
-                'evidence_indices': list(item.evidence_indices),
-            }
-            for item in slot_supports
-            if item.slot_label in slot_by_label
-        ]
-        if not missing and len(covered) < len(slot_plan.requested_slots):
-            missing = [
-                self.need_evaluator._slot_dict(slot)
-                for slot in slot_plan.requested_slots
-                if slot.label not in {item.slot_label for item in slot_supports if item.supported}
-            ]
-        need_search = bool(missing)
-        gap_summary = (
-            f'검색 결과를 반영해도 아직 비어 있는 슬롯이 있다: {", ".join(item["label"] for item in missing[:4])}'
-            if need_search
-            else '검색 결과 기준으로 요청 슬롯이 모두 확인되었다.'
-        )
-        return SearchNeedDecision(
-            need_search=need_search,
-            reason='post_search_missing_slot_grounding' if need_search else 'post_search_slot_coverage_sufficient',
-            gap_summary=gap_summary,
-            target_node_ids=list(original_decision.target_node_ids),
-            target_terms=list(original_decision.target_terms),
-            requested_slots=list(original_decision.requested_slots),
-            covered_slots=covered,
-            missing_slots=missing,
-            slot_supports=support_payload,
-            metadata={
-                **original_decision.metadata,
-                'post_search_refined': True,
-                'post_search_refiner_reason': reason,
-            },
-        )

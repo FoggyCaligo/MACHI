@@ -4,8 +4,17 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+from config import (
+    MEANING_ANALYZER_NUM_PREDICT,
+    MEANING_ANALYZER_TEMPERATURE,
+    MEANING_ANALYZER_TIMEOUT_SECONDS,
+    build_ollama_options,
+)
 from core.activation.activation_engine import ActivationEngine, ActivationRequest
+from core.cognition.meaning_block import MeaningBlock
+from core.entities.chat_message import ChatMessage
 from core.search.search_sidecar import SearchEvidence, SearchRunResult, SearchSidecar
 from core.thinking.structure_revision_service import StructureRevisionService
 from core.thinking.thought_engine import ThoughtEngine, ThoughtRequest
@@ -13,7 +22,7 @@ from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestResu
 from core.update.node_merge_service import NodeMergeService
 from core.verbalization.verbalizer import Verbalizer
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
-
+from tools.ollama_client import OllamaClient, OllamaClientError, OllamaTimeoutError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / 'data' / 'memory.db'
@@ -60,8 +69,6 @@ class ChatPipeline:
         self.slimmed_runtime = True
         self.disabled_runtime_layers = [
             'pattern_detector',
-            'intent_manager',
-            'concept_differentiation_service',
             'temporary_edge_service',
             'model_feedback_service',
             'model_edge_assertion_service',
@@ -82,6 +89,7 @@ class ChatPipeline:
         )
         self.verbalizer = verbalizer or Verbalizer()
         self.search_sidecar = search_sidecar or SearchSidecar()
+        self.meaning_analysis_client = OllamaClient(timeout_seconds=MEANING_ANALYZER_TIMEOUT_SECONDS)
         self.model_feedback_service = None
         self.model_edge_assertion_service = None
         self.connect_type_promotion_service = None
@@ -107,31 +115,22 @@ class ChatPipeline:
             )
         )
 
-        thought_view = self.activation_engine.build_view(
-            ActivationRequest(
-                session_id=request.session_id,
-                content=request.message,
-                current_root_event_id=ingest_result.root_event_id,
-            )
+        analyzed_blocks, meaning_analysis = self._analyze_meaning_blocks(
+            message=request.message,
+            seed_blocks=ingest_result.blocks,
+            model_name=request.model_name,
         )
-        thought_result = self.thought_engine.think(
-            ThoughtRequest(
-                session_id=request.session_id,
-                message_id=ingest_result.message_id,
-                message_text=request.message,
-            ),
-            thought_view,
-        )
-        if thought_result.core_conclusion is None:
-            raise RuntimeError('ThoughtEngine did not produce core_conclusion')
+        resolved_nodes = self._resolve_blocks_directly(analyzed_blocks)
 
         search_run = self.search_sidecar.run(
             message=request.message,
-            thought_view=thought_view,
-            conclusion=thought_result.core_conclusion,
+            meaning_blocks=analyzed_blocks,
+            resolved_nodes=resolved_nodes,
+            current_root_event_id=ingest_result.root_event_id,
             model_name=request.model_name,
         )
         self._raise_if_search_requires_model_selection(request=request, search_run=search_run)
+
         search_results: list[SearchEvidence] = search_run.results
         search_ingest_results: list[GraphIngestResult] = []
         if search_results:
@@ -155,27 +154,41 @@ class ChatPipeline:
                         )
                     )
                 )
-            thought_view = self.activation_engine.build_view(
-                ActivationRequest(
-                    session_id=request.session_id,
-                    content=request.message,
-                )
+
+        thought_view = self.activation_engine.build_view(
+            ActivationRequest(
+                session_id=request.session_id,
+                content=request.message,
+                seed_blocks=analyzed_blocks,
+                current_root_event_id=ingest_result.root_event_id,
             )
-            thought_result = self.thought_engine.think(
-                ThoughtRequest(
-                    session_id=request.session_id,
-                    message_id=ingest_result.message_id,
-                    message_text=request.message,
-                ),
-                thought_view,
-            )
-            if thought_result.core_conclusion is None:
-                raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
-            search_run.decision = self.search_sidecar.need_evaluator.evaluate(
-                message=request.message,
-                thought_view=thought_view,
-                conclusion=thought_result.core_conclusion,
-            )
+        )
+        thought_result = self.thought_engine.think(
+            ThoughtRequest(
+                session_id=request.session_id,
+                message_id=ingest_result.message_id,
+                message_text=request.message,
+            ),
+            thought_view,
+        )
+        if thought_result.core_conclusion is None:
+            raise RuntimeError('ThoughtEngine did not produce core_conclusion')
+
+        thought_result.metadata['meaning_analysis'] = meaning_analysis
+        thought_result.metadata['input_block_count'] = len(analyzed_blocks)
+        thought_result.metadata['search_completed_before_think'] = True
+        thought_result.metadata['search_result_count'] = len(search_results)
+        thought_result.metadata['assistant_full_answer_ingest_removed'] = True
+        thought_result.core_conclusion.metadata['meaning_analysis'] = meaning_analysis
+        thought_result.core_conclusion.metadata['search_completed_before_think'] = True
+
+        resolved_nodes = self._resolve_blocks_directly(analyzed_blocks)
+        search_run.decision = self.search_sidecar.need_evaluator.evaluate(
+            message=request.message,
+            meaning_blocks=analyzed_blocks,
+            resolved_nodes=resolved_nodes,
+            current_root_event_id=ingest_result.root_event_id,
+        )
 
         temporary_edge_cleanup_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
         model_feedback_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
@@ -187,16 +200,10 @@ class ChatPipeline:
         verbalized = self.verbalizer.verbalize(thought_result.core_conclusion, model_name=request.model_name)
         if verbalized.llm_error or not verbalized.user_response:
             if verbalized.llm_error and verbalized.llm_error.startswith('template_verbalizer_disabled:'):
-                raise RuntimeError(
-                    '현재 응답을 생성할 수 있는 모델이 없습니다. 모델을 선택하거나 OLLAMA 환경을 확인해주세요.'
-                )
+                raise RuntimeError('현재 응답을 생성할 수 있는 모델이 없습니다. 모델을 선택하거나 OLLAMA 환경을 확인해주세요.')
             if verbalized.llm_error_code == 'timeout':
-                raise UserFacingChatError(
-                    '선택한 모델의 응답 생성이 제한 시간 안에 끝나지 않았습니다. 더 빠른 모델로 바꾸거나, Ollama 상태와 모델 로드 상태를 확인한 뒤 다시 시도해주세요.'
-                )
-            raise RuntimeError(
-                f"Verbalization failed: {verbalized.llm_error or 'empty response from verbalizer'}"
-            )
+                raise UserFacingChatError('선택한 모델의 응답 생성이 제한 시간 안에 끝나지 않았습니다. 더 빠른 모델로 바꾸거나, Ollama 상태와 모델 로드 상태를 확인한 뒤 다시 시도해주세요.')
+            raise RuntimeError(f"Verbalization failed: {verbalized.llm_error or 'empty response from verbalizer'}")
 
         thought_result.derived_action = verbalized.derived_action
         intent_snapshot_metadata = dict(thought_result.metadata.get('intent_snapshot', {}) or {})
@@ -207,26 +214,7 @@ class ChatPipeline:
             if thought_result.core_conclusion is not None and isinstance(thought_result.core_conclusion.metadata, dict):
                 thought_result.core_conclusion.metadata['previous_tone_hint'] = verbalized.derived_action.tone_hint
         thought_result.metadata['intent_snapshot'] = intent_snapshot_metadata
-
-        assistant_claim_domain = self.ingest_service.trust_policy.infer_claim_domain(
-            verbalized.user_response,
-            source_type='assistant',
-        )
-        assistant_ingest = self.ingest_service.ingest(
-            GraphIngestRequest(
-                session_id=request.session_id,
-                turn_index=request.turn_index,
-                role='assistant',
-                content=verbalized.user_response,
-                metadata={
-                    'source': 'assistant_reply',
-                    'model_name': request.model_name,
-                    'intent_snapshot': intent_snapshot_metadata,
-                },
-                source_type='assistant',
-                claim_domain=assistant_claim_domain,
-            )
-        )
+        self._store_assistant_snapshot(request=request, response_text=verbalized.user_response, intent_snapshot=intent_snapshot_metadata, model_name=request.model_name)
 
         activation_debug = {
             'seed_blocks': [
@@ -234,6 +222,7 @@ class ChatPipeline:
                     'block_kind': block.block_kind,
                     'text': block.text,
                     'normalized_text': block.normalized_text,
+                    'metadata': block.metadata,
                 }
                 for block in thought_view.seed_blocks
             ],
@@ -269,9 +258,6 @@ class ChatPipeline:
                 'covered_slots': search_run.decision.covered_slots,
                 'missing_slots': search_run.decision.missing_slots,
                 'slot_supports': search_run.decision.slot_supports,
-                'scope_gate_attempted': bool(search_run.decision.metadata.get('scope_gate_attempted')),
-                'scope_gate': search_run.decision.metadata.get('scope_gate'),
-                'scope_gate_error': search_run.decision.metadata.get('scope_gate_error'),
             },
             'slot_plan': None,
             'plan': {
@@ -287,6 +273,7 @@ class ChatPipeline:
             'missing_terms': search_grounding['missing_terms'],
             'missing_aspects': search_grounding['missing_aspects'],
             'no_evidence_found': search_grounding['no_evidence_found'],
+            'meaning_analysis': meaning_analysis,
             'ingest': [
                 {
                     'message_id': item.message_id,
@@ -302,13 +289,9 @@ class ChatPipeline:
         }
 
         assistant_ingest_debug = {
-            'message_id': assistant_ingest.message_id,
-            'root_event_id': assistant_ingest.root_event_id,
-            'block_count': assistant_ingest.block_count,
-            'created_node_ids': assistant_ingest.created_node_ids,
-            'reused_node_ids': assistant_ingest.reused_node_ids,
-            'created_edge_ids': assistant_ingest.created_edge_ids,
-            'supported_edge_ids': assistant_ingest.supported_edge_ids,
+            'enabled': False,
+            'reason': 'assistant_full_answer_ingest_removed',
+            'snapshot_saved': True,
         }
 
         debug_payload = {
@@ -363,31 +346,208 @@ class ChatPipeline:
             rows = [row for row in uow.chat_messages.list_by_session(session_id, limit=100000) if row.role == 'user']
             return (rows[-1].turn_index + 1) if rows else 1
 
-    def run_internal_revision_review(
-        self,
-        *,
-        limit: int = 100,
-        trigger: str = 'system_internal',
-    ) -> dict[str, Any]:
-        actions = self.thought_engine.run_revision_review(
-            message_id=None,
-            limit=max(1, int(limit)),
-            trigger=trigger,
-        )
+    def _resolve_blocks_directly(self, blocks: list[MeaningBlock]) -> dict[str, Any]:
+        resolved: dict[str, Any] = {}
+        with self._uow_factory() as uow:
+            for block in blocks:
+                if block.block_kind != 'noun_phrase':
+                    continue
+                term = ' '.join(str(block.normalized_text or block.text).split()).strip().lower()
+                if not term or term in resolved:
+                    continue
+                lookup = self.ingest_service.accessor.resolve(uow.nodes, block)
+                resolved[term] = lookup.node
+        return resolved
+
+    def _analyze_meaning_blocks(self, *, message: str, seed_blocks: list[MeaningBlock], model_name: str) -> tuple[list[MeaningBlock], dict[str, Any]]:
+        annotated = [MeaningBlock(
+            text=block.text,
+            normalized_text=block.normalized_text,
+            block_kind=block.block_kind,
+            sentence_index=block.sentence_index,
+            block_index=block.block_index,
+            source_sentence=block.source_sentence,
+            metadata=dict(block.metadata),
+        ) for block in seed_blocks]
+        fallback = self._fallback_meaning_analysis(annotated)
+        analysis_result = fallback
+        if model_name and model_name != DEFAULT_MODEL_NAME:
+            try:
+                analysis_result = self._llm_meaning_analysis(message=message, blocks=annotated, model_name=model_name, fallback=fallback)
+            except Exception as exc:
+                analysis_result = {**fallback, 'mode': 'fallback', 'error': str(exc)}
+        self._apply_meaning_analysis(annotated, analysis_result)
+        return annotated, analysis_result
+
+    def _fallback_meaning_analysis(self, blocks: list[MeaningBlock]) -> dict[str, Any]:
+        noun_blocks = [block for block in blocks if block.block_kind == 'noun_phrase']
+        last_sentence = max((block.sentence_index for block in noun_blocks), default=0)
+        primary: list[str] = []
+        secondary: list[str] = []
+        items: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for block in noun_blocks:
+            term = ' '.join(str(block.normalized_text or block.text).split()).strip().lower()
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            importance = 'primary' if block.sentence_index == last_sentence else 'secondary'
+            if importance == 'primary':
+                primary.append(term)
+            else:
+                secondary.append(term)
+            items.append(
+                {
+                    'normalized': term,
+                    'importance': importance,
+                    'search_policy': 'search_if_unusable',
+                    'freshness_kind': 'unknown',
+                }
+            )
         return {
-            'ok': True,
-            'action_count': len(actions),
-            'actions': [asdict(item) for item in actions],
-            'trigger': trigger,
+            'mode': 'fallback',
+            'current_intent': 'graph_grounded_reasoning',
+            'primary_keywords': primary[:6],
+            'secondary_keywords': secondary[:6],
+            'ignore_for_search': [],
+            'items': items,
         }
 
-    def _raise_if_search_requires_model_selection(
-        self,
-        *,
-        request: ChatPipelineRequest,
-        search_run: SearchRunResult,
-    ) -> None:
-        return
+    def _llm_meaning_analysis(self, *, message: str, blocks: list[MeaningBlock], model_name: str, fallback: dict[str, Any]) -> dict[str, Any]:
+        candidates = []
+        seen: set[str] = set()
+        for block in blocks:
+            if block.block_kind != 'noun_phrase':
+                continue
+            term = ' '.join(str(block.normalized_text or block.text).split()).strip().lower()
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            candidates.append({
+                'surface': block.text,
+                'normalized': term,
+                'sentence_index': block.sentence_index,
+                'source_sentence': block.source_sentence,
+            })
+        if not candidates:
+            return fallback
+        system_prompt = (
+            '당신은 MK5 의미 단위 분석기다. 이미 정규식으로 뽑힌 후보들 중에서 현재 사용자의 의도를 따라가며 '
+            '검색/접근 우선순위만 정한다. 새 개념을 만들지 말고, 주어진 normalized 후보만 사용하라. '
+            '응답은 반드시 JSON 객체 하나만 반환하라.'
+        )
+        user_prompt = json.dumps({
+            'message': message,
+            'candidates': candidates,
+            'task': {
+                'return_fields': [
+                    'current_intent',
+                    'primary_keywords',
+                    'secondary_keywords',
+                    'ignore_for_search',
+                    'items(normalized, importance, search_policy, freshness_kind)',
+                ],
+                'importance': ['primary', 'secondary', 'background', 'ignore'],
+                'search_policy': ['search_if_unusable', 'local_only', 'ignore'],
+                'freshness_kind': ['timeless', 'current_state', 'self_or_local', 'unknown'],
+            },
+            'rules': [
+                'primary는 지금 질문에 답하기 위해 직접 확인해야 하는 핵심 대상만 넣어라.',
+                '자기소개, 인사, 호칭, 말투 정보는 보통 background 또는 ignore로 내려라.',
+                '현재 시스템 내부 상태나 현재 대화 맥락을 확인해야 하는 것은 local_only 또는 self_or_local로 표시하라.',
+                '외부 검색으로 확인해야 하는 일반 개념은 search_if_unusable로 표시하라.',
+                '모르면 conservative하게 secondary + search_if_unusable + unknown을 사용하라.',
+            ],
+        }, ensure_ascii=False, indent=2)
+        result = self.meaning_analysis_client.chat(
+            model_name=model_name,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+            stream=False,
+            options=build_ollama_options(temperature=MEANING_ANALYZER_TEMPERATURE, num_predict=MEANING_ANALYZER_NUM_PREDICT),
+            response_format='json',
+        )
+        parsed = self._parse_json_object(result.content)
+        if not isinstance(parsed, dict):
+            raise RuntimeError('meaning analyzer returned non-object JSON')
+        parsed['mode'] = 'llm'
+        return parsed
+
+    def _parse_json_object(self, content: str) -> dict[str, Any]:
+        text = str(content or '').strip()
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            parsed = json.loads(text[start:end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        raise RuntimeError('meaning analyzer returned invalid JSON')
+
+    def _apply_meaning_analysis(self, blocks: list[MeaningBlock], analysis: dict[str, Any]) -> None:
+        item_map: dict[str, dict[str, str]] = {}
+        for item in analysis.get('items') or []:
+            if not isinstance(item, dict):
+                continue
+            term = ' '.join(str(item.get('normalized') or '').split()).strip().lower()
+            if not term:
+                continue
+            item_map[term] = {
+                'importance': str(item.get('importance') or 'secondary').strip(),
+                'search_policy': str(item.get('search_policy') or 'search_if_unusable').strip(),
+                'freshness_kind': str(item.get('freshness_kind') or 'unknown').strip(),
+            }
+        for block in blocks:
+            if block.block_kind != 'noun_phrase':
+                continue
+            term = ' '.join(str(block.normalized_text or block.text).split()).strip().lower()
+            item = item_map.get(term) or {'importance': 'secondary', 'search_policy': 'search_if_unusable', 'freshness_kind': 'unknown'}
+            block.metadata['importance'] = item['importance']
+            block.metadata['search_policy'] = item['search_policy']
+            block.metadata['freshness_kind'] = item['freshness_kind']
+            block.metadata['analysis_source'] = analysis.get('mode') or 'fallback'
+        for block in blocks:
+            block.metadata.setdefault('analysis_intent', str(analysis.get('current_intent') or 'graph_grounded_reasoning'))
+
+    def _store_assistant_snapshot(self, *, request: ChatPipelineRequest, response_text: str, intent_snapshot: dict[str, Any], model_name: str) -> None:
+        metadata = {
+            'source': 'assistant_snapshot',
+            'source_type': 'assistant_snapshot',
+            'model_name': model_name,
+            'intent_snapshot': intent_snapshot,
+        }
+        with self._uow_factory() as uow:
+            uow.chat_messages.add(
+                ChatMessage(
+                    message_uid=f'msg_{uuid4().hex}',
+                    session_id=request.session_id,
+                    turn_index=request.turn_index,
+                    role='assistant',
+                    content=response_text,
+                    content_hash=self.ingest_service.hash_resolver.content_hash(response_text),
+                    attached_files=[],
+                    metadata=metadata,
+                )
+            )
+            uow.commit()
+
+    def run_internal_revision_review(self, *, limit: int = 100, trigger: str = 'system_internal') -> dict[str, Any]:
+        actions = self.thought_engine.run_revision_review(message_id=None, limit=max(1, int(limit)), trigger=trigger)
+        return {'ok': True, 'action_count': len(actions), 'actions': [asdict(item) for item in actions], 'trigger': trigger}
+
+    def _raise_if_search_requires_model_selection(self, *, request: ChatPipelineRequest, search_run: SearchRunResult) -> None:
+        error = ' '.join(str(search_run.error or '').split()).lower()
+        if not error:
+            return
+        if 'model' in error and ('require' in error or 'selection' in error or 'selectable' in error):
+            raise UserFacingChatError('검색이 필요하지만 현재 선택된 모델로는 구조 해석/검색 계획을 진행할 수 없습니다. 모델을 선택한 뒤 다시 시도해주세요.')
 
     def _attach_search_context(self, conclusion, *, search_run: SearchRunResult) -> None:
         if conclusion is None:
@@ -408,17 +568,11 @@ class ChatPipeline:
             'grounded_terms': search_grounding['grounded_terms'],
             'missing_terms': search_grounding['missing_terms'],
             'missing_aspects': search_grounding['missing_aspects'],
-            'slot_entities': [],
-            'slot_aspects': [],
-            'comparison_axes': [],
             'planned_queries': search_run.plan.queries if search_run.plan else [],
             'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []) if search_run.plan else [],
             'error': search_run.error,
             'provider_errors': search_grounding['provider_errors'],
             'no_evidence_found': search_grounding['no_evidence_found'],
-            'scope_gate_attempted': False,
-            'scope_gate': None,
-            'scope_gate_error': None,
             'summaries': [
                 {
                     'title': item.title,
@@ -434,19 +588,12 @@ class ChatPipeline:
     def _build_search_grounding_state(self, search_run: SearchRunResult) -> dict[str, Any]:
         grounded_terms = self._unique_slot_values(search_run.decision.covered_slots, key='entity')
         missing_terms = self._unique_slot_values(search_run.decision.missing_slots, key='entity')
-        missing_aspects = self._unique_slot_values(search_run.decision.missing_slots, key='aspect')
         provider_errors = list(getattr(search_run, 'provider_errors', []) or [])
-        no_evidence_found = bool(
-            search_run.decision.need_search
-            and search_run.attempted
-            and not search_run.results
-            and not search_run.error
-            and not provider_errors
-        )
+        no_evidence_found = bool(search_run.decision.need_search and search_run.attempted and not search_run.results and not search_run.error and not provider_errors)
         return {
             'grounded_terms': grounded_terms,
             'missing_terms': missing_terms,
-            'missing_aspects': missing_aspects,
+            'missing_aspects': [],
             'provider_errors': provider_errors,
             'no_evidence_found': no_evidence_found,
         }
@@ -460,12 +607,7 @@ class ChatPipeline:
             values.append(token)
         return values
 
-    def _load_revision_rule_overrides(
-        self,
-        path_token: str | Path | None,
-        *,
-        strict: bool,
-    ) -> tuple[dict[str, dict[str, object]], str, str]:
+    def _load_revision_rule_overrides(self, path_token: str | Path | None, *, strict: bool) -> tuple[dict[str, dict[str, object]], str, str]:
         raw_path = str(path_token or '').strip()
         if not raw_path:
             return {}, '', ''
@@ -481,7 +623,7 @@ class ChatPipeline:
             if not normalized:
                 raise ValueError('override file exists but no valid rule override entries were found')
             return normalized, display_path, ''
-        except Exception as exc:  # pragma: no cover - defensive path
+        except Exception as exc:  # pragma: no cover
             if strict:
                 raise RuntimeError(f'failed to load revision rule overrides: {exc}') from exc
             return {}, display_path, str(exc)
