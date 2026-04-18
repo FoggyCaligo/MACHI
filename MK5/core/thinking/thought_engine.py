@@ -6,10 +6,11 @@ from uuid import uuid4
 
 from core.entities.conclusion import ThoughtResult
 from core.entities.graph_event import GraphEvent
-from core.entities.intent import IntentSnapshot
 from core.entities.thought_view import ThoughtView
+from core.thinking.concept_differentiation_service import ConceptDifferentiationService
 from core.thinking.conclusion_builder import ConclusionBuilder
 from core.thinking.contradiction_detector import ContradictionDetector
+from core.thinking.intent_manager import IntentManager
 from core.thinking.structure_revision_service import StructureRevisionService
 from core.thinking.trust_manager import TrustManager
 from core.update.node_merge_service import NodeMergeService
@@ -31,7 +32,9 @@ class ThoughtEngine:
         contradiction_detector: ContradictionDetector | None = None,
         trust_manager: TrustManager | None = None,
         structure_revision_service: StructureRevisionService | None = None,
+        concept_differentiation_service: ConceptDifferentiationService | None = None,
         conclusion_builder: ConclusionBuilder | None = None,
+        intent_manager: IntentManager | None = None,
     ) -> None:
         self.uow_factory = uow_factory
         self.contradiction_detector = contradiction_detector or ContradictionDetector()
@@ -39,7 +42,9 @@ class ThoughtEngine:
         self.structure_revision_service = structure_revision_service or StructureRevisionService(
             node_merge_service=NodeMergeService(uow_factory),
         )
+        self.concept_differentiation_service = concept_differentiation_service or ConceptDifferentiationService()
         self.conclusion_builder = conclusion_builder or ConclusionBuilder()
+        self.intent_manager = intent_manager or IntentManager()
 
     def think(self, request: ThoughtRequest, thought_view: ThoughtView) -> ThoughtResult:
         with self.uow_factory() as uow:
@@ -53,7 +58,20 @@ class ThoughtEngine:
                 uow,
                 message_id=request.message_id,
             )
-            intent_snapshot = self._build_minimal_intent_snapshot(thought_view)
+            differentiation_result = self.concept_differentiation_service.differentiate(
+                uow,
+                thought_view=thought_view,
+                message_id=request.message_id,
+                contradiction_signals=signals,
+            )
+            intent_snapshot = self.intent_manager.resolve(
+                uow,
+                request=request,
+                thought_view=thought_view,
+                contradiction_signals=signals,
+                trust_updates=trust_updates,
+                revision_actions=revision_actions,
+            )
             uow.commit()
 
         core_conclusion = self.conclusion_builder.build(
@@ -80,31 +98,9 @@ class ThoughtEngine:
                 'signal_count': len(signals),
                 'trust_update_count': len(trust_updates),
                 'revision_action_count': len(revision_actions),
-                'differentiation': {'enabled': False, 'reason': 'slimmed_runtime_disabled'},
+                'differentiation': differentiation_result.to_metadata(),
                 'intent_snapshot': intent_snapshot.to_metadata(),
             },
-        )
-
-
-    def _build_minimal_intent_snapshot(self, thought_view: ThoughtView) -> IntentSnapshot:
-        metadata = thought_view.metadata or {}
-        current_topic_terms = list(metadata.get('current_topic_terms') or [])
-        previous_topic_terms = list(metadata.get('previous_topic_terms') or [])
-        overlap = len(set(current_topic_terms).intersection(previous_topic_terms))
-        if overlap > 0:
-            continuity = 'continued_topic'
-        elif previous_topic_terms:
-            continuity = 'shifted_topic'
-        else:
-            continuity = 'unknown'
-        return IntentSnapshot(
-            snapshot_intent='graph_grounded_reasoning',
-            topic_terms=current_topic_terms[:6],
-            previous_topic_terms=previous_topic_terms[:6],
-            topic_continuity=continuity,
-            topic_overlap_count=overlap,
-            previous_tone_hint=str(metadata.get('previous_tone_hint') or ''),
-            metadata={'intent_manager_enabled': False, 'source': 'minimal_intent_snapshot'},
         )
 
     def run_revision_review(

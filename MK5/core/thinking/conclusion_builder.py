@@ -29,6 +29,7 @@ class MissingIntentSnapshotError(RuntimeError):
 class ConclusionBuilder:
     max_summary_conflicts: int = 3
     max_summary_relations: int = 6
+    max_summary_concepts: int = 12
 
     def build(
         self,
@@ -40,12 +41,12 @@ class ConclusionBuilder:
         revision_actions: list[RevisionAction],
         intent_snapshot: IntentSnapshot | None = None,
     ) -> CoreConclusion:
-        activated_concepts = self._activated_concepts(thought_view)
         if intent_snapshot is None:
             raise MissingIntentSnapshotError(
                 'ConclusionBuilder.build() requires an intent_snapshot from IntentManager. '
                 'Do not fall back to inferred graph-state intent here.'
             )
+        activated_concepts = self._activated_concepts(thought_view, intent_snapshot=intent_snapshot)
         key_relations = self._key_relations(thought_view, contradiction_signals, trust_updates, revision_actions)
         detected_conflicts = [self._to_conflict_record(item) for item in contradiction_signals]
         trust_changes = [self._to_trust_change_record(item) for item in trust_updates]
@@ -91,20 +92,64 @@ class ConclusionBuilder:
             },
         )
 
-    def _activated_concepts(self, thought_view: ThoughtView) -> list[int]:
+    def _activated_concepts(self, thought_view: ThoughtView, *, intent_snapshot: IntentSnapshot) -> list[int]:
         seen: set[int] = set()
         ordered: list[int] = []
-        for activated in thought_view.seed_nodes:
+        topic_terms = {str(item).strip().lower() for item in (intent_snapshot.topic_terms or []) if str(item).strip()}
+
+        prioritized_seed_nodes = sorted(
+            thought_view.seed_nodes,
+            key=lambda item: (
+                1 if self._node_matches_topic(item.node, topic_terms) else 0,
+                item.activation_score,
+                item.node.trust_score,
+                item.node.stability_score,
+            ),
+            reverse=True,
+        )
+        for activated in prioritized_seed_nodes:
             node_id = activated.node.id
-            if node_id is not None and node_id not in seen:
-                ordered.append(node_id)
-                seen.add(node_id)
+            if node_id is None or node_id in seen:
+                continue
+            ordered.append(node_id)
+            seen.add(node_id)
+            if len(ordered) >= self.max_summary_concepts:
+                return ordered
+
         for node in thought_view.nodes:
             node_id = node.id
-            if node_id is not None and node_id not in seen:
-                ordered.append(node_id)
-                seen.add(node_id)
+            if node_id is None or node_id in seen:
+                continue
+            if topic_terms and not self._node_matches_topic(node, topic_terms):
+                continue
+            ordered.append(node_id)
+            seen.add(node_id)
+            if len(ordered) >= self.max_summary_concepts:
+                return ordered
+
+        for node in thought_view.nodes:
+            node_id = node.id
+            if node_id is None or node_id in seen:
+                continue
+            ordered.append(node_id)
+            seen.add(node_id)
+            if len(ordered) >= self.max_summary_concepts:
+                break
         return ordered
+
+    def _node_matches_topic(self, node, topic_terms: set[str]) -> bool:
+        if not topic_terms:
+            return False
+        values = [
+            str(getattr(node, 'normalized_value', '') or ''),
+            str(getattr(node, 'raw_value', '') or ''),
+        ]
+        payload = getattr(node, 'payload', {}) if isinstance(getattr(node, 'payload', {}), dict) else {}
+        aliases = payload.get('raw_aliases') or []
+        if isinstance(aliases, list):
+            values.extend(str(item or '') for item in aliases)
+        normalized = ' '.join(values).lower()
+        return any(term in normalized for term in topic_terms)
 
     def _key_relations(
         self,

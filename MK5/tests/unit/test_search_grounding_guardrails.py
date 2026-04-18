@@ -1,36 +1,308 @@
-from core.activation.activation_engine import ActivationEngine, ActivationRequest
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from config import QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS, SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS, SEARCH_SCOPE_GATE_TIMEOUT_SECONDS
+from app.chat_pipeline import ChatPipeline
 from core.entities.conclusion import CoreConclusion
-from core.search.search_need_evaluator import SearchNeedEvaluator
-from core.search.search_query_planner import SearchQueryPlanner
-from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestService
-from storage.sqlite.unit_of_work import SqliteUnitOfWork
+from core.search.question_slot_planner import QuestionSlotPlanner
+from core.search.search_coverage_refiner import SearchCoverageRefiner
+from core.search.search_need_evaluator import SearchNeedDecision
+from core.search.search_query_planner import SearchPlan, SearchQueryPlanner
+from core.search.search_scope_gate import SearchScopeGate
+from core.search.search_sidecar import (
+    CompositeSearchBackend,
+    SearchBackendResult,
+    SearchEvidence,
+    SearchRunResult,
+)
+from core.verbalization.action_layer_builder import ActionLayerBuilder
 
 
-def _uow_factory(tmp_path, schema_path):
-    def factory():
-        return SqliteUnitOfWork(tmp_path / 'memory.db', schema_path=schema_path, initialize_schema=True)
-    return factory
+class FakeChatResult:
+    def __init__(self, content: str) -> None:
+        self.content = content
 
 
-def test_current_turn_nodes_do_not_count_as_grounding(tmp_path):
-    schema_path = 'storage/schema.sql'
-    uow_factory = _uow_factory(tmp_path, schema_path)
-    ingest = GraphIngestService(uow_factory)
-    result = ingest.ingest(GraphIngestRequest(session_id='s1', turn_index=1, role='user', content='단테의 신곡 알려줘', source_type='user', claim_domain='self_report'))
-    engine = ActivationEngine(uow_factory)
-    thought_view = engine.build_view(ActivationRequest(session_id='s1', content='단테의 신곡 알려줘', current_root_event_id=result.root_event_id))
-    conclusion = CoreConclusion(session_id='s1', message_id=result.message_id, user_input_summary='단테의 신곡 알려줘', inferred_intent='informational', explanation_summary='x')
+class FakeClient:
+    def __init__(self, content: str) -> None:
+        self.content = content
 
-    evaluator = SearchNeedEvaluator()
-    decision = evaluator.evaluate(message='단테의 신곡 알려줘', thought_view=thought_view, conclusion=conclusion)
-    assert decision.need_search is True
-    assert '단테' in decision.metadata['missing_terms']
+    def chat(self, *, model_name, messages, stream=False, options=None, response_format=None):
+        return FakeChatResult(self.content)
 
 
-def test_query_planner_emits_individual_missing_concepts_only():
+class StaticBackend:
+    def __init__(self, results: list[SearchEvidence], *, provider_errors: list[dict[str, str]] | None = None) -> None:
+        self.results = results
+        self.provider_errors = provider_errors or []
+
+    def search(self, query: str, *, max_results: int, timeout_seconds: float) -> SearchBackendResult:
+        return SearchBackendResult(
+            results=self.results[:max_results],
+            provider_errors=list(self.provider_errors),
+        )
+
+
+def test_question_slot_planner_supports_structured_search_aspects() -> None:
+    planner = QuestionSlotPlanner(
+        client=FakeClient(
+            json.dumps(
+                {
+                    'entities': ['plate armor', 'mail armor'],
+                    'search_aspects': ['construction'],
+                    'comparison_axes': ['mobility'],
+                    'reason': 'Split factual lookup axes from final comparison axes.',
+                }
+            )
+        )
+    )
+
+    plan = planner.plan(
+        model_name='gemma3:4b',
+        message='Compare plate armor and mail armor.',
+        thought_view=type('ThoughtViewStub', (), {'seed_nodes': [], 'nodes': []})(),
+        conclusion=CoreConclusion(
+            session_id='s1',
+            message_id=1,
+            user_input_summary='armor comparison',
+            inferred_intent='structure_review',
+        ),
+        target_terms=['plate armor', 'mail armor'],
+    )
+
+    assert plan.entities == ['plate armor', 'mail armor']
+    assert plan.aspects == ['construction']
+    assert plan.comparison_axes == []
+    assert [slot.label for slot in plan.requested_slots] == [
+        'plate armor',
+        'plate armor:construction',
+        'mail armor',
+        'mail armor:construction',
+    ]
+
+
+def test_search_llm_helpers_use_bounded_default_timeouts() -> None:
+    planner = QuestionSlotPlanner()
+    refiner = SearchCoverageRefiner()
+    scope_gate = SearchScopeGate()
+
+    assert planner.client is not None
+    assert refiner.client is not None
+    assert scope_gate.client is not None
+    assert planner.client.timeout_seconds == QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS
+    assert refiner.client.timeout_seconds == SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS
+    assert scope_gate.client.timeout_seconds == SEARCH_SCOPE_GATE_TIMEOUT_SECONDS
+
+
+def test_search_coverage_refiner_marks_aspects_from_evidence_passages() -> None:
+    refiner = SearchCoverageRefiner(
+        client=FakeClient(
+            json.dumps(
+                {
+                    'slot_support': [
+                        {'slot_label': 'plate armor', 'supported': True, 'evidence_indices': [1]},
+                        {'slot_label': 'plate armor:construction', 'supported': True, 'evidence_indices': [1]},
+                        {'slot_label': 'mail armor', 'supported': False, 'evidence_indices': []},
+                        {'slot_label': 'mail armor:construction', 'supported': False, 'evidence_indices': []},
+                    ],
+                    'reason': 'Only plate armor evidence includes a construction passage.',
+                }
+            )
+        )
+    )
+    slot_plan = QuestionSlotPlanner(
+        client=FakeClient(
+            json.dumps(
+                {
+                    'entities': ['plate armor', 'mail armor'],
+                    'search_aspects': ['construction'],
+                    'comparison_axes': ['mobility'],
+                    'reason': 'Split factual lookup axes from final comparison axes.',
+                }
+            )
+        )
+    ).plan(
+        model_name='gemma3:4b',
+        message='Compare plate armor and mail armor.',
+        thought_view=type('ThoughtViewStub', (), {'seed_nodes': [], 'nodes': []})(),
+        conclusion=CoreConclusion(
+            session_id='s1',
+            message_id=1,
+            user_input_summary='armor comparison',
+            inferred_intent='structure_review',
+        ),
+        target_terms=['plate armor', 'mail armor'],
+    )
+
+    analysis = refiner.refine(
+        model_name='gemma3:4b',
+        message='Compare plate armor and mail armor.',
+        conclusion=CoreConclusion(
+            session_id='s1',
+            message_id=1,
+            user_input_summary='armor comparison',
+            inferred_intent='structure_review',
+        ),
+        slot_plan=slot_plan,
+        evidences=[
+            SearchEvidence(
+                title='Plate armor',
+                snippet='Plate armor uses large rigid plates.',
+                passages=['Plate armor uses large rigid steel plates joined together.'],
+                url='https://example.test/plate',
+                provider='provider-a',
+            )
+        ],
+    )
+
+    assert analysis.covered_slot_labels == ['plate armor', 'plate armor:construction']
+    assert analysis.missing_slot_labels == ['mail armor', 'mail armor:construction']
+    assert analysis.slot_supports[0].evidence_indices == [1]
+
+
+def test_search_query_planner_uses_entity_aspect_queries() -> None:
     planner = SearchQueryPlanner()
-    decision = SearchNeedEvaluator().evaluate(message='단테의 신곡 알려줘', thought_view=type('TV', (), {'seed_blocks': [], 'nodes': [], 'seed_nodes': [], 'metadata': {}})(), conclusion=CoreConclusion(session_id='s1', message_id=None, user_input_summary='', inferred_intent='informational', explanation_summary=''))
-    # fallback seed_blocks empty => no terms; inject missing_terms directly for planner check
-    decision.metadata['missing_terms'] = ['단테', '신곡']
-    plan = planner.plan(message='단테의 신곡 알려줘', thought_view=None, conclusion=None, decision=decision)
-    assert plan.queries == ['단테', '신곡']
+    decision = SearchNeedDecision(
+        need_search=True,
+        reason='missing_slot_grounding',
+        gap_summary='missing grounding',
+        missing_slots=[
+            {'kind': 'entity', 'entity': 'plate armor', 'aspect': '', 'label': 'plate armor'},
+            {'kind': 'aspect', 'entity': 'plate armor', 'aspect': 'construction', 'label': 'plate armor:construction'},
+            {'kind': 'entity', 'entity': 'mail armor', 'aspect': '', 'label': 'mail armor'},
+            {'kind': 'aspect', 'entity': 'mail armor', 'aspect': 'construction', 'label': 'mail armor:construction'},
+        ],
+    )
+
+    plan = planner.plan(
+        model_name='gemma3:4b',
+        message='Compare plate armor and mail armor.',
+        thought_view=type('ThoughtViewStub', (), {})(),
+        conclusion=CoreConclusion(
+            session_id='s1',
+            message_id=1,
+            user_input_summary='armor comparison',
+            inferred_intent='structure_review',
+        ),
+        decision=decision,
+    )
+
+    assert plan.queries == ['plate armor', 'mail armor']
+    assert plan.metadata['planned_aspect_extraction'] == [
+        {'entity': 'plate armor', 'aspects': ['construction']},
+        {'entity': 'mail armor', 'aspects': ['construction']},
+    ]
+
+
+def test_chat_pipeline_marks_no_evidence_when_search_returns_no_results(tmp_path: Path) -> None:
+    pipeline = ChatPipeline(db_path=tmp_path / 'memory.db', schema_path=ROOT / 'storage' / 'schema.sql')
+    conclusion = CoreConclusion(
+        session_id='s1',
+        message_id=1,
+        user_input_summary='armor comparison',
+        inferred_intent='structure_review',
+    )
+    search_run = SearchRunResult(
+        attempted=True,
+        planning_attempted=True,
+        decision=SearchNeedDecision(
+            need_search=True,
+            reason='missing_slot_grounding',
+            gap_summary='missing grounding',
+            requested_slots=[
+                {'kind': 'entity', 'entity': 'plate armor', 'aspect': '', 'label': 'plate armor'},
+                {'kind': 'aspect', 'entity': 'plate armor', 'aspect': 'construction', 'label': 'plate armor:construction'},
+                {'kind': 'entity', 'entity': 'mail armor', 'aspect': '', 'label': 'mail armor'},
+                {'kind': 'aspect', 'entity': 'mail armor', 'aspect': 'construction', 'label': 'mail armor:construction'},
+            ],
+            missing_slots=[
+                {'kind': 'entity', 'entity': 'plate armor', 'aspect': '', 'label': 'plate armor'},
+                {'kind': 'aspect', 'entity': 'plate armor', 'aspect': 'construction', 'label': 'plate armor:construction'},
+                {'kind': 'entity', 'entity': 'mail armor', 'aspect': '', 'label': 'mail armor'},
+                {'kind': 'aspect', 'entity': 'mail armor', 'aspect': 'construction', 'label': 'mail armor:construction'},
+            ],
+        ),
+        plan=SearchPlan(
+            queries=['plate armor construction', 'mail armor construction'],
+            reason='test plan',
+            focus_terms=['plate armor', 'mail armor'],
+        ),
+        results=[],
+    )
+
+    pipeline._attach_search_context(conclusion, search_run=search_run)
+    search_context = conclusion.metadata['search_context']
+
+    assert search_context['need_search'] is True
+    assert search_context['grounded_terms'] == []
+    assert search_context['missing_terms'] == ['plate armor', 'mail armor']
+    assert search_context['missing_aspects'] == ['construction']
+    assert search_context['no_evidence_found'] is True
+
+
+def test_action_layer_builder_becomes_conservative_when_no_evidence_is_reported() -> None:
+    conclusion = CoreConclusion(
+        session_id='s1',
+        message_id=1,
+        user_input_summary='armor comparison',
+        inferred_intent='structure_review',
+    )
+    conclusion.metadata['search_context'] = {
+        'need_search': True,
+        'attempted': True,
+        'result_count': 0,
+        'missing_terms': ['plate armor', 'mail armor'],
+        'missing_aspects': ['construction'],
+        'no_evidence_found': True,
+    }
+
+    action = ActionLayerBuilder().build(conclusion)
+
+    assert action.metadata['search_attempted'] is True
+    assert action.metadata['search_required'] is True
+    assert action.metadata['search_result_count'] == 0
+    assert action.metadata['no_evidence_found'] is True
+    assert action.metadata['missing_aspect_count'] == 1
+    assert any('construction' in item for item in action.do_not_claim)
+
+
+def test_composite_search_backend_merges_results_and_provider_errors() -> None:
+    backend = CompositeSearchBackend(
+        backends=[
+            StaticBackend(
+                [
+                    SearchEvidence(
+                        title='Plate armor',
+                        snippet='Rigid metal plates.',
+                        passages=['Plate armor consists of rigid metal plates.'],
+                        url='https://example.test/plate',
+                        provider='provider-a',
+                    )
+                ],
+                provider_errors=[{'provider': 'provider-a', 'query': 'armor', 'error': 'partial'}],
+            ),
+            StaticBackend(
+                [
+                    SearchEvidence(
+                        title='Mail armor',
+                        snippet='Interlinked rings.',
+                        passages=['Mail armor uses many interlinked metal rings.'],
+                        url='https://example.test/mail',
+                        provider='provider-b',
+                    )
+                ]
+            ),
+        ]
+    )
+
+    result = backend.search('armor', max_results=4, timeout_seconds=1.0)
+
+    assert [item.title for item in result.results] == ['Plate armor', 'Mail armor']
+    assert result.provider_errors == [{'provider': 'provider-a', 'query': 'armor', 'error': 'partial'}]

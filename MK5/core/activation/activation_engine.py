@@ -58,8 +58,6 @@ class ActivationEngine:
             seed_node_ids = [seed.node.id for seed in seed_nodes if seed.node.id is not None]
             previous_topic_terms = self._latest_topic_terms(uow, request.session_id)
             previous_tone_hint = self._latest_tone_hint(uow, request.session_id)
-            current_topic_terms = self._extract_topic_terms(seed_blocks, seed_nodes)
-            topic_overlap_count = len(set(previous_topic_terms).intersection(current_topic_terms))
             recent_memory_messages = self._recent_conversation_memory(uow, request.session_id)
             identity_nodes = self._session_identity_nodes(uow, request.session_id)
 
@@ -73,6 +71,8 @@ class ActivationEngine:
             neighbor_nodes = self._collect_neighbor_nodes(uow, seed_nodes, all_edges, request.max_neighbors)
             all_nodes = self._merge_nodes(seed_nodes, neighbor_nodes + identity_nodes)
             pointers = self._collect_pointers(uow, all_nodes, request.include_pointer_expansion)
+            current_topic_terms = self._extract_topic_terms(seed_blocks, seed_nodes, all_edges)
+            topic_overlap_count = len(set(previous_topic_terms).intersection(current_topic_terms))
 
             metadata = {
                 'seed_block_count': len(seed_blocks),
@@ -80,6 +80,7 @@ class ActivationEngine:
                 'neighbor_edge_count': len(local_edges),
                 'concept_hop_edge_count': len(concept_hop_edges),
                 'pointer_count': len(pointers),
+                'current_root_event_id': request.current_root_event_id,
                 'current_topic_terms': current_topic_terms,
                 'previous_topic_terms': previous_topic_terms,
                 'previous_tone_hint': previous_tone_hint,
@@ -88,7 +89,6 @@ class ActivationEngine:
                 'recent_memory_count': len(recent_memory_messages),
                 'identity_node_ids': [node.id for node in identity_nodes if node.id is not None],
                 'identity_terms': self._extract_identity_terms(identity_nodes),
-                'current_root_event_id': request.current_root_event_id,
             }
             thought_view = self.thought_view_builder.build(
                 session_id=request.session_id,
@@ -160,16 +160,93 @@ class ActivationEngine:
         rows = list(uow.nodes.list_by_address_hashes(address_hashes))
         return [row for row in rows if row is not None]
 
-    def _extract_topic_terms(self, seed_blocks: list[MeaningBlock], seed_nodes: list[ActivatedNode]) -> list[str]:
-        tokens: list[str] = []
+    def _extract_topic_terms(
+        self,
+        seed_blocks: list[MeaningBlock],
+        seed_nodes: list[ActivatedNode],
+        edges: list[Edge],
+    ) -> list[str]:
+        question_indices = self._focus_sentence_indices(seed_blocks)
+        node_degrees: dict[int, int] = defaultdict(int)
+        for edge in edges:
+            if not edge.is_active:
+                continue
+            if edge.source_node_id is not None:
+                node_degrees[edge.source_node_id] += 1
+            if edge.target_node_id is not None:
+                node_degrees[edge.target_node_id] += 1
+
+        candidate_scores: dict[str, float] = {}
+        candidate_position: dict[str, tuple[int, int]] = {}
+
+        def register(token: str, *, sentence_index: int, block_index: int, score: float) -> None:
+            normalized = ' '.join(str(token or '').split()).strip()
+            if len(normalized) < 2:
+                return
+            previous = candidate_scores.get(normalized)
+            if previous is None or score > previous:
+                candidate_scores[normalized] = score
+                candidate_position[normalized] = (sentence_index, block_index)
+
         for block in seed_blocks:
-            self._append_topic_token(tokens, block.normalized_text or block.text)
-        for activated in seed_nodes:
-            self._append_topic_token(
-                tokens,
-                getattr(activated.node, 'normalized_value', '') or getattr(activated.node, 'raw_value', ''),
+            if block.block_kind != 'noun_phrase':
+                continue
+            score = 1.0
+            if block.sentence_index in question_indices:
+                score += 3.0
+            elif question_indices and block.sentence_index == min(question_indices) - 1:
+                score += 1.5
+            elif not question_indices and block.sentence_index == max(item.sentence_index for item in seed_blocks):
+                score += 2.0
+            score += max(0.0, 0.2 * block.sentence_index)
+            register(
+                block.normalized_text or block.text,
+                sentence_index=block.sentence_index,
+                block_index=block.block_index,
+                score=score,
             )
-        return tokens[:6]
+
+        for activated in seed_nodes:
+            node = activated.node
+            node_id = node.id if node.id is not None else -1
+            degree_bonus = min(node_degrees.get(node_id, 0) * 0.15, 1.2)
+            matched_question = any(block.sentence_index in question_indices for block in activated.matched_blocks)
+            sentence_index = min((block.sentence_index for block in activated.matched_blocks), default=0)
+            block_index = min((block.block_index for block in activated.matched_blocks), default=0)
+            score = activated.activation_score + degree_bonus
+            if matched_question:
+                score += 1.0
+            register(
+                getattr(node, 'normalized_value', '') or getattr(node, 'raw_value', ''),
+                sentence_index=sentence_index,
+                block_index=block_index,
+                score=score,
+            )
+
+        ordered = sorted(
+            candidate_scores.items(),
+            key=lambda item: (
+                item[1],
+                -(candidate_position.get(item[0], (0, 0))[0]),
+                -(candidate_position.get(item[0], (0, 0))[1]),
+                len(item[0]),
+            ),
+            reverse=True,
+        )
+        return [token for token, _score in ordered[:5]]
+
+    def _focus_sentence_indices(self, seed_blocks: list[MeaningBlock]) -> set[int]:
+        question_indices: set[int] = set()
+        for block in seed_blocks:
+            if block.block_kind != 'statement_phrase':
+                continue
+            if str(block.text or '').strip().endswith('?'):
+                question_indices.add(block.sentence_index)
+        if question_indices:
+            return question_indices
+        if not seed_blocks:
+            return set()
+        return {max(block.sentence_index for block in seed_blocks)}
 
     def _extract_identity_terms(self, identity_nodes: list[Node]) -> list[str]:
         tokens: list[str] = []
