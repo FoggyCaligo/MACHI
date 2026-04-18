@@ -49,10 +49,10 @@ class ActionLayerBuilder:
             ]
         elif intent == 'relation_synthesis_request' or relation_count >= 2 or activated_count >= 3:
             response_mode = 'structured_explanation'
-            answer_goal = 'Summarize the directly relevant relations and reasons in a compact way.'
+            answer_goal = "Summarize the directly relevant relations and reasons with enough detail for the user's actual question."
             suggested_actions = [
                 'Lead with the main relation.',
-                'Use one or two short sentences for the rationale when needed.',
+                'Use enough detail to answer the actual question without padding or repetition.',
             ]
         elif intent == 'memory_probe':
             response_mode = 'structured_explanation'
@@ -71,10 +71,10 @@ class ActionLayerBuilder:
                 ]
         elif intent == 'open_information_request':
             response_mode = 'direct_answer_with_uncertainty'
-            answer_goal = 'If information is insufficient, state the boundary first and answer only within confirmed scope.'
+            answer_goal = 'Answer from the confirmed scope first, and mark uncertainty only where the evidence does not settle the point.'
             suggested_actions = [
                 'Answer only within the available evidence.',
-                'Prefer boundaries over speculation when details are missing.',
+                'When evidence is incomplete, make the uncertainty explicit instead of turning it into a fact.',
             ]
 
         if conclusion.detected_conflicts:
@@ -83,15 +83,14 @@ class ActionLayerBuilder:
             do_not_claim.append('Do not imply the system remembers specific content when no activated concepts support it.')
         if search_error and not evidence_available:
             do_not_claim.append('Do not state facts that were not confirmed after a search failure.')
-            suggested_actions.append('Say clearly that some details remain unknown because search confirmation failed.')
+            suggested_actions.append('If some points remain unresolved because confirmation failed, say that directly in the answer.')
         if search_required and search_attempted and search_result_count == 0 and not search_error:
             response_mode = 'structured_explanation'
-            answer_goal = 'State first that search was needed but no confirmable evidence was found, and do not replace missing evidence with guesses.'
-            do_not_claim.append('Do not present structural differences or performance differences as confirmed when no supporting evidence was found.')
-            suggested_actions.append('Say clearly that confirmable external evidence was not found.')
+            answer_goal = 'Answer honestly from the currently grounded scope, and leave unresolved points explicitly unresolved.'
+            do_not_claim.append('Do not present unsupported details as if they were confirmed by search.')
         if evidence_available:
             response_mode = 'structured_explanation'
-            answer_goal = "Use the grounded search evidence first, answer the user's direct question from that evidence, and mention only the still-unconfirmed gaps afterward if they matter."
+            answer_goal = "Use the grounded search evidence first, answer the user's direct question from that evidence, and mention uncertainty only where the evidence still leaves a real gap."
             suggested_actions.append('Lead with the evidence-backed explanation before mentioning any remaining uncertainty.')
         if missing_terms:
             joined = ', '.join(missing_terms)
@@ -104,7 +103,7 @@ class ActionLayerBuilder:
             if not evidence_available:
                 suggested_actions.append('Do not infer unconfirmed aspects; mark them as unresolved.')
         if grounded_terms and missing_terms and not evidence_available:
-            answer_goal = 'Summarize grounded entities first, then mark the unresolved entities without turning them into facts.'
+            answer_goal = 'Use the grounded parts directly, and state unresolved parts as unresolved without forcing a canned boundary response.'
         if no_evidence_found and not search_error:
             do_not_claim.append('Do not imply that missing evidence was actually confirmed.')
         if topic_continuity == 'continued_topic':

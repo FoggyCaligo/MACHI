@@ -97,31 +97,27 @@ class OllamaVerbalizer:
     def _format_memory_status(self, metadata: dict[str, Any]) -> str:
         recent_memory_messages = list(metadata.get('recent_memory_messages') or [])
         recent_memory_count = int(metadata.get('recent_memory_count') or len(recent_memory_messages))
-        topic_terms = [self._truncate(item, 40) for item in (metadata.get('topic_terms') or [])[:3]]
-        previous_topic_terms = [self._truncate(item, 40) for item in (metadata.get('previous_topic_terms') or [])[:3]]
+        topic_terms = [self._truncate(item, 36) for item in (metadata.get('topic_terms') or [])[:3]]
+        previous_topic_terms = [self._truncate(item, 36) for item in (metadata.get('previous_topic_terms') or [])[:2]]
         lines: list[str] = [f'- recent_memory_count: {recent_memory_count}']
         if metadata.get('topic_continuity'):
-            lines.append(f"- topic_continuity: {self._truncate(metadata.get('topic_continuity'), 40)}")
+            lines.append(f"- topic_continuity: {self._truncate(metadata.get('topic_continuity'), 32)}")
         if topic_terms:
             lines.append(f"- topic_terms: {' | '.join(topic_terms)}")
         if previous_topic_terms:
             lines.append(f"- previous_topic_terms: {' | '.join(previous_topic_terms)}")
 
-        for item in recent_memory_messages[-6:]:
+        user_memories: list[dict[str, Any]] = []
+        for item in reversed(recent_memory_messages):
             role_token = ' '.join(str(item.get('role') or '').split()).strip().lower()
-            if role_token != 'user':
-                continue
-            role = self._truncate(item.get('role', '-'), 16)
+            if role_token == 'user':
+                user_memories.append(item)
+            if len(user_memories) >= 2:
+                break
+        for item in reversed(user_memories):
             turn_index = item.get('turn_index', '-')
-            content = self._truncate(item.get('content', ''), 140)
-            lines.append(f'- memory: turn={turn_index} role={role} content={content}')
-            snapshot = item.get('intent_snapshot') or {}
-            if isinstance(snapshot, dict) and snapshot.get('snapshot_intent'):
-                topic_snapshot_terms = [self._truncate(term, 28) for term in (snapshot.get('topic_terms') or [])[:2]]
-                snapshot_line = f"- memory_snapshot: {self._truncate(snapshot.get('snapshot_intent'), 32)}"
-                if topic_snapshot_terms:
-                    snapshot_line += f" | {' | '.join(topic_snapshot_terms)}"
-                lines.append(snapshot_line)
+            content = self._truncate(item.get('content', ''), 96)
+            lines.append(f'- memory: turn={turn_index} content={content}')
         return '\n'.join(lines) if lines else '- no memory context'
 
     def _format_search_status(self, search_context: dict[str, Any]) -> str:

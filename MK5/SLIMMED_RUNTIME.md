@@ -61,3 +61,9 @@ LLM은 문장을 다시 거대한 의미 노드로 만드는 용도가 아니다
 - query focus를 문장/절 중심으로 더 안정화하고
 - conclusion이 그래프 전체가 아니라 질문 초점을 더 직접 따라가게 하는 것
 이다.
+
+
+### Verbalization policy (2026-04-18)
+- 일반 답변에서 template/boundary 응답을 사용하지 않는다.
+- 불충분한 근거는 시스템 오류가 아닌 한 LLM이 자연스럽게 설명한다.
+- verbalizer에는 search evidence 전체가 아니라 압축된 일부 비율만 전달한다.
