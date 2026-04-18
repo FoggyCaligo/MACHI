@@ -23,8 +23,8 @@ class ActionLayerBuilder:
         grounded_terms = list(search_context.get('grounded_terms') or [])
         search_error = search_context.get('error')
         no_evidence_found = bool(search_context.get('no_evidence_found'))
-        evidence_available = bool(search_context.get('evidence_available'))
-        coverage_unconfirmed = bool(search_context.get('coverage_unconfirmed'))
+        evidence_summaries = list(search_context.get('summaries') or [])
+        evidence_available = bool(search_result_count > 0 and evidence_summaries)
         previous_tone_hint = ' '.join(str(metadata.get('previous_tone_hint') or '').split()).strip()
         topic_continuity = str(metadata.get('topic_continuity') or '')
         recent_memory_messages = list(metadata.get('recent_memory_messages') or [])
@@ -81,7 +81,7 @@ class ActionLayerBuilder:
             do_not_claim.append('Do not say there are no active conflicts when conflicts were detected.')
         if not conclusion.activated_concepts:
             do_not_claim.append('Do not imply the system remembers specific content when no activated concepts support it.')
-        if search_error:
+        if search_error and not evidence_available:
             do_not_claim.append('Do not state facts that were not confirmed after a search failure.')
             suggested_actions.append('Say clearly that some details remain unknown because search confirmation failed.')
         if search_required and search_attempted and search_result_count == 0 and not search_error:
@@ -89,21 +89,21 @@ class ActionLayerBuilder:
             answer_goal = 'State first that search was needed but no confirmable evidence was found, and do not replace missing evidence with guesses.'
             do_not_claim.append('Do not present structural differences or performance differences as confirmed when no supporting evidence was found.')
             suggested_actions.append('Say clearly that confirmable external evidence was not found.')
-        if search_attempted and search_result_count > 0 and evidence_available:
+        if evidence_available:
             response_mode = 'structured_explanation'
-            answer_goal = 'Use the confirmed search evidence directly in the answer. Lead with what the evidence says, and mention any unresolved points only after the confirmed explanation.'
-            suggested_actions.append('Lead with the most directly confirmed evidence from search.')
-            if coverage_unconfirmed:
-                suggested_actions.append('Treat coverage-check timeouts as secondary; do not ignore confirmed evidence that is already available.')
+            answer_goal = "Use the grounded search evidence first, answer the user's direct question from that evidence, and mention only the still-unconfirmed gaps afterward if they matter."
+            suggested_actions.append('Lead with the evidence-backed explanation before mentioning any remaining uncertainty.')
         if missing_terms:
             joined = ', '.join(missing_terms)
             do_not_claim.append(f'Do not present these entities as confirmed without evidence: {joined}')
-            suggested_actions.append('Separate grounded entities from still-unconfirmed entities.')
+            if not evidence_available:
+                suggested_actions.append('Separate grounded entities from still-unconfirmed entities.')
         if missing_aspects:
             joined = ', '.join(missing_aspects)
             do_not_claim.append(f'Do not present these aspects as confirmed without evidence: {joined}')
-            suggested_actions.append('Do not infer unconfirmed aspects; mark them as unresolved.')
-        if grounded_terms and missing_terms:
+            if not evidence_available:
+                suggested_actions.append('Do not infer unconfirmed aspects; mark them as unresolved.')
+        if grounded_terms and missing_terms and not evidence_available:
             answer_goal = 'Summarize grounded entities first, then mark the unresolved entities without turning them into facts.'
         if no_evidence_found and not search_error:
             do_not_claim.append('Do not imply that missing evidence was actually confirmed.')
@@ -128,7 +128,6 @@ class ActionLayerBuilder:
                 'search_result_count': search_result_count,
                 'no_evidence_found': no_evidence_found,
                 'evidence_available': evidence_available,
-                'coverage_unconfirmed': coverage_unconfirmed,
                 'grounded_term_count': len(grounded_terms),
                 'missing_term_count': len(missing_terms),
                 'missing_aspect_count': len(missing_aspects),

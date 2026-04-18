@@ -131,6 +131,8 @@ class OllamaVerbalizer:
         grounded_terms = [self._truncate(item, 40) for item in (search_context.get('grounded_terms') or [])[:3]]
         missing_terms = [self._truncate(item, 40) for item in (search_context.get('missing_terms') or [])[:3]]
         missing_aspects = [self._truncate(item, 40) for item in (search_context.get('missing_aspects') or [])[:3]]
+        evidence_available = bool(search_context.get('evidence_available'))
+        coverage_unconfirmed = bool(search_context.get('coverage_unconfirmed'))
         lines: list[str] = [
             f"- need_search: {'true' if search_context.get('need_search') else 'false'}",
             f"- attempted: {'true' if search_context.get('attempted') else 'false'}",
