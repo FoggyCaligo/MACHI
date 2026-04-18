@@ -19,7 +19,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / 'data' / 'memory.db'
 SCHEMA_PATH = PROJECT_ROOT / 'storage' / 'schema.sql'
 DEFAULT_MODEL_NAME = 'mk5-graph-core'
-SEARCH_MODEL_SELECTION_REQUIRED_ERROR = 'question slot planner requires a selectable LLM model'
 
 
 class UserFacingChatError(RuntimeError):
@@ -160,7 +159,6 @@ class ChatPipeline:
                 ActivationRequest(
                     session_id=request.session_id,
                     content=request.message,
-                    current_root_event_id=ingest_result.root_event_id,
                 )
             )
             thought_result = self.thought_engine.think(
@@ -173,17 +171,11 @@ class ChatPipeline:
             )
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
-            if search_run.slot_plan is not None:
-                search_run.decision = self.search_sidecar.need_evaluator.evaluate(
-                    message=request.message,
-                    thought_view=thought_view,
-                    conclusion=thought_result.core_conclusion,
-                    slot_plan=search_run.slot_plan,
-                )
-                search_run.decision.metadata = {
-                    **search_run.decision.metadata,
-                    'post_search_graph_recheck': True,
-                }
+            search_run.decision = self.search_sidecar.need_evaluator.evaluate(
+                message=request.message,
+                thought_view=thought_view,
+                conclusion=thought_result.core_conclusion,
+            )
 
         temporary_edge_cleanup_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
         model_feedback_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
@@ -281,13 +273,7 @@ class ChatPipeline:
                 'scope_gate': search_run.decision.metadata.get('scope_gate'),
                 'scope_gate_error': search_run.decision.metadata.get('scope_gate_error'),
             },
-            'slot_plan': {
-                'entities': search_run.slot_plan.entities,
-                'aspects': search_run.slot_plan.aspects,
-                'comparison_axes': search_run.slot_plan.comparison_axes,
-                'requested_slots': [slot.label for slot in search_run.slot_plan.requested_slots],
-                'reason': search_run.slot_plan.reason,
-            } if search_run.slot_plan else None,
+            'slot_plan': None,
             'plan': {
                 'queries': search_run.plan.queries,
                 'reason': search_run.plan.reason,
@@ -401,16 +387,7 @@ class ChatPipeline:
         request: ChatPipelineRequest,
         search_run: SearchRunResult,
     ) -> None:
-        if not search_run.decision.need_search or not search_run.error:
-            return
-        if search_run.error != SEARCH_MODEL_SELECTION_REQUIRED_ERROR:
-            return
-        if request.model_name.strip() and request.model_name != DEFAULT_MODEL_NAME:
-            return
-        raise UserFacingChatError(
-            '이 질문은 외부 검색이 필요한데 검색 계획용 모델이 선택되지 않았습니다. '
-            '상단의 모델 선택에서 Ollama 모델을 고른 뒤 다시 시도해주세요.'
-        )
+        return
 
     def _attach_search_context(self, conclusion, *, search_run: SearchRunResult) -> None:
         if conclusion is None:
@@ -431,17 +408,17 @@ class ChatPipeline:
             'grounded_terms': search_grounding['grounded_terms'],
             'missing_terms': search_grounding['missing_terms'],
             'missing_aspects': search_grounding['missing_aspects'],
-            'slot_entities': search_run.slot_plan.entities if search_run.slot_plan else [],
-            'slot_aspects': search_run.slot_plan.aspects if search_run.slot_plan else [],
-            'comparison_axes': search_run.slot_plan.comparison_axes if search_run.slot_plan else [],
+            'slot_entities': [],
+            'slot_aspects': [],
+            'comparison_axes': [],
             'planned_queries': search_run.plan.queries if search_run.plan else [],
             'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []) if search_run.plan else [],
             'error': search_run.error,
             'provider_errors': search_grounding['provider_errors'],
             'no_evidence_found': search_grounding['no_evidence_found'],
-            'scope_gate_attempted': bool(search_run.decision.metadata.get('scope_gate_attempted')),
-            'scope_gate': search_run.decision.metadata.get('scope_gate'),
-            'scope_gate_error': search_run.decision.metadata.get('scope_gate_error'),
+            'scope_gate_attempted': False,
+            'scope_gate': None,
+            'scope_gate_error': None,
             'summaries': [
                 {
                     'title': item.title,

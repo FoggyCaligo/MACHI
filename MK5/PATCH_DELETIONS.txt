@@ -1,0 +1,14 @@
+삭제한 레거시 파일:
+- core/search/question_slot_planner.py
+- core/search/search_scope_gate.py
+- core/search/search_coverage_refiner.py
+- prompts/system/search_scope_gate_system_prompt.txt
+- prompts/search/search_scope_gate_prompt.txt
+- prompts/system/question_slot_planner_system_prompt.txt
+- prompts/search/question_slot_planner_prompt.txt
+- prompts/system/search_coverage_refiner_system_prompt.txt
+- prompts/search/search_coverage_refiner_prompt.txt
+
+삭제/교체한 테스트:
+- tests/unit/test_search_orchestration.py (현행 런타임 기준으로 재작성)
+- tests/unit/test_search_grounding_guardrails.py (현행 런타임 기준으로 재작성)

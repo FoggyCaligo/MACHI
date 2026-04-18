@@ -11,13 +11,6 @@ from urllib.request import Request, urlopen
 from config import SEARCH_BACKEND_TIMEOUT_SECONDS, SEARCH_MAX_RESULTS
 from core.entities.conclusion import CoreConclusion
 from core.entities.thought_view import ThoughtView
-from core.search.question_slot_planner import QuestionSlotPlan, QuestionSlotPlanner, QuestionSlotPlannerError
-from core.search.search_scope_gate import SearchScopeGate, SearchScopeGateDecision, SearchScopeGateError
-from core.search.search_coverage_refiner import (
-    SearchCoverageRefiner,
-    SearchCoverageRefinerError,
-    SlotCoverageSupport,
-)
 from core.search.search_need_evaluator import SearchNeedDecision, SearchNeedEvaluator
 from core.search.search_query_planner import SearchPlan, SearchQueryPlanner, SearchQueryPlannerError
 
@@ -55,7 +48,7 @@ class SearchBackendResult:
 class SearchRunResult:
     attempted: bool
     decision: SearchNeedDecision
-    slot_plan: QuestionSlotPlan | None = None
+    slot_plan: Any | None = None
     plan: SearchPlan | None = None
     results: list[SearchEvidence] = field(default_factory=list)
     error: str | None = None
@@ -281,10 +274,7 @@ class SearchSidecar:
     max_results: int = SEARCH_MAX_RESULTS
     timeout_seconds: float = SEARCH_BACKEND_TIMEOUT_SECONDS
     need_evaluator: SearchNeedEvaluator = field(default_factory=SearchNeedEvaluator)
-    scope_gate: SearchScopeGate = field(default_factory=SearchScopeGate)
-    slot_planner: QuestionSlotPlanner = field(default_factory=QuestionSlotPlanner)
     query_planner: SearchQueryPlanner = field(default_factory=SearchQueryPlanner)
-    coverage_refiner: SearchCoverageRefiner = field(default_factory=SearchCoverageRefiner)
     backend: SearchBackend = field(default_factory=CompositeSearchBackend)
     evidence_passage_limit: int = 2
     evidence_fetch_timeout_seconds: float = 3.0
@@ -301,67 +291,9 @@ class SearchSidecar:
         conclusion: CoreConclusion,
         model_name: str,
     ) -> SearchRunResult:
-        coarse_decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
-        scope_gate_decision: SearchScopeGateDecision | None = None
-        scope_gate_error: str | None = None
-
-        if self._can_attempt_scope_gate(model_name):
-            try:
-                scope_gate_decision = self.scope_gate.decide(
-                    model_name=model_name,
-                    message=message,
-                    thought_view=thought_view,
-                    conclusion=conclusion,
-                    target_terms=coarse_decision.target_terms,
-                )
-            except SearchScopeGateError as exc:
-                scope_gate_error = str(exc)
-
-        scope_gate_metadata = self._build_scope_gate_metadata(
-            scope_gate_decision=scope_gate_decision,
-            scope_gate_error=scope_gate_error,
-        )
-
-        if scope_gate_decision is not None and not scope_gate_decision.needs_external_search:
-            blocked_decision = self._decision_after_scope_gate_block(
-                coarse_decision=coarse_decision,
-                scope_gate_decision=scope_gate_decision,
-            )
-            blocked_decision.metadata = {**blocked_decision.metadata, **scope_gate_metadata}
-            return SearchRunResult(attempted=False, decision=blocked_decision, planning_attempted=False)
-
-        try:
-            slot_plan = self.slot_planner.plan(
-                model_name=model_name,
-                message=message,
-                thought_view=thought_view,
-                conclusion=conclusion,
-                target_terms=coarse_decision.target_terms,
-            )
-        except QuestionSlotPlannerError as exc:
-            failed_decision = self._decision_after_slot_planner_failure(
-                coarse_decision,
-                conclusion=conclusion,
-                scope_gate_decision=scope_gate_decision,
-                scope_gate_error=scope_gate_error,
-            )
-            failed_decision.metadata = {**failed_decision.metadata, **scope_gate_metadata}
-            return SearchRunResult(
-                attempted=False,
-                decision=failed_decision,
-                error=str(exc),
-                planning_attempted=True,
-            )
-
-        decision = self.need_evaluator.evaluate(
-            message=message,
-            thought_view=thought_view,
-            conclusion=conclusion,
-            slot_plan=slot_plan,
-        )
-        decision.metadata = {**decision.metadata, **scope_gate_metadata}
+        decision = self.need_evaluator.evaluate(message=message, thought_view=thought_view, conclusion=conclusion)
         if not decision.need_search:
-            return SearchRunResult(attempted=False, decision=decision, slot_plan=slot_plan, planning_attempted=True)
+            return SearchRunResult(attempted=False, decision=decision, planning_attempted=True)
 
         try:
             plan = self.query_planner.plan(
@@ -372,31 +304,18 @@ class SearchSidecar:
                 decision=decision,
             )
         except SearchQueryPlannerError as exc:
-            return SearchRunResult(attempted=False, decision=decision, slot_plan=slot_plan, error=str(exc), planning_attempted=True)
+            return SearchRunResult(attempted=False, decision=decision, error=str(exc), planning_attempted=True)
 
         results, provider_errors = self._execute_plan(plan)
         post_search_decision = decision
-        if results:
-            try:
-                analysis = self.coverage_refiner.refine(
-                    model_name=model_name,
-                    message=message,
-                    conclusion=conclusion,
-                    slot_plan=slot_plan,
-                    evidences=results,
-                )
-                post_search_decision = self._decision_after_search_refinement(
-                    original_decision=decision,
-                    slot_plan=slot_plan,
-                    slot_supports=analysis.slot_supports,
-                    reason=analysis.reason,
-                )
-            except SearchCoverageRefinerError as exc:
-                provider_errors.append({'provider': 'search-coverage-refiner', 'query': message, 'error': str(exc)})
+        if not results and provider_errors:
+            post_search_decision.metadata = {
+                **post_search_decision.metadata,
+                'provider_errors': provider_errors,
+            }
         return SearchRunResult(
             attempted=True,
             decision=post_search_decision,
-            slot_plan=slot_plan,
             plan=plan,
             results=results,
             planning_attempted=True,
@@ -405,92 +324,6 @@ class SearchSidecar:
 
     def search(self, message: str, thought_view: ThoughtView, conclusion: CoreConclusion, *, model_name: str) -> list[SearchEvidence]:
         return self.run(message=message, thought_view=thought_view, conclusion=conclusion, model_name=model_name).results
-
-    def _can_attempt_scope_gate(self, model_name: str) -> bool:
-        token = str(model_name or '').strip()
-        return bool(token and token != 'mk5-graph-core')
-
-    def _build_scope_gate_metadata(
-        self,
-        *,
-        scope_gate_decision: SearchScopeGateDecision | None,
-        scope_gate_error: str | None,
-    ) -> dict[str, Any]:
-        metadata: dict[str, Any] = {}
-        if scope_gate_decision is not None or scope_gate_error is not None:
-            metadata['scope_gate_attempted'] = True
-        if scope_gate_decision is not None:
-            metadata['scope_gate'] = scope_gate_decision.to_metadata()
-        if scope_gate_error:
-            metadata['scope_gate_error'] = scope_gate_error
-        return metadata
-
-    def _decision_after_scope_gate_block(
-        self,
-        *,
-        coarse_decision: SearchNeedDecision,
-        scope_gate_decision: SearchScopeGateDecision,
-    ) -> SearchNeedDecision:
-        return SearchNeedDecision(
-            need_search=False,
-            reason='external_grounding_not_needed',
-            gap_summary=scope_gate_decision.reason,
-            target_node_ids=list(coarse_decision.target_node_ids),
-            target_terms=list(coarse_decision.target_terms),
-            requested_slots=list(coarse_decision.requested_slots),
-            covered_slots=list(coarse_decision.covered_slots),
-            missing_slots=list(coarse_decision.missing_slots),
-            slot_supports=list(coarse_decision.slot_supports),
-            metadata={
-                **coarse_decision.metadata,
-                'scope_gate_blocked': True,
-            },
-        )
-
-    def _decision_after_slot_planner_failure(
-        self,
-        coarse_decision: SearchNeedDecision,
-        *,
-        conclusion: CoreConclusion,
-        scope_gate_decision: SearchScopeGateDecision | None,
-        scope_gate_error: str | None,
-    ) -> SearchNeedDecision:
-        target_terms = list(coarse_decision.target_terms)
-        if scope_gate_decision is not None and scope_gate_decision.needs_external_search:
-            return SearchNeedDecision(
-                need_search=True,
-                reason='slot_planner_failed_after_scope_allow',
-                gap_summary='검색 범위 게이트는 외부 근거가 필요하다고 봤지만, 질문 구조 분해가 실패해 검색 계획을 만들지 못했다.',
-                target_node_ids=list(coarse_decision.target_node_ids),
-                target_terms=target_terms,
-                requested_slots=list(coarse_decision.requested_slots),
-                covered_slots=list(coarse_decision.covered_slots),
-                missing_slots=list(coarse_decision.missing_slots),
-                slot_supports=list(coarse_decision.slot_supports),
-                metadata={
-                    **coarse_decision.metadata,
-                    'slot_planner_failed': True,
-                    'search_confirmation': 'scope_gate_allowed',
-                },
-            )
-
-        return SearchNeedDecision(
-            need_search=False,
-            reason='slot_planner_failed_search_not_confirmed',
-            gap_summary='질문 구조 분해에 실패해 외부 검색 필요성을 확정하지 못했다. 현재 확보된 범위 안에서 보수적으로 답한다.',
-            target_node_ids=list(coarse_decision.target_node_ids),
-            target_terms=target_terms,
-            requested_slots=list(coarse_decision.requested_slots),
-            covered_slots=list(coarse_decision.covered_slots),
-            missing_slots=list(coarse_decision.missing_slots),
-            slot_supports=list(coarse_decision.slot_supports),
-            metadata={
-                **coarse_decision.metadata,
-                'slot_planner_failed': True,
-                'search_confirmation': 'not_confirmed',
-                'scope_gate_unavailable': bool(scope_gate_error) and scope_gate_decision is None,
-            },
-        )
 
     def _execute_plan(self, plan: SearchPlan) -> tuple[list[SearchEvidence], list[dict[str, Any]]]:
         aggregated: list[SearchEvidence] = []

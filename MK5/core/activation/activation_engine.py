@@ -21,11 +21,11 @@ from storage.unit_of_work import UnitOfWork
 class ActivationRequest:
     session_id: str
     content: str
-    current_root_event_id: int | None = None
     max_seed_nodes: int = 12
     max_neighbor_edges: int = 64
     max_neighbors: int = 48
     include_pointer_expansion: bool = True
+    current_root_event_id: int | None = None
 
 
 class ActivationEngine:

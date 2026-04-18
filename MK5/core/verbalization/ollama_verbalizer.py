@@ -131,8 +131,6 @@ class OllamaVerbalizer:
         grounded_terms = [self._truncate(item, 40) for item in (search_context.get('grounded_terms') or [])[:3]]
         missing_terms = [self._truncate(item, 40) for item in (search_context.get('missing_terms') or [])[:3]]
         missing_aspects = [self._truncate(item, 40) for item in (search_context.get('missing_aspects') or [])[:3]]
-        evidence_available = bool(search_context.get('evidence_available'))
-        coverage_unconfirmed = bool(search_context.get('coverage_unconfirmed'))
         lines: list[str] = [
             f"- need_search: {'true' if search_context.get('need_search') else 'false'}",
             f"- attempted: {'true' if search_context.get('attempted') else 'false'}",
@@ -140,10 +138,6 @@ class OllamaVerbalizer:
         ]
         if search_context.get('no_evidence_found'):
             lines.append('- no_evidence_found: true')
-        if evidence_available:
-            lines.append('- evidence_available: true')
-        if coverage_unconfirmed:
-            lines.append('- coverage_unconfirmed: true')
         if grounded_terms:
             lines.append(f"- grounded_terms: {' | '.join(grounded_terms)}")
         if missing_terms:
@@ -161,12 +155,11 @@ class OllamaVerbalizer:
 
         summaries = search_context.get('summaries') or []
         for item in summaries[:2]:
+            passage = ''
             passages = item.get('passages') or []
-            evidence_text = ''
             if isinstance(passages, list) and passages:
-                evidence_text = str(passages[0] or '')
-            if not evidence_text:
-                evidence_text = str(item.get('snippet') or '')
+                passage = str(passages[0] or '')
+            evidence_text = passage or str(item.get('snippet', '') or '')
             lines.append(
                 f"- evidence: {self._truncate(item.get('title', '-'), 60)} ({self._truncate(item.get('provider', '-'), 24)}): {self._truncate(evidence_text, 180)}"
             )
