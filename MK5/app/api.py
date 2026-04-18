@@ -40,6 +40,7 @@ def register_routes(app: Flask) -> None:
 
     @app.post('/chat')
     def chat():
+        print('[api] /chat start')
         message = (request.form.get('message') or '').strip()
         if not message:
             return jsonify({'detail': 'message is required'}), 400
@@ -62,15 +63,18 @@ def register_routes(app: Flask) -> None:
                 ChatPipelineRequest(
                     session_id=session_id,
                     message=message,
-                    turn_index=pipeline.next_turn_index(session_id),
+                    turn_index=0,
                     attached_files=attached_files,
                     model_name=selected_model,
                 )
             )
+            print('[api] /chat fin ok')
             return jsonify(result)
         except UserFacingChatError as exc:
+            print(f'[api] /chat fin user_error detail={exc}')
             return jsonify({'detail': str(exc)}), 400
         except RuntimeError as exc:
+            print(f'[api] /chat fin runtime_error detail={exc}')
             return jsonify({'detail': str(exc)}), 500
 
     @app.post('/internal/revision-review')

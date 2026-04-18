@@ -94,3 +94,8 @@
 - direct access 실패 조건은 node 부재만이 아니라
   **usable grounding 부족** 전체임
 - assistant full answer는 그래프 확장 경로에서 제거
+
+- Search evidence no longer creates `chat_messages` rows; search ingest now uses compact evidence blocks attached directly to graph events/nodes to reduce node explosion and timeout pressure.
+- `next_turn_index()` 세션 전체 스캔 제거: turn_index는 호환성용 고정값 `0`으로 전달하고, 실제 순서는 `chat_messages.id`와 topic continuity로 처리
+
+- 입력 의미 분석은 더 이상 생성형 LLM을 호출하지 않고, 정규식 후보 + 코사인 유사도 기반 라벨링으로 처리한다.

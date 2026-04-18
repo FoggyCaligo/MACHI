@@ -32,11 +32,13 @@ class GraphIngestRequest:
     message_uid: str | None = None
     source_type: str = 'user'
     claim_domain: str | None = None
+    persist_message: bool = True
+    blocks_override: list[MeaningBlock] | None = None
 
 
 @dataclass(slots=True)
 class GraphIngestResult:
-    message_id: int
+    message_id: int | None
     root_event_id: int
     message_uid: str
     block_count: int
@@ -82,27 +84,29 @@ class GraphIngestService:
         )
         profile = self.trust_policy.profile_for(source_type=source_type, claim_domain=claim_domain)
 
-        blocks = self.segmenter.segment(request.content)
+        blocks = list(request.blocks_override) if request.blocks_override is not None else self.segmenter.segment(request.content)
         message_uid = request.message_uid or self._new_uid('msg')
         message_metadata = dict(request.metadata)
         message_metadata.setdefault('source_type', source_type)
         message_metadata.setdefault('claim_domain', claim_domain)
 
         with self.uow_factory() as uow:
-            message = uow.chat_messages.add(
-                ChatMessage(
-                    message_uid=message_uid,
-                    session_id=request.session_id,
-                    turn_index=request.turn_index,
-                    role=request.role,
-                    content=request.content,
-                    content_hash=self.hash_resolver.content_hash(request.content),
-                    attached_files=request.attached_files,
-                    metadata=message_metadata,
+            message: ChatMessage | None = None
+            if request.persist_message:
+                message = uow.chat_messages.add(
+                    ChatMessage(
+                        message_uid=message_uid,
+                        session_id=request.session_id,
+                        turn_index=request.turn_index,
+                        role=request.role,
+                        content=request.content,
+                        content_hash=self.hash_resolver.content_hash(request.content),
+                        attached_files=request.attached_files,
+                        metadata=message_metadata,
+                    )
                 )
-            )
             parsed_input = {
-                'sentence_count': len(self.segmenter.split_sentences(request.content)),
+                'sentence_count': len({block.sentence_index for block in blocks}) if blocks else 0,
                 'blocks': [
                     {
                         'block_kind': block.block_kind,
@@ -114,16 +118,17 @@ class GraphIngestService:
                 ],
                 'source_type': source_type,
                 'claim_domain': claim_domain,
+                'persist_message': request.persist_message,
             }
             root_event = uow.graph_events.add(
                 GraphEvent(
                     event_uid=self._new_uid('evt'),
-                    event_type='message_ingested',
-                    message_id=message.id,
+                    event_type='message_ingested' if request.persist_message else 'evidence_ingested',
+                    message_id=message.id if message is not None else None if message is not None else None,
                     input_text=request.content,
                     parsed_input=parsed_input,
                     effect={
-                        'message_uid': message.message_uid,
+                        'message_uid': message.message_uid if message is not None else message_uid,
                         'source_type': source_type,
                         'claim_domain': claim_domain,
                     },
@@ -131,9 +136,9 @@ class GraphIngestService:
             )
 
             result = GraphIngestResult(
-                message_id=message.id or 0,
+                message_id=message.id if message is not None else None if message is not None else None,
                 root_event_id=root_event.id or 0,
-                message_uid=message.message_uid,
+                message_uid=message.message_uid if message is not None else message_uid,
                 block_count=len(blocks),
                 blocks=blocks,
                 source_type=source_type,
@@ -174,7 +179,7 @@ class GraphIngestService:
                         GraphEvent(
                             event_uid=self._new_uid('evt'),
                             event_type='node_created',
-                            message_id=message.id,
+                            message_id=message.id if message is not None else None,
                             trigger_node_id=node.id,
                             input_text=block.text,
                             parsed_input={
@@ -199,7 +204,7 @@ class GraphIngestService:
                         GraphEvent(
                             event_uid=self._new_uid('evt'),
                             event_type='node_supported',
-                            message_id=message.id,
+                            message_id=message.id if message is not None else None,
                             trigger_node_id=node.id,
                             input_text=block.text,
                             parsed_input={
@@ -219,15 +224,17 @@ class GraphIngestService:
                 resolved.append((block, node))
                 sentence_nodes[block.sentence_index][node.id or 0] = node
 
-            identity_anchor = self._ensure_identity_anchor(
-                uow=uow,
-                session_id=request.session_id,
-                role=request.role,
-                source_type=source_type,
-                claim_domain=claim_domain,
-                root_event_id=root_event.id,
-                message_id=message.id,
-            )
+            identity_anchor = None
+            if request.persist_message:
+                identity_anchor = self._ensure_identity_anchor(
+                    uow=uow,
+                    session_id=request.session_id,
+                    role=request.role,
+                    source_type=source_type,
+                    claim_domain=claim_domain,
+                    root_event_id=root_event.id,
+                    message_id=message.id if message is not None else None,
+                )
             if identity_anchor is not None:
                 if identity_anchor.id is not None and identity_anchor.id not in result.reused_node_ids and identity_anchor.id not in result.created_node_ids:
                     result.reused_node_ids.append(identity_anchor.id)
@@ -320,7 +327,7 @@ class GraphIngestService:
                                 'scope': 'sentence',
                                 'note': 'Weak same-sentence co-occurrence relation.',
                                 'sentence_index': sentence_index,
-                                'message_id': message.id,
+                                'message_id': message.id if message is not None else None,
                                 'source_type': source_type,
                                 'claim_domain': claim_domain,
                                 'source_counts': {source_type: 1},
@@ -336,7 +343,7 @@ class GraphIngestService:
                         GraphEvent(
                             event_uid=self._new_uid('evt'),
                             event_type='edge_created',
-                            message_id=message.id,
+                            message_id=message.id if message is not None else None,
                             trigger_edge_id=edge.id,
                             parsed_input={
                                 'sentence_index': sentence_index,
@@ -368,7 +375,7 @@ class GraphIngestService:
                         GraphEvent(
                             event_uid=self._new_uid('evt'),
                             event_type='edge_supported',
-                            message_id=message.id,
+                            message_id=message.id if message is not None else None,
                             trigger_edge_id=existing.id,
                             parsed_input={
                                 'sentence_index': sentence_index,
@@ -433,7 +440,7 @@ class GraphIngestService:
                     GraphEvent(
                         event_uid=self._new_uid('evt'),
                         event_type='pointer_created',
-                        message_id=message.id,
+                        message_id=message.id if message is not None else None,
                         trigger_node_id=longer[1].id,
                         input_text=longer[0].text,
                         parsed_input={
@@ -557,8 +564,8 @@ class GraphIngestService:
                         edge_family='relation',
                         connect_type='flow',
                         relation_detail={
-                            'message_id': message.id,
-                            'turn_index': message.turn_index,
+                            'message_id': message.id if message is not None else None,
+                            'turn_index': message.turn_index if message is not None else request.turn_index,
                             'session_id': session_id,
                             'source_type': source_type,
                             'claim_domain': claim_domain,
@@ -581,7 +588,7 @@ class GraphIngestService:
                     GraphEvent(
                         event_uid=self._new_uid('evt'),
                         event_type='identity_anchor_linked',
-                        message_id=message.id,
+                        message_id=message.id if message is not None else None,
                         trigger_edge_id=edge.id,
                         parsed_input={
                             'source_type': source_type,
@@ -602,8 +609,8 @@ class GraphIngestService:
                 source_counts = dict(relation_detail.get('source_counts') or {})
                 source_counts[source_type] = int(source_counts.get(source_type, 0)) + 1
                 relation_detail['source_counts'] = source_counts
-                relation_detail['last_message_id'] = message.id
-                relation_detail['last_turn_index'] = message.turn_index
+                relation_detail['last_message_id'] = message.id if message is not None else None
+                relation_detail['last_turn_index'] = message.turn_index if message is not None else request.turn_index
                 relation_detail['last_claim_domain'] = claim_domain
                 relation_detail['session_id'] = session_id
                 relation_detail['scope'] = 'session_temporary'

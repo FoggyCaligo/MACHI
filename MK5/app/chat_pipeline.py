@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
+import re
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from config import (
-    MEANING_ANALYZER_NUM_PREDICT,
-    MEANING_ANALYZER_TEMPERATURE,
-    MEANING_ANALYZER_TIMEOUT_SECONDS,
-    build_ollama_options,
-)
 from core.activation.activation_engine import ActivationEngine, ActivationRequest
 from core.cognition.meaning_block import MeaningBlock
 from core.entities.chat_message import ChatMessage
@@ -22,7 +19,6 @@ from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestResu
 from core.update.node_merge_service import NodeMergeService
 from core.verbalization.verbalizer import Verbalizer
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
-from tools.ollama_client import OllamaClient, OllamaClientError, OllamaTimeoutError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / 'data' / 'memory.db'
@@ -89,7 +85,6 @@ class ChatPipeline:
         )
         self.verbalizer = verbalizer or Verbalizer()
         self.search_sidecar = search_sidecar or SearchSidecar()
-        self.meaning_analysis_client = OllamaClient(timeout_seconds=MEANING_ANALYZER_TIMEOUT_SECONDS)
         self.model_feedback_service = None
         self.model_edge_assertion_service = None
         self.connect_type_promotion_service = None
@@ -135,6 +130,7 @@ class ChatPipeline:
         search_ingest_results: list[GraphIngestResult] = []
         if search_results:
             for index, item in enumerate(search_results, start=1):
+                compact_blocks = self._build_search_evidence_blocks(item)
                 search_ingest_results.append(
                     self.ingest_service.ingest(
                         GraphIngestRequest(
@@ -148,9 +144,13 @@ class ChatPipeline:
                                 'title': item.title,
                                 'search_rank': index,
                                 'planned_query': item.metadata.get('planned_query'),
+                                'evidence_passages': list(item.passages or []),
+                                'compact_ingest': True,
                             },
                             source_type='search',
                             claim_domain=item.claim_domain,
+                            persist_message=False,
+                            blocks_override=compact_blocks,
                         )
                     )
                 )
@@ -341,10 +341,37 @@ class ChatPipeline:
             'verbalization': debug_payload['verbalization'],
         }
 
-    def next_turn_index(self, session_id: str) -> int:
-        with self._uow_factory() as uow:
-            rows = [row for row in uow.chat_messages.list_by_session(session_id, limit=100000) if row.role == 'user']
-            return (rows[-1].turn_index + 1) if rows else 1
+
+    def _build_search_evidence_blocks(self, item: SearchEvidence) -> list[MeaningBlock]:
+        title = ' '.join(str(item.title or '').split()).strip()
+        title_norm = self.ingest_service.hash_resolver.normalize_text(title) if title else ''
+        passage = ' '.join(str((item.passages or [''])[0] or item.snippet or '').split()).strip()
+        if len(passage) > 220:
+            passage = passage[:217].rstrip() + '...'
+        statement_text = f'{title}: {passage}' if title and passage and passage != title else (passage or title)
+        statement_norm = self.ingest_service.hash_resolver.normalize_text(statement_text)
+        blocks: list[MeaningBlock] = []
+        if statement_norm:
+            blocks.append(MeaningBlock(
+                text=statement_text,
+                normalized_text=statement_norm,
+                block_kind='statement_phrase',
+                sentence_index=0,
+                block_index=0,
+                source_sentence=statement_text,
+                metadata={'source': 'search_compact', 'address_scope': 'search_evidence_statement'},
+            ))
+        if title_norm:
+            blocks.append(MeaningBlock(
+                text=title,
+                normalized_text=title_norm,
+                block_kind='noun_phrase',
+                sentence_index=0,
+                block_index=1,
+                source_sentence=statement_text or title,
+                metadata={'source': 'search_compact', 'address_scope': 'search_evidence_title'},
+            ))
+        return blocks
 
     def _resolve_blocks_directly(self, blocks: list[MeaningBlock]) -> dict[str, Any]:
         resolved: dict[str, Any] = {}
@@ -369,13 +396,7 @@ class ChatPipeline:
             source_sentence=block.source_sentence,
             metadata=dict(block.metadata),
         ) for block in seed_blocks]
-        fallback = self._fallback_meaning_analysis(annotated)
-        analysis_result = fallback
-        if model_name and model_name != DEFAULT_MODEL_NAME:
-            try:
-                analysis_result = self._llm_meaning_analysis(message=message, blocks=annotated, model_name=model_name, fallback=fallback)
-            except Exception as exc:
-                analysis_result = {**fallback, 'mode': 'fallback', 'error': str(exc)}
+        analysis_result = self._similarity_meaning_analysis(message=message, blocks=annotated)
         self._apply_meaning_analysis(annotated, analysis_result)
         return annotated, analysis_result
 
@@ -413,83 +434,124 @@ class ChatPipeline:
             'items': items,
         }
 
-    def _llm_meaning_analysis(self, *, message: str, blocks: list[MeaningBlock], model_name: str, fallback: dict[str, Any]) -> dict[str, Any]:
-        candidates = []
-        seen: set[str] = set()
-        for block in blocks:
-            if block.block_kind != 'noun_phrase':
-                continue
-            term = ' '.join(str(block.normalized_text or block.text).split()).strip().lower()
-            if not term or term in seen:
-                continue
-            seen.add(term)
-            candidates.append({
-                'surface': block.text,
-                'normalized': term,
-                'sentence_index': block.sentence_index,
-                'source_sentence': block.source_sentence,
-            })
-        if not candidates:
+    def _similarity_meaning_analysis(self, *, message: str, blocks: list[MeaningBlock]) -> dict[str, Any]:
+        fallback = self._fallback_meaning_analysis(blocks)
+        noun_blocks = [block for block in blocks if block.block_kind == 'noun_phrase']
+        if not noun_blocks:
             return fallback
-        system_prompt = (
-            '당신은 MK5 의미 단위 분석기다. 이미 정규식으로 뽑힌 후보들 중에서 현재 사용자의 의도를 따라가며 '
-            '검색/접근 우선순위만 정한다. 새 개념을 만들지 말고, 주어진 normalized 후보만 사용하라. '
-            '응답은 반드시 JSON 객체 하나만 반환하라.'
-        )
-        user_prompt = json.dumps({
-            'message': message,
-            'candidates': candidates,
-            'task': {
-                'return_fields': [
-                    'current_intent',
-                    'primary_keywords',
-                    'secondary_keywords',
-                    'ignore_for_search',
-                    'items(normalized, importance, search_policy, freshness_kind)',
-                ],
-                'importance': ['primary', 'secondary', 'background', 'ignore'],
-                'search_policy': ['search_if_unusable', 'local_only', 'ignore'],
-                'freshness_kind': ['timeless', 'current_state', 'self_or_local', 'unknown'],
-            },
-            'rules': [
-                'primary는 지금 질문에 답하기 위해 직접 확인해야 하는 핵심 대상만 넣어라.',
-                '자기소개, 인사, 호칭, 말투 정보는 보통 background 또는 ignore로 내려라.',
-                '현재 시스템 내부 상태나 현재 대화 맥락을 확인해야 하는 것은 local_only 또는 self_or_local로 표시하라.',
-                '외부 검색으로 확인해야 하는 일반 개념은 search_if_unusable로 표시하라.',
-                '모르면 conservative하게 secondary + search_if_unusable + unknown을 사용하라.',
-            ],
-        }, ensure_ascii=False, indent=2)
-        result = self.meaning_analysis_client.chat(
-            model_name=model_name,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt},
-            ],
-            stream=False,
-            options=build_ollama_options(temperature=MEANING_ANALYZER_TEMPERATURE, num_predict=MEANING_ANALYZER_NUM_PREDICT),
-            response_format='json',
-        )
-        parsed = self._parse_json_object(result.content)
-        if not isinstance(parsed, dict):
-            raise RuntimeError('meaning analyzer returned non-object JSON')
-        parsed['mode'] = 'llm'
-        return parsed
 
-    def _parse_json_object(self, content: str) -> dict[str, Any]:
-        text = str(content or '').strip()
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            parsed = json.loads(text[start:end + 1])
-            if isinstance(parsed, dict):
-                return parsed
-        raise RuntimeError('meaning analyzer returned invalid JSON')
+        statement_blocks = [block for block in blocks if block.block_kind == 'statement_phrase']
+        question_statement = next(
+            (block for block in reversed(statement_blocks) if '?' in str(block.text) or '？' in str(block.text)),
+            statement_blocks[-1] if statement_blocks else None,
+        )
+        focus_text = str(question_statement.text if question_statement else message)
+        focus_sentence_index = int(question_statement.sentence_index if question_statement else max((block.sentence_index for block in noun_blocks), default=0))
+        focus_token_count = max(1, len(self._token_counter(focus_text)))
+        prototypes = {
+            'timeless': '무엇인지 설명 개요 정의 작품 인물 사물 일반 정보 역사 특징 기본 설명',
+            'current_state': '현재 상태 최근 변화 지금 적용 여부 최신 업데이트 버전 동작 상황',
+            'self_or_local': '지금 너 현재 대화 시스템 내부 로컬 그래프 세션 적용 느껴지는 상태',
+        }
+
+        scored_items: list[tuple[float, dict[str, str]]] = []
+        for index, block in enumerate(noun_blocks):
+            term = ' '.join(str(block.normalized_text or block.text).split()).strip().lower()
+            if not term:
+                continue
+            sentence_text = str(block.source_sentence or block.text)
+            sentence_focus = self._cosine_similarity(sentence_text, focus_text)
+            term_focus = self._cosine_similarity(term, focus_text)
+            message_focus = self._cosine_similarity(term, message)
+            position_boost = 0.25 if block.sentence_index == focus_sentence_index else 0.0
+            short_penalty = 0.08 if len(term) <= 1 else 0.0
+            focus_score = (0.50 * sentence_focus) + (0.35 * term_focus) + (0.15 * message_focus) + position_boost - short_penalty
+
+            freshness_scores = {
+                name: self._cosine_similarity(f'{focus_text} {sentence_text} {term}', proto)
+                for name, proto in prototypes.items()
+            }
+            freshness_kind = max(freshness_scores, key=freshness_scores.get)
+            freshness_score = freshness_scores[freshness_kind]
+            if freshness_score < 0.08:
+                freshness_kind = 'unknown'
+
+            importance = 'secondary'
+            if focus_score >= 0.48:
+                importance = 'primary'
+            elif focus_score >= 0.24:
+                importance = 'secondary'
+            elif block.sentence_index == focus_sentence_index and len(term) >= 2:
+                importance = 'secondary'
+            elif focus_score < 0.10 and len(term) <= 2:
+                importance = 'ignore'
+            else:
+                importance = 'background'
+
+            search_policy = 'search_if_unusable'
+            if importance == 'ignore':
+                search_policy = 'ignore'
+            elif freshness_kind == 'self_or_local':
+                search_policy = 'local_only'
+
+            item = {
+                'normalized': term,
+                'importance': importance,
+                'search_policy': search_policy,
+                'freshness_kind': freshness_kind,
+            }
+            score_with_tiebreak = focus_score + ((focus_token_count - index) / (focus_token_count * 1000.0))
+            scored_items.append((score_with_tiebreak, item))
+
+        if not scored_items:
+            return fallback
+
+        best_item = max(scored_items, key=lambda item: item[0])[1]
+        current_intent = 'graph_grounded_reasoning'
+        if best_item['freshness_kind'] == 'self_or_local':
+            current_intent = 'local_state_check'
+        elif best_item['freshness_kind'] == 'current_state':
+            current_intent = 'state_grounding_request'
+
+        items = [item for _, item in scored_items]
+        primary = [item['normalized'] for _, item in scored_items if item['importance'] == 'primary']
+        secondary = [item['normalized'] for _, item in scored_items if item['importance'] == 'secondary']
+        ignore_for_search = [item['normalized'] for _, item in scored_items if item['search_policy'] == 'ignore']
+
+        if not primary and secondary:
+            primary = secondary[:1]
+            for item in items:
+                if item['normalized'] == primary[0] and item['importance'] == 'secondary':
+                    item['importance'] = 'primary'
+                    break
+            secondary = [item['normalized'] for item in items if item['importance'] == 'secondary']
+
+        return {
+            'mode': 'similarity',
+            'current_intent': current_intent,
+            'primary_keywords': primary[:6],
+            'secondary_keywords': secondary[:8],
+            'ignore_for_search': ignore_for_search[:8],
+            'items': items,
+        }
+
+    def _token_counter(self, text: str) -> Counter[str]:
+        tokens = [token.lower() for token in re.findall(r'[0-9A-Za-z가-힣_+-]+', str(text or '')) if token.strip()]
+        return Counter(tokens)
+
+    def _cosine_similarity(self, left: str, right: str) -> float:
+        left_counter = self._token_counter(left)
+        right_counter = self._token_counter(right)
+        if not left_counter or not right_counter:
+            return 0.0
+        dot = sum(left_counter[token] * right_counter.get(token, 0) for token in left_counter)
+        if dot <= 0:
+            return 0.0
+        left_norm = math.sqrt(sum(value * value for value in left_counter.values()))
+        right_norm = math.sqrt(sum(value * value for value in right_counter.values()))
+        if left_norm <= 0.0 or right_norm <= 0.0:
+            return 0.0
+        return dot / (left_norm * right_norm)
 
     def _apply_meaning_analysis(self, blocks: list[MeaningBlock], analysis: dict[str, Any]) -> None:
         item_map: dict[str, dict[str, str]] = {}
