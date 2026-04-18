@@ -173,13 +173,21 @@ class ChatPipeline:
             )
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
-            if search_run.slot_plan is not None and not search_run.decision.metadata.get('post_search_refined'):
-                search_run.decision = self.search_sidecar.need_evaluator.evaluate(
+            if search_run.slot_plan is not None:
+                reevaluated_decision = self.search_sidecar.need_evaluator.evaluate(
                     message=request.message,
                     thought_view=thought_view,
                     conclusion=thought_result.core_conclusion,
                     slot_plan=search_run.slot_plan,
                 )
+                reevaluated_decision.metadata = {
+                    **search_run.decision.metadata,
+                    **reevaluated_decision.metadata,
+                    'post_search_graph_rechecked': True,
+                }
+                if search_run.provider_errors:
+                    reevaluated_decision.metadata['provider_errors'] = list(search_run.provider_errors)
+                search_run.decision = reevaluated_decision
 
         temporary_edge_cleanup_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
         model_feedback_result = {'enabled': False, 'reason': 'slimmed_runtime_disabled'}
@@ -435,6 +443,8 @@ class ChatPipeline:
             'error': search_run.error,
             'provider_errors': search_grounding['provider_errors'],
             'no_evidence_found': search_grounding['no_evidence_found'],
+            'evidence_available': search_grounding['evidence_available'],
+            'coverage_unconfirmed': search_grounding['coverage_unconfirmed'],
             'scope_gate_attempted': bool(search_run.decision.metadata.get('scope_gate_attempted')),
             'scope_gate': search_run.decision.metadata.get('scope_gate'),
             'scope_gate_error': search_run.decision.metadata.get('scope_gate_error'),
@@ -455,6 +465,11 @@ class ChatPipeline:
         missing_terms = self._unique_slot_values(search_run.decision.missing_slots, key='entity')
         missing_aspects = self._unique_slot_values(search_run.decision.missing_slots, key='aspect')
         provider_errors = list(getattr(search_run, 'provider_errors', []) or [])
+        evidence_available = bool(search_run.attempted and search_run.results)
+        coverage_unconfirmed = any(
+            str(item.get('provider') or '') == 'search-coverage-refiner'
+            for item in provider_errors
+        )
         no_evidence_found = bool(
             search_run.decision.need_search
             and search_run.attempted
@@ -462,12 +477,16 @@ class ChatPipeline:
             and not search_run.error
             and not provider_errors
         )
+        if evidence_available and coverage_unconfirmed and grounded_terms:
+            missing_terms = [term for term in missing_terms if term not in grounded_terms]
         return {
             'grounded_terms': grounded_terms,
             'missing_terms': missing_terms,
             'missing_aspects': missing_aspects,
             'provider_errors': provider_errors,
             'no_evidence_found': no_evidence_found,
+            'evidence_available': evidence_available,
+            'coverage_unconfirmed': coverage_unconfirmed,
         }
 
     def _unique_slot_values(self, slots: list[dict[str, Any]], *, key: str) -> list[str]:

@@ -23,6 +23,8 @@ class ActionLayerBuilder:
         grounded_terms = list(search_context.get('grounded_terms') or [])
         search_error = search_context.get('error')
         no_evidence_found = bool(search_context.get('no_evidence_found'))
+        evidence_available = bool(search_context.get('evidence_available'))
+        coverage_unconfirmed = bool(search_context.get('coverage_unconfirmed'))
         previous_tone_hint = ' '.join(str(metadata.get('previous_tone_hint') or '').split()).strip()
         topic_continuity = str(metadata.get('topic_continuity') or '')
         recent_memory_messages = list(metadata.get('recent_memory_messages') or [])
@@ -87,6 +89,12 @@ class ActionLayerBuilder:
             answer_goal = 'State first that search was needed but no confirmable evidence was found, and do not replace missing evidence with guesses.'
             do_not_claim.append('Do not present structural differences or performance differences as confirmed when no supporting evidence was found.')
             suggested_actions.append('Say clearly that confirmable external evidence was not found.')
+        if search_attempted and search_result_count > 0 and evidence_available:
+            response_mode = 'structured_explanation'
+            answer_goal = 'Use the confirmed search evidence directly in the answer. Lead with what the evidence says, and mention any unresolved points only after the confirmed explanation.'
+            suggested_actions.append('Lead with the most directly confirmed evidence from search.')
+            if coverage_unconfirmed:
+                suggested_actions.append('Treat coverage-check timeouts as secondary; do not ignore confirmed evidence that is already available.')
         if missing_terms:
             joined = ', '.join(missing_terms)
             do_not_claim.append(f'Do not present these entities as confirmed without evidence: {joined}')
@@ -119,6 +127,8 @@ class ActionLayerBuilder:
                 'search_required': search_required,
                 'search_result_count': search_result_count,
                 'no_evidence_found': no_evidence_found,
+                'evidence_available': evidence_available,
+                'coverage_unconfirmed': coverage_unconfirmed,
                 'grounded_term_count': len(grounded_terms),
                 'missing_term_count': len(missing_terms),
                 'missing_aspect_count': len(missing_aspects),

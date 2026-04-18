@@ -40,47 +40,41 @@ class SearchNeedEvaluator:
         target_node_ids = [node.id for node in scope_nodes if node.id is not None]
 
         if slot_plan is None:
-            missing_terms = [term for term in target_terms if not self._has_entity_grounding(scope_nodes, term)]
-            need_search = bool(missing_terms)
-            if need_search:
-                preview = ', '.join(missing_terms[:4])
-                return SearchNeedDecision(
-                    need_search=True,
-                    reason='missing_concept_grounding',
-                    gap_summary=f'현재 질문 핵심 개념 중 아직 grounding이 없는 항목이 있어 외부 검색이 필요하다: {preview}',
-                    target_node_ids=target_node_ids,
-                    target_terms=target_terms,
-                    requested_slots=[self._slot_dict(RequestedSlot(kind='entity', entity=term)) for term in target_terms],
-                    covered_slots=[self._slot_dict(RequestedSlot(kind='entity', entity=term)) for term in target_terms if term not in missing_terms],
-                    missing_slots=[self._slot_dict(RequestedSlot(kind='entity', entity=term)) for term in missing_terms],
-                    slot_supports=[
-                        {
-                            'slot_label': term,
-                            'supported': term not in missing_terms,
-                            'evidence_indices': [],
-                        }
-                        for term in target_terms
-                    ],
-                    metadata={
-                        'focus_mode': 'topic_terms_first',
-                        'grounding_scope_node_ids': target_node_ids,
-                    },
-                )
+            has_seed_coverage = len(thought_view.seed_nodes) > 0
+            concept_edge_count = sum(
+                1 for edge in thought_view.edges
+                if edge.edge_family == 'concept' and edge.is_active
+            )
+            sparse_graph = (
+                not has_seed_coverage
+                and concept_edge_count == 0
+                and len(conclusion.activated_concepts) <= 2
+                and len(conclusion.key_relations) <= 1
+            )
+            unresolved_conflict = bool(conclusion.detected_conflicts)
+            need_search = sparse_graph or unresolved_conflict
+            reason = (
+                'graph_too_sparse_for_answer'
+                if sparse_graph
+                else 'graph_conflict_requires_grounding'
+                if unresolved_conflict
+                else 'graph_sufficient_without_search'
+            )
+            gap_summary = (
+                '현재 사고 그래프에 시드 노드가 적고 활성 개념 구조가 부족해 질문을 풀 근거가 충분하지 않다.'
+                if sparse_graph
+                else '현재 사고 그래프에 충돌이 남아 있어 외부 근거로 현재 주제를 확인할 필요가 있다.'
+                if unresolved_conflict
+                else '현재 활성 개념과 관계만으로도 질문을 직접 풀 수 있다.'
+            )
             return SearchNeedDecision(
-                need_search=False,
-                reason='concept_grounding_sufficient',
-                gap_summary='현재 질문 핵심 개념은 이미 기존 그래프의 grounding 범위 안에 있다.',
+                need_search=need_search,
+                reason=reason,
+                gap_summary=gap_summary,
                 target_node_ids=target_node_ids,
                 target_terms=target_terms,
-                requested_slots=[self._slot_dict(RequestedSlot(kind='entity', entity=term)) for term in target_terms],
-                covered_slots=[self._slot_dict(RequestedSlot(kind='entity', entity=term)) for term in target_terms],
-                missing_slots=[],
-                slot_supports=[
-                    {'slot_label': term, 'supported': True, 'evidence_indices': []}
-                    for term in target_terms
-                ],
                 metadata={
-                    'focus_mode': 'topic_terms_first',
+                    'fallback_mode': True,
                     'grounding_scope_node_ids': target_node_ids,
                 },
             )
@@ -88,9 +82,11 @@ class SearchNeedEvaluator:
         requested_slots = [self._slot_dict(slot) for slot in slot_plan.requested_slots]
         covered: list[RequestedSlot] = []
         missing: list[RequestedSlot] = []
-        grounded_entities: dict[str, bool] = {entity: self._has_entity_grounding(scope_nodes, entity) for entity in slot_plan.entities}
+        grounded_entities: dict[str, bool] = {}
+        for entity in slot_plan.entities:
+            grounded_entities[entity] = self._has_entity_grounding(thought_view, scope_nodes, entity)
         for slot in slot_plan.requested_slots:
-            if self._slot_is_covered(scope_nodes, slot, grounded_entities):
+            if self._slot_is_covered(thought_view, scope_nodes, slot, grounded_entities):
                 covered.append(slot)
             else:
                 missing.append(slot)
@@ -112,7 +108,7 @@ class SearchNeedEvaluator:
             reason=reason,
             gap_summary=gap_summary,
             target_node_ids=target_node_ids,
-            target_terms=self._merge_unique(target_terms + list(dict.fromkeys([*slot_plan.entities, *slot_plan.aspects]))),
+            target_terms=list(dict.fromkeys([*slot_plan.entities, *slot_plan.aspects]))[:8],
             requested_slots=requested_slots,
             covered_slots=[self._slot_dict(slot) for slot in covered],
             missing_slots=[self._slot_dict(slot) for slot in missing],
@@ -128,53 +124,74 @@ class SearchNeedEvaluator:
                 'grounding_scope_node_ids': target_node_ids,
                 'slot_plan_reason': slot_plan.reason,
                 'grounded_entities': grounded_entities,
-                'focus_mode': 'topic_terms_first',
             },
         )
 
     def _grounding_scope_nodes(self, thought_view: ThoughtView) -> list[Node]:
-        metadata = thought_view.metadata or {}
-        current_root_event_id = metadata.get('current_root_event_id')
         scope: list[Node] = []
         seen_ids: set[int] = set()
-        for node in thought_view.nodes:
+        current_root_event_id = thought_view.metadata.get('current_root_event_id') if isinstance(thought_view.metadata, dict) else None
+
+        def add(node: Node) -> None:
             if node.id is None or node.id in seen_ids:
-                continue
-            if current_root_event_id is not None and node.created_from_event_id == current_root_event_id:
-                continue
+                return
             scope.append(node)
             seen_ids.add(node.id)
-            if len(scope) >= self.grounding_scope_limit:
-                break
+
+        for activated in thought_view.seed_nodes:
+            add(activated.node)
+
+        grounded_nodes = [
+            node for node in thought_view.nodes
+            if self._node_has_grounding(node, current_root_event_id=current_root_event_id)
+        ]
+        grounded_nodes.sort(
+            key=lambda node: (
+                float(getattr(node, 'trust_score', 0.0) or 0.0),
+                float(getattr(node, 'stability_score', 0.0) or 0.0),
+                1 if str((node.payload if isinstance(node.payload, dict) else {}).get('source_type') or '') == 'search' else 0,
+            ),
+            reverse=True,
+        )
+        for node in grounded_nodes:
+            add(node)
+
+        for node in thought_view.nodes:
+            add(node)
+
         return scope
 
-    def _has_entity_grounding(self, nodes: list[Node], entity: str) -> bool:
+    def _has_entity_grounding(self, thought_view: ThoughtView, nodes: list[Node], entity: str) -> bool:
         term = self._norm(entity)
+        current_root_event_id = thought_view.metadata.get('current_root_event_id') if isinstance(thought_view.metadata, dict) else None
         for node in nodes:
-            if not self._node_has_grounding(node):
+            if not self._node_has_grounding(node, current_root_event_id=current_root_event_id):
                 continue
             text = self._node_text(node)
             if term and term in text:
                 return True
         return False
 
-    def _slot_is_covered(self, nodes: list[Node], slot: RequestedSlot, grounded_entities: dict[str, bool]) -> bool:
+    def _slot_is_covered(self, thought_view: ThoughtView, nodes: list[Node], slot: RequestedSlot, grounded_entities: dict[str, bool]) -> bool:
         if not grounded_entities.get(slot.entity, False):
             return False
         if slot.kind == 'entity' or not slot.aspect:
             return True
         entity = self._norm(slot.entity)
         aspect = self._norm(slot.aspect)
+        current_root_event_id = thought_view.metadata.get('current_root_event_id') if isinstance(thought_view.metadata, dict) else None
         for node in nodes:
-            if not self._node_has_grounding(node):
+            if not self._node_has_grounding(node, current_root_event_id=current_root_event_id):
                 continue
             text = self._node_text(node)
             if entity in text and aspect in text:
                 return True
         return False
 
-    def _node_has_grounding(self, node: Node) -> bool:
+    def _node_has_grounding(self, node: Node, *, current_root_event_id: int | None = None) -> bool:
         payload = node.payload if isinstance(node.payload, dict) else {}
+        if current_root_event_id is not None and node.created_from_event_id == current_root_event_id:
+            return False
         source_type = str(payload.get('source_type') or '').strip()
         claim_domain = str(payload.get('claim_domain') or '').strip()
         if source_type == 'search' or claim_domain == 'world_fact':
@@ -204,16 +221,17 @@ class SearchNeedEvaluator:
         return self._norm(' '.join(parts))
 
     def _collect_target_terms(self, thought_view: ThoughtView, *, scope_nodes: list[Node]) -> list[str]:
-        metadata = thought_view.metadata or {}
-        topic_terms = self._normalize_terms(metadata.get('current_topic_terms') or [])
-        if topic_terms:
-            return topic_terms[:6]
         terms: list[str] = []
-        for activated in thought_view.seed_nodes:
-            self._append_term(terms, getattr(activated.node, 'normalized_value', None))
         for node in scope_nodes:
             self._append_term(terms, getattr(node, 'normalized_value', None))
-        return terms[:6]
+            payload = node.payload if isinstance(node.payload, dict) else {}
+            aliases = payload.get('raw_aliases', [])
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    self._append_term(terms, alias)
+            if not getattr(node, 'normalized_value', None):
+                self._append_term(terms, getattr(node, 'raw_value', None))
+        return terms[:8]
 
     def _append_term(self, terms: list[str], value: object) -> None:
         token = ' '.join(str(value or '').split()).strip()
@@ -222,18 +240,6 @@ class SearchNeedEvaluator:
         if token in terms:
             return
         terms.append(token)
-
-    def _normalize_terms(self, values: list[str]) -> list[str]:
-        normalized: list[str] = []
-        for item in values or []:
-            self._append_term(normalized, item)
-        return normalized
-
-    def _merge_unique(self, values: list[str]) -> list[str]:
-        merged: list[str] = []
-        for item in values:
-            self._append_term(merged, item)
-        return merged[:8]
 
     def _slot_dict(self, slot: RequestedSlot) -> dict[str, str]:
         return {'kind': slot.kind, 'entity': slot.entity, 'aspect': slot.aspect, 'label': slot.label}
