@@ -99,10 +99,9 @@ else (break 없이 완주):
 - 루프 내 Ollama 타임아웃 3배 상향:
   - `OLLAMA_TIMEOUT_SECONDS`: 120s → 360s
   - `QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS`: 30s → 90s
-  - `SEARCH_SCOPE_GATE_TIMEOUT_SECONDS`: 20s → 60s
   - `SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS`: 30s → 90s
   - `REQUEST_TIMEOUT_MS`: 300,000ms → 900,000ms
-- 루프 밖 단일 실행 타임아웃(Verbalizer, ModelFeedback, ModelEdgeAssertion)은 유지
+- 루프 밖 단일 실행 타임아웃(Verbalizer, ModelEdgeAssertion)은 유지
 
 #### ConclusionView 도입
 - `core/entities/conclusion_view.py`: 새 결론 구조 엔티티
@@ -114,6 +113,17 @@ else (break 없이 완주):
 - `CoreConclusion`은 루프 내부 전용으로 격리 (SearchSidecar 방향 결정에만 사용)
 - debug payload: `core_conclusion` → `conclusion_view` (요약 형태)
 
+#### LLM 호출 최소화
+- **ModelFeedbackService 제거**: `chat_pipeline.py`에서 완전 제거. `ContradictionDetector`/`TrustManager`가 그래프 기반으로 동일 역할 수행.
+- **SearchScopeGate 임베딩 교체** (`core/search/search_scope_gate.py` 전면 재작성):
+  - Ollama `/api/embed` 사용 (기본 모델: `nomic-embed-text`)
+  - query 임베딩 vs 활성 노드 임베딩(max 30개) 코사인 유사도 최댓값 계산
+  - max_sim ≥ `SCOPE_GATE_SIMILARITY_THRESHOLD`(0.65) → 그래프 충분 → 검색 불필요
+  - max_sim < threshold → 외부 검색 필요
+  - `OllamaClient.embed()` 신규 추가 (`tools/ollama_client.py`)
+  - fail-open: 임베딩 실패 시 `SearchScopeGateError` → `scope_gate_error` 노출 후 SlotPlanner 경로로 진행
+  - `SearchSidecar._can_attempt_scope_gate()`: 채팅 모델명 무관, 항상 True
+
 ### connect_type 정책(현재)
 - 현재 허용 집합: `flow`, `neutral`, `opposite`, `conflict`.
 - 모델이 허용 집합 밖의 connect_type을 제안하면:
@@ -124,24 +134,30 @@ else (break 없이 완주):
 
 ### 디버그/운영 관측 포인트
 - chat debug payload:
-  - `model_feedback`
   - `model_edge_assertion`
+  - `search.need_decision.scope_gate` (max_similarity, node_count, threshold)
+  - `search.need_decision.scope_gate_error`
 - activation metadata:
   - `concept_hop_edge_count`
 
 ### 설정값(config.py)
-- `MODEL_FEEDBACK_TIMEOUT_SECONDS`
-- `MODEL_FEEDBACK_TEMPERATURE`
-- `MODEL_FEEDBACK_NUM_PREDICT`
+- `EMBEDDING_MODEL_NAME` (기본: `nomic-embed-text`)
+- `EMBEDDING_TIMEOUT_SECONDS` (기본: 10s)
+- `SCOPE_GATE_SIMILARITY_THRESHOLD` (기본: 0.65)
 - `MODEL_EDGE_ASSERTION_TIMEOUT_SECONDS`
 - `MODEL_EDGE_ASSERTION_TEMPERATURE`
 - `MODEL_EDGE_ASSERTION_NUM_PREDICT`
+
+### 운영 전제조건
+```bash
+ollama pull nomic-embed-text
+```
 
 ### 현재 남은 이슈
 - Windows 환경에서 `.pytest_tmp` 권한 문제로 일부 pytest 세션 종료 정리가 실패할 수 있다.
 - 따라서 현재 검증은 `py_compile` 중심 + 제한된 스모크 확인 기준이다.
 
 ### 다음 우선 작업
-1. `model_edge_assertion`의 실제 대화 E2E 검증 및 회귀 테스트 추가
-2. `proposed_connect_type` 누적-승격 정책(임계치 기반) 구현
-3. connect_type/semantics가 contradiction/revision 규칙에 미치는 영향 고도화
+1. ConclusionViewBuilder 키워드 매칭 정교화 (의미적 유사도 확장)
+2. `model_edge_assertion`의 실제 대화 E2E 검증 및 회귀 테스트 추가
+3. `proposed_connect_type` 누적-승격 정책(임계치 기반) 구현

@@ -29,6 +29,20 @@ MK5는 입력을 그래프에 적재하고, 활성 그래프에서 사고/판정
 - connect type 제안은 즉시 스키마 확장 대신 proposal로 누적 후 승격한다.
 - temporary edge는 session/topic 전환 정책으로 정리한다.
 
+## LLM 호출 구조 (Ollama 모델 기준)
+
+| 컴포넌트 | 종류 | 호출 조건 |
+|---|---|---|
+| SearchScopeGate | 임베딩 모델 (nomic-embed-text) | 매 루프 회차 |
+| QuestionSlotPlanner | Ollama LLM | ScopeGate가 검색 필요로 판정한 경우 |
+| SearchCoverageRefiner | Ollama LLM | 검색 결과가 있을 때만 |
+| ModelEdgeAssertionService | Ollama LLM | 매 턴 |
+| OllamaVerbalizer | Ollama LLM | 매 턴 |
+| ModelFeedbackService | **제거됨** | — |
+
+최소 LLM 호출 (검색 불필요): **2회** (EdgeAssertion + Verbalizer)
+최대 (검색 3회 루프): **8회** (SlotPlanner×3 + CoverageRefiner×3 + EdgeAssertion + Verbalizer)
+
 ## 운영 튜닝
 - revision 규칙은 override 파일로 런타임에서 조정 가능
 - 추천/적용 도구:
@@ -37,3 +51,11 @@ MK5는 입력을 그래프에 적재하고, 활성 그래프에서 사고/판정
 - 자동화:
   - `tools/run_revision_rule_override_job.ps1`
   - `tools/setup_revision_rule_scheduler.ps1`
+
+## 운영 전제조건
+```bash
+ollama pull nomic-embed-text   # SearchScopeGate 임베딩 모델
+```
+- `EMBEDDING_MODEL_NAME` 환경변수로 대체 모델 지정 가능 (기본: `nomic-embed-text`)
+- `SCOPE_GATE_SIMILARITY_THRESHOLD` 환경변수로 임계치 조정 가능 (기본: 0.65)
+- 미설치 시 ScopeGate fail-open → `scope_gate_error` 노출 후 SlotPlanner 경로로 진행
