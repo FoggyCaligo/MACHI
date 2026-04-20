@@ -1,6 +1,6 @@
 # MK5 Overview
 
-업데이트: 2026-04-16
+업데이트: 2026-04-20
 
 ## 한 줄 요약
 MK5는 입력을 그래프에 적재하고, 활성 그래프에서 사고/판정을 수행한 뒤, 결론만 언어화하는 edge-first 파이프라인이다.
@@ -10,15 +10,17 @@ MK5는 입력을 그래프에 적재하고, 활성 그래프에서 사고/판정
    - `GraphIngestService`가 node/edge/pointer/event를 기록
 2. Activation
    - `ActivationEngine`이 현재 질의 중심 `ThoughtView` 구성
-3. Thinking
-   - contradiction 감지
-   - trust/pressure 갱신
-   - marker edge 누적
-   - `StructureRevisionService` 규칙 기반 revision 실행
-4. Conclusion
-   - `CoreConclusion`과 `DerivedActionLayer` 생성
+3. Think→Search 루프 (최대 3회, `_THINK_SEARCH_MAX_LOOPS`)
+   - `ThoughtEngine`: contradiction 감지 / trust·pressure 갱신 / marker edge 누적 / revision 실행
+   - `SearchSidecar`: 검색 필요 없으면 break, 결과 있으면 Ingest → Re-Activation → 반복
+   - 최대 횟수 도달 시 for-else로 최종 Think 1회 추가
+   - `CoreConclusion`은 루프 내부 전용 중간 산물 (SearchSidecar 방향 결정에 사용)
+4. ConclusionView 구성
+   - `ConclusionViewBuilder`가 최종 ThoughtView/ThoughtResult를 받아 룰 기반으로 구성
+   - 사용자 입력 핵심 키워드(topic_terms) 기준으로 노드/엣지 선별
+   - Verbalization 계층이 참조하는 유일한 결론 구조 (CoreConclusion 대체)
 5. Verbalization
-   - 결론을 사용자 응답으로 언어화
+   - `ConclusionView`를 사용자 응답으로 언어화
 6. Assistant ingest
    - 최종 응답도 다시 그래프에 적재
 

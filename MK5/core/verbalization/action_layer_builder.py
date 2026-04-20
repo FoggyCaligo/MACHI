@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.entities.conclusion import CoreConclusion, DerivedActionLayer
+from core.entities.conclusion import DerivedActionLayer
+from core.entities.conclusion_view import ConclusionView
 
 
 @dataclass(slots=True)
 class ActionLayerBuilder:
-    def build(self, conclusion: CoreConclusion) -> DerivedActionLayer:
+    def build(self, conclusion: ConclusionView) -> DerivedActionLayer:
         relation_count = len(conclusion.key_relations)
         activated_count = len(conclusion.activated_concepts)
         conflict_count = len(conclusion.detected_conflicts)

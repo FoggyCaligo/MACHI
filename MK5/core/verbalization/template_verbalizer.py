@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.entities.conclusion import CoreConclusion, DerivedActionLayer
+from core.entities.conclusion import DerivedActionLayer
+from core.entities.conclusion_view import ConclusionView
 
 
 class TemplateVerbalizerDisabledError(RuntimeError):
@@ -14,13 +15,13 @@ class TemplateVerbalizer:
     max_conflicts: int = 3
     max_revisions: int = 3
 
-    def build_user_response(self, conclusion: CoreConclusion, action_layer: DerivedActionLayer) -> str:
+    def build_user_response(self, conclusion: ConclusionView, action_layer: DerivedActionLayer) -> str:
         raise TemplateVerbalizerDisabledError(
             'TemplateVerbalizer는 사용자 응답 fallback으로 사용할 수 없습니다. '
             '모델 기반 언어화가 실패하면 오류를 그대로 드러내야 합니다.'
         )
 
-    def build_internal_explanation(self, conclusion: CoreConclusion) -> str:
+    def build_internal_explanation(self, conclusion: ConclusionView) -> str:
         lines: list[str] = []
         lines.append(conclusion.explanation_summary)
         lines.append('')

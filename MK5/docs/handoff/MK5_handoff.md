@@ -1,8 +1,26 @@
 # MK5 Handoff
 
-업데이트: 2026-04-16
+업데이트: 2026-04-20
 
-## 이번 세션 핵심 변경
+## 이번 세션 핵심 변경 (2026-04-20)
+
+### Think→Search 루프 구조화
+- `chat_pipeline.py`의 1회 고정 흐름을 최대 3회 루프(`_THINK_SEARCH_MAX_LOOPS`)로 교체
+- Python `for-else` 패턴: break(검색 결과 없음) 시 정상 종료, 완주 시 최종 Think 1회 추가
+- 루프 내 Ollama 관련 타임아웃 3배 상향 (QUESTION_SLOT_PLANNER, SEARCH_SCOPE_GATE, SEARCH_COVERAGE_REFINER, OLLAMA_TIMEOUT, REQUEST_TIMEOUT)
+- 루프 밖 단일 실행 컴포넌트(Verbalizer, ModelFeedback, ModelEdgeAssertion) 타임아웃은 유지
+
+### ConclusionView 도입 (MK1 원설계 복원)
+- 배경: MK1에서 "결론 = 의도 필터링된 그래프 서브구조, 언어화는 그 다음"이 원설계였으나 MK5에서 누락
+- 신규: `core/entities/conclusion_view.py`
+- 신규: `core/thinking/conclusion_view_builder.py` (룰 기반)
+  - 선별 기준: topic_terms 키워드 매칭 + trust_score ≥ 0.3 + 1-hop 이웃 확장
+  - 엣지: 선별 노드 간 + connect_type ≠ 'conflict' + trust_score ≥ 0.3
+- `CoreConclusion`: 루프 내부 전용으로 역할 격리 (SearchSidecar 방향 결정에만 사용)
+- `ConclusionView`: Verbalization 계층 전체가 참조하는 유일한 최종 결론 구조
+- 변경된 파일: `verbalizer.py`, `template_verbalizer.py`, `ollama_verbalizer.py`, `action_layer_builder.py`, `meaning_preserver.py`, `chat_pipeline.py`
+
+## 이전 세션 핵심 변경 (2026-04-16)
 - Edge-first 정책을 유지한 상태로 `RevisionExecutionRule` 기반 실행 규칙을 확장.
 - conflict/opposite/connect_type 분기 규칙과 evidence 가중치 기반 게이트를 강화.
 - `TemporaryEdgeService`로 topic shift 시 `session_temporary` edge 자동 정리 경로를 유지.

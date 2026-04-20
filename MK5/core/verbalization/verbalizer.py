@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.entities.conclusion import CoreConclusion, DerivedActionLayer
+from core.entities.conclusion import DerivedActionLayer
+from core.entities.conclusion_view import ConclusionView
 from core.verbalization.action_layer_builder import ActionLayerBuilder
 from core.verbalization.meaning_preserver import MeaningPreserver
 from core.verbalization.ollama_verbalizer import (
@@ -45,7 +46,7 @@ class Verbalizer:
         if self.meaning_preserver is None:
             self.meaning_preserver = MeaningPreserver()
 
-    def verbalize(self, conclusion: CoreConclusion, *, model_name: str = DEFAULT_MODEL_NAME) -> VerbalizationResult:
+    def verbalize(self, conclusion: ConclusionView, *, model_name: str = DEFAULT_MODEL_NAME) -> VerbalizationResult:
         derived_action = self.action_layer_builder.build(conclusion)
         internal_explanation = self.template_verbalizer.build_internal_explanation(conclusion)
 

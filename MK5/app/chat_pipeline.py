@@ -7,7 +7,9 @@ from typing import Any
 
 from config import REVISION_RULE_OVERRIDES_PATH, REVISION_RULE_OVERRIDES_STRICT, REVISION_RULE_PROFILE
 from core.activation.activation_engine import ActivationEngine, ActivationRequest
+from core.entities.conclusion_view import ConclusionView
 from core.search.search_sidecar import SearchEvidence, SearchRunResult, SearchSidecar
+from core.thinking.conclusion_view_builder import ConclusionViewBuilder
 from core.thinking.structure_revision_service import StructureRevisionService
 from core.thinking.thought_engine import ThoughtEngine, ThoughtRequest
 from core.update.connect_type_promotion_service import ConnectTypePromotionResult, ConnectTypePromotionService
@@ -82,6 +84,7 @@ class ChatPipeline:
             ),
         )
         self.verbalizer = verbalizer or Verbalizer()
+        self.conclusion_view_builder = ConclusionViewBuilder()
         self.search_sidecar = search_sidecar or SearchSidecar()
         self.model_feedback_service = model_feedback_service or ModelFeedbackService()
         self.model_edge_assertion_service = model_edge_assertion_service or ModelEdgeAssertionService(self._uow_factory)
@@ -244,9 +247,22 @@ class ChatPipeline:
             )
             uow.commit()
 
-        self._attach_search_context(thought_result.core_conclusion, search_run=search_run)
+        # ── ConclusionView 구성: Think→Search 루프의 최종 결과물을 의도 키워드 기반으로 선별 ──
+        # CoreConclusion은 루프 내부 전용 중간 산물로 남고,
+        # ConclusionView가 Verbalization 계층이 참조하는 유일한 결론 구조다.
+        conclusion_view = self.conclusion_view_builder.build(
+            request=ThoughtRequest(
+                session_id=request.session_id,
+                message_id=ingest_result.message_id,
+                message_text=request.message,
+            ),
+            thought_view=thought_view,
+            thought_result=thought_result,
+        )
 
-        verbalized = self.verbalizer.verbalize(thought_result.core_conclusion, model_name=request.model_name)
+        self._attach_search_context(conclusion_view, search_run=search_run)
+
+        verbalized = self.verbalizer.verbalize(conclusion_view, model_name=request.model_name)
         if verbalized.llm_error or not verbalized.user_response:
             if verbalized.llm_error and verbalized.llm_error.startswith('template_verbalizer_disabled:'):
                 raise RuntimeError(
@@ -266,8 +282,8 @@ class ChatPipeline:
             intent_snapshot_metadata['tone_hint'] = verbalized.derived_action.tone_hint
             intent_snapshot_metadata['response_mode'] = verbalized.derived_action.response_mode
             intent_snapshot_metadata['answer_goal'] = verbalized.derived_action.answer_goal
-            if thought_result.core_conclusion is not None and isinstance(thought_result.core_conclusion.metadata, dict):
-                thought_result.core_conclusion.metadata['previous_tone_hint'] = verbalized.derived_action.tone_hint
+            if isinstance(conclusion_view.metadata, dict):
+                conclusion_view.metadata['previous_tone_hint'] = verbalized.derived_action.tone_hint
         thought_result.metadata['intent_snapshot'] = intent_snapshot_metadata
 
         assistant_claim_domain = self.ingest_service.trust_policy.infer_claim_domain(
@@ -313,7 +329,20 @@ class ChatPipeline:
             'signals': [asdict(item) for item in thought_result.contradiction_signals],
             'trust_updates': [asdict(item) for item in thought_result.trust_updates],
             'revision_actions': [asdict(item) for item in thought_result.revision_actions],
-            'core_conclusion': asdict(thought_result.core_conclusion),
+            'conclusion_view': {
+                'intent_keywords': conclusion_view.intent_keywords,
+                'inferred_intent': conclusion_view.inferred_intent,
+                'aligned_node_count': len(conclusion_view.intent_aligned_nodes),
+                'supporting_edge_count': len(conclusion_view.supporting_edges),
+                'contradicted_node_count': len(conclusion_view.contradicted_nodes),
+                'confidence': conclusion_view.confidence,
+                'explanation_summary': conclusion_view.explanation_summary,
+                'activated_concepts': conclusion_view.activated_concepts,
+                'key_relations': conclusion_view.key_relations,
+                'detected_conflicts': [asdict(c) for c in conclusion_view.detected_conflicts],
+                'revision_decisions': [asdict(r) for r in conclusion_view.revision_decisions],
+                'trust_changes': [asdict(t) for t in conclusion_view.trust_changes],
+            },
             'derived_action': asdict(verbalized.derived_action),
             'metadata': thought_result.metadata,
         }
@@ -466,7 +495,7 @@ class ChatPipeline:
             '상단의 모델 선택에서 Ollama 모델을 고른 뒤 다시 시도해주세요.'
         )
 
-    def _attach_search_context(self, conclusion, *, search_run: SearchRunResult) -> None:
+    def _attach_search_context(self, conclusion: 'ConclusionView', *, search_run: SearchRunResult) -> None:
         if conclusion is None:
             return
         if conclusion.metadata is None:

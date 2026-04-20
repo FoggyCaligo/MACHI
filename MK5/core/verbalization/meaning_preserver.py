@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from core.entities.conclusion import CoreConclusion, DerivedActionLayer
+from core.entities.conclusion import DerivedActionLayer
+from core.entities.conclusion_view import ConclusionView
 
 
 @dataclass(slots=True)
@@ -20,7 +21,7 @@ class MeaningPreserver:
     def evaluate(
         self,
         *,
-        conclusion: CoreConclusion,
+        conclusion: ConclusionView,
         action_layer: DerivedActionLayer,
         user_response: str,
     ) -> MeaningPreservationResult:

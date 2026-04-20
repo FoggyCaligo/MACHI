@@ -17,29 +17,41 @@
 - `ThoughtView` 생성
 - `PatternDetector`로 활성 패턴 추가
 
-### 3. thinking
-`ThoughtEngine`
-- `ContradictionDetector`
-- `TrustManager`
-- `StructureRevisionService`
-- `IntentManager`
-- `ConclusionBuilder`
+### 3. Think→Search 루프 (최대 `_THINK_SEARCH_MAX_LOOPS` = 3회)
 
-순서상 의미:
-- 먼저 구조 충돌을 본다
-- 그다음 trust와 revision 후보를 반영한다
-- 필요 시 shallow merge / deactivation을 수행한다
-- 그 상태를 바탕으로 현재 intent snapshot을 고른다
-- 마지막에 explanation 중심 conclusion을 만든다
+```
+for 최대 3회:
+    ThoughtEngine.think()   ← CoreConclusion 생성 (루프 내부 전용)
+    SearchSidecar.run()     ← CoreConclusion으로 검색 방향 결정
+    검색 결과 없으면 break  ← 현재 thought_result가 최종
+    검색 결과 Ingest → Re-Activation → 다음 회차
+else (break 없이 완주):
+    최종 Think 1회 추가     ← 마지막 enriched 뷰 반영
+```
 
-### 4. search enrichment
-`SearchSidecar`
-- 필요한 경우 외부 검색을 시도한다
-- 검색 결과도 같은 그래프에 낮은 trust로 반영된다
-- 이후 activation / thinking을 한 번 더 수행할 수 있다
+`ThoughtEngine` 내부 순서:
+- `ContradictionDetector`: 구조 충돌 감지
+- `TrustManager`: trust/pressure 갱신
+- `StructureRevisionService`: shallow merge / deactivation 실행
+- `IntentManager`: 현재 intent snapshot 선택
+- `ConclusionBuilder`: `CoreConclusion` 생성 (루프 내 SearchSidecar 방향 결정용)
+
+`CoreConclusion`의 역할:
+- 루프 내부 전용 중간 산물
+- SearchSidecar가 검색 필요 여부·범위를 판단하는 데 사용
+- Verbalization 계층에는 노출되지 않음
+
+### 4. ConclusionView 구성
+`ConclusionViewBuilder`
+- 입력: 최종 ThoughtView + ThoughtResult
+- 사용자 입력 핵심 키워드(topic_terms)를 기준으로 노드/엣지 룰 기반 선별
+  - 노드: is_active=True + trust_score ≥ threshold + 키워드 매칭 또는 1-hop 이웃
+  - 엣지: 선별된 노드 간 + connect_type ≠ 'conflict' + trust_score ≥ threshold
+  - 순서: trust_score 내림차순 → logical_sequence
+- Verbalization 계층이 참조하는 유일한 결론 구조 (CoreConclusion 완전 대체)
 
 ### 5. verbalization
-- `DerivedActionLayer` 생성
+- `ConclusionView`를 입력으로 `DerivedActionLayer` 생성
 - verbalizer가 최종 사용자 응답 생성
 - assistant 응답도 다시 그래프에 반영된다
 
@@ -73,19 +85,34 @@
 ## 아직 남은 것
 - drive → live intent → snapshot intent로 이어지는 더 깊은 의도 함수
 - 실패 히스토리에 따라 stop threshold가 더 장기적으로 조정되는 구조
-- multi-cycle thought loop
+- ConclusionViewBuilder의 키워드 매칭 정교화 (의미적 유사도 기반 확장)
 
 ---
 
-## 2026-04-16 최신 동기화
+## 2026-04-20 최신 동기화
 
 ### 이번 코드 반영 사항
-- `ModelFeedbackService`가 `ChatPipeline.process()`에 연결되어, 최종 `thought_view` 기준으로 기존 엣지에 대한 support/conflict 피드백을 `GraphCommitService`로 커밋한다.
-- `ModelEdgeAssertionService`를 신규 도입하고 `ChatPipeline.process()`에 연결했다.
-  - 모델이 `from_node_id / to_node_id / edge_family / connect_type / relation_detail(note/provenance/proposal)` 형태의 새 엣지를 제안하면 실제 그래프에 생성/강화한다.
-- `ActivationEngine`에 concept 2-hop 확장을 추가했다.
-  - seed의 1-hop concept 인접 노드에 대해 concept 엣지를 한 번 더 확장해 사고 뷰에서 상위/유사 개념 연결이 덜 잘리지 않게 했다.
-- concept 엣지 우선 정렬을 유지해 `max_neighbor_edges` 한도에서 relation 엣지에 밀리는 문제를 완화했다.
+
+#### Think→Search 루프 구조화
+- `chat_pipeline.py`의 기존 "1회 하드코딩 루프"를 `_THINK_SEARCH_MAX_LOOPS = 3`회 일반 루프로 교체
+- Python `for-else` 패턴 사용: break 없이 완주 시 최종 Think 1회 추가 실행
+- 루프 내 Ollama 타임아웃 3배 상향:
+  - `OLLAMA_TIMEOUT_SECONDS`: 120s → 360s
+  - `QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS`: 30s → 90s
+  - `SEARCH_SCOPE_GATE_TIMEOUT_SECONDS`: 20s → 60s
+  - `SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS`: 30s → 90s
+  - `REQUEST_TIMEOUT_MS`: 300,000ms → 900,000ms
+- 루프 밖 단일 실행 타임아웃(Verbalizer, ModelFeedback, ModelEdgeAssertion)은 유지
+
+#### ConclusionView 도입
+- `core/entities/conclusion_view.py`: 새 결론 구조 엔티티
+- `core/thinking/conclusion_view_builder.py`: 룰 기반 노드/엣지 선별 빌더
+  - 사용자 입력 topic_terms 기준 키워드 매칭 + 1-hop 확장
+  - trust_score threshold 기반 필터링
+  - connect_type='conflict' 엣지 제외
+- Verbalization 계층 전체(`verbalizer`, `template_verbalizer`, `ollama_verbalizer`, `action_layer_builder`, `meaning_preserver`)가 `ConclusionView`만 참조하도록 교체
+- `CoreConclusion`은 루프 내부 전용으로 격리 (SearchSidecar 방향 결정에만 사용)
+- debug payload: `core_conclusion` → `conclusion_view` (요약 형태)
 
 ### connect_type 정책(현재)
 - 현재 허용 집합: `flow`, `neutral`, `opposite`, `conflict`.

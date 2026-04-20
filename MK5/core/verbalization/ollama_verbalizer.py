@@ -9,7 +9,8 @@ from config import (
     VERBALIZER_TEMPERATURE,
     build_ollama_options,
 )
-from core.entities.conclusion import CoreConclusion, DerivedActionLayer
+from core.entities.conclusion import DerivedActionLayer
+from core.entities.conclusion_view import ConclusionView
 from tools.ollama_client import (
     OllamaClient,
     OllamaClientError,
@@ -42,7 +43,7 @@ class OllamaVerbalizer:
         self,
         *,
         model_name: str,
-        conclusion: CoreConclusion,
+        conclusion: ConclusionView,
         action_layer: DerivedActionLayer,
     ) -> str:
         try:
@@ -75,7 +76,7 @@ class OllamaVerbalizer:
     def _build_system_prompt(self) -> str:
         return load_prompt_text(self.system_prompt_path)
 
-    def _build_user_prompt(self, conclusion: CoreConclusion, action_layer: DerivedActionLayer) -> str:
+    def _build_user_prompt(self, conclusion: ConclusionView, action_layer: DerivedActionLayer) -> str:
         metadata = conclusion.metadata if isinstance(conclusion.metadata, dict) else {}
         search_context = metadata.get('search_context', {}) if isinstance(metadata, dict) else {}
         template = load_prompt_text(self.user_prompt_path)
