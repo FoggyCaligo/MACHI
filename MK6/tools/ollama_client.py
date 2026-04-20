@@ -5,6 +5,17 @@ import httpx
 
 from .. import config
 
+# 공유 클라이언트 — 연결 풀 재사용. 임베딩처럼 짧은 요청이 여러 번 올 때 효과적이다.
+# timeout은 요청별로 따로 지정하므로 여기서는 설정하지 않는다.
+_shared_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient()
+    return _shared_client
+
 # Ollama가 families 메타데이터로 분류하는 임베딩 전용 패밀리.
 # /api/tags 응답의 details.families 값을 기준으로 필터링한다.
 # (문자열 휴리스틱이 아닌 Ollama 자체 분류 메타데이터 사용)
@@ -14,17 +25,20 @@ _EMBEDDING_ONLY_FAMILIES: frozenset[str] = frozenset({"nomic-bert", "bert", "cli
 async def get_embedding(text: str) -> list[float]:
     """nomic-embed-text (또는 설정된 모델)로 임베딩 벡터를 반환한다.
 
+    공유 클라이언트를 사용해 연결 풀을 재사용한다.
+
     Raises:
         httpx.HTTPError: 네트워크 오류 또는 Ollama 오류 응답
     """
     url = f"{config.OLLAMA_HOST}/api/embeddings"
-    async with httpx.AsyncClient(timeout=config.EMBEDDING_TIMEOUT_SECONDS) as client:
-        r = await client.post(
-            url,
-            json={"model": config.EMBEDDING_MODEL_NAME, "prompt": text},
-        )
-        r.raise_for_status()
-        return r.json()["embedding"]
+    client = _get_client()
+    r = await client.post(
+        url,
+        json={"model": config.EMBEDDING_MODEL_NAME, "prompt": text},
+        timeout=config.EMBEDDING_TIMEOUT_SECONDS,
+    )
+    r.raise_for_status()
+    return r.json()["embedding"]
 
 
 async def generate(prompt: str, model: str | None = None) -> str:

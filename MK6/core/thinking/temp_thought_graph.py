@@ -44,6 +44,7 @@ class TempThoughtGraph:
     def __init__(self) -> None:
         self._nodes: dict[str, Node] = {}
         self._edges: dict[str, Edge] = {}
+        self._adj: dict[str, set[str]] = {}      # address_hash → 이웃 hash 집합 (O(1) 조회)
         self._goal_hash: str | None = None       # 목표 노드 address_hash
         self._empty_slots: list[EmptySlot] = []  # 아직 채워지지 않은 자리
         self._delta: GraphDelta = GraphDelta()   # 현재 루프 회차 변경 추적
@@ -58,7 +59,10 @@ class TempThoughtGraph:
                 for node in subgraph.nodes:
                     self._nodes.setdefault(node.address_hash, node)
                 for edge in subgraph.edges:
-                    self._edges.setdefault(edge.edge_id, edge)
+                    if edge.edge_id not in self._edges:
+                        self._edges[edge.edge_id] = edge
+                        self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
+                        self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
             elif isinstance(ref, EmptySlot):
                 self._empty_slots.append(ref)
 
@@ -89,11 +93,25 @@ class TempThoughtGraph:
     def add_edge(self, edge: Edge) -> None:
         self._edges[edge.edge_id] = edge
         self._delta.added_edges.append(edge.edge_id)
+        # 인접 인덱스 업데이트
+        self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
+        self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
 
     def remove_edge(self, edge_id: str) -> None:
-        if edge_id in self._edges:
-            del self._edges[edge_id]
-            self._delta.removed_edges.append(edge_id)
+        edge = self._edges.pop(edge_id, None)
+        if edge is None:
+            return
+        self._delta.removed_edges.append(edge_id)
+        # 인접 인덱스에서 해당 방향 제거 (다른 엣지로 여전히 연결돼 있을 수 있으므로 잔존 확인)
+        def _still_connected(src: str, tgt: str) -> bool:
+            return any(
+                (e.source_hash == src and e.target_hash == tgt) or
+                (e.source_hash == tgt and e.target_hash == src)
+                for e in self._edges.values()
+            )
+        if not _still_connected(edge.source_hash, edge.target_hash):
+            self._adj.get(edge.source_hash, set()).discard(edge.target_hash)
+            self._adj.get(edge.target_hash, set()).discard(edge.source_hash)
 
     def get_edges_for_node(self, address_hash: str) -> list[Edge]:
         return [
@@ -153,11 +171,5 @@ class TempThoughtGraph:
         return self._goal_hash
 
     def neighbor_hashes(self, address_hash: str) -> set[str]:
-        """노드의 이웃 노드 hash 집합을 반환한다."""
-        result: set[str] = set()
-        for edge in self.get_edges_for_node(address_hash):
-            if edge.source_hash == address_hash:
-                result.add(edge.target_hash)
-            else:
-                result.add(edge.source_hash)
-        return result
+        """노드의 이웃 노드 hash 집합을 O(1)로 반환한다."""
+        return set(self._adj.get(address_hash, set()))

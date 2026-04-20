@@ -153,9 +153,16 @@ def run(tg: TempThoughtGraph) -> list[DifferentiationResult]:
         and n.address_hash != tg.goal_hash
     ]
 
+    # 이웃 집합을 한 번만 계산해서 재사용한다.
+    # neighbor_hashes()는 O(1)이지만, 같은 노드를 쌍마다 반복 호출하지 않도록 미리 캐싱.
+    neighbor_cache: dict[str, set[str]] = {
+        n.address_hash: tg.neighbor_hashes(n.address_hash)
+        for n in nodes
+    }
+
     for node_a, node_b in combinations(nodes, 2):
-        neighbors_a = tg.neighbor_hashes(node_a.address_hash)
-        neighbors_b = tg.neighbor_hashes(node_b.address_hash)
+        neighbors_a = neighbor_cache[node_a.address_hash]
+        neighbors_b = neighbor_cache[node_b.address_hash]
 
         score = composite_score(node_a, node_b, neighbors_a, neighbors_b)
 

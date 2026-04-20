@@ -77,9 +77,16 @@ def extract(
                 queued.add(neighbor_hash)
                 queue.append((neighbor_hash, depth + 1))
 
+    # 양 끝점이 모두 visited_nodes에 있는 엣지만 포함한다.
+    # trust threshold 미통과로 제외된 이웃 노드를 향하는 엣지를 걸러낸다.
+    valid_edges = [
+        e for e in visited_edges.values()
+        if e.source_hash in visited_nodes and e.target_hash in visited_nodes
+    ]
+
     return LocalSubgraph(
         center_hash=center_hash,
         nodes=list(visited_nodes.values()),
-        edges=list(visited_edges.values()),
+        edges=valid_edges,
         hop_radius=n_hop,
     )
