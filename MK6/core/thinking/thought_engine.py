@@ -23,7 +23,7 @@ from ..entities.word_entry import WordEntry
 from ..entities.translated_graph import TranslatedGraph, ConceptPointer, EmptySlot
 from ..storage.world_graph import (
     insert_node, update_node, insert_edge, update_edge,
-    get_node as db_get_node,
+    get_node as db_get_node, get_edge as db_get_edge,
     insert_word, get_word,
     remap_words_to_node,
 )
@@ -79,7 +79,10 @@ def _commit_edge(conn: sqlite3.Connection, edge: Edge, strong: bool) -> None:
         edge.edge_weight = min(edge.edge_weight, 0.2)
     edge.is_temporary = False
     edge.touch()
-    insert_edge(conn, edge)
+    if db_get_edge(conn, edge.edge_id) is None:
+        insert_edge(conn, edge)
+    else:
+        update_edge(conn, edge)
 
 
 # ── 수렴 판단 ─────────────────────────────────────────────────────────────────
