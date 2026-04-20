@@ -166,16 +166,18 @@ Think는 이를 "검색결과도 없음"으로 수용하고 진행한다.
 ConceptPointer에 담기는 국소그래프를 추출한다.
 
 ```
-LocalGraphExtractor.extract(node, n_hop: int) → LocalSubgraph
+LocalGraphExtractor.extract(conn, center_hash, *, hop_radius, trust_threshold) → LocalSubgraph
 
 LocalSubgraph:
-  - center_node: 기준 노드
-  - nodes: N-hop 이내 활성 노드 목록
-  - edges: 노드 간 엣지 목록 (is_active=True, trust_score ≥ threshold)
-  - pointers: 관련 포인터 목록
+  - center_hash: 기준 노드 address_hash
+  - nodes: center 노드 + N-hop 이내 활성 노드 목록
+  - edges: 노드 간 엣지 목록 (is_active=True)
+  - hop_radius: 실제 사용된 탐색 반경
 ```
 
-ActivationEngine은 TranslatedGraph의 모든 ConceptPointer에서 LocalSubgraph를 합산해 ThoughtView를 구성한다.
+**center 노드는 trust_threshold와 무관하게 항상 포함된다.** words 테이블에서 찾아낸 노드는 아직 신뢰도가 낮더라도 반드시 TempThoughtGraph에 로드되어야 Think 루프가 해당 개념을 처리할 수 있다. trust_threshold 필터는 depth≥1인 이웃 노드에만 적용된다.
+
+TempThoughtGraph의 `load_from_translated`는 TranslatedGraph의 모든 ConceptPointer에서 LocalSubgraph를 합산한다.
 
 ---
 

@@ -21,21 +21,21 @@ def test_revision_rule_analytics_aggregates_counts_and_evidence() -> None:
             'edge_revision_pending',
             {
                 'rule_name': 'relation_neutral',
-                'marker_evidence': {'conflict_assertion': 1.5, 'deactivate_candidate': 0.0, 'merge_candidate': 0.0},
+                'marker_evidence': {'conflict_support': 1.5, 'total_evidence': 0.0},
             },
         ),
         _event(
             'edge_deactivated_for_revision',
             {
                 'rule_name': 'relation_neutral',
-                'marker_evidence': {'conflict_assertion': 2.5, 'deactivate_candidate': 3.0, 'merge_candidate': 0.0},
+                'marker_evidence': {'conflict_support': 2.5, 'total_evidence': 3.0},
             },
         ),
         _event(
             'edge_revision_merge_executed',
             {
                 'rule_name': 'concept_neutral',
-                'marker_evidence': {'conflict_assertion': 0.6, 'deactivate_candidate': 0.0, 'merge_candidate': 4.2},
+                'marker_evidence': {'conflict_support': 0.6, 'total_evidence': 4.2},
             },
         ),
     ]
@@ -68,7 +68,7 @@ def test_revision_rule_analytics_recommends_threshold_adjustment() -> None:
                 'edge_deactivated_for_revision',
                 {
                     'rule_name': 'relation_neutral',
-                    'marker_evidence': {'conflict_assertion': 1.2},
+                    'marker_evidence': {'conflict_support': 1.2, 'total_evidence': 1.2},
                 },
             )
         )
@@ -77,7 +77,7 @@ def test_revision_rule_analytics_recommends_threshold_adjustment() -> None:
             'edge_revision_pending',
             {
                 'rule_name': 'relation_neutral',
-                'marker_evidence': {'conflict_assertion': 1.0},
+                'marker_evidence': {'conflict_support': 1.0, 'total_evidence': 1.0},
             },
         )
     )

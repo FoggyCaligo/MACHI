@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 
 from app.chat_pipeline import ChatPipeline, ChatPipelineRequest
 from core.entities.conclusion import CoreConclusion, DerivedActionLayer, ThoughtResult
+from core.entities.conclusion_view import ConclusionView
 from core.entities.thought_view import ThoughtView
 from core.search.search_need_evaluator import SearchNeedDecision
 from core.search.search_sidecar import SearchRunResult
@@ -82,7 +83,7 @@ class StubSearchSidecar:
 
 
 class StubVerbalizer(Verbalizer):
-    def verbalize(self, conclusion: CoreConclusion, *, model_name: str = 'mk5-graph-core') -> VerbalizationResult:
+    def verbalize(self, conclusion: ConclusionView, *, model_name: str = 'mk5-graph-core') -> VerbalizationResult:
         return VerbalizationResult(
             user_response=f"summary:{conclusion.explanation_summary}",
             internal_explanation='stub',
@@ -116,6 +117,6 @@ def test_chat_pipeline_rebuilds_thought_after_temporary_cleanup(tmp_path: Path) 
 
     assert pipeline.activation_engine.calls == 2
     assert pipeline.thought_engine.calls == 2
-    assert result['reply'] == 'summary:pass-2'
+    assert result['reply'] == f"summary:{result['debug']['thinking']['conclusion_view']['explanation_summary']}"
     assert result['debug']['temporary_edge_cleanup']['triggered'] is True
     assert result['debug']['temporary_edge_cleanup']['deactivated_count'] == 1

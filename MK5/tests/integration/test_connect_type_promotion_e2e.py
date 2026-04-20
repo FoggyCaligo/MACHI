@@ -9,18 +9,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.chat_pipeline import ChatPipeline, ChatPipelineRequest
-from core.entities.conclusion import CoreConclusion, DerivedActionLayer
+from core.entities.conclusion import DerivedActionLayer
 from core.search.search_need_evaluator import SearchNeedDecision
 from core.search.search_sidecar import SearchRunResult, SearchSidecar
 from core.update.connect_type_promotion_service import ConnectTypePromotionService
 from core.update.model_edge_assertion_service import ModelEdgeAssertionService
-from core.update.model_feedback_service import ModelFeedbackResult, ModelFeedbackService
+from core.entities.conclusion_view import ConclusionView
 from core.verbalization.verbalizer import VerbalizationResult, Verbalizer
 from storage.sqlite.unit_of_work import SqliteUnitOfWork
 
 
 class FakeVerbalizer(Verbalizer):
-    def verbalize(self, conclusion: CoreConclusion, *, model_name: str = 'mk5-graph-core') -> VerbalizationResult:
+    def verbalize(self, conclusion: ConclusionView, *, model_name: str = 'mk5-graph-core') -> VerbalizationResult:
         return VerbalizationResult(
             user_response='ok',
             internal_explanation='ok',
@@ -31,7 +31,7 @@ class FakeVerbalizer(Verbalizer):
 
 
 class NoSearchSidecar(SearchSidecar):
-    def run(self, *, message: str, thought_view, conclusion: CoreConclusion, model_name: str) -> SearchRunResult:
+    def run(self, *, message: str, thought_view, conclusion, model_name: str) -> SearchRunResult:
         return SearchRunResult(
             attempted=False,
             planning_attempted=False,
@@ -40,10 +40,6 @@ class NoSearchSidecar(SearchSidecar):
             provider_errors=[],
         )
 
-
-class NoopFeedbackService(ModelFeedbackService):
-    def extract(self, *, model_name: str, message: str, thought_view, conclusion: CoreConclusion) -> ModelFeedbackResult:
-        return ModelFeedbackResult(attempted=False)
 
 
 class AssertionClientPlain:
@@ -78,7 +74,6 @@ def build_pipeline(tmp_path: Path, *, assertion_client, threshold: int) -> ChatP
         schema_path=schema_path,
         verbalizer=FakeVerbalizer(),
         search_sidecar=NoSearchSidecar(),
-        model_feedback_service=NoopFeedbackService(),
         model_edge_assertion_service=assertion_service,
         connect_type_promotion_service=ConnectTypePromotionService(threshold=threshold, max_scan=200),
     )

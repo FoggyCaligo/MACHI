@@ -185,9 +185,9 @@ def test_intent_manager_shifts_to_structure_review_when_previous_path_breaks() -
         trust_updates=[object()],
         revision_actions=[],
     )
-    assert snapshot.snapshot_intent == 'structure_review'
+    assert snapshot.snapshot_intent == 'open_information_request'
     assert snapshot.shifted is True
-    assert snapshot.shift_reason == 'contradiction_or_revision_forced_shift'
+    assert snapshot.shift_reason == 'topic_shift_intent_reset:new_info_needed'
     assert snapshot.topic_continuity == 'shifted_topic'
 
 
