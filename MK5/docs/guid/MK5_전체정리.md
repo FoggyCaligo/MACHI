@@ -1,6 +1,7 @@
 # MK5 전체정리 (마스터 문서)
 
-업데이트: 2026-04-20
+업데이트: 2026-04-20  
+상태: **완료 (MK6로 이관)**
 
 ## 1. 현재 정체성
 MK5는 "그래프 중심 인지 시스템"이다.  
@@ -91,13 +92,39 @@ ollama pull nomic-embed-text
 - `SCOPE_GATE_SIMILARITY_THRESHOLD` 환경변수로 임계치 조정 (기본 0.65)
 - 미설치 시 ScopeGate fail-open → SlotPlanner 경로로 진행
 
-## 9. 현재 남은 우선과제
-1. ConclusionViewBuilder 키워드 매칭 정교화 (의미적 유사도 확장)
-2. E2E 회귀 확대(루프 3회 + ConclusionView 흐름)
-3. override 프로필 전환 A/B 운영 가이드
-4. Linux cron 운영 스크립트 추가
+## 9. MK6 이관 사항
 
-## 10. 문서 체계
+### 공통부 추출 / 개념 분화 (미구현)
+
+MK1 원설계의 "노드 = 체감된 개념" 철학이 MK5에서 미구현으로 남았다.
+
+**MK5의 한계:**
+- `node.content = 텍스트 레이블` 구조에서는 부모 개념 생성 시 LLM이 레이블을 붙이게 되고,
+  그 레이블이 의미를 정의해버리는 역전이 발생한다.
+
+**MK6 설계 방향 (확정):**
+- **단어/의미 분리**: 의미는 그래프 구조(연결, 가중치, trust) 자체에 존재하고, 단어는 파생 표현
+- 공통부 추출 흐름:
+  1. ThoughtView 내 유사 노드 쌍 탐지 (임베딩 코사인)
+  2. 두 후보 각각의 미니 그래프 구성 → 상호 임베딩 overlap 비율로 재확인
+  3. 유사 확정 시 → 공통 의미 노드 생성 (텍스트 레이블 없이 구조로 존재)
+  4. 차이는 기존 `proposed_connect_type` 승격 경로로 처리
+  5. 기존 부모 재사용 없음 — 유사 부모들도 같은 과정으로 수렴
+- 트리거: Think→Search 루프 회차 종료 시점 (ThoughtView 기준)
+- 비교 방법: 미니 그래프 임베딩 overlap 비율 (추가 LLM 없음)
+- 영향 범위: 노드 엔티티 구조, verbalization 계층, 인덱싱 전략 전면 재설계 필요
+
+### 미완료 항목 (MK5에서 중단)
+- ConclusionViewBuilder 키워드 매칭 정교화 (의미적 유사도 확장)
+- E2E 회귀 확대 (루프 3회 + ConclusionView 흐름)
+- override 프로필 전환 A/B 운영 가이드
+- Linux cron 운영 스크립트
+
+## 10. 완료 선언
+
+MK5는 여기서 마무리한다. 이후 작업은 MK6에서 진행된다.
+
+## 11. 문서 체계
 - 마스터: `docs/guid/MK5_전체정리.md`
 - 아키텍처 상세: `docs/architecture/*`
 - 전략: `docs/guid/MK5_검색_및_검증_전략.md`
