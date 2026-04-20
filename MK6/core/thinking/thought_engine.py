@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
@@ -46,8 +46,11 @@ class ConclusionView:
     goal_hash: str | None
     had_empty_slots: bool
     loop_count: int
-    model: str | None = None        # 이번 요청에서 사용할 생성 모델
-    user_input: str | None = None   # 원래 사용자 입력 (GraphToLang 컨텍스트용)
+    model: str | None = None                    # 이번 요청에서 사용할 생성 모델
+    user_input: str | None = None               # 원래 사용자 입력 (GraphToLang 컨텍스트용)
+    known_hashes: set[str] = field(default_factory=set)
+    # known_hashes: think() 시작 시 이미 DB에 존재했던 ConceptPointer 노드의 hash 집합.
+    # GraphToLang에서 "핵심 키워드"(기존 개념) vs "참고 개념"(신규 ingest) 분류에 사용한다.
 
 
 # ── 세계그래프 커밋 ───────────────────────────────────────────────────────────
@@ -152,10 +155,14 @@ class ThoughtEngine:
         tg.set_goal_node(self._goal_node)
         tg.load_from_translated(translated)
 
-        # ConceptPointer들을 목표 노드에 임시 연결
+        # ConceptPointer들을 목표 노드에 임시 연결 + known_hashes 수집
+        # known_hashes: think() 시작 시점에 이미 DB에 존재하던 개념들.
+        # GraphToLang에서 "핵심 키워드" 분류의 기준이 된다.
+        known_hashes: set[str] = set()
         for ref in translated.nodes:
             if isinstance(ref, ConceptPointer):
                 tg.connect_to_goal(ref.address_hash)
+                known_hashes.add(ref.address_hash)
 
         had_empty_slots = tg.has_empty_slots()
         loop_count = 0
@@ -169,7 +176,7 @@ class ThoughtEngine:
 
             # 1. EmptySlot 처리 — 필요 시 검색
             if tg.has_empty_slots():
-                await self._fill_empty_slots(tg)
+                await self._fill_empty_slots(tg, user_input=user_input)
 
             # 2. ConceptDifferentiation
             diff_results = concept_differentiation.run(tg)
@@ -201,26 +208,33 @@ class ThoughtEngine:
             loop_count=loop_count,
             model=model,
             user_input=user_input,
+            known_hashes=known_hashes,
         )
 
-    async def _fill_empty_slots(self, tg: TempThoughtGraph) -> None:
-        """EmptySlot 전체를 합쳐 1회 검색 → 각 슬롯을 ingest.
+    async def _fill_empty_slots(
+        self,
+        tg: TempThoughtGraph,
+        user_input: str | None = None,
+    ) -> None:
+        """EmptySlot 전체를 1회 검색 → 각 슬롯을 ingest.
 
         설계:
-        - 슬롯마다 개별 검색하지 않는다. 모든 hint를 합쳐 쿼리를 만들고 1회만 검색한다.
+        - 슬롯마다 개별 검색하지 않는다. user_input 원문(있으면)을 검색 쿼리로 쓴다.
+          user_input이 없으면 hint 합산 쿼리를 사용한다.
+          원문 쿼리가 개별 토큰 합산보다 의미 있는 검색 결과를 돌려준다.
         - 검색 결과는 lang_to_graph로 파싱하지 않는다.
-          (DB가 비어 있으면 파싱해도 EmptySlot만 나와서 cascade가 발생하기 때문)
-        - 대신 _ingest_slot으로 hint마다 노드를 직접 생성하고,
+          (빈 DB에서 파싱하면 EmptySlot cascade + PoolTimeout 발생)
+        - _ingest_slot으로 hint마다 노드를 직접 생성하고,
           검색 결과를 payload["search_summary"]에 저장한다.
-        - GraphToLang이 payload를 LLM 컨텍스트로 활용해 답변 품질을 높인다.
+        - GraphToLang이 payload를 LLM 컨텍스트로 활용한다.
         """
         slots = list(tg.empty_slots)
         if not slots:
             return
 
-        # 모든 hint를 합쳐 1회 검색
-        combined_query = " ".join(slot.concept_hint for slot in slots)
-        search_text = await self._search_fn(combined_query)
+        # user_input이 있으면 원문을 쿼리로, 없으면 hint 합산
+        query = user_input or " ".join(slot.concept_hint for slot in slots)
+        search_text = await self._search_fn(query)
 
         # 각 슬롯을 ingest — 검색 결과를 payload에 함께 저장
         for slot in slots:

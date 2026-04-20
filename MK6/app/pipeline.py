@@ -27,7 +27,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     레이블 없는 추상 노드는 이웃 노드의 레이블과 엣지 관계로 간접 표현한다.
     """
     # ── 구조 직렬화 ───────────────────────────────────────────────────────────
-    # ── 노드 분류: trust >= 0.3 → 핵심 키워드, 미만 → 참고 개념 ─────────────
+    # ── 노드 분류: known_hashes → 핵심 키워드, 신규 ingest → 참고 개념 ────────
     key_labels: list[str] = []
     ref_labels: list[str] = []
     node_map = {n.address_hash: n for n in conclusion.nodes}
@@ -35,37 +35,37 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     for node in conclusion.nodes:
         if node.address_hash == conclusion.goal_hash:
             continue
-        if node.labels:
-            label_str = node.labels[0]
-        else:
-            neighbor_hashes = {
-                e.target_hash if e.source_hash == node.address_hash else e.source_hash
-                for e in conclusion.edges
-                if e.source_hash == node.address_hash or e.target_hash == node.address_hash
-            }
-            neighbor_labels = [
-                node_map[h].labels[0]
-                for h in neighbor_hashes
-                if h in node_map and node_map[h].labels
-            ]
-            if not neighbor_labels:
-                continue
-            label_str = f"[{', '.join(neighbor_labels)}의 공통 개념]"
+        # abstract 노드는 GraphToLang 출력에서 제외.
+        # 분화 결과로 생성된 구조 노드이며, LLM 컨텍스트에 노이즈만 추가한다.
+        if node.is_abstract:
+            continue
+        if not node.labels:
+            continue
 
-        if node.trust_score >= 0.3:
+        label_str = node.labels[0]
+
+        # known_hashes: think() 시작 시점에 이미 DB에 존재하던 ConceptPointer 노드.
+        # → 핵심 키워드 (AI가 이미 알고 있던 개념)
+        # 신규 ingest 노드 → 참고 개념 (이번 대화에서 처음 등장)
+        if node.address_hash in conclusion.known_hashes:
             key_labels.append(label_str)
         else:
             ref_labels.append(label_str)
 
     # ── 엣지: 비임시 엣지 → 근거 연결 ───────────────────────────────────────
+    # abstract 노드가 엔드포인트인 엣지는 제외 (분화 구조 엣지 → LLM 컨텍스트 노이즈)
     edge_lines: list[str] = []
     for edge in conclusion.edges:
         if edge.is_temporary:
             continue
         src = node_map.get(edge.source_hash)
         tgt = node_map.get(edge.target_hash)
-        src_str = src.labels[0] if src and src.labels else edge.source_hash[:8]
-        tgt_str = tgt.labels[0] if tgt and tgt.labels else edge.target_hash[:8]
+        if src is None or tgt is None:
+            continue
+        if src.is_abstract or tgt.is_abstract:
+            continue
+        src_str = src.labels[0] if src.labels else edge.source_hash[:8]
+        tgt_str = tgt.labels[0] if tgt.labels else edge.target_hash[:8]
         edge_lines.append(f"  - {src_str} →[{edge.connect_type}]→ {tgt_str}")
 
     # ── 검색 컨텍스트: payload["search_summary"] 보유 노드 수집 ─────────────

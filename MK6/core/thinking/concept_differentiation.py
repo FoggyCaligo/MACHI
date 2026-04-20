@@ -147,15 +147,19 @@ def run(tg: TempThoughtGraph) -> list[DifferentiationResult]:
     """
     results: list[DifferentiationResult] = []
 
-    # 추상 노드는 분화 후보에서 제외한다.
-    # - 추상 노드는 이미 분화 결과물이므로 재분화 대상이 아니다.
-    # - 포함하면 루프마다 노드 수가 자기 증폭식으로 늘어난다.
+    # 분화 후보 조건:
+    # - 추상 노드 제외 (이미 분화 결과물 → 재분화 시 자기 증폭)
+    # - stability_score > COMMIT_STABILITY_WEAK 인 노드만 포함.
+    #   신규 ingest 노드(stability == COMMIT_STABILITY_WEAK)는 개념 경계가
+    #   아직 정착되지 않은 상태이므로 분화 대상에서 제외한다.
+    #   같은 개념이 반복 등장해 stability가 강화된 뒤에야 분화에 참여한다.
     nodes = [
         n for n in tg.all_nodes()
         if n.embedding is not None
         and n.is_active
         and not n.is_abstract
         and n.address_hash != tg.goal_hash
+        and n.stability_score > config.COMMIT_STABILITY_WEAK
     ]
 
     # 이웃 집합을 순회 전 한 번만 계산해서 캐싱한다.
