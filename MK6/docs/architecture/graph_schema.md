@@ -111,27 +111,31 @@ CREATE INDEX idx_edges_connect_type ON edges(connect_type);
 
 ### 입력 타입 분류기
 
-자연어와 비자연어(코드/URL/파일 경로)를 구분해 처리 경로를 분기한다.
+자연어와 비자연어(코드/URL/파일 경로)를 구분해 처리 경로를 분기한다.  
+**방식: 규칙 → 임베딩 폴백 (D안)**
 
 ```
 입력 문자열
   │
   ▼
-InputTypeClassifier.classify(text) → "natural" | "code" | "path" | "url"
+1단계: 정규식 규칙 (명확한 패턴)
+  - url:    ^https?:// | ^ftp://
+  - path:   (^[./\\]|[/\\]) + 확장자 패턴 (.py|.js|.ts|.md|.txt 등)
+  - code:   들여쓰기 블록 + 코드 키워드 (def |class |function |const |import |{...})
+  - 위 모두 불일치 → 2단계로
 
-판정 기준 (규칙 기반, MVP):
-  - url:  http:// / https:// / ftp:// 로 시작
-  - path: 경로 구분자 패턴 (/, \, ./ , ../) + 확장자 패턴
-  - code: 들여쓰기 블록, def/class/function/{}/[] 등 코드 구조 패턴
-  - natural: 위 어느 것도 아니면 자연어
+2단계: 임베딩 유사도 (모호한 경우)
+  - "natural language text", "source code", "file path", "url" 프로토타입 임베딩 준비
+  - 입력 임베딩 → 프로토타입과 코사인 유사도 → 가장 가까운 카테고리
+  - 유사도 차이 < threshold → "natural"로 폴백 (안전한 기본값)
 
 처리 경로:
   - "natural" → 문장 분리 → 토큰 추출 → 의미 그래프 조회
-  - "code" | "path" | "url" → 전체를 단일 단위로 묶어 임베딩 폴백
+  - "code" | "path" | "url" → 전체를 단일 단위로 임베딩 폴백
 ```
 
 비자연어 입력은 전체를 하나의 단위로 임베딩에 넘긴다.  
-이후 코드/파일 도구 레이어(2차)가 붙으면 해당 경로가 확장된다.
+코드/파일 도구 레이어(2차)가 붙으면 해당 경로가 확장된다.
 
 ---
 
