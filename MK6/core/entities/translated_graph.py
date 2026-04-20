@@ -78,8 +78,14 @@ class TranslatedGraph:
 
     언어 입력 한 단위(문장 또는 구)를 그래프 표현으로 번역한 결과다.
     저장이 아니라 번역이므로 World Graph는 변경되지 않는다.
+
+    near_refs: centroid에 가까운 토큰 그룹 → GraphToLang 핵심 키워드 후보.
+    far_refs:  centroid에서 먼 토큰 그룹  → GraphToLang 참고 개념 후보.
+    두 그룹은 언어 구조(임베딩 중요도)에만 근거하며, 그래프 상태와 무관하다.
     """
 
     nodes: list[ConceptRef]
     edges: list[TranslatedEdge]
-    source: str   # 원문 (provenance용)
+    source: str                                          # 원문 (provenance용)
+    near_refs: list[ConceptRef] = field(default_factory=list)   # 핵심 키워드 후보
+    far_refs:  list[ConceptRef] = field(default_factory=list)   # 참고 개념 후보

@@ -58,9 +58,11 @@ class ConclusionView:
     loop_count: int
     model: str | None = None                    # 이번 요청에서 사용할 생성 모델
     user_input: str | None = None               # 원래 사용자 입력 (GraphToLang 컨텍스트용)
-    known_hashes: set[str] = field(default_factory=set)
-    # known_hashes: think() 시작 시 이미 DB에 존재했던 ConceptPointer 노드의 hash 집합.
-    # GraphToLang에서 "핵심 키워드"(기존 개념) vs "참고 개념"(신규 ingest) 분류에 사용한다.
+    key_hashes: set[str] = field(default_factory=set)
+    # key_hashes: near 그룹 (centroid 가까운 토큰) — GraphToLang 핵심 키워드 분류 기준.
+    ref_hashes: set[str] = field(default_factory=set)
+    # ref_hashes: far 그룹 (centroid 먼 토큰) — GraphToLang 참고 개념 분류 기준.
+    # 두 필드 모두 언어 구조 기반이며 그래프 상태(DB 존재 여부)와 무관하다.
 
 
 # ── 세계그래프 커밋 ───────────────────────────────────────────────────────────
@@ -239,14 +241,19 @@ class ThoughtEngine:
         _te_added_keys: set[tuple[str, str]] = set()
         _add_translated_edges(tg, translated.edges, _te_added_keys)
 
-        # ConceptPointer들을 목표 노드에 임시 연결 + known_hashes 수집
-        # known_hashes: think() 시작 시점에 이미 DB에 존재하던 개념들.
-        # GraphToLang에서 "핵심 키워드" 분류의 기준이 된다.
-        known_hashes: set[str] = set()
-        for ref in translated.nodes:
+        # ConceptPointer들을 목표 노드에 임시 연결
+        # key_hashes / ref_hashes: near/far 그룹 기반 분류 (언어 구조 기반, 그래프 상태 무관).
+        # GraphToLang에서 "핵심 키워드" / "참고 개념" 분류의 기준이 된다.
+        key_hashes: set[str] = set()   # near 그룹 → 핵심 키워드
+        ref_hashes: set[str] = set()   # far 그룹  → 참고 개념
+        for ref in translated.near_refs:
             if isinstance(ref, ConceptPointer):
                 tg.connect_to_goal(ref.address_hash)
-                known_hashes.add(ref.address_hash)
+                key_hashes.add(ref.address_hash)
+        for ref in translated.far_refs:
+            if isinstance(ref, ConceptPointer):
+                tg.connect_to_goal(ref.address_hash)
+                ref_hashes.add(ref.address_hash)
 
         _t0 = _t("graph init", _t0)
 
@@ -265,7 +272,7 @@ class ThoughtEngine:
             if tg.has_empty_slots():
                 _ts = time.perf_counter()
                 await self._fill_empty_slots(
-                    tg, user_input=user_input, known_hashes=known_hashes
+                    tg, user_input=user_input, concept_hashes=key_hashes | ref_hashes
                 )
                 _t0 = _t(f"fill_empty_slots (loop {loop_count})", _ts)
                 # fill 완료 후 EmptySlot 엔드포인트 포함 TranslatedEdge 추가
@@ -292,6 +299,20 @@ class ThoughtEngine:
         # ── 루프 종료 후 ConceptDifferentiation (최종 1회) ───────────────────
         concept_differentiation.run(tg)
 
+        # ── EmptySlot → 해시 분류 (near/far 그룹 기반) ───────────────────────
+        # _fill_empty_slots에서 채워진 노드는 compute_hash(hint)로 address_hash가
+        # 결정된다. 루프 종료 후 tg에 노드가 존재하면 해당 그룹에 귀속한다.
+        for ref in translated.near_refs:
+            if isinstance(ref, EmptySlot):
+                h = compute_hash(ref.concept_hint.strip())
+                if tg.get_node(h) is not None:
+                    key_hashes.add(h)
+        for ref in translated.far_refs:
+            if isinstance(ref, EmptySlot):
+                h = compute_hash(ref.concept_hint.strip())
+                if tg.get_node(h) is not None:
+                    ref_hashes.add(h)
+
         # ── 세계그래프 강한 커밋 (새로 추가된 노드/엣지) ─────────────────────
         _tc = time.perf_counter()
         self._commit_new_content(tg)
@@ -305,7 +326,8 @@ class ThoughtEngine:
             loop_count=loop_count,
             model=model,
             user_input=user_input,
-            known_hashes=known_hashes,
+            key_hashes=key_hashes,
+            ref_hashes=ref_hashes,
         )
 
     def _add_search_result_edges(
@@ -378,7 +400,7 @@ class ThoughtEngine:
         self,
         tg: TempThoughtGraph,
         user_input: str | None = None,
-        known_hashes: set[str] | None = None,
+        concept_hashes: set[str] | None = None,
     ) -> None:
         """EmptySlot 전체를 1회 검색 → 각 슬롯을 ingest.
 
@@ -450,9 +472,9 @@ class ThoughtEngine:
                     ))
 
             # ② ingest ↔ ConceptPointer (의미 연관 — weight 0.6)
-            if known_hashes:
+            if concept_hashes:
                 for ingest_node in ingested_nodes:
-                    for cp_hash in known_hashes:
+                    for cp_hash in concept_hashes:
                         cp_node = tg.get_node(cp_hash)
                         if cp_node is None:
                             continue

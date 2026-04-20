@@ -86,23 +86,24 @@ def _importance_scores(
     return scores
 
 
-def _filter_top_ratio(
+def _split_near_far(
     sentence_pairs: list[tuple[str, ConceptRef]],
     token_embs: dict[str, list[float]],
-) -> list[tuple[str, ConceptRef]]:
-    """문장 내 토큰을 near+far 방식으로 필터링한다.
+) -> tuple[list[tuple[str, ConceptRef]], list[tuple[str, ConceptRef]]]:
+    """문장 내 토큰을 near(핵심)/far(참고) 두 그룹으로 분리한다.
 
-    centroid에 가장 가까운 NEAR_RATIO 비율 (문장 대표 개념) +
-    centroid에서 가장 먼 FAR_RATIO 비율 (도메인 특이 개념·고유명사)의
-    합집합을 선택한다. 최소 TOKEN_IMPORTANCE_MIN개는 보장한다.
+    near: centroid에 가장 가까운 NEAR_RATIO 비율 → 핵심 키워드
+          문장의 대표 개념. 중심 의미에 가장 가까운 토큰.
+    far:  centroid에서 가장 먼 FAR_RATIO 비율 → 참고 개념
+          도메인 특이 개념·고유명사 등 문장 내 독특한 토큰.
 
-    선택 가능 풀(selectable): 2자 이상 토큰만 포함.
-    조사·어미 분리로 생성된 1자 토큰("는", "을", "의" 등)은 centroid 계산에는
-    참여하지만 near/far 선택 대상에서 제외된다.
-    이는 문자열 리스트가 아닌 구조적 길이 기준이므로 휴리스틱이 아니다.
+    - 선택 가능 풀(selectable): 2자 이상 토큰만 포함 (1자 조사·어미 제외).
+    - near/far가 겹치는 경우 near 우선.
+    - near는 최소 TOKEN_IMPORTANCE_MIN개 보장.
+    - 두 그룹은 언어 구조에만 근거하며 그래프 상태와 무관하다.
     """
     if not sentence_pairs:
-        return []
+        return [], []
 
     n = len(sentence_pairs)
     tokens = [t for t, _ in sentence_pairs]
@@ -112,9 +113,7 @@ def _filter_top_ratio(
 
     # 2자 이상 토큰만 선택 대상으로 한정 — 1자 조사·어미 제외
     selectable = [i for i in range(n) if len(tokens[i]) >= 2]
-
     if not selectable:
-        # 모두 1자 토큰인 극단적 경우 — 전체 대상으로 폴백
         selectable = list(range(n))
 
     sorted_desc = sorted(selectable, key=lambda i: scores[i], reverse=True)
@@ -124,18 +123,20 @@ def _filter_top_ratio(
 
     near_indices: set[int] = set(sorted_desc[:n_near])
     far_indices:  set[int] = set(sorted_desc[max(0, len(sorted_desc) - n_far):])
+    far_indices -= near_indices   # near 우선: 겹치는 인덱스는 near에 귀속
 
-    selected = near_indices | far_indices
-
-    # 최소 보장: selectable 내에서 점수 순으로 추가
-    if len(selected) < config.TOKEN_IMPORTANCE_MIN:
+    # near 최소 보장: selectable 내에서 점수 순으로 추가
+    if len(near_indices) < config.TOKEN_IMPORTANCE_MIN:
         for idx in sorted_desc:
-            selected.add(idx)
-            if len(selected) >= config.TOKEN_IMPORTANCE_MIN:
+            near_indices.add(idx)
+            far_indices.discard(idx)
+            if len(near_indices) >= config.TOKEN_IMPORTANCE_MIN:
                 break
 
     # 원래 순서(sentence 내 위치)를 유지한 채 반환
-    return [pair for i, pair in enumerate(sentence_pairs) if i in selected]
+    near_pairs = [pair for i, pair in enumerate(sentence_pairs) if i in near_indices]
+    far_pairs  = [pair for i, pair in enumerate(sentence_pairs) if i in far_indices]
+    return near_pairs, far_pairs
 
 
 # ── 개념 단위 조회 ────────────────────────────────────────────────────────────
@@ -311,7 +312,10 @@ async def translate(
         )
         token_embs = dict(zip(unique_missed, emb_results))
 
-    # 토큰별 최종 resolve → 중요도 필터링 → nodes/edges 추가
+    # 토큰별 최종 resolve → near/far 분리 → nodes/edges 추가
+    all_near_refs: list[ConceptRef] = []
+    all_far_refs:  list[ConceptRef] = []
+
     for sentence_tokens in sentences:
         # 1. 각 토큰을 ConceptPointer 또는 EmptySlot으로 resolve
         sentence_pairs: list[tuple[str, ConceptRef]] = []
@@ -344,19 +348,22 @@ async def translate(
                 ref = EmptySlot(concept_hint=token)
             sentence_pairs.append((token, ref))
 
-        # 2. 중요도 상위 TOKEN_IMPORTANCE_RATIO 필터링
-        filtered_pairs = _filter_top_ratio(sentence_pairs, token_embs)
+        # 2. near(핵심)/far(참고) 분리 — 언어 구조 기반, 그래프 상태 무관
+        near_pairs, far_pairs = _split_near_far(sentence_pairs, token_embs)
 
-        # 3. 필터된 토큰만 nodes에 추가, 인접 쌍 → neutral 엣지
-        filtered_refs = [r for _, r in filtered_pairs]
-        for ref in filtered_refs:
+        # 3. near+far 합집합을 sentence 원래 순서로 재구성 → nodes/edges 추가
+        selected_id_set = {id(p) for p in near_pairs} | {id(p) for p in far_pairs}
+        selected_in_order = [p for p in sentence_pairs if id(p) in selected_id_set]
+        selected_refs = [r for _, r in selected_in_order]
+
+        for ref in selected_refs:
             nodes.append(ref)
 
-        for i in range(len(filtered_refs) - 1):
+        for i in range(len(selected_refs) - 1):
             edges.append(
                 TranslatedEdge(
-                    source_ref=filtered_refs[i],
-                    target_ref=filtered_refs[i + 1],
+                    source_ref=selected_refs[i],
+                    target_ref=selected_refs[i + 1],
                     edge_family="concept",
                     connect_type="neutral",
                     confidence=0.5,
@@ -364,4 +371,14 @@ async def translate(
                 )
             )
 
-    return TranslatedGraph(nodes=nodes, edges=edges, source=text)
+        # 4. near/far 누적 (TranslatedGraph 필드용)
+        all_near_refs.extend(r for _, r in near_pairs)
+        all_far_refs.extend(r for _, r in far_pairs)
+
+    return TranslatedGraph(
+        nodes=nodes,
+        edges=edges,
+        source=text,
+        near_refs=all_near_refs,
+        far_refs=all_far_refs,
+    )

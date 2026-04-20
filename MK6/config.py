@@ -33,8 +33,8 @@ LANG_TO_GRAPH_MAX_EMBEDDING_NODES = _env_int("LANG_TO_GRAPH_MAX_EMBEDDING_NODES"
 #   NEAR_RATIO: centroid에 가장 가까운 토큰 비율 (문장 대표 개념)
 #   FAR_RATIO:  centroid에서 가장 먼 토큰 비율 (도메인 특이 개념, 고유명사 등)
 # 두 그룹의 합집합을 노드로 생성한다. 최소 TOKEN_IMPORTANCE_MIN개 보장.
-TOKEN_IMPORTANCE_NEAR_RATIO = _env_float("TOKEN_IMPORTANCE_NEAR_RATIO", 0.15)
-TOKEN_IMPORTANCE_FAR_RATIO  = _env_float("TOKEN_IMPORTANCE_FAR_RATIO",  0.15)
+TOKEN_IMPORTANCE_NEAR_RATIO = _env_float("TOKEN_IMPORTANCE_NEAR_RATIO", 0.20)
+TOKEN_IMPORTANCE_FAR_RATIO  = _env_float("TOKEN_IMPORTANCE_FAR_RATIO",  0.20)
 TOKEN_IMPORTANCE_MIN = _env_int("TOKEN_IMPORTANCE_MIN", 1)
 
 # ── LocalGraphExtractor ──────────────────────────────────────────────────────

@@ -46,15 +46,12 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
         label_str = node.labels[0]
 
-        # 핵심 키워드: think() 시작 시점에 이미 DB에 존재하던 개념(ConceptPointer).
-        #   → Machi가 이전 대화를 통해 이미 알고 있던 개념.
-        # 참고 개념: 이번 대화에서 새로 ingest된 노드 (신규 개념, 조사 잔재 포함).
-        #   → stability_score 기준으로 핵심 키워드에 포함하지 않는다.
-        #   → 새 ingest 노드는 참고 개념으로 노출되어 LLM이 2차적으로 활용한다.
-        is_from_input = node.address_hash in conclusion.known_hashes
-        if is_from_input:
+        # 핵심 키워드: near 그룹 — centroid에 가까운 토큰 (문장 대표 개념).
+        # 참고 개념:  far 그룹  — centroid에서 먼 토큰 (도메인 특이 개념·고유명사).
+        # 두 기준 모두 언어 구조 기반이며 그래프 상태(DB 존재 여부)와 무관하다.
+        if node.address_hash in conclusion.key_hashes:
             key_labels.append(label_str)
-        else:
+        elif node.address_hash in conclusion.ref_hashes:
             ref_labels.append(label_str)
 
     # ── 엣지: 비임시 엣지 → 근거 연결 ───────────────────────────────────────
