@@ -169,6 +169,10 @@ async def list_models() -> list[str]:
 
         result: list[str] = []
         for m in data.get("models", []):
+            name: str = m["name"]
+            # 명시적 제외 모델 (패밀리로 구분 불가한 임베딩 전용 모델 등)
+            if name in config.OLLAMA_EXCLUDED_MODELS:
+                continue
             details = m.get("details") or {}
             # Ollama 버전에 따라 "families"(복수) 또는 "family"(단수)로 반환
             families: list[str] = details.get("families") or []
@@ -179,7 +183,7 @@ async def list_models() -> list[str]:
             # 모든 패밀리가 임베딩 전용이면 제외
             if families and all(f in _EMBEDDING_ONLY_FAMILIES for f in families):
                 continue
-            result.append(m["name"])
+            result.append(name)
         return result
 
     except Exception:

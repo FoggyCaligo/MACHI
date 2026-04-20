@@ -69,6 +69,16 @@ GRAPH_TO_LANG_EDGE_RATIO = _env_float("GRAPH_TO_LANG_EDGE_RATIO", 0.30)
 
 # ── Ollama LLM ───────────────────────────────────────────────────────────────
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+
+# 생성 모델 선택지에서 제외할 모델 이름 집합.
+# 패밀리 메타데이터로 구분할 수 없는 임베딩 전용 모델을 명시적으로 지정한다.
+# 환경변수 OLLAMA_EXCLUDED_MODELS에 쉼표로 구분해 추가할 수 있다.
+_excluded_from_env: list[str] = [
+    m.strip()
+    for m in os.getenv("OLLAMA_EXCLUDED_MODELS", "").split(",")
+    if m.strip()
+]
+OLLAMA_EXCLUDED_MODELS: frozenset[str] = frozenset(["embeddinggemma:latest"] + _excluded_from_env)
 OLLAMA_TIMEOUT_SECONDS = _env_float("OLLAMA_TIMEOUT_SECONDS", 600.0)
-OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "").strip()
+OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "gemma3:4b").strip()
 OLLAMA_NUM_PREDICT = _env_int("OLLAMA_NUM_PREDICT", 512)  # GraphToLang 최대 생성 토큰 수
