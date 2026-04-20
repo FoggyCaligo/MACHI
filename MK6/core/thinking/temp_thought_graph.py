@@ -1,0 +1,163 @@
+"""TempThoughtGraph — Think 루프 동안 메모리 상에서만 존재하는 임시 사고 그래프.
+
+세계그래프(WorldGraph)의 국소 서브그래프를 복사해 구성하며,
+노드/엣지 조작이 자유롭게 일어나되 WorldGraph에 즉시 영향을 주지 않는다.
+Think가 끝나면 변경된 내용 중 필요한 부분만 WorldGraph로 커밋한다.
+"""
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from ..entities.node import Node
+from ..entities.edge import Edge
+from ..entities.translated_graph import (
+    TranslatedGraph, ConceptPointer, EmptySlot,
+)
+
+
+@dataclass
+class GraphDelta:
+    """한 루프 회차에서 발생한 변경 사항을 추적한다."""
+    added_nodes: list[str] = field(default_factory=list)    # address_hash
+    modified_nodes: list[str] = field(default_factory=list)
+    added_edges: list[str] = field(default_factory=list)    # edge_id
+    removed_edges: list[str] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return (
+            not self.added_nodes
+            and not self.modified_nodes
+            and not self.added_edges
+            and not self.removed_edges
+        )
+
+
+class TempThoughtGraph:
+    """임시 사고 그래프.
+
+    Think 루프 1회 실행 단위로 생성된다.
+    수렴 판단을 위해 루프 회차별 delta를 기록한다.
+    """
+
+    def __init__(self) -> None:
+        self._nodes: dict[str, Node] = {}
+        self._edges: dict[str, Edge] = {}
+        self._goal_hash: str | None = None       # 목표 노드 address_hash
+        self._empty_slots: list[EmptySlot] = []  # 아직 채워지지 않은 자리
+        self._delta: GraphDelta = GraphDelta()   # 현재 루프 회차 변경 추적
+
+    # ── 구성 ──────────────────────────────────────────────────────────────────
+
+    def load_from_translated(self, tg: TranslatedGraph) -> None:
+        """TranslatedGraph에서 ConceptPointer들의 국소 서브그래프를 로드한다."""
+        for ref in tg.nodes:
+            if isinstance(ref, ConceptPointer):
+                subgraph = ref.local_subgraph
+                for node in subgraph.nodes:
+                    self._nodes.setdefault(node.address_hash, node)
+                for edge in subgraph.edges:
+                    self._edges.setdefault(edge.edge_id, edge)
+            elif isinstance(ref, EmptySlot):
+                self._empty_slots.append(ref)
+
+    def set_goal_node(self, node: Node) -> None:
+        """목표 노드를 설정하고 그래프에 추가한다."""
+        self._goal_hash = node.address_hash
+        self._nodes[node.address_hash] = node
+
+    # ── 노드 조작 ─────────────────────────────────────────────────────────────
+
+    def add_node(self, node: Node) -> None:
+        self._nodes[node.address_hash] = node
+        self._delta.added_nodes.append(node.address_hash)
+
+    def get_node(self, address_hash: str) -> Node | None:
+        return self._nodes.get(address_hash)
+
+    def update_node(self, node: Node) -> None:
+        self._nodes[node.address_hash] = node
+        if node.address_hash not in self._delta.modified_nodes:
+            self._delta.modified_nodes.append(node.address_hash)
+
+    def all_nodes(self) -> list[Node]:
+        return list(self._nodes.values())
+
+    # ── 엣지 조작 ─────────────────────────────────────────────────────────────
+
+    def add_edge(self, edge: Edge) -> None:
+        self._edges[edge.edge_id] = edge
+        self._delta.added_edges.append(edge.edge_id)
+
+    def remove_edge(self, edge_id: str) -> None:
+        if edge_id in self._edges:
+            del self._edges[edge_id]
+            self._delta.removed_edges.append(edge_id)
+
+    def get_edges_for_node(self, address_hash: str) -> list[Edge]:
+        return [
+            e for e in self._edges.values()
+            if e.source_hash == address_hash or e.target_hash == address_hash
+        ]
+
+    def all_edges(self) -> list[Edge]:
+        return list(self._edges.values())
+
+    # ── 엣지 연결 (목표 노드 ↔ 입력 개념) ───────────────────────────────────
+
+    def connect_to_goal(self, concept_hash: str) -> None:
+        """개념 노드를 목표 노드에 임시 연결한다."""
+        if self._goal_hash is None:
+            return
+        edge = Edge(
+            edge_id=str(uuid.uuid4()),
+            source_hash=self._goal_hash,
+            target_hash=concept_hash,
+            edge_family="relation",
+            connect_type="neutral",
+            provenance_source="lang_to_graph",
+            is_temporary=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        self.add_edge(edge)
+
+    # ── EmptySlot 관리 ────────────────────────────────────────────────────────
+
+    @property
+    def empty_slots(self) -> list[EmptySlot]:
+        return list(self._empty_slots)
+
+    def has_empty_slots(self) -> bool:
+        return bool(self._empty_slots)
+
+    def fill_slot(self, slot: EmptySlot, node: Node) -> None:
+        """EmptySlot을 실제 노드로 채운다."""
+        self.add_node(node)
+        self._empty_slots = [s for s in self._empty_slots if s is not slot]
+
+    # ── 수렴 판단 ─────────────────────────────────────────────────────────────
+
+    def current_delta(self) -> GraphDelta:
+        return self._delta
+
+    def reset_delta(self) -> None:
+        """루프 회차 시작 시 delta를 초기화한다."""
+        self._delta = GraphDelta()
+
+    # ── 읽기 전용 속성 ────────────────────────────────────────────────────────
+
+    @property
+    def goal_hash(self) -> str | None:
+        return self._goal_hash
+
+    def neighbor_hashes(self, address_hash: str) -> set[str]:
+        """노드의 이웃 노드 hash 집합을 반환한다."""
+        result: set[str] = set()
+        for edge in self.get_edges_for_node(address_hash):
+            if edge.source_hash == address_hash:
+                result.add(edge.target_hash)
+            else:
+                result.add(edge.source_hash)
+        return result

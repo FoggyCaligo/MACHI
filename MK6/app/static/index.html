@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MK6</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0f0f12;
+      --surface:    #18181f;
+      --border:     #2a2a35;
+      --accent:     #7c6af7;
+      --accent-dim: #4a4280;
+      --text:       #e4e4ef;
+      --text-dim:   #6b6b80;
+      --user-bg:    #252538;
+      --mk6-bg:     #1c1c28;
+      --danger:     #e05260;
+      --meta:       #4b4b62;
+      --radius:     12px;
+      --font:       'Segoe UI', 'Apple SD Gothic Neo', sans-serif;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); }
+
+    /* ── 레이아웃 ── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    /* ── 헤더 ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .logo {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      color: var(--accent);
+    }
+    .logo span { color: var(--text-dim); font-weight: 400; font-size: 13px; margin-left: 8px; }
+    #new-chat-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color .15s, color .15s;
+    }
+    #new-chat-btn:hover { border-color: var(--accent); color: var(--text); }
+
+    /* 모델 셀렉터 */
+    .header-right { display: flex; align-items: center; gap: 10px; }
+    #model-select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 5px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      cursor: pointer;
+      outline: none;
+      max-width: 180px;
+      transition: border-color .15s, color .15s;
+    }
+    #model-select:hover, #model-select:focus { border-color: var(--accent); color: var(--text); }
+    #model-select option { background: var(--surface); color: var(--text); }
+
+    /* ── 메시지 영역 ── */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      scroll-behavior: smooth;
+    }
+    #messages::-webkit-scrollbar { width: 4px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* ── 메시지 버블 ── */
+    .msg-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .msg-row.user { flex-direction: row-reverse; }
+
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .avatar.mk6  { background: var(--accent-dim); color: var(--accent); }
+    .avatar.user { background: var(--user-bg);    color: var(--text-dim); }
+
+    .bubble {
+      max-width: 75%;
+      padding: 12px 16px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg-row.user  .bubble { background: var(--user-bg); border-top-right-radius: 4px; }
+    .msg-row.mk6   .bubble { background: var(--mk6-bg);  border-top-left-radius: 4px; }
+
+    .bubble .file-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--border);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+
+    .meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--meta);
+    }
+    .meta span { display: flex; align-items: center; gap: 3px; }
+    .meta .tag-empty { color: var(--danger); }
+
+    /* ── 빈 상태 ── */
+    #empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--text-dim);
+      pointer-events: none;
+      user-select: none;
+    }
+    #empty-state .big { font-size: 36px; color: var(--accent); font-weight: 700; }
+    #empty-state .sub { font-size: 13px; }
+
+    /* ── 로딩 ── */
+    .loader {
+      display: flex;
+      gap: 5px;
+      padding: 12px 16px;
+      background: var(--mk6-bg);
+      border-radius: var(--radius);
+      border-top-left-radius: 4px;
+      width: fit-content;
+    }
+    .loader span {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--accent-dim);
+      animation: bounce .9s infinite;
+    }
+    .loader span:nth-child(2) { animation-delay: .15s; }
+    .loader span:nth-child(3) { animation-delay: .3s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); }
+      40%            { transform: translateY(-6px); background: var(--accent); }
+    }
+
+    /* ── 입력 영역 ── */
+    #input-area {
+      border-top: 1px solid var(--border);
+      padding: 16px 20px;
+      background: var(--bg);
+    }
+
+    /* 파일 뱃지 */
+    #file-badge {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    #file-badge .fname { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #remove-file {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 2px;
+      flex-shrink: 0;
+    }
+    #remove-file:hover { color: var(--danger); }
+
+    /* 입력 행 */
+    #input-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      transition: border-color .15s;
+    }
+    #input-row:focus-within { border-color: var(--accent-dim); }
+
+    #file-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 18px;
+      color: var(--text-dim);
+      padding: 2px;
+      flex-shrink: 0;
+      transition: color .15s;
+      line-height: 1;
+    }
+    #file-btn:hover { color: var(--accent); }
+
+    #file-input { display: none; }
+
+    #msg-input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-size: 14px;
+      font-family: var(--font);
+      resize: none;
+      min-height: 24px;
+      max-height: 140px;
+      line-height: 1.5;
+    }
+    #msg-input::placeholder { color: var(--text-dim); }
+
+    #send-btn {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      padding: 7px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background .15s, opacity .15s;
+    }
+    #send-btn:hover  { background: #9585ff; }
+    #send-btn:disabled { opacity: .4; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">MK6 <span>cognitive graph AI</span></div>
+    <div class="header-right">
+      <select id="model-select" title="생성 모델 선택">
+        <option value="">모델 로딩 중…</option>
+      </select>
+      <button id="new-chat-btn">새 채팅</button>
+    </div>
+  </header>
+
+  <div id="messages">
+    <div id="empty-state">
+      <div class="big">MK6</div>
+      <div class="sub">메시지를 입력하거나 파일을 첨부하세요.</div>
+    </div>
+  </div>
+
+  <div id="input-area">
+    <div id="file-badge">
+      <span>📄</span>
+      <span class="fname" id="file-name"></span>
+      <button id="remove-file" title="파일 제거">×</button>
+    </div>
+    <div id="input-row">
+      <button id="file-btn" title="파일 첨부">📎</button>
+      <input type="file" id="file-input" accept=".txt,.md,.py,.js,.ts,.json,.yaml,.yml,.toml,.csv,.html,.css,.sh,.go,.rs,.java,.c,.cpp,.h" />
+      <textarea id="msg-input" rows="1" placeholder="메시지를 입력하세요..."></textarea>
+      <button id="send-btn">전송</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── 상태 ──────────────────────────────────────────────────────────────────
+  const state = {
+    fileContent: null,
+    fileName: null,
+    loading: false,
+  };
+
+  // ── 모델 셀렉터 초기화 ────────────────────────────────────────────────────
+  const $modelSelect = document.getElementById('model-select');
+
+  async function loadModels() {
+    try {
+      const res = await fetch('/models');
+      const data = await res.json();
+      const models = data.models || [];
+      const current = data.current || '';
+
+      $modelSelect.innerHTML = '';
+
+      if (models.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '모델 없음 (Ollama 확인 필요)';
+        $modelSelect.appendChild(opt);
+        return;
+      }
+
+      models.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        if (name === current) opt.selected = true;
+        $modelSelect.appendChild(opt);
+      });
+
+      // current가 목록에 없으면 첫 번째 선택
+      if (current && !models.includes(current)) {
+        $modelSelect.selectedIndex = 0;
+      }
+    } catch (e) {
+      $modelSelect.innerHTML = '<option value="">연결 실패</option>';
+    }
+  }
+
+  loadModels();
+
+  // ── DOM 참조 ──────────────────────────────────────────────────────────────
+  const $messages   = document.getElementById('messages');
+  const $emptyState = document.getElementById('empty-state');
+  const $fileBadge  = document.getElementById('file-badge');
+  const $fileName   = document.getElementById('file-name');
+  const $fileInput  = document.getElementById('file-input');
+  const $fileBtn    = document.getElementById('file-btn');
+  const $removeFile = document.getElementById('remove-file');
+  const $msgInput   = document.getElementById('msg-input');
+  const $sendBtn    = document.getElementById('send-btn');
+  const $newChatBtn = document.getElementById('new-chat-btn');
+
+  // ── 자동 높이 조절 ────────────────────────────────────────────────────────
+  $msgInput.addEventListener('input', () => {
+    $msgInput.style.height = 'auto';
+    $msgInput.style.height = Math.min($msgInput.scrollHeight, 140) + 'px';
+  });
+
+  // ── 파일 첨부 ─────────────────────────────────────────────────────────────
+  $fileBtn.addEventListener('click', () => $fileInput.click());
+
+  $fileInput.addEventListener('change', () => {
+    const file = $fileInput.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      state.fileContent = e.target.result;
+      state.fileName    = file.name;
+      $fileName.textContent = file.name;
+      $fileBadge.style.display = 'flex';
+    };
+    reader.onerror = () => alert('파일을 읽지 못했습니다.');
+    reader.readAsText(file, 'utf-8');
+
+    $fileInput.value = '';
+  });
+
+  $removeFile.addEventListener('click', clearFile);
+
+  function clearFile() {
+    state.fileContent = null;
+    state.fileName    = null;
+    $fileBadge.style.display = 'none';
+    $fileName.textContent = '';
+  }
+
+  // ── 새 채팅 ───────────────────────────────────────────────────────────────
+  $newChatBtn.addEventListener('click', () => {
+    // 메시지 버블만 제거, empty-state 복원
+    const rows = $messages.querySelectorAll('.msg-row, .loader-row');
+    rows.forEach(r => r.remove());
+    $emptyState.style.display = 'flex';
+    clearFile();
+    $msgInput.value = '';
+    $msgInput.style.height = 'auto';
+  });
+
+  // ── 전송 ──────────────────────────────────────────────────────────────────
+  $sendBtn.addEventListener('click', sendMessage);
+  $msgInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  async function sendMessage() {
+    if (state.loading) return;
+
+    const typed = $msgInput.value.trim();
+    if (!typed && !state.fileContent) return;
+
+    // ── 사용자 메시지 조합 ──────────────────────────────────────────────────
+    let payload = typed;
+    let displayText = typed;
+    let displayFileName = state.fileName;
+
+    if (state.fileContent) {
+      const header = `[파일: ${state.fileName}]\n\n${state.fileContent}`;
+      payload = typed ? `${header}\n\n${typed}` : header;
+    }
+
+    // ── UI에 사용자 버블 추가 ──────────────────────────────────────────────
+    $emptyState.style.display = 'none';
+    appendUserBubble(displayText, displayFileName);
+
+    $msgInput.value = '';
+    $msgInput.style.height = 'auto';
+    clearFile();
+
+    // ── 로딩 버블 ─────────────────────────────────────────────────────────
+    const loaderRow = appendLoader();
+    state.loading = true;
+    $sendBtn.disabled = true;
+
+    try {
+      const selectedModel = $modelSelect.value || null;
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: payload, model: selectedModel }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || res.statusText);
+      }
+
+      const data = await res.json();
+      loaderRow.remove();
+      appendMk6Bubble(data);
+
+    } catch (err) {
+      loaderRow.remove();
+      appendErrorBubble(err.message);
+    } finally {
+      state.loading = false;
+      $sendBtn.disabled = false;
+      $msgInput.focus();
+    }
+  }
+
+  // ── 버블 생성 헬퍼 ────────────────────────────────────────────────────────
+  function appendUserBubble(text, fileName) {
+    const row = document.createElement('div');
+    row.className = 'msg-row user';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar user';
+    avatar.textContent = 'YOU';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    if (fileName) {
+      const tag = document.createElement('div');
+      tag.className = 'file-tag';
+      tag.innerHTML = `📄 <span>${escHtml(fileName)}</span>`;
+      bubble.appendChild(tag);
+      bubble.appendChild(document.createElement('br'));
+    }
+
+    if (text) {
+      bubble.appendChild(document.createTextNode(text));
+    } else if (fileName) {
+      const hint = document.createElement('span');
+      hint.style.color = 'var(--text-dim)';
+      hint.style.fontSize = '13px';
+      hint.textContent = '(파일만 전송)';
+      bubble.appendChild(hint);
+    }
+
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    $messages.appendChild(row);
+    scrollBottom();
+  }
+
+  function appendMk6Bubble(data) {
+    const row = document.createElement('div');
+    row.className = 'msg-row mk6';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar mk6';
+    avatar.textContent = 'M6';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.appendChild(document.createTextNode(data.response || '(응답 없음)'));
+
+    // 메타데이터
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.innerHTML = `
+      <span>🔁 루프 ${data.loop_count}회</span>
+      <span>◉ 노드 ${data.node_count}</span>
+      <span>— 엣지 ${data.edge_count}</span>
+      ${data.had_empty_slots
+        ? '<span class="tag-empty">⚠ EmptySlot 있음</span>'
+        : '<span>✓ 모두 해석됨</span>'}
+      ${data.model_used ? `<span>🤖 ${escHtml(data.model_used)}</span>` : ''}
+    `;
+    bubble.appendChild(meta);
+
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    $messages.appendChild(row);
+    scrollBottom();
+  }
+
+  function appendErrorBubble(message) {
+    const row = document.createElement('div');
+    row.className = 'msg-row mk6';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar mk6';
+    avatar.textContent = 'M6';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.style.color = 'var(--danger)';
+    bubble.textContent = `[오류] ${message}`;
+
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    $messages.appendChild(row);
+    scrollBottom();
+  }
+
+  function appendLoader() {
+    const row = document.createElement('div');
+    row.className = 'msg-row mk6 loader-row';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar mk6';
+    avatar.textContent = 'M6';
+
+    const loader = document.createElement('div');
+    loader.className = 'loader';
+    loader.innerHTML = '<span></span><span></span><span></span>';
+
+    row.appendChild(avatar);
+    row.appendChild(loader);
+    $messages.appendChild(row);
+    scrollBottom();
+    return row;
+  }
+
+  // ── 유틸 ─────────────────────────────────────────────────────────────────
+  function scrollBottom() {
+    $messages.scrollTop = $messages.scrollHeight;
+  }
+
+  function escHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+</script>
+</body>
+</html>

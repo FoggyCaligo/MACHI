@@ -1,7 +1,7 @@
 # ConceptDifferentiation
 
 작성: 2026-04-20  
-상태: 설계 단계
+상태: 구현 완료 → `core/thinking/concept_differentiation.py`
 
 ---
 
