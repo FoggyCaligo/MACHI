@@ -54,10 +54,29 @@ overlap_ratio = |neighbors_A ∩ neighbors_B| / |neighbors_A ∪ neighbors_B|
 
 ---
 
+## 분화 후보 조건
+
+노드 쌍을 검사하기 전에 다음 조건을 모두 충족한 노드만 후보에 포함한다:
+
+| 조건 | 이유 |
+|---|---|
+| `is_abstract == False` | 추상 노드는 이미 분화 결과물 → 재분화 시 자기 증폭 |
+| `is_active == True` | 비활성 노드 제외 |
+| `embedding is not None` | 유사도 계산 불가 노드 제외 |
+| `address_hash != goal_hash` | 목표 노드는 분화 대상 아님 |
+| `stability_score > COMMIT_STABILITY_WEAK` | 신규 ingest 노드 제외 |
+
+**stability 필터 설명:**  
+신규 ingest 노드는 `stability_score = COMMIT_STABILITY_WEAK (0.1)`로 생성된다.  
+개념 경계가 아직 정착되지 않은 상태이므로 분화에 참여하면 의미 없는 추상 노드가 대량 생성된다.  
+같은 개념이 반복 등장해 stability가 `COMMIT_STABILITY_WEAK`를 초과할 때부터 분화에 참여한다.
+
+---
+
 ## 처리 흐름
 
 ```
-임시 사고 그래프 내 모든 노드 쌍에 대해:
+임시 사고 그래프 내 분화 후보 노드 쌍에 대해:
   │
   ▼
 ① 유사도 판정
@@ -99,18 +118,14 @@ graph_schema.md의 동기화 정책을 따른다.
 
 ---
 
-## GraphToLang에서 추상 노드 표현
+## GraphToLang에서 추상 노드 처리
 
-`is_abstract=True` 노드 (labels=[]) 를 언어화할 때:
+`is_abstract=True` 노드는 GraphToLang 출력에서 **완전히 제외**한다.
 
-```
-추상 노드 표현 =
-  해당 노드에 연결된 words 테이블의 surface_form 집합
-  + 연결된 이웃 노드들의 labels
-  + 연결 edge의 connect_type
-```
+- 핵심 키워드, 참고 개념 양쪽 모두 포함하지 않는다.
+- 추상 노드가 엔드포인트인 엣지도 근거 연결에서 제외한다.
 
-LLM Verbalizer에게 이 구조를 전달하면, "A와 B의 공통 개념" 형태로 자연어 생성이 가능하다.
+**이유:** 추상 노드는 분화 과정에서 생성된 내부 구조 노드다. labels가 없고, LLM 컨텍스트에 포함하면 "[A, B의 공통 개념]" 형태의 노이즈만 추가된다. 추상 노드의 의미는 그 자식 노드(A, B)의 관계를 통해 간접적으로 표현되는 것으로 충분하다.
 
 ---
 

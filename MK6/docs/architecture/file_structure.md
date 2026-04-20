@@ -297,16 +297,22 @@ conclusion = await engine.think(translated_graph)
 ```
 
 루프 한 회차:
-1. EmptySlot → 모든 hint 합산 1회 검색 → `_ingest_slot(slot, search_text)` → 노드 생성 + payload 저장
+1. EmptySlot → `user_input` 원문으로 1회 검색 → `_ingest_slot(slot, search_text)` → 노드 생성 + payload 저장
 2. `concept_differentiation.run(tg)` → 분화 결과 약한 커밋
 3. 수렴 판단: `delta.is_empty()` OR 노드/엣지 수 변화 없음 → 종료
 
 EmptySlot 처리 원칙:
-- 슬롯마다 개별 검색하지 않는다. 전체 hint를 합산해 1회만 검색한다.
+- 슬롯마다 개별 검색하지 않는다. `user_input` 원문을 검색 쿼리로 사용한다 (없으면 hint 합산 폴백).
+  개별 토큰 합산보다 원문이 의미 있는 검색 결과를 돌려준다.
 - 검색 결과를 `lang_to_graph`로 재파싱하지 않는다 (빈 DB에서 cascade 발생, PoolTimeout 위험).
 - 대신 `_ingest_slot`으로 hint당 노드를 직접 생성하고 검색 결과를 `payload["search_summary"]`에 저장한다.
 - 기존 노드에 요약이 없으면 `update_node`로 payload 보강한다.
 - `GraphToLang`이 payload를 `[검색 컨텍스트]` 섹션으로 LLM에 주입한다.
+
+known_hashes 수집:
+- `think()` 시작 시 `translated.nodes`에서 ConceptPointer 노드의 hash를 수집한다.
+- 이 시점에 DB에 이미 존재하던 개념 = "AI가 알고 있던 개념".
+- `ConclusionView.known_hashes`로 전달되어 `GraphToLang`의 핵심/참고 분류 기준이 된다.
 
 루프 종료 후: 강한 커밋 (신규 비임시 노드/엣지 → WorldGraph).
 
@@ -316,7 +322,18 @@ EmptySlot 처리 원칙:
 
 커밋 중복 방지: `_commit_edge`는 `get_edge`로 존재 여부를 확인한 뒤 없으면 `insert_edge`, 있으면 `update_edge`를 실행한다.
 
-`ConclusionView`: `nodes`, `edges`, `goal_hash`, `had_empty_slots`, `loop_count`, `model`, `user_input`
+`ConclusionView` 필드:
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `nodes` | `list[Node]` | TempThoughtGraph의 전체 노드 |
+| `edges` | `list[Edge]` | TempThoughtGraph의 전체 엣지 |
+| `goal_hash` | `str \| None` | 목표 노드 hash |
+| `had_empty_slots` | `bool` | think() 시작 시 EmptySlot 존재 여부 |
+| `loop_count` | `int` | 실제 루프 횟수 |
+| `model` | `str \| None` | 사용할 생성 모델 |
+| `user_input` | `str \| None` | 원래 사용자 입력 (GraphToLang user 메시지) |
+| `known_hashes` | `set[str]` | think() 시작 시 이미 DB에 존재하던 ConceptPointer 노드 hash 집합 |
 
 ---
 
