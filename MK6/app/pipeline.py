@@ -23,16 +23,23 @@ from .. import config
 async def graph_to_lang(conclusion: ConclusionView) -> str:
     """ConclusionView를 자연어로 변환한다.
 
-    노드/엣지 구조를 프롬프트로 직렬화해 LLM에 전달한다.
+    사용자 입력과 인지 그래프 구조를 함께 LLM에 전달한다.
     레이블 없는 추상 노드는 이웃 노드의 레이블과 엣지 관계로 간접 표현한다.
     """
     # ── 구조 직렬화 ───────────────────────────────────────────────────────────
+    def _trust_label(t: float) -> str:
+        if t >= 0.7:
+            return "확실"
+        if t >= 0.3:
+            return "보통"
+        return "불확실"
+
     node_lines: list[str] = []
     for node in conclusion.nodes:
         if node.address_hash == conclusion.goal_hash:
             continue
         if node.labels:
-            label_str = ", ".join(node.labels)
+            label_str = node.labels[0]
         else:
             # 추상 노드: 이웃 노드 레이블로 간접 표현
             neighbor_hashes = {
@@ -45,28 +52,35 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
                 neighbor = next((n for n in conclusion.nodes if n.address_hash == h), None)
                 if neighbor and neighbor.labels:
                     neighbor_labels.append(neighbor.labels[0])
-            label_str = f"[추상: {', '.join(neighbor_labels) or '?'}의 공통 개념]"
-        node_lines.append(f"  - {label_str} (trust={node.trust_score:.2f})")
+            if not neighbor_labels:
+                continue
+            label_str = f"[{', '.join(neighbor_labels)}의 공통 개념]"
+        node_lines.append(f"  - {label_str} (신뢰도: {_trust_label(node.trust_score)})")
 
     edge_lines: list[str] = []
     node_map = {n.address_hash: n for n in conclusion.nodes}
     for edge in conclusion.edges:
         if edge.is_temporary:
             continue
-        src_labels = node_map.get(edge.source_hash, None)
-        tgt_labels = node_map.get(edge.target_hash, None)
-        src_str = src_labels.labels[0] if src_labels and src_labels.labels else edge.source_hash[:8]
-        tgt_str = tgt_labels.labels[0] if tgt_labels and tgt_labels.labels else edge.target_hash[:8]
+        src = node_map.get(edge.source_hash)
+        tgt = node_map.get(edge.target_hash)
+        src_str = src.labels[0] if src and src.labels else edge.source_hash[:8]
+        tgt_str = tgt.labels[0] if tgt and tgt.labels else edge.target_hash[:8]
         edge_lines.append(f"  - {src_str} --[{edge.connect_type}]--> {tgt_str}")
 
     nodes_text = "\n".join(node_lines) or "  (없음)"
     edges_text = "\n".join(edge_lines) or "  (없음)"
 
+    user_msg = conclusion.user_input or ""
+
     prompt = (
-        "다음은 인지 그래프에서 추출된 개념 구조입니다.\n"
-        "이 구조를 바탕으로 자연스러운 한국어 문장으로 응답해 주세요.\n\n"
-        f"[개념 노드]\n{nodes_text}\n\n"
-        f"[관계 엣지]\n{edges_text}\n\n"
+        "아래는 다음 사용자 입력에 대해 인지 그래프 위에서 사고 과정을 거친 결론입니다.\n"
+        "이 결론을 기준으로 사용자 입력에 자연스러운 한국어로 응답해 주세요.\n"
+        "신뢰도가 '불확실'인 개념은 단정하지 말고 조심스럽게 표현하세요.\n"
+        "구조 자체를 설명하거나 나열하지 마세요.\n\n"
+        f"[사용자 입력]\n{user_msg}\n\n"
+        f"[결론 — 인식된 개념]\n{nodes_text}\n\n"
+        f"[결론 — 개념 간 관계]\n{edges_text}\n\n"
         "응답:"
     )
     return await generate(prompt, model=conclusion.model)
@@ -143,7 +157,7 @@ class Pipeline:
             lang_to_graph_fn=lang_to_graph,
             goal_node=self._goal_node,
         )
-        conclusion = await engine.think(translated, model=model)
+        conclusion = await engine.think(translated, model=model, user_input=user_input)
 
         # 3. 그래프 → 언어
         response_text = await graph_to_lang(conclusion)

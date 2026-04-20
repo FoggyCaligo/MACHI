@@ -46,17 +46,31 @@ async def generate(prompt: str, model: str | None = None) -> str:
             "UI에서 모델을 선택하세요."
         )
     url = f"{config.OLLAMA_HOST}/api/generate"
-    async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_SECONDS) as client:
-        r = await client.post(
-            url,
-            json={
-                "model": model_name,
-                "prompt": prompt,
-                "stream": False,
-            },
+    try:
+        async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_SECONDS) as client:
+            r = await client.post(
+                url,
+                json={
+                    "model": model_name,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_predict": config.OLLAMA_NUM_PREDICT},
+                },
+            )
+    except httpx.ReadTimeout:
+        raise TimeoutError(
+            f"Ollama 모델 '{model_name}'이 {config.OLLAMA_TIMEOUT_SECONDS:.0f}초 안에 응답하지 않았습니다. "
+            "모델이 처음 로드 중이거나 머신 자원이 부족할 수 있습니다. "
+            "잠시 후 다시 시도하거나 OLLAMA_TIMEOUT_SECONDS 값을 늘려 주세요."
         )
-        r.raise_for_status()
-        return r.json()["response"]
+
+    if r.status_code == 400:
+        raise ValueError(
+            f"Ollama가 모델 '{model_name}'로 생성 요청을 거부했습니다 (400). "
+            "임베딩 전용 모델을 선택했거나 모델 이름이 올바르지 않을 수 있습니다."
+        )
+    r.raise_for_status()
+    return r.json()["response"]
 
 
 async def list_models() -> list[str]:
@@ -79,8 +93,13 @@ async def list_models() -> list[str]:
         result: list[str] = []
         for m in data.get("models", []):
             details = m.get("details") or {}
+            # Ollama 버전에 따라 "families"(복수) 또는 "family"(단수)로 반환
             families: list[str] = details.get("families") or []
-            # Ollama가 분류한 families 중 생성 불가 패밀리만 있으면 제외
+            if not families:
+                singular = details.get("family") or ""
+                if singular:
+                    families = [singular]
+            # 모든 패밀리가 임베딩 전용이면 제외
             if families and all(f in _EMBEDDING_ONLY_FAMILIES for f in families):
                 continue
             result.append(m["name"])

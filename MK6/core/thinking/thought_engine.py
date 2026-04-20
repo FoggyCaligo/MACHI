@@ -46,7 +46,8 @@ class ConclusionView:
     goal_hash: str | None
     had_empty_slots: bool
     loop_count: int
-    model: str | None = None   # 이번 요청에서 사용할 생성 모델
+    model: str | None = None        # 이번 요청에서 사용할 생성 모델
+    user_input: str | None = None   # 원래 사용자 입력 (GraphToLang 컨텍스트용)
 
 
 # ── 세계그래프 커밋 ───────────────────────────────────────────────────────────
@@ -137,6 +138,7 @@ class ThoughtEngine:
         self,
         translated: TranslatedGraph,
         model: str | None = None,
+        user_input: str | None = None,
     ) -> ConclusionView:
         """Think 루프를 실행하고 ConclusionView를 반환한다.
 
@@ -201,6 +203,7 @@ class ThoughtEngine:
             had_empty_slots=had_empty_slots,
             loop_count=loop_count,
             model=model,
+            user_input=user_input,
         )
 
     async def _fill_empty_slots(self, tg: TempThoughtGraph) -> None:
