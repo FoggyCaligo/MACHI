@@ -78,6 +78,8 @@ MK6/
 | `EMBEDDING_TIMEOUT_SECONDS` | `10.0` | 임베딩 요청 타임아웃 |
 | `LANG_TO_GRAPH_SIMILARITY_THRESHOLD` | `0.75` | 임베딩 유사도 임계치 (ConceptPointer 확정) |
 | `LANG_TO_GRAPH_MAX_EMBEDDING_NODES` | `200` | 유사도 비교 후보 노드 최대 수 |
+| `TOKEN_IMPORTANCE_RATIO` | `0.20` | 문장별 토큰 중요도 필터 비율 (상위 20%만 노드로 생성) |
+| `TOKEN_IMPORTANCE_MIN` | `2` | 중요도 필터 후 보장하는 최소 토큰 수 |
 | `LOCAL_GRAPH_N_HOP` | `2` | 국소 그래프 탐색 반경 |
 | `LOCAL_GRAPH_TRUST_THRESHOLD` | `0.2` | 국소 그래프 포함 최소 trust_score |
 | `INPUT_CLASSIFIER_EMBED_THRESHOLD` | `0.70` | 입력 타입 분류 임베딩 신뢰 임계치 |
@@ -91,8 +93,9 @@ MK6/
 | `COMMIT_STABILITY_STRONG` | `0.6` | 강한 커밋 stability_score |
 | `COMMIT_STABILITY_WEAK` | `0.1` | 약한 커밋 stability_score |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama 서버 주소 |
-| `OLLAMA_TIMEOUT_SECONDS` | `120.0` | Ollama 생성 요청 타임아웃 |
+| `OLLAMA_TIMEOUT_SECONDS` | `600.0` | Ollama 생성 요청 타임아웃 |
 | `OLLAMA_MODEL_NAME` | `` (필수 설정) | 텍스트 생성 모델 이름 |
+| `OLLAMA_NUM_PREDICT` | `512` | GraphToLang 최대 생성 토큰 수 |
 
 ---
 
@@ -165,13 +168,17 @@ TranslatedGraph    번역 결과 전체 (nodes, edges, source)
 
 WorldGraph 영구 저장소. SQLite 기반.
 
-### db.py — `open_db`
+### db.py — `open_db`, `close_db`
 
 SQLite 커넥션을 열고 스키마(DDL)를 초기화한다.
 
 - `open_db(db_path: str) → sqlite3.Connection`
-- 부모 디렉터리 자동 생성, `row_factory=sqlite3.Row`, WAL 모드, FK 활성화
-- DDL: `words`, `nodes`, `edges` 테이블 + 인덱스 (`CREATE TABLE IF NOT EXISTS`)
+  - 부모 디렉터리 자동 생성, `row_factory=sqlite3.Row`, WAL 모드, FK 활성화
+  - DDL: `words`, `nodes`, `edges` 테이블 + 인덱스 (`CREATE TABLE IF NOT EXISTS`)
+- `close_db(conn: sqlite3.Connection) → None`
+  - `PRAGMA wal_checkpoint(TRUNCATE)` 실행 후 커넥션 종료
+  - WAL 파일을 메인 DB에 병합하고 0바이트로 초기화한다
+  - 체크포인트 실패 시에도 `conn.close()`는 반드시 실행 (Ctrl+C 안전 종료)
 
 ### world_graph.py — 노드/엣지/단어 CRUD
 
@@ -249,7 +256,11 @@ translate(text, conn, embed_fn) → TranslatedGraph
 3. 자연어 → `tokenize` → 토큰별:
    - words 테이블 exact match → ConceptPointer
    - 실패 시 임베딩 유사도 (상위 N개 후보 풀) → ConceptPointer 또는 EmptySlot
-4. 동일 문장 내 인접 토큰 쌍 → `neutral` TranslatedEdge (관계 타입 확정은 ThoughtEngine)
+4. **토큰 중요도 필터링** (`_filter_top_ratio`): 문장별로 중요도 점수 상위 `TOKEN_IMPORTANCE_RATIO(20%)` 토큰만 통과
+   - `_importance_scores`: 문장 centroid 임베딩과의 cosine 유사도. 임베딩 없는 토큰은 레이블 길이 기반 폴백.
+   - 파티클·구두점 등 비중요 토큰이 자연히 탈락. 최소 `TOKEN_IMPORTANCE_MIN(2)`개 보장.
+   - **이 필터가 전체 파이프라인의 유일한 노이즈 제어 포인트**. 하위 컴포넌트(ThoughtEngine, GraphToLang)는 별도 상한을 두지 않는다.
+5. 필터된 토큰만 노드로 추가. 인접 필터 통과 쌍 → `neutral` TranslatedEdge (관계 타입 확정은 ThoughtEngine)
 
 ---
 
@@ -307,7 +318,13 @@ EmptySlot 처리 원칙:
 - 검색 결과를 `lang_to_graph`로 재파싱하지 않는다 (빈 DB에서 cascade 발생, PoolTimeout 위험).
 - 대신 `_ingest_slot`으로 hint당 노드를 직접 생성하고 검색 결과를 `payload["search_summary"]`에 저장한다.
 - 기존 노드에 요약이 없으면 `update_node`로 payload 보강한다.
-- `GraphToLang`이 payload를 `[검색 컨텍스트]` 섹션으로 LLM에 주입한다.
+- `GraphToLang`이 payload를 `[검색 컨텍스트]` 섹션으로 LLM에 주입한다 (단, known_hashes 노드 제외 — 이전 세션 오염 방지).
+
+co_occurrence 엣지 생성:
+- `_fill_empty_slots` 완료 후, 같은 쿼리에서 등장한 ingest 노드들 간 엣지 생성.
+- ① **ingest ↔ ingest**: `provenance_source="search"`, `proposed_connect_type="co_occurrence"`, `is_temporary=False`
+- ② **ingest ↔ ConceptPointer** (known_hashes 기준): 신규 개념이 기존 개념과 연결되어 근거 연결에 함께 표시됨.
+- 상한 없음 — LangToGraph의 토큰 필터(상위 20%)로 노드 수가 이미 제어되어 있음.
 
 known_hashes 수집:
 - `think()` 시작 시 `translated.nodes`에서 ConceptPointer 노드의 hash를 수집한다.
@@ -387,7 +404,12 @@ result = await pipeline.run("사과는 과일이야")
 내부 구성:
 - `_get_or_create_goal_node` — WorldGraph에서 고정 목표 노드 로드 또는 최초 생성
 - `_search` — 검색 함수 stub (향후 교체)
-- `graph_to_lang(conclusion)` — ConclusionView → 프롬프트 직렬화 → `generate()` → 언어 출력
+- `graph_to_lang(conclusion)` — ConclusionView → 프롬프트 직렬화 → `chat()` → 언어 출력
+  - 핵심 키워드: `known_hashes` 소속 노드 (abstract 제외)
+  - 참고 개념: 신규 ingest 노드 (abstract 제외)
+  - 근거 연결: `→[connect_type, weight]→` 포맷. `is_temporary=True` 및 abstract 엔드포인트 엣지 제외. 정렬: non-neutral 먼저 > edge_weight 내림차순 > search 외 provenance 먼저. 상한 없음 (업스트림 필터로 제어).
+  - 검색 컨텍스트: ingest 노드의 `payload["search_summary"]`만 포함 (known_hashes 제외)
+- `Pipeline.close()` — `close_db()` 호출 (WAL 체크포인트 포함)
 
 context manager 지원: `async with Pipeline() as p: ...`
 
@@ -404,6 +426,8 @@ context manager 지원: `async with Pipeline() as p: ...`
 `/chat` 응답: `response`, `loop_count`, `had_empty_slots`, `node_count`, `edge_count`, `model_used`
 
 `lifespan`으로 `Pipeline` 초기화/종료 관리. `/chat` 엔드포인트는 내부 예외를 HTTP 500으로 변환하며 서버 로그에 전체 traceback을 출력한다.
+
+SIGINT/SIGTERM 핸들러(`_shutdown_handler`) 등록: uvicorn lifespan이 미처 실행되지 않고 프로세스가 종료되는 경우(이중 Ctrl+C, kill 명령어)에도 `Pipeline.close()` → WAL 체크포인트가 보장된다. 핸들러 실행 후 기본 동작으로 복구하여 시그널을 재전달, 프로세스를 정상 종료시킨다.
 
 ---
 

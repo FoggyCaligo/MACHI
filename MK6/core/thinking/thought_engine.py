@@ -252,6 +252,8 @@ class ThoughtEngine:
         # 새 노드는 만들지 않고, 같은 쿼리에서 함께 등장한 개념들만 연결한다:
         #   ① ingest ↔ ingest  (검색 키워드 간)
         #   ② ingest ↔ ConceptPointer  (신규 개념 ↔ 기존 개념)
+        # LangToGraph의 토큰 중요도 필터(상위 20%)가 이미 업스트림에서
+        # 비중요 토큰을 제거하므로 여기서는 별도 상한을 두지 않는다.
         if ingested_nodes:
             now = datetime.now(timezone.utc)
 
@@ -273,21 +275,12 @@ class ThoughtEngine:
                     ))
 
             # ② ingest ↔ ConceptPointer
-            # known_hashes가 전달된 경우에만.
-            # 검색 키워드(신규 개념)와 기존 개념 간 연결이 없으면
-            # 근거 연결에 한쪽만 나타난다.
-            # known_hashes가 많을 때 엣지 폭발을 막기 위해
-            # stability_score 상위 SEARCH_CO_OCCURRENCE_MAX_CP개만 사용한다.
             if known_hashes:
-                cp_candidates = [
-                    n for h in known_hashes
-                    if (n := tg.get_node(h)) is not None
-                ]
-                cp_candidates.sort(key=lambda n: n.stability_score, reverse=True)
-                top_cp = cp_candidates[: config.SEARCH_CO_OCCURRENCE_MAX_CP]
-
                 for ingest_node in ingested_nodes:
-                    for cp_node in top_cp:
+                    for cp_hash in known_hashes:
+                        cp_node = tg.get_node(cp_hash)
+                        if cp_node is None:
+                            continue
                         tg.add_edge(Edge(
                             edge_id=str(uuid.uuid4()),
                             source_hash=cp_node.address_hash,

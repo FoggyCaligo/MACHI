@@ -54,7 +54,9 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
     # ── 엣지: 비임시 엣지 → 근거 연결 ───────────────────────────────────────
     # abstract 노드가 엔드포인트인 엣지는 제외 (분화 구조 엣지 → LLM 컨텍스트 노이즈)
-    edge_lines: list[str] = []
+    # 정렬: non-neutral 먼저 > edge_weight 내림차순 > search 외 provenance 먼저
+    # 상한: GRAPH_TO_LANG_MAX_EDGES (기본 15)
+    _edge_candidates: list[tuple] = []   # (sort_key, src_str, tgt_str, connect_type, weight)
     for edge in conclusion.edges:
         if edge.is_temporary:
             continue
@@ -66,7 +68,21 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             continue
         src_str = src.labels[0] if src.labels else edge.source_hash[:8]
         tgt_str = tgt.labels[0] if tgt.labels else edge.target_hash[:8]
-        edge_lines.append(f"  - {src_str} →[{edge.connect_type}]→ {tgt_str}")
+        sort_key = (
+            0 if edge.connect_type != "neutral" else 1,   # non-neutral 우선
+            -edge.edge_weight,                             # 높은 weight 우선
+            0 if edge.provenance_source != "search" else 1,  # search 외 provenance 우선
+        )
+        _edge_candidates.append((sort_key, src_str, tgt_str, edge.connect_type, edge.edge_weight))
+
+    # LangToGraph 토큰 중요도 필터(상위 20%)가 업스트림에서 비중요 토큰을 제거하므로
+    # 여기서는 별도 상한 없이 정렬만 한다.
+    _edge_candidates.sort(key=lambda x: x[0])
+
+    edge_lines: list[str] = []
+    for _, src_str, tgt_str, connect_type, weight in _edge_candidates:
+        weight_str = f"{weight:.2f}".rstrip("0").rstrip(".")
+        edge_lines.append(f"  - {src_str} →[{connect_type}, {weight_str}]→ {tgt_str}")
 
     # ── 검색 컨텍스트: payload["search_summary"] 보유 노드 수집 ─────────────
     _SEARCH_CTX_MAX = 600   # 시스템 메시지에 포함할 검색 요약 최대 길이

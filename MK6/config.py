@@ -28,6 +28,12 @@ EMBEDDING_TIMEOUT_SECONDS = _env_float("EMBEDDING_TIMEOUT_SECONDS", 10.0)
 LANG_TO_GRAPH_SIMILARITY_THRESHOLD = _env_float("LANG_TO_GRAPH_SIMILARITY_THRESHOLD", 0.75)
 LANG_TO_GRAPH_MAX_EMBEDDING_NODES = _env_int("LANG_TO_GRAPH_MAX_EMBEDDING_NODES", 200)
 
+# 토큰 중요도 필터링 비율.
+# 문장별로 centroid 임베딩 기반 cosine 유사도 상위 RATIO 비율 토큰만 노드로 생성한다.
+# 임베딩 없는 토큰은 레이블 길이 기반 폴백. 최소 TOKEN_IMPORTANCE_MIN개 보장.
+TOKEN_IMPORTANCE_RATIO = _env_float("TOKEN_IMPORTANCE_RATIO", 0.20)
+TOKEN_IMPORTANCE_MIN = _env_int("TOKEN_IMPORTANCE_MIN", 2)
+
 # ── LocalGraphExtractor ──────────────────────────────────────────────────────
 LOCAL_GRAPH_N_HOP = _env_int("LOCAL_GRAPH_N_HOP", 2)
 LOCAL_GRAPH_TRUST_THRESHOLD = _env_float("LOCAL_GRAPH_TRUST_THRESHOLD", 0.2)
@@ -43,11 +49,6 @@ DIFFERENTIATION_ALPHA_DECAY_RATE = _env_float("DIFFERENTIATION_ALPHA_DECAY_RATE"
 
 # ── Think 루프 ───────────────────────────────────────────────────────────────
 THINK_MAX_LOOPS = _env_int("THINK_MAX_LOOPS", 10)
-
-# 검색 ingest 시 co_occurrence 엣지 생성에 사용할 ConceptPointer 최대 수.
-# known_hashes 중 stability_score 상위 N개만 선택한다.
-# 파티클("이", "가", "을")처럼 stability가 낮은 노드가 자동으로 걸러진다.
-SEARCH_CO_OCCURRENCE_MAX_CP = _env_int("SEARCH_CO_OCCURRENCE_MAX_CP", 5)
 
 # ── 세계그래프 커밋 강도 ─────────────────────────────────────────────────────
 COMMIT_TRUST_STRONG = _env_float("COMMIT_TRUST_STRONG", 0.7)
