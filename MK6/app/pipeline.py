@@ -9,7 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from ..core.entities.node import Node
-from ..core.storage.db import open_db
+from ..core.storage.db import open_db, close_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.thinking.thought_engine import ThoughtEngine, ConclusionView
@@ -200,7 +200,7 @@ class Pipeline:
         )
 
     def close(self) -> None:
-        self._conn.close()
+        close_db(self._conn)
 
     async def __aenter__(self) -> "Pipeline":
         return self

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -32,10 +33,29 @@ logger = logging.getLogger(__name__)
 _pipeline: Pipeline | None = None
 
 
+def _shutdown_handler(signum: int, frame: object) -> None:
+    """SIGINT / SIGTERM 수신 시 DB를 안전하게 닫는다.
+
+    uvicorn이 lifespan 종료를 완료하기 전에 프로세스가 종료되는 경우
+    (예: 이중 Ctrl+C, kill 명령어)를 대비해 WAL 체크포인트를 보장한다.
+    """
+    if _pipeline is not None:
+        try:
+            _pipeline.close()
+        except Exception:
+            pass
+    # 기본 동작으로 복구하고 시그널을 재전달 → 프로세스 정상 종료
+    signal.signal(signum, signal.SIG_DFL)
+    signal.raise_signal(signum)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global _pipeline
     _pipeline = Pipeline()
+    # 시그널 핸들러 등록 — lifespan 종료 외 경로로 프로세스가 죽을 때 대비
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
     yield
     if _pipeline is not None:
         _pipeline.close()

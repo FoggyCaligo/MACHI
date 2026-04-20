@@ -91,3 +91,21 @@ def open_db(db_path: str) -> sqlite3.Connection:
     conn.executescript(_DDL)
     conn.commit()
     return conn
+
+
+def close_db(conn: sqlite3.Connection) -> None:
+    """WAL 체크포인트 후 커넥션을 닫는다.
+
+    WAL 모드에서는 conn.close()만 호출해도 WAL 파일이 메인 DB로
+    병합되지 않을 수 있다. TRUNCATE 체크포인트로 WAL을 완전히
+    메인 파일에 통합하고 WAL 파일을 0바이트로 초기화한 뒤 닫는다.
+
+    TRUNCATE가 실패(다른 reader가 남아있는 등)해도 conn.close()는
+    반드시 실행한다.
+    """
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+    except Exception:
+        pass
+    conn.close()
