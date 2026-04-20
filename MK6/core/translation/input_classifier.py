@@ -55,6 +55,9 @@ def classify_by_rules(text: str) -> InputType | None:
 
 # ── 2단계: 임베딩 폴백 ───────────────────────────────────────────────────────
 
+import asyncio
+import math
+
 # 프로토타입 문장 (임베딩 기준점)
 _PROTOTYPES: dict[InputType, str] = {
     "natural": "This is a natural language sentence about everyday topics.",
@@ -62,6 +65,34 @@ _PROTOTYPES: dict[InputType, str] = {
     "path":    "/usr/local/bin/python3.10",
     "url":     "https://www.example.com/path/to/page",
 }
+
+# 프로토타입 임베딩 캐시 — 서버 수명 동안 최초 1회만 계산
+_proto_cache: dict[InputType, list[float]] | None = None
+_proto_lock = asyncio.Lock()
+
+
+async def _get_proto_embeddings(embed_fn) -> dict[InputType, list[float]]:
+    """프로토타입 임베딩을 반환한다. 최초 호출 시 한 번만 계산하고 캐싱한다."""
+    global _proto_cache
+    if _proto_cache is not None:
+        return _proto_cache
+    async with _proto_lock:
+        if _proto_cache is not None:   # double-checked locking
+            return _proto_cache
+        embs = await asyncio.gather(
+            *[embed_fn(text) for text in _PROTOTYPES.values()]
+        )
+        _proto_cache = dict(zip(_PROTOTYPES.keys(), embs))
+    return _proto_cache
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
 
 
 async def classify(
@@ -82,23 +113,14 @@ async def classify(
     if result is not None:
         return result
 
-    import math
-
-    def cosine(a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(x * x for x in b))
-        if na == 0 or nb == 0:
-            return 0.0
-        return dot / (na * nb)
-
-    input_emb = await embed_fn(text)
-    proto_embs: dict[InputType, list[float]] = {}
-    for kind, proto_text in _PROTOTYPES.items():
-        proto_embs[kind] = await embed_fn(proto_text)
+    # 입력 임베딩과 캐시된 프로토타입 임베딩을 병렬 획득
+    input_emb, proto_embs = await asyncio.gather(
+        embed_fn(text),
+        _get_proto_embeddings(embed_fn),
+    )
 
     scores: dict[InputType, float] = {
-        kind: cosine(input_emb, emb)
+        kind: _cosine(input_emb, emb)
         for kind, emb in proto_embs.items()
     }
 

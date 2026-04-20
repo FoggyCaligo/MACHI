@@ -1,6 +1,7 @@
 """LangToGraph — 언어를 그래프로 번역한다."""
 from __future__ import annotations
 
+import asyncio
 import math
 import sqlite3
 from typing import Callable, Awaitable
@@ -10,7 +11,7 @@ from ..entities.translated_graph import (
     ConceptPointer, EmptySlot, ConceptRef,
     TranslatedEdge, TranslatedGraph,
 )
-from ..storage.world_graph import get_node, get_word, get_active_nodes
+from ..storage.world_graph import get_node, get_word
 from ..utils.hash_resolver import normalize_text
 from ..utils.local_graph_extractor import extract as extract_subgraph
 from .input_classifier import classify, InputType
@@ -127,6 +128,11 @@ async def translate(
 
     저장은 하지 않는다. World Graph는 변경되지 않는다.
 
+    후보 풀 구성 원칙 (2패스):
+      1패스: words 테이블 exact match → ConceptPointer 확보
+      2패스: 1패스에서 얻은 LocalSubgraph 내 노드만 임베딩 유사도 후보로 사용
+      후보가 없으면 바로 EmptySlot — Think 루프에서 검색으로 채운다.
+
     Args:
         text:     번역할 언어 입력
         conn:     World Graph DB 커넥션
@@ -135,15 +141,6 @@ async def translate(
     Returns:
         TranslatedGraph — nodes(ConceptPointer | EmptySlot), edges(TranslatedEdge)
     """
-    # 임베딩 후보 풀 — 매 호출마다 최대 N개 활성 노드를 로드
-    # (임베딩이 있는 노드 우선, trust_score 내림차순)
-    all_active = get_active_nodes(conn)
-    candidate_nodes = sorted(
-        (n for n in all_active if n.embedding is not None),
-        key=lambda n: n.trust_score,
-        reverse=True,
-    )[: config.LANG_TO_GRAPH_MAX_EMBEDDING_NODES]
-
     # ── 입력 타입 분류 ────────────────────────────────────────────────────────
     input_type: InputType = await classify(
         text,
@@ -155,31 +152,98 @@ async def translate(
     edges: list[TranslatedEdge] = []
 
     if input_type != "natural":
-        # 비자연어 — 전체를 단일 단위로 처리
-        ref = await _resolve_unit_as_embedding(text, conn, embed_fn, candidate_nodes)
+        # 비자연어 — exact match 시도 후 없으면 EmptySlot
+        ref = await _resolve_unit_as_embedding(text, conn, embed_fn, [])
         nodes.append(ref)
         return TranslatedGraph(nodes=nodes, edges=edges, source=text)
 
     # ── 자연어 경로 ───────────────────────────────────────────────────────────
-    sentences = tokenize(text)  # list[list[str]]
+    sentences = tokenize(text)
+    all_tokens: list[str] = [t for sent in sentences for t in sent]
 
+    # 1패스 — exact match만으로 ConceptPointer 수집
+    exact_pointers: dict[str, ConceptPointer] = {}   # normalized → ConceptPointer
+    for token in all_tokens:
+        normalized = normalize_text(token)
+        word_entry = get_word(conn, normalized)
+        if word_entry is None:
+            continue
+        node = get_node(conn, word_entry.address_hash)
+        if node is None or not node.is_active:
+            continue
+        subgraph = extract_subgraph(conn, node.address_hash)
+        exact_pointers[normalized] = ConceptPointer(
+            address_hash=node.address_hash,
+            local_subgraph=subgraph,
+        )
+
+    # 2패스용 후보 풀 — 1패스 LocalSubgraph 합산
+    candidate_nodes: list[Node] = []
+    if exact_pointers:
+        seen: set[str] = set()
+        for ptr in exact_pointers.values():
+            for n in ptr.local_subgraph.nodes:
+                if n.address_hash not in seen and n.embedding is not None:
+                    candidate_nodes.append(n)
+                    seen.add(n.address_hash)
+
+    # 2패스 — exact match 실패 토큰의 임베딩을 배치 처리
+    # 후보 없으면 embed 호출 없이 바로 EmptySlot
+    missed_tokens: list[str] = []
+    for sent in sentences:
+        for token in sent:
+            if normalize_text(token) not in exact_pointers:
+                missed_tokens.append(token)
+
+    token_embs: dict[str, list[float]] = {}
+    if candidate_nodes and missed_tokens:
+        unique_missed = list(dict.fromkeys(missed_tokens))   # 중복 제거, 순서 유지
+        emb_results = await asyncio.gather(
+            *[embed_fn(normalize_text(t)) for t in unique_missed]
+        )
+        token_embs = dict(zip(unique_missed, emb_results))
+
+    # 토큰별 최종 resolve
     for sentence_tokens in sentences:
         sentence_refs: list[ConceptRef] = []
 
         for token in sentence_tokens:
-            ref = await _resolve_token(token, conn, embed_fn, candidate_nodes)
+            normalized = normalize_text(token)
+            if normalized in exact_pointers:
+                ref: ConceptRef = exact_pointers[normalized]
+            elif token in token_embs:
+                # 미리 계산된 임베딩으로 후보 비교
+                tok_emb = token_embs[token]
+                best_node: Node | None = None
+                best_score = -1.0
+                for node in candidate_nodes:
+                    if node.embedding is None:
+                        continue
+                    score = _cosine(tok_emb, node.embedding)
+                    if score > best_score:
+                        best_score = score
+                        best_node = node
+                if best_node is not None and best_score >= config.LANG_TO_GRAPH_SIMILARITY_THRESHOLD:
+                    subgraph = extract_subgraph(conn, best_node.address_hash)
+                    ref = ConceptPointer(
+                        address_hash=best_node.address_hash,
+                        local_subgraph=subgraph,
+                    )
+                else:
+                    ref = EmptySlot(concept_hint=token)
+            else:
+                # 후보 없음 → EmptySlot (embed 호출 없음)
+                ref = EmptySlot(concept_hint=token)
+
             nodes.append(ref)
             sentence_refs.append(ref)
 
         # 동일 문장 내 인접 토큰 쌍 → neutral 엣지
-        # 관계 타입 확정은 ThoughtEngine이 담당
         for i in range(len(sentence_refs) - 1):
-            src = sentence_refs[i]
-            tgt = sentence_refs[i + 1]
             edges.append(
                 TranslatedEdge(
-                    source_ref=src,
-                    target_ref=tgt,
+                    source_ref=sentence_refs[i],
+                    target_ref=sentence_refs[i + 1],
                     edge_family="concept",
                     connect_type="neutral",
                     confidence=0.5,
