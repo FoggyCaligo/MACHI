@@ -90,30 +90,41 @@ def _filter_top_ratio(
     sentence_pairs: list[tuple[str, ConceptRef]],
     token_embs: dict[str, list[float]],
 ) -> list[tuple[str, ConceptRef]]:
-    """문장 내 토큰을 중요도 상위 TOKEN_IMPORTANCE_RATIO 비율로 필터링한다.
+    """문장 내 토큰을 near+far 방식으로 필터링한다.
 
-    최소 TOKEN_IMPORTANCE_MIN개는 보장한다.
+    centroid에 가장 가까운 NEAR_RATIO 비율 (문장 대표 개념) +
+    centroid에서 가장 먼 FAR_RATIO 비율 (도메인 특이 개념·고유명사)의
+    합집합을 선택한다. 최소 TOKEN_IMPORTANCE_MIN개는 보장한다.
     """
     if not sentence_pairs:
         return []
 
+    n = len(sentence_pairs)
     tokens = [t for t, _ in sentence_pairs]
     refs   = [r for _, r in sentence_pairs]
 
     scores = _importance_scores(tokens, refs, token_embs)
 
-    n_keep = max(
-        config.TOKEN_IMPORTANCE_MIN,
-        math.ceil(len(sentence_pairs) * config.TOKEN_IMPORTANCE_RATIO),
-    )
-    n_keep = min(n_keep, len(sentence_pairs))
+    # 점수 내림차순 정렬 인덱스
+    sorted_desc = sorted(range(n), key=lambda i: scores[i], reverse=True)
 
-    # 점수 내림차순 인덱스, 원래 순서 보존을 위해 정렬 후 index set 구성
-    top_indices = set(
-        sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n_keep]
-    )
+    n_near = max(1, math.ceil(n * config.TOKEN_IMPORTANCE_NEAR_RATIO))
+    n_far  = max(1, math.ceil(n * config.TOKEN_IMPORTANCE_FAR_RATIO))
+
+    near_indices: set[int] = set(sorted_desc[:n_near])           # 상위 (centroid 근접)
+    far_indices:  set[int] = set(sorted_desc[max(0, n - n_far):])  # 하위 (centroid 원거리)
+
+    selected = near_indices | far_indices
+
+    # 최소 보장: 부족하면 점수 순으로 추가
+    if len(selected) < config.TOKEN_IMPORTANCE_MIN:
+        for idx in sorted_desc:
+            selected.add(idx)
+            if len(selected) >= config.TOKEN_IMPORTANCE_MIN:
+                break
+
     # 원래 순서(sentence 내 위치)를 유지한 채 반환
-    return [pair for i, pair in enumerate(sentence_pairs) if i in top_indices]
+    return [pair for i, pair in enumerate(sentence_pairs) if i in selected]
 
 
 # ── 개념 단위 조회 ────────────────────────────────────────────────────────────

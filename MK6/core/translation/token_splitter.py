@@ -27,8 +27,8 @@ def split_sentences(text: str) -> list[str]:
 
 # ── 토큰 추출 ─────────────────────────────────────────────────────────────────
 
-# 한글 1자 이상, 또는 영숫자·기호 조합
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_+\-./#]+|[가-힣]+")
+# 한글 1자 이상, 또는 영숫자 시작 조합 (단독 구두점 제외)
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+\-./#]*|[가-힣]+")
 
 
 def extract_tokens(sentence: str) -> list[str]:
