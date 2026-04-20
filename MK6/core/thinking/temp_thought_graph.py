@@ -47,7 +47,9 @@ class TempThoughtGraph:
         self._adj: dict[str, set[str]] = {}      # address_hash → 이웃 hash 집합 (O(1) 조회)
         self._goal_hash: str | None = None       # 목표 노드 address_hash
         self._empty_slots: list[EmptySlot] = []  # 아직 채워지지 않은 자리
-        self._delta: GraphDelta = GraphDelta()   # 현재 루프 회차 변경 추적
+        self._delta: GraphDelta = GraphDelta()   # 현재 루프 회차 변경 추적 (수렴 판단용)
+        self._all_added_nodes: list[str] = []    # 루프 전체 누적 추가 노드 (커밋용)
+        self._all_added_edges: list[str] = []    # 루프 전체 누적 추가 엣지 (커밋용)
         self._differentiated_pairs: set[frozenset[str]] = set()  # 이미 분화한 쌍 기록
         self._goal_connections: set[str] = set()  # 목표 노드에 연결된 개념 hash 집합 (중복 방지)
 
@@ -78,6 +80,7 @@ class TempThoughtGraph:
     def add_node(self, node: Node) -> None:
         self._nodes[node.address_hash] = node
         self._delta.added_nodes.append(node.address_hash)
+        self._all_added_nodes.append(node.address_hash)
 
     def get_node(self, address_hash: str) -> Node | None:
         return self._nodes.get(address_hash)
@@ -95,6 +98,7 @@ class TempThoughtGraph:
     def add_edge(self, edge: Edge) -> None:
         self._edges[edge.edge_id] = edge
         self._delta.added_edges.append(edge.edge_id)
+        self._all_added_edges.append(edge.edge_id)
         # 인접 인덱스 업데이트
         self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
         self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
@@ -183,8 +187,22 @@ class TempThoughtGraph:
         return self._delta
 
     def reset_delta(self) -> None:
-        """루프 회차 시작 시 delta를 초기화한다."""
+        """루프 회차 시작 시 delta를 초기화한다. (수렴 판단 전용)
+
+        _all_added_nodes / _all_added_edges는 초기화하지 않는다.
+        커밋 추적은 루프 전체에 걸쳐 누적된다.
+        """
         self._delta = GraphDelta()
+
+    @property
+    def all_added_node_hashes(self) -> list[str]:
+        """루프 전체에 걸쳐 add_node()로 추가된 노드의 address_hash 목록 (커밋용)."""
+        return self._all_added_nodes
+
+    @property
+    def all_added_edge_ids(self) -> list[str]:
+        """루프 전체에 걸쳐 add_edge()로 추가된 엣지의 edge_id 목록 (커밋용)."""
+        return self._all_added_edges
 
     # ── 읽기 전용 속성 ────────────────────────────────────────────────────────
 

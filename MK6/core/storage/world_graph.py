@@ -208,6 +208,25 @@ def update_edge(conn: sqlite3.Connection, edge: Edge) -> None:
     )
 
 
+def get_edge_by_endpoints(
+    conn: sqlite3.Connection,
+    source_hash: str,
+    target_hash: str,
+) -> Edge | None:
+    """source → target 방향의 active 엣지를 조회한다. 여러 개면 첫 번째 반환."""
+    row = conn.execute(
+        """
+        SELECT * FROM edges
+        WHERE source_hash = ? AND target_hash = ? AND is_active = 1
+        LIMIT 1
+        """,
+        (source_hash, target_hash),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_edge(row)
+
+
 def get_edges_for_node(
     conn: sqlite3.Connection,
     address_hash: str,

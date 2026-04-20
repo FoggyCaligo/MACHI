@@ -20,10 +20,11 @@ from typing import Callable, Awaitable
 from ..entities.node import Node
 from ..entities.edge import Edge
 from ..entities.word_entry import WordEntry
-from ..entities.translated_graph import TranslatedGraph, ConceptPointer, EmptySlot
+from ..entities.translated_graph import TranslatedGraph, TranslatedEdge, ConceptPointer, EmptySlot
 from ..storage.world_graph import (
     insert_node, update_node, insert_edge, update_edge,
     get_node as db_get_node, get_edge as db_get_edge,
+    get_edge_by_endpoints as db_get_edge_by_endpoints,
     insert_word, get_word,
     remap_words_to_node,
 )
@@ -83,10 +84,24 @@ def _commit_edge(conn: sqlite3.Connection, edge: Edge, strong: bool) -> None:
         edge.edge_weight = min(edge.edge_weight, 0.2)
     edge.is_temporary = False
     edge.touch()
-    if db_get_edge(conn, edge.edge_id) is None:
-        insert_edge(conn, edge)
-    else:
+
+    # 같은 edge_id가 이미 DB에 있으면 단순 update
+    if db_get_edge(conn, edge.edge_id) is not None:
         update_edge(conn, edge)
+        return
+
+    if strong:
+        # 같은 endpoints의 기존 엣지가 있으면 강화 (weight 누적, support_count 증가)
+        # edge_id는 매번 새 UUID이므로 endpoints 기준으로 동일 관계를 식별한다.
+        existing = db_get_edge_by_endpoints(conn, edge.source_hash, edge.target_hash)
+        if existing is not None:
+            existing.edge_weight += edge.edge_weight
+            existing.support_count += 1
+            existing.touch()
+            update_edge(conn, existing)
+            return
+
+    insert_edge(conn, edge)
 
 
 # ── 수렴 판단 ─────────────────────────────────────────────────────────────────
@@ -107,6 +122,61 @@ def _has_converged(tg: TempThoughtGraph, prev_node_count: int, prev_edge_count: 
         return True
 
     return False
+
+
+# ── TranslatedEdge → TempThoughtGraph 변환 ───────────────────────────────────
+
+def _add_translated_edges(
+    tg: TempThoughtGraph,
+    translated_edges: list[TranslatedEdge],
+    added_keys: set[tuple[str, str]],
+) -> None:
+    """TranslatedEdge 목록에서 해결 가능한 항목을 TempThoughtGraph에 추가한다.
+
+    - ConceptPointer 엔드포인트: address_hash로 즉시 해결.
+    - EmptySlot 엔드포인트: compute_hash(hint)로 노드 존재 여부 확인.
+      노드가 없으면 건너뜀 (fill 이후 재호출 시 처리).
+    - added_keys: (src_hash, tgt_hash) 쌍으로 중복 추가 방지.
+    - edge_weight = TranslatedEdge.confidence (0.5) — co_occurrence(0.5~0.6)와 동급,
+      세션이 쌓이며 WorldGraph에서 반복 강화되면 자연히 올라간다.
+    """
+    now = datetime.now(timezone.utc)
+    for te in translated_edges:
+        # source 해결
+        if isinstance(te.source_ref, ConceptPointer):
+            src_hash = te.source_ref.address_hash
+        else:
+            src_hash = compute_hash(te.source_ref.concept_hint.strip())
+            if tg.get_node(src_hash) is None:
+                continue  # 아직 fill 안 됨
+
+        # target 해결
+        if isinstance(te.target_ref, ConceptPointer):
+            tgt_hash = te.target_ref.address_hash
+        else:
+            tgt_hash = compute_hash(te.target_ref.concept_hint.strip())
+            if tg.get_node(tgt_hash) is None:
+                continue  # 아직 fill 안 됨
+
+        key = (src_hash, tgt_hash)
+        if key in added_keys:
+            continue
+        added_keys.add(key)
+
+        tg.add_edge(Edge(
+            edge_id=str(uuid.uuid4()),
+            source_hash=src_hash,
+            target_hash=tgt_hash,
+            edge_family=te.edge_family,
+            connect_type=te.connect_type,
+            edge_weight=te.confidence,
+            translation_confidence=te.confidence,
+            provenance_source="lang_to_graph",
+            proposed_connect_type=te.proposed_connect_type,
+            is_temporary=False,
+            created_at=now,
+            updated_at=now,
+        ))
 
 
 # ── ThoughtEngine ─────────────────────────────────────────────────────────────
@@ -155,6 +225,10 @@ class ThoughtEngine:
         tg.set_goal_node(self._goal_node)
         tg.load_from_translated(translated)
 
+        # TranslatedEdge → TempThoughtGraph 변환 (CP↔CP는 즉시, EmptySlot 포함은 fill 후)
+        _te_added_keys: set[tuple[str, str]] = set()
+        _add_translated_edges(tg, translated.edges, _te_added_keys)
+
         # ConceptPointer들을 목표 노드에 임시 연결 + known_hashes 수집
         # known_hashes: think() 시작 시점에 이미 DB에 존재하던 개념들.
         # GraphToLang에서 "핵심 키워드" 분류의 기준이 된다.
@@ -179,6 +253,8 @@ class ThoughtEngine:
                 await self._fill_empty_slots(
                     tg, user_input=user_input, known_hashes=known_hashes
                 )
+                # fill 완료 후 EmptySlot 엔드포인트 포함 TranslatedEdge 추가
+                _add_translated_edges(tg, translated.edges, _te_added_keys)
 
             # 2. ConceptDifferentiation
             diff_results = concept_differentiation.run(tg)
@@ -383,13 +459,15 @@ class ThoughtEngine:
     def _commit_new_content(self, tg: TempThoughtGraph) -> None:
         """임시 사고 그래프의 결과를 WorldGraph에 반영한다.
 
+        루프 전체 누적 추가 목록(all_added_*)을 사용한다.
+        reset_delta()로 초기화되는 current_delta()를 쓰면 다회 루프 시
+        이전 회차에서 추가된 노드/엣지가 커밋에서 누락되는 버그가 발생한다.
+
         - is_abstract 노드: 약한 커밋
         - is_temporary 엣지: 건너뜀 (목표 연결 엣지 등)
         - 나머지 신규 노드/엣지: 강한 커밋
         """
-        delta = tg.current_delta()
-
-        for address_hash in delta.added_nodes:
+        for address_hash in tg.all_added_node_hashes:
             node = tg.get_node(address_hash)
             if node is None:
                 continue
@@ -398,7 +476,7 @@ class ThoughtEngine:
             else:
                 _commit_strong(self._conn, node)
 
-        for edge_id in delta.added_edges:
+        for edge_id in tg.all_added_edge_ids:
             edge = tg.get_edge(edge_id)   # O(1) dict 조회
             if edge is None:
                 continue
