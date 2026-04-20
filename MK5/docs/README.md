@@ -37,6 +37,7 @@
 ## 실행법
 (ollama 다운로드 및 선호 모델 다운로드)
 ollama pull nomic-embed-text
+cd MK5
 py -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
