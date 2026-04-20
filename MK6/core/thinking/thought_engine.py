@@ -237,11 +237,34 @@ class ThoughtEngine:
         search_text = await self._search_fn(query)
 
         # 각 슬롯을 ingest — 검색 결과를 payload에 함께 저장
+        ingested_nodes: list[Node] = []
         for slot in slots:
             node = await self._ingest_slot(slot, search_text=search_text)
             if node is not None:
                 tg.fill_slot(slot, node)
                 tg.connect_to_goal(node.address_hash)
+                ingested_nodes.append(node)
+
+        # 검색 컨텍스트에서 함께 등장한 ingest 노드들 간 엣지 생성.
+        # 새 노드는 만들지 않고, 검색 키워드 노드들만 서로 연결한다.
+        if len(ingested_nodes) >= 2:
+            now = datetime.now(timezone.utc)
+            for i, node_a in enumerate(ingested_nodes):
+                for node_b in ingested_nodes[i + 1:]:
+                    edge = Edge(
+                        edge_id=str(uuid.uuid4()),
+                        source_hash=node_a.address_hash,
+                        target_hash=node_b.address_hash,
+                        edge_family="concept",
+                        connect_type="neutral",
+                        provenance_source="search",
+                        proposed_connect_type="co_occurrence",
+                        proposal_reason="검색 컨텍스트에서 함께 등장한 개념",
+                        is_temporary=False,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    tg.add_edge(edge)
 
     async def _ingest_slot(
         self,
