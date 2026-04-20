@@ -68,9 +68,25 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         tgt_str = tgt.labels[0] if tgt and tgt.labels else edge.target_hash[:8]
         edge_lines.append(f"  - {src_str} →[{edge.connect_type}]→ {tgt_str}")
 
-    key_text  = ", ".join(key_labels) if key_labels else "(없음)"
-    ref_text  = ", ".join(ref_labels) if ref_labels else "(없음)"
-    edge_text = "\n".join(edge_lines) if edge_lines else "  (없음)"
+    # ── 검색 컨텍스트: payload["search_summary"] 보유 노드 수집 ─────────────
+    _SEARCH_CTX_MAX = 600   # 시스템 메시지에 포함할 검색 요약 최대 길이
+    seen_summaries: set[str] = set()
+    search_ctx_parts: list[str] = []
+    for node in conclusion.nodes:
+        summary = node.payload.get("search_summary", "")
+        if not summary:
+            continue
+        snippet = summary[:_SEARCH_CTX_MAX]
+        if snippet not in seen_summaries:
+            seen_summaries.add(snippet)
+            search_ctx_parts.append(snippet)
+            if len(search_ctx_parts) >= 2:   # 최대 2개 (중복 제거 후)
+                break
+
+    key_text    = ", ".join(key_labels) if key_labels else "(없음)"
+    ref_text    = ", ".join(ref_labels) if ref_labels else "(없음)"
+    edge_text   = "\n".join(edge_lines) if edge_lines else "  (없음)"
+    search_text = ("\n---\n".join(search_ctx_parts)) if search_ctx_parts else "(없음)"
 
     user_msg = conclusion.user_input or ""
 
@@ -79,11 +95,13 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "아래는 사용자 입력에 대해 인지 그래프 위에서 사고 과정을 거쳐 도달한 당신의 현재 인식 상태입니다.\n"
         "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
         "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
+        "검색 컨텍스트가 있으면 이를 근거로 구체적인 정보를 답변에 포함하십시오.\n"
         "근거 연결이 있으면 그 관계를 자연스럽게 반영하십시오.\n"
         "인식 상태 구조 자체를 설명하거나 나열하지 마십시오.\n\n"
         f"[핵심 키워드]\n{key_text}\n\n"
         f"[참고 개념]\n{ref_text}\n\n"
-        f"[근거 연결]\n{edge_text}"
+        f"[근거 연결]\n{edge_text}\n\n"
+        f"[검색 컨텍스트]\n{search_text}"
     )
 
     print("\n" + "─" * 60)
@@ -165,7 +183,6 @@ class Pipeline:
             conn=self._conn,
             embed_fn=get_embedding,
             search_fn=_search,
-            lang_to_graph_fn=lang_to_graph,
             goal_node=self._goal_node,
         )
         conclusion = await engine.think(translated, model=model, user_input=user_input)

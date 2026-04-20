@@ -48,6 +48,8 @@ class TempThoughtGraph:
         self._goal_hash: str | None = None       # 목표 노드 address_hash
         self._empty_slots: list[EmptySlot] = []  # 아직 채워지지 않은 자리
         self._delta: GraphDelta = GraphDelta()   # 현재 루프 회차 변경 추적
+        self._differentiated_pairs: set[frozenset[str]] = set()  # 이미 분화한 쌍 기록
+        self._goal_connections: set[str] = set()  # 목표 노드에 연결된 개념 hash 집합 (중복 방지)
 
     # ── 구성 ──────────────────────────────────────────────────────────────────
 
@@ -113,6 +115,10 @@ class TempThoughtGraph:
             self._adj.get(edge.source_hash, set()).discard(edge.target_hash)
             self._adj.get(edge.target_hash, set()).discard(edge.source_hash)
 
+    def get_edge(self, edge_id: str) -> Edge | None:
+        """edge_id로 엣지를 O(1) 조회한다."""
+        return self._edges.get(edge_id)
+
     def get_edges_for_node(self, address_hash: str) -> list[Edge]:
         return [
             e for e in self._edges.values()
@@ -125,9 +131,15 @@ class TempThoughtGraph:
     # ── 엣지 연결 (목표 노드 ↔ 입력 개념) ───────────────────────────────────
 
     def connect_to_goal(self, concept_hash: str) -> None:
-        """개념 노드를 목표 노드에 임시 연결한다."""
+        """개념 노드를 목표 노드에 임시 연결한다.
+
+        같은 concept_hash가 이미 연결돼 있으면 중복 엣지를 생성하지 않는다.
+        """
         if self._goal_hash is None:
             return
+        if concept_hash in self._goal_connections:
+            return
+        self._goal_connections.add(concept_hash)
         edge = Edge(
             edge_id=str(uuid.uuid4()),
             source_hash=self._goal_hash,
@@ -154,6 +166,16 @@ class TempThoughtGraph:
         """EmptySlot을 실제 노드로 채운다."""
         self.add_node(node)
         self._empty_slots = [s for s in self._empty_slots if s is not slot]
+
+    # ── ConceptDifferentiation 쌍 추적 ──────────────────────────────────────
+
+    def is_differentiated(self, hash_a: str, hash_b: str) -> bool:
+        """두 노드가 이미 분화된 쌍인지 확인한다."""
+        return frozenset({hash_a, hash_b}) in self._differentiated_pairs
+
+    def mark_differentiated(self, hash_a: str, hash_b: str) -> None:
+        """두 노드를 분화 완료 쌍으로 기록한다."""
+        self._differentiated_pairs.add(frozenset({hash_a, hash_b}))
 
     # ── 수렴 판단 ─────────────────────────────────────────────────────────────
 

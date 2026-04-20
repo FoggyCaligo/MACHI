@@ -13,7 +13,16 @@ _shared_client: httpx.AsyncClient | None = None
 def _get_client() -> httpx.AsyncClient:
     global _shared_client
     if _shared_client is None or _shared_client.is_closed:
-        _shared_client = httpx.AsyncClient()
+        _shared_client = httpx.AsyncClient(
+            # pool=None: 연결 대기 무제한.
+            # asyncio.gather로 대량 임베딩 요청을 동시 발화할 때 PoolTimeout 방지.
+            timeout=httpx.Timeout(
+                connect=5.0,
+                read=config.EMBEDDING_TIMEOUT_SECONDS,
+                write=5.0,
+                pool=None,
+            ),
+        )
     return _shared_client
 
 # Ollama가 families 메타데이터로 분류하는 임베딩 전용 패밀리.
@@ -35,7 +44,7 @@ async def get_embedding(text: str) -> list[float]:
     r = await client.post(
         url,
         json={"model": config.EMBEDDING_MODEL_NAME, "prompt": text},
-        timeout=config.EMBEDDING_TIMEOUT_SECONDS,
+        # 클라이언트 레벨 timeout 사용 (pool=None 포함). per-request 오버라이드 없음.
     )
     r.raise_for_status()
     return r.json()["embedding"]

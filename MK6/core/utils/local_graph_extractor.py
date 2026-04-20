@@ -17,6 +17,7 @@ def extract(
     *,
     hop_radius: int | None = None,
     trust_threshold: float | None = None,
+    cache: dict[str, LocalSubgraph] | None = None,
 ) -> LocalSubgraph:
     """center_hash 노드를 중심으로 N-hop 이내의 국소 그래프를 반환한다.
 
@@ -26,10 +27,14 @@ def extract(
         hop_radius:      탐색 반경 (기본값: config.LOCAL_GRAPH_N_HOP)
         trust_threshold: 이 값 미만의 trust_score를 가진 노드는 포함하지 않음
                          (기본값: config.LOCAL_GRAPH_TRUST_THRESHOLD)
+        cache:           요청 단위 memoization 캐시 (address_hash → LocalSubgraph).
+                         제공하면 이미 추출한 서브그래프는 BFS·DB 조회 없이 재사용한다.
 
     Returns:
         LocalSubgraph — 중심 노드 포함, 발견된 노드·엣지 전체
     """
+    if cache is not None and center_hash in cache:
+        return cache[center_hash]
     n_hop = hop_radius if hop_radius is not None else config.LOCAL_GRAPH_N_HOP
     min_trust = (
         trust_threshold
@@ -84,9 +89,12 @@ def extract(
         if e.source_hash in visited_nodes and e.target_hash in visited_nodes
     ]
 
-    return LocalSubgraph(
+    result = LocalSubgraph(
         center_hash=center_hash,
         nodes=list(visited_nodes.values()),
         edges=valid_edges,
         hop_radius=n_hop,
     )
+    if cache is not None:
+        cache[center_hash] = result
+    return result

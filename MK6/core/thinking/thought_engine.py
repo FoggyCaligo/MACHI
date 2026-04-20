@@ -112,12 +112,11 @@ class ThoughtEngine:
     """Think 루프 실행기.
 
     Args:
-        conn:         WorldGraph DB 커넥션
-        embed_fn:     async 임베딩 함수
-        search_fn:    async 검색 함수 (query: str) → str | None
-                      결과 없으면 None 반환
-        lang_to_graph_fn:  async 번역 함수 (text, conn, embed_fn) → TranslatedGraph
-        goal_node:    목표 노드 (WorldGraph에서 로드된 고정 앵커)
+        conn:      WorldGraph DB 커넥션
+        embed_fn:  async 임베딩 함수
+        search_fn: async 검색 함수 (query: str) → str | None
+                   결과 없으면 None 반환
+        goal_node: 목표 노드 (WorldGraph에서 로드된 고정 앵커)
     """
 
     def __init__(
@@ -125,13 +124,11 @@ class ThoughtEngine:
         conn: sqlite3.Connection,
         embed_fn: EmbedFn,
         search_fn: Callable[[str], Awaitable[str | None]],
-        lang_to_graph_fn: Callable[..., Awaitable[TranslatedGraph]],
         goal_node: Node,
     ) -> None:
         self._conn = conn
         self._embed_fn = embed_fn
         self._search_fn = search_fn
-        self._lang_to_graph_fn = lang_to_graph_fn
         self._goal_node = goal_node
 
     async def think(
@@ -207,52 +204,69 @@ class ThoughtEngine:
         )
 
     async def _fill_empty_slots(self, tg: TempThoughtGraph) -> None:
-        """EmptySlot 각각에 대해 검색 → (실패 시) ingest → TempThoughtGraph 반영."""
-        for slot in list(tg.empty_slots):
-            query = slot.concept_hint
-            search_result = await self._search_fn(query)
+        """EmptySlot 전체를 합쳐 1회 검색 → 각 슬롯을 ingest.
 
-            if search_result is not None:
-                # 검색 성공 → 결과를 그래프로 번역해서 반영
-                sub_translated = await self._lang_to_graph_fn(
-                    search_result, self._conn, self._embed_fn
-                )
-                tg.load_from_translated(sub_translated)
+        설계:
+        - 슬롯마다 개별 검색하지 않는다. 모든 hint를 합쳐 쿼리를 만들고 1회만 검색한다.
+        - 검색 결과는 lang_to_graph로 파싱하지 않는다.
+          (DB가 비어 있으면 파싱해도 EmptySlot만 나와서 cascade가 발생하기 때문)
+        - 대신 _ingest_slot으로 hint마다 노드를 직접 생성하고,
+          검색 결과를 payload["search_summary"]에 저장한다.
+        - GraphToLang이 payload를 LLM 컨텍스트로 활용해 답변 품질을 높인다.
+        """
+        slots = list(tg.empty_slots)
+        if not slots:
+            return
 
-                for ref in sub_translated.nodes:
-                    if isinstance(ref, ConceptPointer):
-                        node = tg.get_node(ref.address_hash)
-                        if node is not None:
-                            tg.fill_slot(slot, node)
-                        break
-            else:
-                # 검색 실패 → hint로 신규 노드 ingest
-                node = await self._ingest_slot(slot)
-                if node is not None:
-                    tg.fill_slot(slot, node)
-                    tg.connect_to_goal(node.address_hash)
+        # 모든 hint를 합쳐 1회 검색
+        combined_query = " ".join(slot.concept_hint for slot in slots)
+        search_text = await self._search_fn(combined_query)
 
-    async def _ingest_slot(self, slot: EmptySlot) -> Node | None:
-        """검색으로 채울 수 없는 EmptySlot을 hint 기반 신규 노드로 등록한다.
+        # 각 슬롯을 ingest — 검색 결과를 payload에 함께 저장
+        for slot in slots:
+            node = await self._ingest_slot(slot, search_text=search_text)
+            if node is not None:
+                tg.fill_slot(slot, node)
+                tg.connect_to_goal(node.address_hash)
+
+    async def _ingest_slot(
+        self,
+        slot: EmptySlot,
+        search_text: str | None = None,
+    ) -> Node | None:
+        """EmptySlot을 hint 기반 신규 노드로 등록한다.
 
         처리:
         1. hint 정규화 → address_hash 계산
-        2. 이미 WorldGraph에 있으면 그대로 반환
+        2. 이미 WorldGraph에 있으면 재사용
+           (search_text가 새로 주어지고 기존 노드에 요약이 없으면 payload 보강)
         3. 없으면 임베딩 계산 → 신규 Node 생성 → 약한 커밋
         4. words 테이블에도 등록 (없는 경우에만)
+
+        Args:
+            slot:        처리할 EmptySlot
+            search_text: 검색 결과 원문. 있으면 payload["search_summary"]에 저장한다.
+                         GraphToLang이 이를 LLM 컨텍스트로 활용한다.
 
         Returns:
             생성 또는 기존 Node. 임베딩 실패 시 None.
         """
+        _SUMMARY_MAX = 800   # payload에 저장할 검색 요약 최대 길이
+
         hint = slot.concept_hint.strip()
         if not hint:
             return None
 
         address_hash = compute_hash(hint)
 
-        # 이미 존재하면 재사용
+        # 이미 존재하면 재사용 (search_text로 payload 보강)
         existing = db_get_node(self._conn, address_hash)
         if existing is not None:
+            if search_text and not existing.payload.get("search_summary"):
+                existing.payload["search_summary"] = search_text[:_SUMMARY_MAX]
+                existing.touch()
+                update_node(self._conn, existing)
+                self._conn.commit()
             return existing
 
         # 임베딩 계산
@@ -260,6 +274,10 @@ class ThoughtEngine:
             embedding = await self._embed_fn(hint)
         except Exception:
             embedding = None
+
+        payload: dict = {}
+        if search_text:
+            payload["search_summary"] = search_text[:_SUMMARY_MAX]
 
         now = datetime.now(timezone.utc)
         node = Node(
@@ -272,7 +290,7 @@ class ThoughtEngine:
             stability_score=config.COMMIT_STABILITY_WEAK,
             is_active=True,
             embedding=embedding,
-            payload={},
+            payload=payload,
             created_at=now,
             updated_at=now,
         )
@@ -313,7 +331,7 @@ class ThoughtEngine:
                 _commit_strong(self._conn, node)
 
         for edge_id in delta.added_edges:
-            edge = next((e for e in tg.all_edges() if e.edge_id == edge_id), None)
+            edge = tg.get_edge(edge_id)   # O(1) dict 조회
             if edge is None:
                 continue
             if edge.is_temporary:

@@ -9,7 +9,7 @@ from typing import Callable, Awaitable
 from ..entities.node import Node
 from ..entities.translated_graph import (
     ConceptPointer, EmptySlot, ConceptRef,
-    TranslatedEdge, TranslatedGraph,
+    TranslatedEdge, TranslatedGraph, LocalSubgraph,
 )
 from ..storage.world_graph import get_node, get_word
 from ..utils.hash_resolver import normalize_text
@@ -148,6 +148,9 @@ async def translate(
         config.INPUT_CLASSIFIER_EMBED_THRESHOLD,
     )
 
+    # 요청 단위 LocalSubgraph 캐시 — 같은 center_hash에 대한 BFS/DB 재조회 방지
+    _subgraph_cache: dict[str, LocalSubgraph] = {}
+
     nodes: list[ConceptRef] = []
     edges: list[TranslatedEdge] = []
 
@@ -171,7 +174,7 @@ async def translate(
         node = get_node(conn, word_entry.address_hash)
         if node is None or not node.is_active:
             continue
-        subgraph = extract_subgraph(conn, node.address_hash)
+        subgraph = extract_subgraph(conn, node.address_hash, cache=_subgraph_cache)
         exact_pointers[normalized] = ConceptPointer(
             address_hash=node.address_hash,
             local_subgraph=subgraph,
@@ -224,7 +227,7 @@ async def translate(
                         best_score = score
                         best_node = node
                 if best_node is not None and best_score >= config.LANG_TO_GRAPH_SIMILARITY_THRESHOLD:
-                    subgraph = extract_subgraph(conn, best_node.address_hash)
+                    subgraph = extract_subgraph(conn, best_node.address_hash, cache=_subgraph_cache)
                     ref = ConceptPointer(
                         address_hash=best_node.address_hash,
                         local_subgraph=subgraph,

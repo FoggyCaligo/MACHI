@@ -292,14 +292,21 @@ score = α × cosine_sim(emb_A, emb_B) + (1-α) × overlap_ratio(neighbors_A, ne
 Think 루프 실행기.
 
 ```python
-engine = ThoughtEngine(conn, embed_fn, search_fn, lang_to_graph_fn, goal_node)
+engine = ThoughtEngine(conn, embed_fn, search_fn, goal_node)
 conclusion = await engine.think(translated_graph)
 ```
 
 루프 한 회차:
-1. EmptySlot → `search_fn(hint)` → `lang_to_graph(결과)` → TempThoughtGraph 반영
+1. EmptySlot → 모든 hint 합산 1회 검색 → `_ingest_slot(slot, search_text)` → 노드 생성 + payload 저장
 2. `concept_differentiation.run(tg)` → 분화 결과 약한 커밋
 3. 수렴 판단: `delta.is_empty()` OR 노드/엣지 수 변화 없음 → 종료
+
+EmptySlot 처리 원칙:
+- 슬롯마다 개별 검색하지 않는다. 전체 hint를 합산해 1회만 검색한다.
+- 검색 결과를 `lang_to_graph`로 재파싱하지 않는다 (빈 DB에서 cascade 발생, PoolTimeout 위험).
+- 대신 `_ingest_slot`으로 hint당 노드를 직접 생성하고 검색 결과를 `payload["search_summary"]`에 저장한다.
+- 기존 노드에 요약이 없으면 `update_node`로 payload 보강한다.
+- `GraphToLang`이 payload를 `[검색 컨텍스트]` 섹션으로 LLM에 주입한다.
 
 루프 종료 후: 강한 커밋 (신규 비임시 노드/엣지 → WorldGraph).
 
@@ -307,9 +314,9 @@ conclusion = await engine.think(translated_graph)
 - **강**: 일반 상황 업데이트, 새 연결, 충돌 처리 → `COMMIT_TRUST_STRONG` / `COMMIT_STABILITY_STRONG`
 - **약**: 추상 노드, 불확실 업데이트 → `COMMIT_TRUST_WEAK` / `COMMIT_STABILITY_WEAK`
 
-커밋 중복 방지: `_commit_edge`는 `get_edge`로 존재 여부를 확인한 뒤 없으면 `insert_edge`, 있으면 `update_edge`를 실행한다 (루프 내 약한 커밋과 종료 후 강한 커밋이 동일 edge_id를 처리할 수 있으므로).
+커밋 중복 방지: `_commit_edge`는 `get_edge`로 존재 여부를 확인한 뒤 없으면 `insert_edge`, 있으면 `update_edge`를 실행한다.
 
-`ConclusionView`: `nodes`, `edges`, `goal_hash`, `had_empty_slots`, `loop_count`, `model`
+`ConclusionView`: `nodes`, `edges`, `goal_hash`, `had_empty_slots`, `loop_count`, `model`, `user_input`
 
 ---
 

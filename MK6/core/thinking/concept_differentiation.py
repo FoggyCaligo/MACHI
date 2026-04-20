@@ -146,21 +146,29 @@ def run(tg: TempThoughtGraph) -> list[DifferentiationResult]:
         발생한 분화 결과 목록 (없으면 빈 리스트)
     """
     results: list[DifferentiationResult] = []
+
+    # 추상 노드는 분화 후보에서 제외한다.
+    # - 추상 노드는 이미 분화 결과물이므로 재분화 대상이 아니다.
+    # - 포함하면 루프마다 노드 수가 자기 증폭식으로 늘어난다.
     nodes = [
         n for n in tg.all_nodes()
         if n.embedding is not None
         and n.is_active
+        and not n.is_abstract
         and n.address_hash != tg.goal_hash
     ]
 
-    # 이웃 집합을 한 번만 계산해서 재사용한다.
-    # neighbor_hashes()는 O(1)이지만, 같은 노드를 쌍마다 반복 호출하지 않도록 미리 캐싱.
+    # 이웃 집합을 순회 전 한 번만 계산해서 캐싱한다.
     neighbor_cache: dict[str, set[str]] = {
         n.address_hash: tg.neighbor_hashes(n.address_hash)
         for n in nodes
     }
 
     for node_a, node_b in combinations(nodes, 2):
+        # 이미 분화한 쌍은 건너뛴다.
+        if tg.is_differentiated(node_a.address_hash, node_b.address_hash):
+            continue
+
         neighbors_a = neighbor_cache[node_a.address_hash]
         neighbors_b = neighbor_cache[node_b.address_hash]
 
@@ -173,7 +181,6 @@ def run(tg: TempThoughtGraph) -> list[DifferentiationResult]:
         abstract_node = _make_abstract_node(node_a, node_b)
         now = datetime.now(timezone.utc)
 
-        # 추상 노드 → 두 자식 노드 연결
         edge_to_a = _make_differentiation_edge(
             abstract_node.address_hash, node_a.address_hash, now
         )
@@ -181,10 +188,10 @@ def run(tg: TempThoughtGraph) -> list[DifferentiationResult]:
             abstract_node.address_hash, node_b.address_hash, now
         )
 
-        # TempThoughtGraph에 반영
         tg.add_node(abstract_node)
         tg.add_edge(edge_to_a)
         tg.add_edge(edge_to_b)
+        tg.mark_differentiated(node_a.address_hash, node_b.address_hash)
 
         results.append(
             DifferentiationResult(

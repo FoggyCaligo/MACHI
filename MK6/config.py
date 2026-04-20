@@ -54,4 +54,4 @@ COMMIT_STABILITY_WEAK = _env_float("COMMIT_STABILITY_WEAK", 0.1)
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 OLLAMA_TIMEOUT_SECONDS = _env_float("OLLAMA_TIMEOUT_SECONDS", 600.0)
 OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "").strip()
-OLLAMA_NUM_PREDICT = _env_int("OLLAMA_NUM_PREDICT", 128)  # GraphToLang 최대 생성 토큰 수
+OLLAMA_NUM_PREDICT = _env_int("OLLAMA_NUM_PREDICT", 512)  # GraphToLang 최대 생성 토큰 수
