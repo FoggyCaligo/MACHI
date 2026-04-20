@@ -32,3 +32,12 @@
 - 실행 문서는 `로드맵 + 현재작업 + 작업수칙` 3개를 기준으로 유지한다.
 - 현재 상위 기준은 `kind`/`connect_semantics`가 아니라 `edge_family + connect_type + 방향 + 상태값`이다.
 - 스케줄 운영 도구는 남겨둘 수 있지만, 상위 철학을 덮어쓰면 안 된다.
+
+
+## 실행법
+(ollama 다운로드 및 선호 모델 다운로드)
+ollama pull nomic-embed-text
+py -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python run.py
