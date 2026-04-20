@@ -243,17 +243,35 @@ class IntentManager:
         if previous_name is None or previous_name not in scores:
             return best_name, False, None
 
+        topic_continuity = features.get('topic_continuity', 'unknown')
         previous_score = scores[previous_name]
+
+        # ① 주제 변경 감지 → intent 리셋 필요 (shifted=True 강제)
+        # 새 주제에서는 그래프 특징에 맞는 intent로 재설정
+        if topic_continuity in ('new_topic', 'shifted_topic'):
+            if features['graph_sparse']:
+                return 'open_information_request', True, f'topic_shift_intent_reset:new_info_needed'
+            if features['pointer_backed']:
+                return 'memory_probe', True, f'topic_shift_intent_reset:memory_probe'
+            return best_name, True, f'topic_shift_intent_reset'
+
+        # ② 같은 주제 계속 (continued_topic, related_topic)
+        # 모순/수정이 있으면 강제로 structure_review로 전환
         if self._requires_forced_shift(best_name, previous_name, features):
             return best_name, best_name != previous_name, 'contradiction_or_revision_forced_shift'
 
+        # 점수 기반 의도 전환
         if best_name != previous_name and best_score >= previous_score + self.shift_margin:
             return best_name, True, f'score_shift:{previous_name}->{best_name}'
 
+        # 노드 겹침이 있으면 이전 의도 유지
         if features['overlap_count'] > 0 and not features['contradiction_count'] and not features['revision_count']:
             return previous_name, False, None
+        # 주제 키워드 겹침이 있으면 이전 의도 유지
         if features['topic_overlap'] > 0 and not features['contradiction_count'] and not features['revision_count']:
             return previous_name, False, None
+
+        # ③ 기본값: 최고 점수 의도로 설정 (shifted=False)
         return best_name, False, None
 
     def _requires_forced_shift(self, best_name: str, previous_name: str, features: dict[str, Any]) -> bool:

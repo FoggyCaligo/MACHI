@@ -45,8 +45,13 @@ class TemporaryEdgeService:
         snapshot = dict(intent_snapshot or {})
         topic_continuity = ' '.join(str(snapshot.get('topic_continuity') or '').split()).strip()
         topic_overlap_count = int(snapshot.get('topic_overlap_count') or 0)
-        shifted = bool(snapshot.get('shifted'))
-        if not shifted or topic_overlap_count != 0:
+
+        # 주제 전환 판정: topic_continuity가 'new_topic' 또는 'shifted_topic'일 때만 정리
+        # (intent 변경 여부 shifted와 무관)
+        # - new_topic: 첫 주제, 이전 주제와 완전 다름
+        # - shifted_topic: 이전 주제와 키워드 겹침 없음
+        # - continued_topic, related_topic: 같은 주제 범위 (정리 안 함)
+        if topic_continuity not in ('new_topic', 'shifted_topic'):
             return TemporaryEdgeCleanupResult(
                 attempted=True,
                 triggered=False,
