@@ -29,7 +29,7 @@ _MAX_TEXT_LEN     = 2500 # 최종 텍스트 최대 길이
 
 def _ddg_search_sync(query: str) -> list[dict[str, Any]]:
     """동기 DuckDuckGo 검색. asyncio.to_thread 안에서 실행된다."""
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
     with DDGS() as ddgs:
         return list(ddgs.text(query, max_results=_DDG_MAX_RESULTS))
 
