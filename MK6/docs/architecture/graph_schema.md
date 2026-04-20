@@ -189,6 +189,43 @@ scope prefix를 `"word::"`로 고정해 의미 그래프 노드 해시와 충돌
 
 ---
 
+## words 테이블 동기화 정책
+
+ConceptDifferentiation이 노드를 merge하거나 differentiate할 때 words 테이블도 함께 갱신한다.
+
+### Merge (두 노드 → 하나)
+
+```
+병합 전:
+  words: [사과 → node_A], [apple → node_A], [과일 → node_B], [fruit → node_B]
+  노드: node_A, node_B → 병합 → node_merged
+
+병합 후:
+  words: [사과 → node_merged], [apple → node_merged],
+         [과일 → node_merged], [fruit → node_merged]
+```
+
+- node_A와 node_B에 연결된 모든 단어의 `address_hash`를 `node_merged`로 일괄 업데이트
+- node_A, node_B는 비활성화 (`is_active=0`)
+
+### Differentiation (하나 → 둘)
+
+```
+분화 전:
+  words: [십자가 → node_X], [cross → node_X]
+  노드: node_X → 분화 → node_X1 (둥근 십자가), node_X2 (네모난 십자가)
+
+분화 후:
+  words: [십자가 → node_X1],  ← 배분 기준으로 할당
+         [cross → node_X2]    ← 또는 둘 다 공유 가능
+```
+
+- 기존 단어들을 두 노드에 배분한다
+- 배분 기준: 각 단어의 임베딩과 두 신규 노드 임베딩의 코사인 유사도 → 더 가까운 노드에 할당
+- 배분이 불명확한 경우(유사도 차이 < threshold): 두 노드 모두에 연결 (중복 허용)
+
+---
+
 ## 관계 요약
 
 ```
