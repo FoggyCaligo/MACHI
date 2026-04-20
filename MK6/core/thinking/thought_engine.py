@@ -257,7 +257,7 @@ class ThoughtEngine:
         if ingested_nodes:
             now = datetime.now(timezone.utc)
 
-            # ① ingest ↔ ingest
+            # ① ingest ↔ ingest (순수 근접 관계 — weight 0.5)
             for i, node_a in enumerate(ingested_nodes):
                 for node_b in ingested_nodes[i + 1:]:
                     tg.add_edge(Edge(
@@ -266,6 +266,7 @@ class ThoughtEngine:
                         target_hash=node_b.address_hash,
                         edge_family="concept",
                         connect_type="neutral",
+                        edge_weight=0.5,
                         provenance_source="search",
                         proposed_connect_type="co_occurrence",
                         proposal_reason="검색 컨텍스트에서 함께 등장한 개념",
@@ -274,7 +275,7 @@ class ThoughtEngine:
                         updated_at=now,
                     ))
 
-            # ② ingest ↔ ConceptPointer
+            # ② ingest ↔ ConceptPointer (의미 연관 — weight 0.6)
             if known_hashes:
                 for ingest_node in ingested_nodes:
                     for cp_hash in known_hashes:
@@ -287,6 +288,7 @@ class ThoughtEngine:
                             target_hash=ingest_node.address_hash,
                             edge_family="concept",
                             connect_type="neutral",
+                            edge_weight=0.6,
                             provenance_source="search",
                             proposed_connect_type="co_occurrence",
                             proposal_reason="같은 쿼리에서 함께 등장한 개념",
