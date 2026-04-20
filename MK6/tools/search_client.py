@@ -27,20 +27,19 @@ _MAX_TEXT_LEN     = 2500 # 최종 텍스트 최대 길이
 
 # ── DuckDuckGo ────────────────────────────────────────────────────────────────
 
-def _ddg_search_sync(query: str) -> list[dict[str, Any]]:
+def _ddg_search_sync(query: str, region: str) -> list[dict[str, Any]]:
     """동기 DuckDuckGo 검색. asyncio.to_thread 안에서 실행된다."""
     from ddgs import DDGS
     with DDGS() as ddgs:
-        return list(ddgs.text(query, max_results=_DDG_MAX_RESULTS))
+        return list(ddgs.text(
+            query,
+            max_results=_DDG_MAX_RESULTS,
+            region=region,
+            safesearch="moderate",
+        ))
 
 
-async def _ddg_search(query: str) -> list[str]:
-    """DuckDuckGo 결과를 텍스트 조각 리스트로 반환한다."""
-    try:
-        results = await asyncio.to_thread(_ddg_search_sync, query)
-    except Exception:
-        return []
-
+def _ddg_results_to_parts(results: list[dict[str, Any]]) -> list[str]:
     parts: list[str] = []
     for r in results:
         title = (r.get("title") or "").strip()
@@ -51,6 +50,29 @@ async def _ddg_search(query: str) -> list[str]:
             parts.append(body)
         elif title:
             parts.append(title)
+    return parts
+
+
+async def _ddg_search(query: str) -> list[str]:
+    """DuckDuckGo 결과를 한국(kr-ko) + 미국(us-en) 두 지역에서 검색해 반환한다."""
+    try:
+        kr_results, us_results = await asyncio.gather(
+            asyncio.to_thread(_ddg_search_sync, query, "kr-ko"),
+            asyncio.to_thread(_ddg_search_sync, query, "us-en"),
+        )
+    except Exception:
+        return []
+
+    # 중복 제거: body 기준으로 이미 추가된 텍스트는 건너뜀
+    seen: set[str] = set()
+    parts: list[str] = []
+    for r in list(kr_results) + list(us_results):
+        body = (r.get("body") or "").strip()
+        if not body or body in seen:
+            continue
+        seen.add(body)
+        title = (r.get("title") or "").strip()
+        parts.append(f"{title}. {body}" if title else body)
     return parts
 
 
