@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 from dataclasses import dataclass
 
@@ -62,7 +63,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     # ── 엣지: 비임시 엣지 → 근거 연결 ───────────────────────────────────────
     # abstract 노드가 엔드포인트인 엣지는 제외 (분화 구조 엣지 → LLM 컨텍스트 노이즈)
     # 정렬: non-neutral 먼저 > edge_weight 내림차순 > search 외 provenance 먼저
-    # 상한: GRAPH_TO_LANG_MAX_EDGES (기본 15)
+    # 상한: 정렬 후 상위 GRAPH_TO_LANG_EDGE_RATIO(30%)만 포함
     _edge_candidates: list[tuple] = []   # (sort_key, src_str, tgt_str, connect_type, weight)
     for edge in conclusion.edges:
         if edge.is_temporary:
@@ -82,9 +83,12 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         )
         _edge_candidates.append((sort_key, src_str, tgt_str, edge.connect_type, edge.edge_weight))
 
-    # LangToGraph 토큰 중요도 필터(상위 20%)가 업스트림에서 비중요 토큰을 제거하므로
-    # 여기서는 별도 상한 없이 정렬만 한다.
     _edge_candidates.sort(key=lambda x: x[0])
+
+    # 상위 30% 절삭 — 노드 수 n에서 생성되는 pairwise 엣지는 O(n²)이므로
+    # 정렬 후 상위 비율만 LLM에 전달한다.
+    _n_edges = max(1, math.ceil(len(_edge_candidates) * config.GRAPH_TO_LANG_EDGE_RATIO))
+    _edge_candidates = _edge_candidates[:_n_edges]
 
     edge_lines: list[str] = []
     for _, src_str, tgt_str, connect_type, weight in _edge_candidates:

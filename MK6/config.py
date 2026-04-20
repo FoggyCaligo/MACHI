@@ -33,8 +33,8 @@ LANG_TO_GRAPH_MAX_EMBEDDING_NODES = _env_int("LANG_TO_GRAPH_MAX_EMBEDDING_NODES"
 #   NEAR_RATIO: centroid에 가장 가까운 토큰 비율 (문장 대표 개념)
 #   FAR_RATIO:  centroid에서 가장 먼 토큰 비율 (도메인 특이 개념, 고유명사 등)
 # 두 그룹의 합집합을 노드로 생성한다. 최소 TOKEN_IMPORTANCE_MIN개 보장.
-TOKEN_IMPORTANCE_NEAR_RATIO = _env_float("TOKEN_IMPORTANCE_NEAR_RATIO", 0.20)
-TOKEN_IMPORTANCE_FAR_RATIO  = _env_float("TOKEN_IMPORTANCE_FAR_RATIO",  0.20)
+TOKEN_IMPORTANCE_NEAR_RATIO = _env_float("TOKEN_IMPORTANCE_NEAR_RATIO", 0.15)
+TOKEN_IMPORTANCE_FAR_RATIO  = _env_float("TOKEN_IMPORTANCE_FAR_RATIO",  0.15)
 TOKEN_IMPORTANCE_MIN = _env_int("TOKEN_IMPORTANCE_MIN", 1)
 
 # ── LocalGraphExtractor ──────────────────────────────────────────────────────
@@ -58,6 +58,11 @@ COMMIT_TRUST_STRONG = _env_float("COMMIT_TRUST_STRONG", 0.7)
 COMMIT_TRUST_WEAK = _env_float("COMMIT_TRUST_WEAK", 0.15)
 COMMIT_STABILITY_STRONG = _env_float("COMMIT_STABILITY_STRONG", 0.6)
 COMMIT_STABILITY_WEAK = _env_float("COMMIT_STABILITY_WEAK", 0.1)
+
+# ── GraphToLang ──────────────────────────────────────────────────────────────
+# 정렬 후 상위 RATIO 비율의 엣지만 LLM 컨텍스트에 포함한다.
+# pairwise 엣지는 노드 수에 대해 O(n²)이므로 비율 기반 절삭이 필요하다.
+GRAPH_TO_LANG_EDGE_RATIO = _env_float("GRAPH_TO_LANG_EDGE_RATIO", 0.30)
 
 # ── Ollama LLM ───────────────────────────────────────────────────────────────
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")

@@ -78,9 +78,10 @@ MK6/
 | `EMBEDDING_TIMEOUT_SECONDS` | `10.0` | 임베딩 요청 타임아웃 |
 | `LANG_TO_GRAPH_SIMILARITY_THRESHOLD` | `0.75` | 임베딩 유사도 임계치 (ConceptPointer 확정) |
 | `LANG_TO_GRAPH_MAX_EMBEDDING_NODES` | `200` | 유사도 비교 후보 노드 최대 수 |
-| `TOKEN_IMPORTANCE_NEAR_RATIO` | `0.20` | centroid 근접 토큰 비율 (문장 대표 개념 포착) |
-| `TOKEN_IMPORTANCE_FAR_RATIO` | `0.20` | centroid 원거리 토큰 비율 (고유명사·도메인 특이 개념 포착) |
+| `TOKEN_IMPORTANCE_NEAR_RATIO` | `0.15` | centroid 근접 토큰 비율 (문장 대표 개념 포착) |
+| `TOKEN_IMPORTANCE_FAR_RATIO` | `0.15` | centroid 원거리 토큰 비율 (고유명사·도메인 특이 개념 포착) |
 | `TOKEN_IMPORTANCE_MIN` | `1` | 중요도 필터 후 보장하는 최소 토큰 수 (극단적으로 짧은 문장 대비) |
+| `GRAPH_TO_LANG_EDGE_RATIO` | `0.30` | GraphToLang에 포함할 엣지 비율. 정렬 후 상위 30%만 LLM 컨텍스트에 전달 (pairwise O(n²) 폭발 방지) |
 | `LOCAL_GRAPH_N_HOP` | `2` | 국소 그래프 탐색 반경 |
 | `LOCAL_GRAPH_TRUST_THRESHOLD` | `0.2` | 국소 그래프 포함 최소 trust_score |
 | `INPUT_CLASSIFIER_EMBED_THRESHOLD` | `0.70` | 입력 타입 분류 임베딩 신뢰 임계치 |
@@ -410,7 +411,7 @@ result = await pipeline.run("사과는 과일이야")
 - `graph_to_lang(conclusion)` — ConclusionView → 프롬프트 직렬화 → `chat()` → 언어 출력
   - 핵심 키워드: `known_hashes` 소속 노드 (abstract 제외)
   - 참고 개념: 신규 ingest 노드 (abstract 제외)
-  - 근거 연결: `→[connect_type, weight]→` 포맷. `is_temporary=True` 및 abstract 엔드포인트 엣지 제외. 정렬: non-neutral 먼저 > edge_weight 내림차순 > search 외 provenance 먼저. 상한 없음 (업스트림 필터로 제어).
+  - 근거 연결: `→[connect_type, weight]→` 포맷. `is_temporary=True` 및 abstract 엔드포인트 엣지 제외. 정렬: non-neutral 먼저 > edge_weight 내림차순 > search 외 provenance 먼저. **정렬 후 상위 `GRAPH_TO_LANG_EDGE_RATIO(30%)`만 포함** (pairwise O(n²) 폭발 방지).
   - 검색 컨텍스트: ingest 노드의 `payload["search_summary"]`만 포함 (known_hashes 제외)
 - `Pipeline.close()` — `close_db()` 호출 (WAL 체크포인트 포함)
 
