@@ -176,7 +176,9 @@ class ThoughtEngine:
 
             # 1. EmptySlot 처리 — 필요 시 검색
             if tg.has_empty_slots():
-                await self._fill_empty_slots(tg, user_input=user_input)
+                await self._fill_empty_slots(
+                    tg, user_input=user_input, known_hashes=known_hashes
+                )
 
             # 2. ConceptDifferentiation
             diff_results = concept_differentiation.run(tg)
@@ -215,6 +217,7 @@ class ThoughtEngine:
         self,
         tg: TempThoughtGraph,
         user_input: str | None = None,
+        known_hashes: set[str] | None = None,
     ) -> None:
         """EmptySlot 전체를 1회 검색 → 각 슬롯을 ingest.
 
@@ -245,13 +248,17 @@ class ThoughtEngine:
                 tg.connect_to_goal(node.address_hash)
                 ingested_nodes.append(node)
 
-        # 검색 컨텍스트에서 함께 등장한 ingest 노드들 간 엣지 생성.
-        # 새 노드는 만들지 않고, 검색 키워드 노드들만 서로 연결한다.
-        if len(ingested_nodes) >= 2:
+        # 검색 컨텍스트에서 함께 등장한 노드들 간 co_occurrence 엣지 생성.
+        # 새 노드는 만들지 않고, 같은 쿼리에서 함께 등장한 개념들만 연결한다:
+        #   ① ingest ↔ ingest  (검색 키워드 간)
+        #   ② ingest ↔ ConceptPointer  (신규 개념 ↔ 기존 개념)
+        if ingested_nodes:
             now = datetime.now(timezone.utc)
+
+            # ① ingest ↔ ingest
             for i, node_a in enumerate(ingested_nodes):
                 for node_b in ingested_nodes[i + 1:]:
-                    edge = Edge(
+                    tg.add_edge(Edge(
                         edge_id=str(uuid.uuid4()),
                         source_hash=node_a.address_hash,
                         target_hash=node_b.address_hash,
@@ -263,8 +270,37 @@ class ThoughtEngine:
                         is_temporary=False,
                         created_at=now,
                         updated_at=now,
-                    )
-                    tg.add_edge(edge)
+                    ))
+
+            # ② ingest ↔ ConceptPointer
+            # known_hashes가 전달된 경우에만.
+            # 검색 키워드(신규 개념)와 기존 개념 간 연결이 없으면
+            # 근거 연결에 한쪽만 나타난다.
+            # known_hashes가 많을 때 엣지 폭발을 막기 위해
+            # stability_score 상위 SEARCH_CO_OCCURRENCE_MAX_CP개만 사용한다.
+            if known_hashes:
+                cp_candidates = [
+                    n for h in known_hashes
+                    if (n := tg.get_node(h)) is not None
+                ]
+                cp_candidates.sort(key=lambda n: n.stability_score, reverse=True)
+                top_cp = cp_candidates[: config.SEARCH_CO_OCCURRENCE_MAX_CP]
+
+                for ingest_node in ingested_nodes:
+                    for cp_node in top_cp:
+                        tg.add_edge(Edge(
+                            edge_id=str(uuid.uuid4()),
+                            source_hash=cp_node.address_hash,
+                            target_hash=ingest_node.address_hash,
+                            edge_family="concept",
+                            connect_type="neutral",
+                            provenance_source="search",
+                            proposed_connect_type="co_occurrence",
+                            proposal_reason="같은 쿼리에서 함께 등장한 개념",
+                            is_temporary=False,
+                            created_at=now,
+                            updated_at=now,
+                        ))
 
     async def _ingest_slot(
         self,

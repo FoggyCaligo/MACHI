@@ -44,6 +44,11 @@ DIFFERENTIATION_ALPHA_DECAY_RATE = _env_float("DIFFERENTIATION_ALPHA_DECAY_RATE"
 # ── Think 루프 ───────────────────────────────────────────────────────────────
 THINK_MAX_LOOPS = _env_int("THINK_MAX_LOOPS", 10)
 
+# 검색 ingest 시 co_occurrence 엣지 생성에 사용할 ConceptPointer 최대 수.
+# known_hashes 중 stability_score 상위 N개만 선택한다.
+# 파티클("이", "가", "을")처럼 stability가 낮은 노드가 자동으로 걸러진다.
+SEARCH_CO_OCCURRENCE_MAX_CP = _env_int("SEARCH_CO_OCCURRENCE_MAX_CP", 5)
+
 # ── 세계그래프 커밋 강도 ─────────────────────────────────────────────────────
 COMMIT_TRUST_STRONG = _env_float("COMMIT_TRUST_STRONG", 0.7)
 COMMIT_TRUST_WEAK = _env_float("COMMIT_TRUST_WEAK", 0.15)
