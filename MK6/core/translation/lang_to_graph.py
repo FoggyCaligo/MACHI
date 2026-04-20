@@ -289,10 +289,17 @@ async def translate(
     token_embs: dict[str, list[float]] = {}
     if all_tokens:
         unique_tokens = list(dict.fromkeys(all_tokens))  # 중복 제거, 순서 유지
+        # return_exceptions=True: 일부 임베딩 실패(ReadTimeout 등)가 있어도
+        # 나머지는 정상 처리. 실패한 토큰은 token_embs에서 누락 → 길이 기반 폴백.
         emb_results = await asyncio.gather(
-            *[embed_fn(normalize_text(t)) for t in unique_tokens]
+            *[embed_fn(normalize_text(t)) for t in unique_tokens],
+            return_exceptions=True,
         )
-        token_embs = dict(zip(unique_tokens, emb_results))
+        token_embs = {
+            tok: emb
+            for tok, emb in zip(unique_tokens, emb_results)
+            if isinstance(emb, list)
+        }
 
     # 토큰별 최종 resolve → near/far 분리 → nodes/edges 추가
     all_near_refs: list[ConceptRef] = []

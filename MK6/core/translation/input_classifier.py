@@ -114,10 +114,16 @@ async def classify(
         return result
 
     # 입력 임베딩과 캐시된 프로토타입 임베딩을 병렬 획득
-    input_emb, proto_embs = await asyncio.gather(
-        embed_fn(text),
-        _get_proto_embeddings(embed_fn),
-    )
+    # 임베딩 모델이 느리거나 콜드 스타트이면 ReadTimeout이 발생할 수 있다.
+    # 분류 실패 시 "natural"로 안전 폴백 — 자연어가 가장 일반적인 입력이므로
+    # 잘못된 분류보다 폴백이 낫다.
+    try:
+        input_emb, proto_embs = await asyncio.gather(
+            embed_fn(text),
+            _get_proto_embeddings(embed_fn),
+        )
+    except Exception:
+        return "natural"
 
     scores: dict[InputType, float] = {
         kind: _cosine(input_emb, emb)
