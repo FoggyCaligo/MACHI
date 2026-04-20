@@ -52,6 +52,9 @@ DIFFERENTIATION_ALPHA_DECAY_RATE = _env_float("DIFFERENTIATION_ALPHA_DECAY_RATE"
 
 # ── Think 루프 ───────────────────────────────────────────────────────────────
 THINK_MAX_LOOPS = _env_int("THINK_MAX_LOOPS", 10)
+# 검색 전체(DDG + Wikipedia)에 대한 asyncio 레벨 타임아웃 (초).
+# 이 시간 안에 search_fn이 완료되지 않으면 검색 결과 없이 계속 진행한다.
+SEARCH_TIMEOUT = _env_float("SEARCH_TIMEOUT", 20.0)
 
 # ── 세계그래프 커밋 강도 ─────────────────────────────────────────────────────
 COMMIT_TRUST_STRONG = _env_float("COMMIT_TRUST_STRONG", 0.7)

@@ -11,11 +11,20 @@
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
+
+
+def _t(label: str, start: float) -> float:
+    """경과 시간을 출력하고 현재 시각을 반환한다."""
+    elapsed = time.perf_counter() - start
+    print(f"[think] {label}: {elapsed:.3f}s")
+    return time.perf_counter()
 
 from ..entities.node import Node
 from ..entities.edge import Edge
@@ -219,6 +228,7 @@ class ThoughtEngine:
         Returns:
             ConclusionView — GraphToLang에 넘길 최종 그래프 구조
         """
+        _t0 = time.perf_counter()
         tg = TempThoughtGraph()
 
         # ── 임시 사고 그래프 구성 ─────────────────────────────────────────────
@@ -238,6 +248,8 @@ class ThoughtEngine:
                 tg.connect_to_goal(ref.address_hash)
                 known_hashes.add(ref.address_hash)
 
+        _t0 = _t("graph init", _t0)
+
         had_empty_slots = tg.has_empty_slots()
         loop_count = 0
         prev_node_count = len(tg.all_nodes())
@@ -250,14 +262,18 @@ class ThoughtEngine:
 
             # 1. EmptySlot 처리 — 필요 시 검색
             if tg.has_empty_slots():
+                _ts = time.perf_counter()
                 await self._fill_empty_slots(
                     tg, user_input=user_input, known_hashes=known_hashes
                 )
+                _t0 = _t(f"fill_empty_slots (loop {loop_count})", _ts)
                 # fill 완료 후 EmptySlot 엔드포인트 포함 TranslatedEdge 추가
                 _add_translated_edges(tg, translated.edges, _te_added_keys)
 
             # 2. ConceptDifferentiation
+            _td = time.perf_counter()
             diff_results = concept_differentiation.run(tg)
+            _t(f"concept_diff (loop {loop_count})", _td)
 
             # 3. 유의미한 분화가 발생했으면 약한 커밋 (즉시)
             for result in diff_results:
@@ -276,7 +292,9 @@ class ThoughtEngine:
         concept_differentiation.run(tg)
 
         # ── 세계그래프 강한 커밋 (새로 추가된 노드/엣지) ─────────────────────
+        _tc = time.perf_counter()
         self._commit_new_content(tg)
+        _t("commit_new_content", _tc)
 
         return ConclusionView(
             nodes=tg.all_nodes(),
@@ -288,6 +306,72 @@ class ThoughtEngine:
             user_input=user_input,
             known_hashes=known_hashes,
         )
+
+    def _add_search_result_edges(
+        self,
+        tg: TempThoughtGraph,
+        search_text: str,
+    ) -> None:
+        """검색 결과 텍스트에서 TempThoughtGraph에 이미 존재하는 노드 사이의 엣지를 추가한다.
+
+        LLM/임베딩을 사용하지 않는다. DB exact match (words 테이블)만 사용한다.
+
+        처리 순서:
+        1. extract_tokens으로 토크나이징 (구두점·조사 제거)
+        2. 각 토큰을 normalize → words 테이블 exact match → address_hash 획득
+        3. 해당 hash가 TempThoughtGraph에 존재하면 "언급된 기존 노드" 목록에 추가
+        4. 목록 내 모든 쌍에 co_occurrence 엣지 생성 (이미 연결된 쌍 제외)
+        """
+        from ..translation.token_splitter import extract_tokens
+        from ..utils.hash_resolver import normalize_text
+
+        tokens = extract_tokens(search_text)
+        if not tokens:
+            return
+
+        # exact match로 TempThoughtGraph에 존재하는 노드만 수집 (순서 유지, 중복 제거)
+        mentioned: list[str] = []   # address_hash 목록
+        seen_hashes: set[str] = set()
+        for token in tokens:
+            normalized = normalize_text(token)
+            word_entry = get_word(self._conn, normalized)
+            if word_entry is None:
+                continue
+            h = word_entry.address_hash
+            if h in seen_hashes:
+                continue
+            if tg.get_node(h) is None:
+                continue
+            seen_hashes.add(h)
+            mentioned.append(h)
+
+        if len(mentioned) < 2:
+            return
+
+        # 존재하는 노드 쌍에 엣지 추가 (중복 방지)
+        now = datetime.now(timezone.utc)
+        added_keys: set[tuple[str, str]] = set()
+
+        for i, src_hash in enumerate(mentioned):
+            for tgt_hash in mentioned[i + 1:]:
+                key = (src_hash, tgt_hash)
+                if key in added_keys:
+                    continue
+                added_keys.add(key)
+                tg.add_edge(Edge(
+                    edge_id=str(uuid.uuid4()),
+                    source_hash=src_hash,
+                    target_hash=tgt_hash,
+                    edge_family="concept",
+                    connect_type="neutral",
+                    edge_weight=0.5,
+                    provenance_source="search",
+                    proposed_connect_type="co_occurrence",
+                    proposal_reason="검색 결과에서 함께 등장한 기존 개념",
+                    is_temporary=False,
+                    created_at=now,
+                    updated_at=now,
+                ))
 
     async def _fill_empty_slots(
         self,
@@ -313,16 +397,28 @@ class ThoughtEngine:
 
         # user_input이 있으면 원문을 쿼리로, 없으면 hint 합산
         query = user_input or " ".join(slot.concept_hint for slot in slots)
-        search_text = await self._search_fn(query)
+
+        _ts = time.perf_counter()
+        try:
+            search_text = await asyncio.wait_for(
+                self._search_fn(query),
+                timeout=config.SEARCH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            print(f"[think] search_fn timeout ({config.SEARCH_TIMEOUT}s) — 검색 결과 없이 계속")
+            search_text = None
+        _t(f"search_fn ({len(slots)} slots)", _ts)
 
         # 각 슬롯을 ingest — 검색 결과를 payload에 함께 저장
         ingested_nodes: list[Node] = []
+        _ti = time.perf_counter()
         for slot in slots:
             node = await self._ingest_slot(slot, search_text=search_text)
             if node is not None:
                 tg.fill_slot(slot, node)
                 tg.connect_to_goal(node.address_hash)
                 ingested_nodes.append(node)
+        _t(f"ingest_slots x{len(slots)}", _ti)
 
         # 검색 컨텍스트에서 함께 등장한 노드들 간 co_occurrence 엣지 생성.
         # 새 노드는 만들지 않고, 같은 쿼리에서 함께 등장한 개념들만 연결한다:
@@ -372,6 +468,12 @@ class ThoughtEngine:
                             created_at=now,
                             updated_at=now,
                         ))
+
+        # 검색 결과 텍스트로부터 기존 노드 간 엣지 추가.
+        # TempThoughtGraph에 이미 존재하는 ConceptPointer 쌍에 대해서만 엣지를 생성한다.
+        # EmptySlot 엔드포인트는 건너뜀 — 새 노드를 만들지 않는다.
+        if search_text:
+            self._add_search_result_edges(tg, search_text)
 
     async def _ingest_slot(
         self,

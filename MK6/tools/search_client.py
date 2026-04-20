@@ -20,6 +20,8 @@ import httpx
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 
 _DDG_MAX_RESULTS  = 5
+_DDG_TIMEOUT      = 8.0  # DDGS HTTP 소켓 타임아웃 (초)
+_DDG_GATHER_TIMEOUT = 12.0  # 두 지역 DDG 병렬 gather 전체 상한 (초)
 _WIKI_MAX_RESULTS = 3    # 언어별 최대 문서 수
 _WIKI_TIMEOUT     = 8.0  # Wikipedia API 타임아웃 (초)
 _MAX_TEXT_LEN     = 2500 # 최종 텍스트 최대 길이
@@ -28,9 +30,13 @@ _MAX_TEXT_LEN     = 2500 # 최종 텍스트 최대 길이
 # ── DuckDuckGo ────────────────────────────────────────────────────────────────
 
 def _ddg_search_sync(query: str, region: str) -> list[dict[str, Any]]:
-    """동기 DuckDuckGo 검색. asyncio.to_thread 안에서 실행된다."""
+    """동기 DuckDuckGo 검색. asyncio.to_thread 안에서 실행된다.
+
+    DDGS(timeout=...) 로 소켓 수준 타임아웃을 설정한다.
+    asyncio 레벨 취소는 스레드를 멈추지 못하므로 여기서 직접 제한한다.
+    """
     from ddgs import DDGS
-    with DDGS() as ddgs:
+    with DDGS(timeout=_DDG_TIMEOUT) as ddgs:
         return list(ddgs.text(
             query,
             max_results=_DDG_MAX_RESULTS,
@@ -39,26 +45,18 @@ def _ddg_search_sync(query: str, region: str) -> list[dict[str, Any]]:
         ))
 
 
-def _ddg_results_to_parts(results: list[dict[str, Any]]) -> list[str]:
-    parts: list[str] = []
-    for r in results:
-        title = (r.get("title") or "").strip()
-        body  = (r.get("body")  or "").strip()
-        if title and body:
-            parts.append(f"{title}. {body}")
-        elif body:
-            parts.append(body)
-        elif title:
-            parts.append(title)
-    return parts
-
-
 async def _ddg_search(query: str) -> list[str]:
-    """DuckDuckGo 결과를 한국(kr-ko) + 미국(us-en) 두 지역에서 검색해 반환한다."""
+    """DuckDuckGo 결과를 한국(kr-ko) + 미국(us-en) 두 지역에서 검색해 반환한다.
+
+    _DDG_GATHER_TIMEOUT 초 안에 완료되지 않으면 빈 리스트를 반환한다.
+    """
     try:
-        kr_results, us_results = await asyncio.gather(
-            asyncio.to_thread(_ddg_search_sync, query, "kr-ko"),
-            asyncio.to_thread(_ddg_search_sync, query, "us-en"),
+        kr_results, us_results = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(_ddg_search_sync, query, "kr-ko"),
+                asyncio.to_thread(_ddg_search_sync, query, "us-en"),
+            ),
+            timeout=_DDG_GATHER_TIMEOUT,
         )
     except Exception:
         return []

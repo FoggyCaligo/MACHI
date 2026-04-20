@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+import time
 from dataclasses import dataclass
 
 from ..core.entities.node import Node
@@ -206,8 +207,12 @@ class Pipeline:
             user_input: 사용자 메시지 (파일 내용 포함 가능)
             model:      사용할 생성 모델 (None이면 config.OLLAMA_MODEL_NAME)
         """
+        _p0 = time.perf_counter()
+
         # 1. 언어 → 그래프 번역
         translated = await lang_to_graph(user_input, self._conn, get_embedding)
+        _p1 = time.perf_counter()
+        print(f"[pipeline] lang_to_graph: {_p1 - _p0:.3f}s")
 
         # 2. Think 루프
         engine = ThoughtEngine(
@@ -217,9 +222,12 @@ class Pipeline:
             goal_node=self._goal_node,
         )
         conclusion = await engine.think(translated, model=model, user_input=user_input)
+        _p2 = time.perf_counter()
+        print(f"[pipeline] think: {_p2 - _p1:.3f}s")
 
         # 3. 그래프 → 언어
         response_text = await graph_to_lang(conclusion)
+        print(f"[pipeline] graph_to_lang+LLM: {time.perf_counter() - _p2:.3f}s")
 
         return PipelineResult(
             response_text=response_text,
