@@ -63,6 +63,10 @@ class ConclusionView:
     ref_hashes: set[str] = field(default_factory=set)
     # ref_hashes: far 그룹 (centroid 먼 토큰) — GraphToLang 참고 개념 분류 기준.
     # 두 필드 모두 언어 구조 기반이며 그래프 상태(DB 존재 여부)와 무관하다.
+    search_node_hashes: set[str] = field(default_factory=set)
+    # search_node_hashes: 이번 세션에서 _ingest_slot이 search_summary를 설정한 노드 해시.
+    # GraphToLang 검색 컨텍스트 수집 시 이 해시만 대상으로 하여
+    # 이전 세션에서 로드된 이웃 노드의 search_summary가 새어나오는 것을 방지한다.
 
 
 # ── 세계그래프 커밋 ───────────────────────────────────────────────────────────
@@ -261,6 +265,7 @@ class ThoughtEngine:
         loop_count = 0
         prev_node_count = len(tg.all_nodes())
         prev_edge_count = len(tg.all_edges())
+        search_node_hashes: set[str] = set()   # 이번 세션 search_summary 설정 노드 누적
 
         # ── Think 루프 ────────────────────────────────────────────────────────
         while loop_count < config.THINK_MAX_LOOPS:
@@ -271,9 +276,10 @@ class ThoughtEngine:
             # 1. EmptySlot 처리 — 필요 시 검색
             if tg.has_empty_slots():
                 _ts = time.perf_counter()
-                await self._fill_empty_slots(
+                newly_searched = await self._fill_empty_slots(
                     tg, user_input=user_input, concept_hashes=key_hashes | ref_hashes
                 )
+                search_node_hashes |= newly_searched
                 _t0 = _t(f"fill_empty_slots (loop {loop_count})", _ts)
                 # fill 완료 후 EmptySlot 엔드포인트 포함 TranslatedEdge 추가
                 _add_translated_edges(tg, translated.edges, _te_added_keys)
@@ -328,6 +334,7 @@ class ThoughtEngine:
             user_input=user_input,
             key_hashes=key_hashes,
             ref_hashes=ref_hashes,
+            search_node_hashes=search_node_hashes,
         )
 
     def _add_search_result_edges(
@@ -401,8 +408,12 @@ class ThoughtEngine:
         tg: TempThoughtGraph,
         user_input: str | None = None,
         concept_hashes: set[str] | None = None,
-    ) -> None:
+    ) -> set[str]:
         """EmptySlot 전체를 1회 검색 → 각 슬롯을 ingest.
+
+        Returns:
+            이번 호출에서 search_summary가 실제로 설정된 노드 해시 집합.
+            GraphToLang 검색 컨텍스트를 이번 세션 결과로만 제한하는 데 사용한다.
 
         설계:
         - 슬롯마다 개별 검색하지 않는다. user_input 원문(있으면)을 검색 쿼리로 쓴다.
@@ -416,7 +427,7 @@ class ThoughtEngine:
         """
         slots = list(tg.empty_slots)
         if not slots:
-            return
+            return set()
 
         # user_input이 있으면 원문을 쿼리로, 없으면 hint 합산
         query = user_input or " ".join(slot.concept_hint for slot in slots)
@@ -435,13 +446,16 @@ class ThoughtEngine:
 
         # 각 슬롯을 ingest — 검색 결과를 payload에 함께 저장
         ingested_nodes: list[Node] = []
+        session_search_hashes: set[str] = set()   # 이번 호출에서 search_summary 설정된 해시
         _ti = time.perf_counter()
         for slot in slots:
-            node = await self._ingest_slot(slot, search_text=search_text)
+            node, got_search = await self._ingest_slot(slot, search_text=search_text)
             if node is not None:
                 tg.fill_slot(slot, node)
                 tg.connect_to_goal(node.address_hash)
                 ingested_nodes.append(node)
+                if got_search:
+                    session_search_hashes.add(node.address_hash)
         _t(f"ingest_slots x{len(slots)}", _ti)
 
         # 검색 컨텍스트에서 함께 등장한 노드들 간 co_occurrence 엣지 생성.
@@ -499,11 +513,13 @@ class ThoughtEngine:
         if search_text:
             self._add_search_result_edges(tg, search_text)
 
+        return session_search_hashes
+
     async def _ingest_slot(
         self,
         slot: EmptySlot,
         search_text: str | None = None,
-    ) -> Node | None:
+    ) -> tuple[Node | None, bool]:
         """EmptySlot을 hint 기반 신규 노드로 등록한다.
 
         처리:
@@ -519,13 +535,16 @@ class ThoughtEngine:
                          GraphToLang이 이를 LLM 컨텍스트로 활용한다.
 
         Returns:
-            생성 또는 기존 Node. 임베딩 실패 시 None.
+            (Node | None, bool):
+            - Node: 생성 또는 기존 Node. 임베딩 실패 시 None.
+            - bool: 이번 호출에서 search_summary가 실제로 설정됐으면 True.
+                    이전 세션에서 이미 있던 search_summary는 False.
         """
         _SUMMARY_MAX = 800   # payload에 저장할 검색 요약 최대 길이
 
         hint = slot.concept_hint.strip()
         if not hint:
-            return None
+            return None, False
 
         address_hash = compute_hash(hint)
 
@@ -537,7 +556,8 @@ class ThoughtEngine:
                 existing.touch()
                 update_node(self._conn, existing)
                 self._conn.commit()
-            return existing
+                return existing, True   # 이번에 새로 설정
+            return existing, False       # 이미 있었거나 search_text 없음
 
         # 임베딩 계산
         try:
@@ -580,7 +600,7 @@ class ThoughtEngine:
             ))
 
         self._conn.commit()
-        return node
+        return node, bool(search_text)   # 신규 노드면 search_text가 있으면 True
 
     def _commit_new_content(self, tg: TempThoughtGraph) -> None:
         """임시 사고 그래프의 결과를 WorldGraph에 반영한다.

@@ -89,13 +89,16 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         weight_str = f"{weight:.2f}".rstrip("0").rstrip(".")
         edge_lines.append(f"  - {src_str} →[{connect_type}, {weight_str}]→ {tgt_str}")
 
-    # ── 검색 컨텍스트: payload["search_summary"] 보유 노드 수집 ─────────────
+    # ── 검색 컨텍스트: 이번 세션에서 search_summary가 설정된 노드만 수집 ──────
+    # conclusion.search_node_hashes: _ingest_slot이 이번 요청 중 search_summary를
+    # 실제로 설정한 노드 해시 집합. 이전 세션에서 로드된 이웃 노드의 summary가
+    # 새어나오는 것을 방지한다.
     _SEARCH_CTX_MAX = 600   # 시스템 메시지에 포함할 검색 요약 최대 길이
     seen_summaries: set[str] = set()
     search_ctx_parts: list[str] = []
     for node in conclusion.nodes:
-        # search_summary가 있는 노드의 요약을 LLM 컨텍스트에 포함한다.
-        # seen_summaries 중복 제거로 동일 요약이 두 번 들어가지 않는다.
+        if node.address_hash not in conclusion.search_node_hashes:
+            continue
         summary = node.payload.get("search_summary", "")
         if not summary:
             continue
