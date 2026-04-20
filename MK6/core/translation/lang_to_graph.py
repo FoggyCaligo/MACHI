@@ -95,6 +95,11 @@ def _filter_top_ratio(
     centroid에 가장 가까운 NEAR_RATIO 비율 (문장 대표 개념) +
     centroid에서 가장 먼 FAR_RATIO 비율 (도메인 특이 개념·고유명사)의
     합집합을 선택한다. 최소 TOKEN_IMPORTANCE_MIN개는 보장한다.
+
+    선택 가능 풀(selectable): 2자 이상 토큰만 포함.
+    조사·어미 분리로 생성된 1자 토큰("는", "을", "의" 등)은 centroid 계산에는
+    참여하지만 near/far 선택 대상에서 제외된다.
+    이는 문자열 리스트가 아닌 구조적 길이 기준이므로 휴리스틱이 아니다.
     """
     if not sentence_pairs:
         return []
@@ -105,18 +110,24 @@ def _filter_top_ratio(
 
     scores = _importance_scores(tokens, refs, token_embs)
 
-    # 점수 내림차순 정렬 인덱스
-    sorted_desc = sorted(range(n), key=lambda i: scores[i], reverse=True)
+    # 2자 이상 토큰만 선택 대상으로 한정 — 1자 조사·어미 제외
+    selectable = [i for i in range(n) if len(tokens[i]) >= 2]
 
-    n_near = max(1, math.ceil(n * config.TOKEN_IMPORTANCE_NEAR_RATIO))
-    n_far  = max(1, math.ceil(n * config.TOKEN_IMPORTANCE_FAR_RATIO))
+    if not selectable:
+        # 모두 1자 토큰인 극단적 경우 — 전체 대상으로 폴백
+        selectable = list(range(n))
 
-    near_indices: set[int] = set(sorted_desc[:n_near])           # 상위 (centroid 근접)
-    far_indices:  set[int] = set(sorted_desc[max(0, n - n_far):])  # 하위 (centroid 원거리)
+    sorted_desc = sorted(selectable, key=lambda i: scores[i], reverse=True)
+
+    n_near = max(1, math.ceil(len(selectable) * config.TOKEN_IMPORTANCE_NEAR_RATIO))
+    n_far  = max(1, math.ceil(len(selectable) * config.TOKEN_IMPORTANCE_FAR_RATIO))
+
+    near_indices: set[int] = set(sorted_desc[:n_near])
+    far_indices:  set[int] = set(sorted_desc[max(0, len(sorted_desc) - n_far):])
 
     selected = near_indices | far_indices
 
-    # 최소 보장: 부족하면 점수 순으로 추가
+    # 최소 보장: selectable 내에서 점수 순으로 추가
     if len(selected) < config.TOKEN_IMPORTANCE_MIN:
         for idx in sorted_desc:
             selected.add(idx)

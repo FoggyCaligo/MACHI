@@ -29,42 +29,47 @@ _MAX_TEXT_LEN     = 2500 # 최종 텍스트 최대 길이
 
 # ── DuckDuckGo ────────────────────────────────────────────────────────────────
 
-def _ddg_search_sync(query: str, region: str) -> list[dict[str, Any]]:
+def _ddg_search_sync(query: str) -> list[dict[str, Any]]:
     """동기 DuckDuckGo 검색. asyncio.to_thread 안에서 실행된다.
 
     DDGS(timeout=...) 로 소켓 수준 타임아웃을 설정한다.
-    asyncio 레벨 취소는 스레드를 멈추지 못하므로 여기서 직접 제한한다.
+    스레드 풀 고갈 방지를 위해 단일 스레드만 사용한다 (지역 병렬화 제거).
     """
     from ddgs import DDGS
     with DDGS(timeout=_DDG_TIMEOUT) as ddgs:
-        return list(ddgs.text(
+        kr = list(ddgs.text(
             query,
             max_results=_DDG_MAX_RESULTS,
-            region=region,
+            region="kr-ko",
             safesearch="moderate",
         ))
+        us = list(ddgs.text(
+            query,
+            max_results=_DDG_MAX_RESULTS,
+            region="us-en",
+            safesearch="moderate",
+        ))
+    return kr + us
 
 
 async def _ddg_search(query: str) -> list[str]:
-    """DuckDuckGo 결과를 한국(kr-ko) + 미국(us-en) 두 지역에서 검색해 반환한다.
+    """DuckDuckGo 결과를 반환한다.
 
+    단일 스레드에서 kr-ko → us-en 순으로 검색해 스레드 풀 고갈을 방지한다.
     _DDG_GATHER_TIMEOUT 초 안에 완료되지 않으면 빈 리스트를 반환한다.
     """
     try:
-        kr_results, us_results = await asyncio.wait_for(
-            asyncio.gather(
-                asyncio.to_thread(_ddg_search_sync, query, "kr-ko"),
-                asyncio.to_thread(_ddg_search_sync, query, "us-en"),
-            ),
+        results: list[dict[str, Any]] = await asyncio.wait_for(
+            asyncio.to_thread(_ddg_search_sync, query),
             timeout=_DDG_GATHER_TIMEOUT,
         )
     except Exception:
         return []
 
-    # 중복 제거: body 기준으로 이미 추가된 텍스트는 건너뜀
+    # 중복 제거: body 기준
     seen: set[str] = set()
     parts: list[str] = []
-    for r in list(kr_results) + list(us_results):
+    for r in results:
         body = (r.get("body") or "").strip()
         if not body or body in seen:
             continue

@@ -259,6 +259,7 @@ class ThoughtEngine:
         while loop_count < config.THINK_MAX_LOOPS:
             loop_count += 1
             tg.reset_delta()
+            print(f"[think] loop {loop_count} start  nodes={len(tg.all_nodes())}  empty_slots={len(tg.empty_slots)}")
 
             # 1. EmptySlot 처리 — 필요 시 검색
             if tg.has_empty_slots():
@@ -397,6 +398,7 @@ class ThoughtEngine:
 
         # user_input이 있으면 원문을 쿼리로, 없으면 hint 합산
         query = user_input or " ".join(slot.concept_hint for slot in slots)
+        print(f"[think] search start  query_len={len(query)}  slots={len(slots)}")
 
         _ts = time.perf_counter()
         try:

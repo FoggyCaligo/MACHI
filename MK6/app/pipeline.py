@@ -46,16 +46,12 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
         label_str = node.labels[0]
 
-        # known_hashes: think() 시작 시점에 이미 DB에 존재하던 ConceptPointer 노드.
-        # → 핵심 키워드 (AI가 이미 알고 있던 개념)
-        # 신규 ingest 노드 → 참고 개념 (이번 대화에서 처음 등장)
-        # 핵심 키워드: DB에 이미 있던 개념(ConceptPointer) 또는 이번 입력에서 직접 등장한 신규 ingest 노드
-        # 신규 ingest 노드는 stability_score == COMMIT_STABILITY_WEAK (0.1) 로 생성된다.
-        # 참고 개념: LocalSubgraph 이웃 노드 등 그래프 컨텍스트로 로드된 기존 노드
-        is_from_input = (
-            node.address_hash in conclusion.known_hashes       # ConceptPointer (기존 개념)
-            or node.stability_score <= config.COMMIT_STABILITY_WEAK  # 신규 ingest (이번 입력)
-        )
+        # 핵심 키워드: think() 시작 시점에 이미 DB에 존재하던 개념(ConceptPointer).
+        #   → Machi가 이전 대화를 통해 이미 알고 있던 개념.
+        # 참고 개념: 이번 대화에서 새로 ingest된 노드 (신규 개념, 조사 잔재 포함).
+        #   → stability_score 기준으로 핵심 키워드에 포함하지 않는다.
+        #   → 새 ingest 노드는 참고 개념으로 노출되어 LLM이 2차적으로 활용한다.
+        is_from_input = node.address_hash in conclusion.known_hashes
         if is_from_input:
             key_labels.append(label_str)
         else:
