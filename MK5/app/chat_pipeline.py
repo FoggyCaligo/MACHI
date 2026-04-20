@@ -26,6 +26,7 @@ DB_PATH = PROJECT_ROOT / 'data' / 'memory.db'
 SCHEMA_PATH = PROJECT_ROOT / 'storage' / 'schema.sql'
 DEFAULT_MODEL_NAME = 'mk5-graph-core'
 SEARCH_MODEL_SELECTION_REQUIRED_ERROR = 'question slot planner requires a selectable LLM model'
+_THINK_SEARCH_MAX_LOOPS = 3  # Think → Search 루프 최대 반복 횟수
 
 
 class UserFacingChatError(RuntimeError):
@@ -113,28 +114,39 @@ class ChatPipeline:
                 content=request.message,
             )
         )
-        thought_result = self.thought_engine.think(
-            ThoughtRequest(
-                session_id=request.session_id,
-                message_id=ingest_result.message_id,
-                message_text=request.message,
-            ),
-            thought_view,
-        )
-        if thought_result.core_conclusion is None:
-            raise RuntimeError('ThoughtEngine did not produce core_conclusion')
-
-        search_run = self.search_sidecar.run(
-            message=request.message,
-            thought_view=thought_view,
-            conclusion=thought_result.core_conclusion,
-            model_name=request.model_name,
-        )
-        self._raise_if_search_requires_model_selection(request=request, search_run=search_run)
-        search_results: list[SearchEvidence] = search_run.results
+        # ── Think → Search 루프 (최대 _THINK_SEARCH_MAX_LOOPS 회) ──────────────────
+        # 매 회차: Think → 검색 필요 없으면 break → 검색 결과 Ingest → Re-Activation → 반복
+        # for-else: break 없이 최대 횟수 도달 시 마지막 enriched 뷰로 최종 Think 1회 추가
+        search_run: SearchRunResult | None = None
+        all_search_results: list[SearchEvidence] = []
         search_ingest_results: list[GraphIngestResult] = []
-        if search_results:
-            for index, item in enumerate(search_results, start=1):
+
+        for _loop_index in range(_THINK_SEARCH_MAX_LOOPS):
+            thought_result = self.thought_engine.think(
+                ThoughtRequest(
+                    session_id=request.session_id,
+                    message_id=ingest_result.message_id,
+                    message_text=request.message,
+                ),
+                thought_view,
+            )
+            if thought_result.core_conclusion is None:
+                raise RuntimeError('ThoughtEngine did not produce core_conclusion')
+
+            search_run = self.search_sidecar.run(
+                message=request.message,
+                thought_view=thought_view,
+                conclusion=thought_result.core_conclusion,
+                model_name=request.model_name,
+            )
+            self._raise_if_search_requires_model_selection(request=request, search_run=search_run)
+
+            if not search_run.results:
+                # 검색 결과 없음(또는 검색 불필요) → 현재 thought_result가 최종
+                break
+
+            # 검색 결과 Ingest
+            for index, item in enumerate(search_run.results, start=len(all_search_results) + 1):
                 search_ingest_results.append(
                     self.ingest_service.ingest(
                         GraphIngestRequest(
@@ -154,12 +166,19 @@ class ChatPipeline:
                         )
                     )
                 )
+            all_search_results.extend(search_run.results)
+
+            # Re-Activation: 다음 Think를 위해 enriched 그래프 상태로 뷰 재구성
             thought_view = self.activation_engine.build_view(
                 ActivationRequest(
                     session_id=request.session_id,
                     content=request.message,
                 )
             )
+
+        else:
+            # for-else: break 없이 최대 횟수(_THINK_SEARCH_MAX_LOOPS) 도달
+            # → 마지막 검색 결과가 반영된 뷰로 최종 Think 1회 추가 실행
             thought_result = self.thought_engine.think(
                 ThoughtRequest(
                     session_id=request.session_id,
@@ -169,14 +188,10 @@ class ChatPipeline:
                 thought_view,
             )
             if thought_result.core_conclusion is None:
-                raise RuntimeError('ThoughtEngine did not produce core_conclusion after search enrichment')
-            if search_run.slot_plan is not None and not search_run.decision.metadata.get('post_search_refined'):
-                search_run.decision = self.search_sidecar.need_evaluator.evaluate(
-                    message=request.message,
-                    thought_view=thought_view,
-                    conclusion=thought_result.core_conclusion,
-                    slot_plan=search_run.slot_plan,
-                )
+                raise RuntimeError('ThoughtEngine did not produce core_conclusion after max search loops')
+
+        if search_run is None:  # defensive: _THINK_SEARCH_MAX_LOOPS > 0 이므로 실제 불가
+            raise RuntimeError('Think-Search loop produced no search run')
 
         intent_snapshot_meta = dict(thought_result.metadata.get('intent_snapshot', {}) or {})
         temporary_edge_cleanup_result: TemporaryEdgeCleanupResult = self.temporary_edge_service.cleanup_on_topic_shift(
@@ -334,7 +349,7 @@ class ChatPipeline:
                 'issued_slot_queries': (search_run.plan.metadata or {}).get('issued_slot_queries', []),
                 'planned_aspect_extraction': (search_run.plan.metadata or {}).get('planned_aspect_extraction', []),
             } if search_run.plan else None,
-            'results': [asdict(item) for item in search_results],
+            'results': [asdict(item) for item in all_search_results],
             'provider_errors': search_grounding['provider_errors'],
             'grounded_terms': search_grounding['grounded_terms'],
             'missing_terms': search_grounding['missing_terms'],
