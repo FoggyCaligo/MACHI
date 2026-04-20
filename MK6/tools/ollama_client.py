@@ -73,6 +73,60 @@ async def generate(prompt: str, model: str | None = None) -> str:
     return r.json()["response"]
 
 
+async def chat(
+    system: str,
+    user: str,
+    model: str | None = None,
+) -> str:
+    """Ollama chat 엔드포인트로 텍스트를 생성한다 (non-streaming).
+
+    system 메시지와 user 메시지를 분리해 전달한다.
+
+    Args:
+        system: 시스템 메시지 (AI의 역할/인식 상태 정의)
+        user:   사용자 메시지
+        model:  사용할 모델 이름. None이면 config.OLLAMA_MODEL_NAME 사용.
+
+    Raises:
+        ValueError: 모델명 미설정 또는 Ollama 거부 (400)
+        TimeoutError: 응답 타임아웃
+        httpx.HTTPError: 그 외 네트워크/HTTP 오류
+    """
+    model_name = model or config.OLLAMA_MODEL_NAME
+    if not model_name:
+        raise ValueError(
+            "OLLAMA_MODEL_NAME 환경변수가 설정되지 않았습니다. "
+            "UI에서 모델을 선택하거나 환경변수를 지정하세요."
+        )
+    url = f"{config.OLLAMA_HOST}/api/chat"
+    try:
+        async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_SECONDS) as client:
+            r = await client.post(
+                url,
+                json={
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user",   "content": user},
+                    ],
+                    "stream": False,
+                    "options": {"num_predict": config.OLLAMA_NUM_PREDICT},
+                },
+            )
+    except httpx.ReadTimeout:
+        raise TimeoutError(
+            f"Ollama 모델 '{model_name}'이 {config.OLLAMA_TIMEOUT_SECONDS:.0f}초 안에 응답하지 않았습니다."
+        )
+
+    if r.status_code == 400:
+        raise ValueError(
+            f"Ollama가 모델 '{model_name}'로 chat 요청을 거부했습니다 (400). "
+            "임베딩 전용 모델을 선택했거나 모델 이름이 올바르지 않을 수 있습니다."
+        )
+    r.raise_for_status()
+    return r.json()["message"]["content"]
+
+
 async def list_models() -> list[str]:
     """Ollama에 설치된 텍스트 생성 가능 모델 목록을 반환한다.
 

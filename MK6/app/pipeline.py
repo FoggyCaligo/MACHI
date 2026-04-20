@@ -13,7 +13,7 @@ from ..core.storage.db import open_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.thinking.thought_engine import ThoughtEngine, ConclusionView
-from ..tools.ollama_client import get_embedding, generate
+from ..tools.ollama_client import get_embedding, generate, chat as llm_chat
 from ..tools.search_client import search as _search
 from .. import config
 
@@ -27,38 +27,38 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     레이블 없는 추상 노드는 이웃 노드의 레이블과 엣지 관계로 간접 표현한다.
     """
     # ── 구조 직렬화 ───────────────────────────────────────────────────────────
-    def _trust_label(t: float) -> str:
-        if t >= 0.7:
-            return "확실"
-        if t >= 0.3:
-            return "보통"
-        return "불확실"
+    # ── 노드 분류: trust >= 0.3 → 핵심 키워드, 미만 → 참고 개념 ─────────────
+    key_labels: list[str] = []
+    ref_labels: list[str] = []
+    node_map = {n.address_hash: n for n in conclusion.nodes}
 
-    node_lines: list[str] = []
     for node in conclusion.nodes:
         if node.address_hash == conclusion.goal_hash:
             continue
         if node.labels:
             label_str = node.labels[0]
         else:
-            # 추상 노드: 이웃 노드 레이블로 간접 표현
             neighbor_hashes = {
                 e.target_hash if e.source_hash == node.address_hash else e.source_hash
                 for e in conclusion.edges
                 if e.source_hash == node.address_hash or e.target_hash == node.address_hash
             }
-            neighbor_labels = []
-            for h in neighbor_hashes:
-                neighbor = next((n for n in conclusion.nodes if n.address_hash == h), None)
-                if neighbor and neighbor.labels:
-                    neighbor_labels.append(neighbor.labels[0])
+            neighbor_labels = [
+                node_map[h].labels[0]
+                for h in neighbor_hashes
+                if h in node_map and node_map[h].labels
+            ]
             if not neighbor_labels:
                 continue
             label_str = f"[{', '.join(neighbor_labels)}의 공통 개념]"
-        node_lines.append(f"  - {label_str} (신뢰도: {_trust_label(node.trust_score)})")
 
+        if node.trust_score >= 0.3:
+            key_labels.append(label_str)
+        else:
+            ref_labels.append(label_str)
+
+    # ── 엣지: 비임시 엣지 → 근거 연결 ───────────────────────────────────────
     edge_lines: list[str] = []
-    node_map = {n.address_hash: n for n in conclusion.nodes}
     for edge in conclusion.edges:
         if edge.is_temporary:
             continue
@@ -66,24 +66,35 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         tgt = node_map.get(edge.target_hash)
         src_str = src.labels[0] if src and src.labels else edge.source_hash[:8]
         tgt_str = tgt.labels[0] if tgt and tgt.labels else edge.target_hash[:8]
-        edge_lines.append(f"  - {src_str} --[{edge.connect_type}]--> {tgt_str}")
+        edge_lines.append(f"  - {src_str} →[{edge.connect_type}]→ {tgt_str}")
 
-    nodes_text = "\n".join(node_lines) or "  (없음)"
-    edges_text = "\n".join(edge_lines) or "  (없음)"
+    key_text  = ", ".join(key_labels) if key_labels else "(없음)"
+    ref_text  = ", ".join(ref_labels) if ref_labels else "(없음)"
+    edge_text = "\n".join(edge_lines) if edge_lines else "  (없음)"
 
     user_msg = conclusion.user_input or ""
 
-    prompt = (
-        "아래는 다음 사용자 입력에 대해 인지 그래프 위에서 사고 과정을 거친 결론입니다.\n"
-        "이 결론을 기준으로 사용자 입력에 자연스러운 한국어로 응답해 주세요.\n"
-        "신뢰도가 '불확실'인 개념은 단정하지 말고 조심스럽게 표현하세요.\n"
-        "구조 자체를 설명하거나 나열하지 마세요.\n\n"
-        f"[사용자 입력]\n{user_msg}\n\n"
-        f"[결론 — 인식된 개념]\n{nodes_text}\n\n"
-        f"[결론 — 개념 간 관계]\n{edges_text}\n\n"
-        "응답:"
+    system_msg = (
+        "당신은 인지 그래프 기반 AI 어시스턴트입니다.\n"
+        "아래는 사용자 입력에 대해 인지 그래프 위에서 사고 과정을 거쳐 도달한 당신의 현재 인식 상태입니다.\n"
+        "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
+        "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
+        "근거 연결이 있으면 그 관계를 자연스럽게 반영하십시오.\n"
+        "인식 상태 구조 자체를 설명하거나 나열하지 마십시오.\n\n"
+        f"[핵심 키워드]\n{key_text}\n\n"
+        f"[참고 개념]\n{ref_text}\n\n"
+        f"[근거 연결]\n{edge_text}"
     )
-    return await generate(prompt, model=conclusion.model)
+
+    print("\n" + "─" * 60)
+    print("[GraphToLang system]")
+    print(system_msg)
+    print("─" * 30)
+    print("[GraphToLang user]")
+    print(user_msg)
+    print("─" * 60 + "\n")
+
+    return await llm_chat(system_msg, user_msg, model=conclusion.model)
 
 
 # ── 목표 노드 ─────────────────────────────────────────────────────────────────
