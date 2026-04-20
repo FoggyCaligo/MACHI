@@ -99,8 +99,10 @@ LangToGraph는 **언어 도메인 → 그래프 도메인 번역기**다.
    번역 결과는 “문장 자체의 이상적 논리 구조”가 아니라, **현재 세계그래프가 이해 가능한 범위 안에서의 의미그래프**다.
 2. **모르는 것은 비워 둔다.**
    억지로 채우지 않는다. 못 찾으면 `EmptySlot`으로 남긴다.
-3. **검색 결과도 동일하게 번역한다.**
-   검색으로 얻은 텍스트도 바로 저장하지 않고 다시 LangToGraph를 거친다.
+3. **검색 결과는 LangToGraph를 거치지 않는다.**
+   빈 DB에서 재파싱하면 EmptySlot cascade와 PoolTimeout이 발생한다.
+   검색 결과는 `_ingest_slot`으로 직접 노드를 생성하고 `payload[“search_summary”]`에 요약만 저장한다.
+   GraphToLang이 이 요약을 LLM 컨텍스트(`[검색 컨텍스트]`)로 활용한다.
 
 ---
 
@@ -168,15 +170,16 @@ MVP 정책은 **규칙 우선 + 임베딩 폴백**이다.
 1. LangToGraph는 먼저 **알고 있는 것만으로** 번역한다.
 2. 모르는 것은 `EmptySlot`으로 남긴다.
 3. Think가 필요를 판단하면 검색한다.
-4. 검색 결과도 다시 LangToGraph로 번역한다.
+4. 검색 결과는 LangToGraph 재파싱 없이 직접 ingest한다. (요약을 payload에 저장)
 
 즉 검색의 진짜 위치는 아래다.
 
 ```text
 LangToGraph
-→ EmptySlot/근거 부족/업데이트 필요 상태 남김
+→ EmptySlot 상태 남김
 → Think가 검색 필요 판단
-→ graph > words > external search > LangToGraph
+→ external search → _ingest_slot (hint당 직접 노드 생성 + payload["search_summary"] 저장)
+→ GraphToLang이 payload를 [검색 컨텍스트]로 LLM에 주입
 ```
 
 ### 9.1 검색 실패

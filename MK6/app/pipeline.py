@@ -94,10 +94,8 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     seen_summaries: set[str] = set()
     search_ctx_parts: list[str] = []
     for node in conclusion.nodes:
-        # known_hashes(기존 개념)에 붙어 있는 이전 세션 검색 결과는 제외한다.
-        # 이번 요청에서 ingest된 신규 노드의 search_summary만 포함한다.
-        if node.address_hash in conclusion.known_hashes:
-            continue
+        # search_summary가 있는 노드의 요약을 LLM 컨텍스트에 포함한다.
+        # seen_summaries 중복 제거로 동일 요약이 두 번 들어가지 않는다.
         summary = node.payload.get("search_summary", "")
         if not summary:
             continue

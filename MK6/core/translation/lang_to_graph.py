@@ -37,32 +37,19 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 def _importance_scores(
     tokens: list[str],
-    refs: list[ConceptRef],
     token_embs: dict[str, list[float]],
 ) -> list[float]:
     """문장 내 각 토큰의 중요도 점수를 계산한다.
 
     방법: 문장 centroid 임베딩과의 cosine 유사도.
-    - ConceptPointer: local_subgraph의 center 노드 embedding 사용.
-    - EmptySlot: token_embs에서 조회.
+    - 모든 토큰: token_embs에서 실시간 임베딩 조회.
+    - ConceptPointer의 WorldGraph 저장 임베딩은 사용하지 않는다.
+      → 그래프 상태가 centroid를 오염시키는 것을 방지.
+      → 유일한 ConceptPointer가 centroid를 독점하는 문제 해소.
     - 임베딩 없는 토큰: 레이블 길이 기반 폴백 (0.5 + 0.3 × 정규화 길이).
-
-    이 점수로 상위 TOKEN_IMPORTANCE_RATIO 비율 토큰만 노드로 남긴다.
-    파티클("이", "가", "에")나 구두점(".")처럼 짧고 의미가 적은 토큰이
-    자연스럽게 낮은 점수를 받아 걸러진다.
     """
-    # 각 토큰의 임베딩 수집
-    embs: list[list[float] | None] = []
-    for token, ref in zip(tokens, refs):
-        if isinstance(ref, ConceptPointer):
-            center = next(
-                (n for n in ref.local_subgraph.nodes
-                 if n.address_hash == ref.address_hash),
-                None,
-            )
-            embs.append(center.embedding if center is not None else None)
-        else:
-            embs.append(token_embs.get(token))
+    # 각 토큰의 임베딩 수집 — 모두 token_embs (실시간 계산)에서 가져온다
+    embs: list[list[float] | None] = [token_embs.get(t) for t in tokens]
 
     # 사용 가능한 임베딩으로 centroid 계산
     valid_embs = [e for e in embs if e is not None]
@@ -107,9 +94,8 @@ def _split_near_far(
 
     n = len(sentence_pairs)
     tokens = [t for t, _ in sentence_pairs]
-    refs   = [r for _, r in sentence_pairs]
 
-    scores = _importance_scores(tokens, refs, token_embs)
+    scores = _importance_scores(tokens, token_embs)
 
     # 2자 이상 토큰만 선택 대상으로 한정 — 1자 조사·어미 제외
     selectable = [i for i in range(n) if len(tokens[i]) >= 2]
@@ -296,21 +282,17 @@ async def translate(
                     candidate_nodes.append(n)
                     seen.add(n.address_hash)
 
-    # 2패스 — exact match 실패 토큰의 임베딩을 배치 처리
-    # 후보 없으면 embed 호출 없이 바로 EmptySlot
-    missed_tokens: list[str] = []
-    for sent in sentences:
-        for token in sent:
-            if normalize_text(token) not in exact_pointers:
-                missed_tokens.append(token)
-
+    # 전체 토큰 임베딩 — 중요도 스코어링 및 2패스 resolution 공용
+    # ConceptPointer 여부와 무관하게 모든 토큰을 실시간 embed 한다.
+    # → centroid가 그래프 상태(WorldGraph 저장 임베딩)에 오염되지 않음.
+    # → "대해서" 같은 기능어가 유일한 ConceptPointer여도 centroid를 독점 불가.
     token_embs: dict[str, list[float]] = {}
-    if candidate_nodes and missed_tokens:
-        unique_missed = list(dict.fromkeys(missed_tokens))   # 중복 제거, 순서 유지
+    if all_tokens:
+        unique_tokens = list(dict.fromkeys(all_tokens))  # 중복 제거, 순서 유지
         emb_results = await asyncio.gather(
-            *[embed_fn(normalize_text(t)) for t in unique_missed]
+            *[embed_fn(normalize_text(t)) for t in unique_tokens]
         )
-        token_embs = dict(zip(unique_missed, emb_results))
+        token_embs = dict(zip(unique_tokens, emb_results))
 
     # 토큰별 최종 resolve → near/far 분리 → nodes/edges 추가
     all_near_refs: list[ConceptRef] = []
@@ -323,8 +305,8 @@ async def translate(
             normalized = normalize_text(token)
             if normalized in exact_pointers:
                 ref: ConceptRef = exact_pointers[normalized]
-            elif token in token_embs:
-                # 미리 계산된 임베딩으로 후보 비교
+            elif candidate_nodes and token in token_embs:
+                # 2패스: 미리 계산된 임베딩으로 후보 비교
                 tok_emb = token_embs[token]
                 best_node: Node | None = None
                 best_score = -1.0
@@ -344,7 +326,7 @@ async def translate(
                 else:
                     ref = EmptySlot(concept_hint=token)
             else:
-                # 후보 없음 → EmptySlot (embed 호출 없음)
+                # 후보 없음 → EmptySlot
                 ref = EmptySlot(concept_hint=token)
             sentence_pairs.append((token, ref))
 
