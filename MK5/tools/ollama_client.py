@@ -47,6 +47,12 @@ class OllamaChatResult:
     raw: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class OllamaEmbedResult:
+    model: str
+    embeddings: list[list[float]]
+
+
 @dataclass(slots=True)
 class OllamaClient:
     base_url: str = OLLAMA_BASE_URL
@@ -121,6 +127,21 @@ class OllamaClient:
             raise OllamaResponseError('OLLAMA returned empty content')
         model = str(raw.get('model') or model_name)
         return OllamaChatResult(model=model, content=content, raw=raw)
+
+    def embed(self, *, model_name: str, input_texts: list[str]) -> OllamaEmbedResult:
+        if not model_name.strip():
+            raise OllamaResponseError('model_name is required for embed')
+        if not input_texts:
+            raise OllamaResponseError('input_texts must not be empty')
+        payload: dict[str, Any] = {'model': model_name, 'input': input_texts}
+        raw = self._request_json('POST', '/api/embed', payload)
+        embeddings = raw.get('embeddings') or []
+        if not isinstance(embeddings, list):
+            raise OllamaResponseError('OLLAMA embed returned non-list embeddings')
+        return OllamaEmbedResult(
+            model=str(raw.get('model') or model_name),
+            embeddings=[list(e) for e in embeddings if isinstance(e, list)],
+        )
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f'{self.base_url}{path}'

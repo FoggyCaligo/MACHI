@@ -50,7 +50,7 @@ class FakeScopeGate:
         self.reason = reason
         self.call_count = 0
 
-    def decide(self, *, model_name, message, thought_view, conclusion, target_terms):
+    def decide(self, *, message, thought_view):
         self.call_count += 1
         return SearchScopeGateDecision(
             needs_external_search=self.needs_external_search,
@@ -61,7 +61,7 @@ class FakeScopeGate:
 
 
 class ErrorScopeGate:
-    def decide(self, *, model_name, message, thought_view, conclusion, target_terms):
+    def decide(self, *, message, thought_view):
         raise SearchScopeGateError('scope gate failed')
 
 

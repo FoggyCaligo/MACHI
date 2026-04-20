@@ -16,7 +16,6 @@ from core.update.connect_type_promotion_service import ConnectTypePromotionResul
 from core.update.graph_commit_service import GraphCommitService
 from core.update.graph_ingest_service import GraphIngestRequest, GraphIngestResult, GraphIngestService
 from core.update.model_edge_assertion_service import ModelEdgeAssertionResult, ModelEdgeAssertionService
-from core.update.model_feedback_service import ModelFeedbackResult, ModelFeedbackService
 from core.update.node_merge_service import NodeMergeService
 from core.update.temporary_edge_service import TemporaryEdgeCleanupResult, TemporaryEdgeService
 from core.verbalization.verbalizer import Verbalizer
@@ -52,7 +51,6 @@ class ChatPipeline:
         *,
         verbalizer: Verbalizer | None = None,
         search_sidecar: SearchSidecar | None = None,
-        model_feedback_service: ModelFeedbackService | None = None,
         model_edge_assertion_service: ModelEdgeAssertionService | None = None,
         connect_type_promotion_service: ConnectTypePromotionService | None = None,
         graph_commit_service: GraphCommitService | None = None,
@@ -86,7 +84,6 @@ class ChatPipeline:
         self.verbalizer = verbalizer or Verbalizer()
         self.conclusion_view_builder = ConclusionViewBuilder()
         self.search_sidecar = search_sidecar or SearchSidecar()
-        self.model_feedback_service = model_feedback_service or ModelFeedbackService()
         self.model_edge_assertion_service = model_edge_assertion_service or ModelEdgeAssertionService(self._uow_factory)
         self.connect_type_promotion_service = connect_type_promotion_service or ConnectTypePromotionService()
         self.graph_commit_service = graph_commit_service or GraphCommitService(self._uow_factory)
@@ -222,17 +219,6 @@ class ChatPipeline:
             )
             if thought_result.core_conclusion is None:
                 raise RuntimeError('ThoughtEngine did not produce core_conclusion after temporary edge cleanup')
-
-        # ── Model feedback: LLM이 본 그래프 상태를 기반으로 엣지 trust를 조정 ──────
-        # Ollama 모델이 선택된 경우에만 실행. mk5-graph-core는 no-op.
-        model_feedback_result = self.model_feedback_service.extract(
-            model_name=request.model_name,
-            message=request.message,
-            thought_view=thought_view,
-            conclusion=thought_result.core_conclusion,
-        )
-        if model_feedback_result.plan is not None:
-            self.graph_commit_service.commit(model_feedback_result.plan)
 
         model_edge_assertion_result: ModelEdgeAssertionResult = self.model_edge_assertion_service.assert_edges(
             model_name=request.model_name,
@@ -409,7 +395,6 @@ class ChatPipeline:
         }
 
         debug_payload = {
-            'model_feedback': model_feedback_result.to_debug(),
             'model_edge_assertion': model_edge_assertion_result.to_debug(),
             'connect_type_promotion': connect_type_promotion_result.to_debug(),
             'temporary_edge_cleanup': temporary_edge_cleanup_result.to_debug(),

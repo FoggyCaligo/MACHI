@@ -305,14 +305,11 @@ class SearchSidecar:
         scope_gate_decision: SearchScopeGateDecision | None = None
         scope_gate_error: str | None = None
 
-        if self._can_attempt_scope_gate(model_name):
+        if self._can_attempt_scope_gate():
             try:
                 scope_gate_decision = self.scope_gate.decide(
-                    model_name=model_name,
                     message=message,
                     thought_view=thought_view,
-                    conclusion=conclusion,
-                    target_terms=coarse_decision.target_terms,
                 )
             except SearchScopeGateError as exc:
                 scope_gate_error = str(exc)
@@ -401,9 +398,8 @@ class SearchSidecar:
     def search(self, message: str, thought_view: ThoughtView, conclusion: CoreConclusion, *, model_name: str) -> list[SearchEvidence]:
         return self.run(message=message, thought_view=thought_view, conclusion=conclusion, model_name=model_name).results
 
-    def _can_attempt_scope_gate(self, model_name: str) -> bool:
-        token = str(model_name or '').strip()
-        return bool(token and token != 'mk5-graph-core')
+    def _can_attempt_scope_gate(self) -> bool:
+        return True
 
     def _build_scope_gate_metadata(
         self,

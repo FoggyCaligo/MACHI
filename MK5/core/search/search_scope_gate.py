@@ -1,24 +1,12 @@
 from __future__ import annotations
 
-import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from config import (
-    SEARCH_SCOPE_GATE_NUM_PREDICT,
-    SEARCH_SCOPE_GATE_TEMPERATURE,
-    SEARCH_SCOPE_GATE_TIMEOUT_SECONDS,
-    build_ollama_options,
-)
-from core.entities.conclusion import CoreConclusion
+from config import EMBEDDING_MODEL_NAME, EMBEDDING_TIMEOUT_SECONDS, SCOPE_GATE_SIMILARITY_THRESHOLD
 from core.entities.thought_view import ThoughtView
-from tools.ollama_client import (
-    OllamaClient,
-    OllamaClientError,
-    OllamaModelNotFoundError,
-    OllamaResponseError,
-)
-from tools.prompt_loader import load_prompt_text
+from tools.ollama_client import OllamaClient, OllamaClientError
 
 
 class SearchScopeGateError(RuntimeError):
@@ -45,150 +33,92 @@ class SearchScopeGateDecision:
 
 @dataclass(slots=True)
 class SearchScopeGate:
+    """임베딩+코사인 유사도 기반 검색 범위 판정.
+
+    사용자 쿼리와 활성 그래프 노드 텍스트의 코사인 유사도 최댓값을 기준으로
+    외부 검색 필요 여부를 판단한다. LLM 호출 없음.
+    """
+
     client: OllamaClient | None = None
-    system_prompt_path: str = 'prompts/system/search_scope_gate_system_prompt.txt'
-    user_prompt_path: str = 'prompts/search/search_scope_gate_prompt.txt'
+    embedding_model: str = EMBEDDING_MODEL_NAME
+    similarity_threshold: float = SCOPE_GATE_SIMILARITY_THRESHOLD
+    max_nodes: int = 30
 
     def __post_init__(self) -> None:
         if self.client is None:
-            self.client = OllamaClient(timeout_seconds=SEARCH_SCOPE_GATE_TIMEOUT_SECONDS)
+            self.client = OllamaClient(timeout_seconds=EMBEDDING_TIMEOUT_SECONDS)
 
     def decide(
         self,
         *,
-        model_name: str,
         message: str,
         thought_view: ThoughtView,
-        conclusion: CoreConclusion,
-        target_terms: list[str],
     ) -> SearchScopeGateDecision:
-        if not model_name.strip() or model_name == 'mk5-graph-core':
-            raise SearchScopeGateError('search scope gate requires a selectable LLM model')
-        try:
-            result = self.client.chat(
-                model_name=model_name,
-                messages=[
-                    {'role': 'system', 'content': self._build_system_prompt()},
-                    {
-                        'role': 'user',
-                        'content': self._build_user_prompt(
-                            message=message,
-                            thought_view=thought_view,
-                            conclusion=conclusion,
-                            target_terms=target_terms,
-                        ),
-                    },
-                ],
-                stream=False,
-                options=build_ollama_options(
-                    temperature=SEARCH_SCOPE_GATE_TEMPERATURE,
-                    num_predict=SEARCH_SCOPE_GATE_NUM_PREDICT,
-                ),
-                response_format='json',
+        if not self.embedding_model:
+            raise SearchScopeGateError('EMBEDDING_MODEL_NAME is not configured')
+
+        node_texts = self._collect_node_texts(thought_view)
+        if not node_texts:
+            return SearchScopeGateDecision(
+                needs_external_search=True,
+                scope='world_grounding',
+                reason='활성 노드가 없어 그래프에서 답변을 구성할 수 없다.',
+                confidence='high',
+                metadata={'max_similarity': 0.0, 'node_count': 0, 'threshold': self.similarity_threshold},
             )
-        except OllamaModelNotFoundError as exc:
-            raise SearchScopeGateError(str(exc)) from exc
-        except (OllamaClientError, OllamaResponseError) as exc:
+
+        try:
+            result = self.client.embed(
+                model_name=self.embedding_model,
+                input_texts=[message] + node_texts[: self.max_nodes],
+            )
+        except OllamaClientError as exc:
             raise SearchScopeGateError(str(exc)) from exc
 
-        payload = self._parse_json(result.content)
-        needs_external_search = bool(
-            payload.get('needs_external_search')
-            if 'needs_external_search' in payload
-            else payload.get('external_grounding_needed')
+        if len(result.embeddings) < 2:
+            raise SearchScopeGateError('embedding returned insufficient vectors')
+
+        query_vec = result.embeddings[0]
+        node_vecs = result.embeddings[1:]
+
+        max_sim = max(self._cosine(query_vec, nv) for nv in node_vecs)
+        needs_external = max_sim < self.similarity_threshold
+        scope = 'world_grounding' if needs_external else 'local_graph_only'
+        reason = (
+            f'쿼리-그래프 최대 코사인 유사도 {max_sim:.3f} < 임계치 {self.similarity_threshold} → 외부 근거 필요.'
+            if needs_external
+            else f'쿼리-그래프 최대 코사인 유사도 {max_sim:.3f} ≥ 임계치 {self.similarity_threshold} → 그래프 내 답변 가능.'
         )
-        scope = ' '.join(str(payload.get('scope') or '').split()).strip() or ('world_grounding' if needs_external_search else 'local_graph_only')
-        reason = ' '.join(str(payload.get('reason') or '').split()).strip() or (
-            '질문은 외부 세계 사실 확인이 필요한 요청이다.'
-            if needs_external_search
-            else '질문은 현재 대화와 활성 그래프 범위 안에서 답할 수 있다.'
-        )
-        confidence = ' '.join(str(payload.get('confidence') or '').split()).strip()
+
         return SearchScopeGateDecision(
-            needs_external_search=needs_external_search,
+            needs_external_search=needs_external,
             scope=scope,
             reason=reason,
-            confidence=confidence,
+            confidence='high',
             metadata={
-                'target_terms': self._dedupe_items(target_terms, limit=8),
+                'max_similarity': round(max_sim, 4),
+                'node_count': len(node_vecs),
+                'threshold': self.similarity_threshold,
             },
         )
 
-    def _build_system_prompt(self) -> str:
-        return load_prompt_text(self.system_prompt_path)
-
-    def _build_user_prompt(
-        self,
-        *,
-        message: str,
-        thought_view: ThoughtView,
-        conclusion: CoreConclusion,
-        target_terms: list[str],
-    ) -> str:
-        template = load_prompt_text(self.user_prompt_path)
-        return template.format(
-            user_input=message,
-            inferred_intent=conclusion.inferred_intent,
-            explanation_summary=conclusion.explanation_summary or '-',
-            target_terms=self._format_lines(target_terms),
-            seed_block_count=len(thought_view.seed_blocks or []),
-            activated_concept_count=len(conclusion.activated_concepts or []),
-            relation_count=len(conclusion.key_relations or []),
-        )
-
-    def _format_lines(self, items: list[str]) -> str:
-        if not items:
-            return '- 없음'
-        return '\n'.join(f'- {item}' for item in items[:8])
-
-    def _parse_json(self, text: str) -> dict[str, Any]:
-        raw = str(text or '').strip()
-        candidates = [raw]
-        fenced = self._extract_fenced_json(raw)
-        if fenced:
-            candidates.append(fenced)
-        bracketed = self._extract_braced_json(raw)
-        if bracketed and bracketed not in candidates:
-            candidates.append(bracketed)
-
-        for candidate in candidates:
-            if not candidate:
+    def _collect_node_texts(self, thought_view: ThoughtView) -> list[str]:
+        texts: list[str] = []
+        for node in thought_view.nodes:
+            if not node.is_active:
                 continue
-            try:
-                payload = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                return payload
-        raise SearchScopeGateError('search scope gate returned invalid JSON')
+            text = (
+                getattr(node, 'normalized_value', '') or getattr(node, 'raw_value', '') or ''
+            ).strip()
+            if text and text not in texts:
+                texts.append(text)
+        return texts
 
-    def _extract_fenced_json(self, text: str) -> str:
-        marker = '```'
-        if marker not in text:
-            return ''
-        parts = text.split(marker)
-        for chunk in parts[1:]:
-            normalized = chunk.strip()
-            if normalized.startswith('json'):
-                normalized = normalized[4:].strip()
-            if normalized.startswith('{') and normalized.endswith('}'):
-                return normalized
-        return ''
-
-    def _extract_braced_json(self, text: str) -> str:
-        start = text.find('{')
-        end = text.rfind('}')
-        if start == -1 or end == -1 or end <= start:
-            return ''
-        return text[start:end + 1]
-
-    def _dedupe_items(self, items: list[Any], *, limit: int) -> list[str]:
-        tokens: list[str] = []
-        for item in items:
-            token = ' '.join(str(item or '').split()).strip()
-            if not token or token in tokens:
-                continue
-            tokens.append(token)
-            if len(tokens) >= limit:
-                break
-        return tokens
+    @staticmethod
+    def _cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        mag_a = math.sqrt(sum(x * x for x in a))
+        mag_b = math.sqrt(sum(x * x for x in b))
+        if mag_a == 0.0 or mag_b == 0.0:
+            return 0.0
+        return dot / (mag_a * mag_b)

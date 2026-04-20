@@ -15,22 +15,25 @@
    - core/thinking/conclusion_view_builder.py
    - Verbalization 계층 전체 ConclusionView 기반으로 교체
    - CoreConclusion 루프 내부 전용으로 격리
+10. ModelFeedbackService 제거 (효용 대비 LLM 비용 과다)
+11. SearchScopeGate LLM→임베딩+코사인 교체
+    - tools/ollama_client.py: OllamaEmbedResult + embed() 추가
+    - core/search/search_scope_gate.py: 임베딩+코사인 유사도 기반 판정으로 전면 교체
+    - config.py: EMBEDDING_MODEL_NAME / EMBEDDING_TIMEOUT_SECONDS / SCOPE_GATE_SIMILARITY_THRESHOLD 추가
+    - SearchSidecar: _can_attempt_scope_gate() 채팅 모델 무관으로 변경
 
 [이번 턴 반영]
-1. chat_pipeline.py: Think→Search 루프 (`_THINK_SEARCH_MAX_LOOPS = 3`)
-2. config.py: 루프 내 타임아웃 3배 상향
-   - OLLAMA_TIMEOUT_SECONDS: 120 → 360
-   - QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS: 30 → 90
-   - SEARCH_SCOPE_GATE_TIMEOUT_SECONDS: 20 → 60
-   - SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS: 30 → 90
-   - REQUEST_TIMEOUT_MS: 300000 → 900000
-3. core/entities/conclusion_view.py 신규 생성
-4. core/thinking/conclusion_view_builder.py 신규 생성
-5. Verbalization 5개 파일 CoreConclusion → ConclusionView 교체
-   - verbalizer.py, template_verbalizer.py, ollama_verbalizer.py
-   - action_layer_builder.py, meaning_preserver.py
-6. chat_pipeline.py: ConclusionViewBuilder 단계 추가 (루프 종료 후)
-7. debug payload: core_conclusion → conclusion_view (요약 형태)
+1. ModelFeedbackService 제거
+   - chat_pipeline.py: import/인스턴스/LLM 호출/graph_commit/debug 항목 모두 제거
+   - config.py: MODEL_FEEDBACK_* 3개 설정 제거
+2. SearchScopeGate 임베딩 교체
+   - 입력: 사용자 메시지 + 활성 노드 텍스트 (max 30개)
+   - 판정: max(cosine(query_emb, node_emb)) ≥ SCOPE_GATE_SIMILARITY_THRESHOLD(0.65) → 검색 불필요
+   - 모델: nomic-embed-text (Ollama /api/embed 엔드포인트)
+   - fail-open: 임베딩 실패 시 SearchScopeGateError → scope_gate_error 노출 후 SlotPlanner로 진행
+3. 테스트 업데이트
+   - test_search_orchestration.py: FakeScopeGate/ErrorScopeGate 시그니처 수정
+   - test_search_grounding_guardrails.py: SEARCH_SCOPE_GATE_TIMEOUT_SECONDS → EMBEDDING_TIMEOUT_SECONDS
 
 [다음 우선작업]
 1. ConclusionViewBuilder 키워드 매칭 정교화 (의미적 유사도 확장)
@@ -42,3 +45,5 @@
 1. ConclusionViewBuilder의 node 필드 접근은 getattr()로 방어적으로 처리
 2. Windows에서 pytest temp/cache 권한 이슈(`WinError 5`)가 간헐적으로 발생
 3. 필요 시 `py_compile` + 스모크 검증을 병행
+4. nomic-embed-text 미설치 시 ScopeGate fail-open(SearchScopeGateError) → SlotPlanner 경로로 폴백
+   - Ollama에 사전 pull 필요: `ollama pull nomic-embed-text`

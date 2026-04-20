@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config import QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS, SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS, SEARCH_SCOPE_GATE_TIMEOUT_SECONDS
+from config import EMBEDDING_TIMEOUT_SECONDS, QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS, SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS
 from app.chat_pipeline import ChatPipeline
 from core.entities.conclusion import CoreConclusion
 from core.search.question_slot_planner import QuestionSlotPlanner
@@ -98,7 +98,7 @@ def test_search_llm_helpers_use_bounded_default_timeouts() -> None:
     assert scope_gate.client is not None
     assert planner.client.timeout_seconds == QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS
     assert refiner.client.timeout_seconds == SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS
-    assert scope_gate.client.timeout_seconds == SEARCH_SCOPE_GATE_TIMEOUT_SECONDS
+    assert scope_gate.client.timeout_seconds == EMBEDDING_TIMEOUT_SECONDS
 
 
 def test_search_coverage_refiner_marks_aspects_from_evidence_passages() -> None:
