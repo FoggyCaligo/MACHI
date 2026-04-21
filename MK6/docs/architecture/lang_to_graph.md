@@ -24,11 +24,9 @@ MK6의 인지 시스템은 그래프 도메인에서만 작동한다.
 LangToGraph(sentence: str) → TranslatedGraph
 
 TranslatedGraph:
-  - nodes:     list[ConceptRef]   # 번역된 개념들 (near+far 합집합, 원래 sentence 순서)
-  - edges:     list[TranslatedEdge]   # 번역된 관계들
-  - source:    str                # 원문 (provenance용)
-  - near_refs: list[ConceptRef]   # centroid 근접 그룹 → GraphToLang 핵심 키워드 후보
-  - far_refs:  list[ConceptRef]   # centroid 원거리 그룹 → GraphToLang 참고 개념 후보
+  - nodes:  list[ConceptRef]      # 문장의 모든 토큰 (필터링 없이 전체, 원래 sentence 순서)
+  - edges:  list[TranslatedEdge]  # 번역된 관계들
+  - source: str                   # 원문 (provenance용)
 
 ConceptRef = ConceptPointer | EmptySlot
 
@@ -36,10 +34,13 @@ ConceptPointer:
   - node_id: 그래프 노드 ID
   - address_hash: 해시 주소
   - local_subgraph: 해당 노드 중심의 국소그래프 (N-hop)
+  - importance: float   # centroid 기반 중요도 점수
+                        # ThoughtEngine이 key_hashes/ref_hashes 분류에 사용
 
 EmptySlot:
   - concept_hint: 번역하려 했던 의미 단위
   - unfound: True
+  - importance: float   # centroid 기반 중요도 점수
 
 TranslatedEdge:
   - source_ref: ConceptRef        # 관계의 출발 개념
@@ -59,31 +60,42 @@ LangToGraph(sentence)
   │
   ▼
 ① 의미 구조 분해
-  - 문장을 개념 단위(nodes)와 관계(edges)로 분해
-  - "사과는 과일이다"
-      → 개념: [사과, 과일]
-      → 관계: [사과 →(flow)→ 과일]
-  - "A는 B에 반대된다"
-      → 개념: [A, B]
-      → 관계: [A →(opposite)→ B]
+  - 문장을 토큰 단위로 분해
+  - 각 토큰 → ConceptPointer | EmptySlot resolve
   │
   ▼
-② 각 개념 단위에 대해: 그래프 조회
+② 각 토큰에 대해: 그래프 조회 (2패스)
   │
-  ├─ HashResolver.compute(개념단위) → address_hash
-  ├─ HashAccessor.lookup(address_hash) → node | None
+  1패스 — exact match:
+  ├─ normalize_text(token) → words 테이블 조회
   ├─ [있음] → LocalGraphExtractor.extract(node) → ConceptPointer
-  └─ [없음] → EmptySlot(concept_hint=개념단위)
+  └─ [없음] → 다음 단계로
+  │
+  2패스 — 임베딩 유사도 (1패스 LocalSubgraph 합산이 후보 풀):
+  ├─ token 임베딩 계산
+  ├─ 후보 풀과 코사인 유사도 비교
+  ├─ 유사도 ≥ threshold → ConceptPointer
+  └─ 유사도 < threshold, 또는 후보 없음 → EmptySlot
   │
   ▼
-③ 관계를 TranslatedEdge로 구성
-  - 각 관계의 source/target을 위에서 얻은 ConceptRef로 연결
-  - connect_type을 문장의 의미에서 결정
-  - 불확실하면 neutral + proposed_connect_type에 후보 보존
+③ 중요도 점수 할당 (_assign_importances)
+  - 문장 내 모든 토큰 임베딩의 centroid 계산
+  - 각 토큰의 cosine(emb, centroid) → ref.importance 에 in-place 저장
+  - ConceptPointer의 WorldGraph 저장 임베딩은 사용하지 않음
+    (그래프 상태가 centroid를 오염시키지 않도록)
+  - 임베딩 없는 토큰: 0.5 + 0.3 × (len/max_len) 폴백
   │
   ▼
-반환: TranslatedGraph(nodes=[ConceptRef, ...], edges=[TranslatedEdge, ...])
+④ 모든 토큰을 nodes에 포함 (필터링 없음)
+  - 인접 토큰 쌍 → neutral TranslatedEdge (양쪽 모두 2자 이상인 경우만)
+  │
+  ▼
+반환: TranslatedGraph(nodes=[모든 ConceptRef], edges=[TranslatedEdge, ...])
 ```
+
+**near/far 20% 필터링은 ThoughtEngine에서 수행한다.**  
+LangToGraph는 모든 토큰을 importance 점수와 함께 넘긴다.  
+ThoughtEngine이 루프 후 점수 기준으로 상위 20% → key_hashes, 하위 20% → ref_hashes로 분류한다.
 
 ---
 
@@ -109,28 +121,25 @@ EmptySlot은 "그래프에 아직 없는 개념"의 표시다.
 **LangToGraph는 EmptySlot을 마킹만 하고 그대로 반환한다. 이 시점에 검색하지 않는다.**  
 검색은 Think 루프 내부에서 필요 시 발생한다.
 
+모든 EmptySlot은 `translated.nodes`에 포함되어 TempThoughtGraph에 로드된다.  
+이전에 near/far 그룹에서 누락된 EmptySlot이 검색을 트리거하지 못하는 문제가 있었으나,  
+현재는 필터링 없이 전체를 넘기므로 모든 미지 개념이 검색 대상이 된다.
+
 ```
-LangToGraph 반환값 예시:
+LangToGraph 반환값 예시 ("글록의 안전장치를 설명해줄래"):
 
 TranslatedGraph {
   nodes: [
-    ConceptPointer(address_hash="abc...", local_subgraph=...),  ← 찾은 개념
-    EmptySlot(concept_hint="양자역학", unfound=True),           ← 마킹만
-    ConceptPointer(address_hash="def...", local_subgraph=...),
+    EmptySlot(concept_hint="글록", importance=0.71),          ← 미지 → 검색 트리거
+    ConceptPointer(address_hash="abc...", importance=0.85),   ← 안전장치
+    EmptySlot(concept_hint="설명해줄래", importance=0.62),
+    ...  ← 모든 토큰 포함
   ]
   edges: [TranslatedEdge(...), ...]
 }
 ```
 
-EmptySlot은 Think 루프에서 다음 조건이 충족될 때 검색 트리거가 된다:
-- EmptySlot이 존재하는 경우
-- 근거가 부족한 경우
-- 업데이트가 필요한 경우
-
-검색 결과가 없으면 `LangToGraph(검색결과)` → `None` 반환.  
-Think는 이를 "검색결과도 없음"으로 수용하고 진행한다.
-
-신규 ingest는 Think 루프 내에서 "이 개념을 세계그래프에 등록할 필요가 있다"고 판단된 시점에 발생한다.
+EmptySlot은 Think 루프에서 `tg.has_empty_slots()`가 True이면 검색 트리거가 된다.
 
 ---
 
@@ -139,31 +148,31 @@ Think는 이를 "검색결과도 없음"으로 수용하고 진행한다.
 **단계 0 — 입력 타입 분류 (전처리):**
 - `InputTypeClassifier`가 입력을 `natural | code | path | url`로 분류
 - `natural` → 문장 분리 → 토큰 추출 경로
-- `code | path | url` → 전체를 단일 단위로 묶어 임베딩 폴백
+- `code | path | url` → EmptySlot 단일 단위로 처리
 
 **단계 1 — 토큰 분리 (자연어 경로):**
 - 문장 분리: `_SENTENCE_SPLIT_RE` (개행 + Unicode 문장 종결 문자)
 - 토큰 추출: `_TOKEN_RE` — `[A-Za-z0-9][A-Za-z0-9_+\-./#]*|[가-힣]{2,}` (한글 **2자 이상**. 1자 한글 조사·어미는 정규식 수준에서 차단)
 - 정규화: 소문자 + 한국어 접미 조사 strip (한 번만, 어간 2자 미만이면 제거 안 함)
 
-**단계 2 — words 테이블 exact match 우선:**
+**단계 2 — words 테이블 exact match 우선 (1패스):**
 - `normalize_text(token)` → `words.surface_form` 조회
 - 있으면 → `address_hash` 즉시 반환 → `nodes` 테이블에서 로컬 서브그래프 추출
 
-**단계 3 — 없으면 임베딩 기반 유사도 조회 (MK5 방식 동일):**
-- 토큰 임베딩 계산 (nomic-embed-text)
-- `nodes` 테이블 임베딩과 코사인 유사도 비교
+**단계 3 — 없으면 임베딩 기반 유사도 조회 (2패스):**
+- 모든 토큰 임베딩 계산 (nomic-embed-text) — ConceptPointer/EmptySlot 구분 없이 전체
+- 1패스 LocalSubgraph 합산 노드와 코사인 유사도 비교
 - 유사도 ≥ threshold → ConceptPointer
-- 유사도 < threshold → EmptySlot
+- 유사도 < threshold, 또는 후보 없음 → EmptySlot
 
-**단계 4 — near/far 분리 및 관계 구조:**
-- `_split_near_far(sentence_pairs, token_embs)`: 문장 내 토큰을 두 그룹으로 분리
-  - **near** (`TOKEN_IMPORTANCE_NEAR_RATIO=20%`): centroid 근접 → `near_refs` → 핵심 키워드
-  - **far** (`TOKEN_IMPORTANCE_FAR_RATIO=20%`): centroid 원거리 → `far_refs` → 참고 개념
-  - near/far 겹치면 near 우선. near 최소 1개 보장.
-  - 선택 풀: 2자 이상 토큰만 대상 (1자 조사·어미 제외)
-- near+far 합집합을 원래 sentence 순서로 재구성 → nodes 추가
-- 인접 선택 토큰 쌍 → `neutral` TranslatedEdge (관계 타입 확정은 ThoughtEngine)
+**단계 4 — 중요도 점수 할당 및 전체 노드 반환:**
+- `_assign_importances(sentence_pairs, token_embs)`: 모든 토큰에 centroid 기반 중요도 in-place 할당
+  - centroid = 문장 내 모든 토큰 실시간 임베딩의 평균
+  - importance = cosine(token_emb, centroid)
+  - WorldGraph 저장 임베딩 불사용 → 그래프 상태가 centroid에 개입 불가
+- 전체 토큰을 importance 포함한 채 `nodes`에 추가 (필터링 없음)
+- 인접 토큰 쌍 → `neutral` TranslatedEdge (양쪽 모두 2자 이상인 경우만)
+- **near/far 20% 분류는 ThoughtEngine에서 수행**
 
 ---
 
@@ -198,6 +207,14 @@ GraphToLang(conclusion_view: ConclusionView) → str
   - ConclusionView의 노드/엣지 구조를 LLM에 전달
   - LLM이 구조에서 자연어 생성
   - 언어는 파생 표현 — 구조가 먼저, 단어는 나중
+
+ConclusionView:
+  - nodes: list[Node]
+  - edges: list[Edge]
+  - key_hashes: set[str]          # near 그룹 (importance 상위 20%) → 핵심 키워드
+  - ref_hashes: set[str]          # far 그룹 (importance 하위 20%) → 참고 개념
+  - search_node_hashes: set[str]  # 이번 세션에서 search_summary 설정된 노드
+                                  # (이전 세션 이웃 노드 search_summary 누출 방지)
 ```
 
 텍스트 레이블 없는 노드(공통부 추출로 형성된 순수 구조 노드)는 연결된 이웃 노드들의 레이블과 엣지 관계로 간접 표현된다.
