@@ -245,19 +245,11 @@ class ThoughtEngine:
         _te_added_keys: set[tuple[str, str]] = set()
         _add_translated_edges(tg, translated.edges, _te_added_keys)
 
-        # ConceptPointer들을 목표 노드에 임시 연결
-        # key_hashes / ref_hashes: near/far 그룹 기반 분류 (언어 구조 기반, 그래프 상태 무관).
-        # GraphToLang에서 "핵심 키워드" / "참고 개념" 분류의 기준이 된다.
-        key_hashes: set[str] = set()   # near 그룹 → 핵심 키워드
-        ref_hashes: set[str] = set()   # far 그룹  → 참고 개념
-        for ref in translated.near_refs:
+        # 모든 ConceptPointer를 목표 노드에 임시 연결
+        # key_hashes / ref_hashes는 Think 루프 후 importance 기반으로 결정한다.
+        for ref in translated.nodes:
             if isinstance(ref, ConceptPointer):
                 tg.connect_to_goal(ref.address_hash)
-                key_hashes.add(ref.address_hash)
-        for ref in translated.far_refs:
-            if isinstance(ref, ConceptPointer):
-                tg.connect_to_goal(ref.address_hash)
-                ref_hashes.add(ref.address_hash)
 
         _t0 = _t("graph init", _t0)
 
@@ -276,8 +268,15 @@ class ThoughtEngine:
             # 1. EmptySlot 처리 — 필요 시 검색
             if tg.has_empty_slots():
                 _ts = time.perf_counter()
+                # concept_hashes: ingest ↔ 기존 개념 간 co_occurrence 엣지 생성용.
+                # 루프 초기에는 key/ref 분류가 아직 없으므로 TG 내 모든 ConceptPointer 해시 사용.
+                existing_cp_hashes = {
+                    ref.address_hash
+                    for ref in translated.nodes
+                    if isinstance(ref, ConceptPointer)
+                }
                 newly_searched = await self._fill_empty_slots(
-                    tg, user_input=user_input, concept_hashes=key_hashes | ref_hashes
+                    tg, user_input=user_input, concept_hashes=existing_cp_hashes
                 )
                 search_node_hashes |= newly_searched
                 _t0 = _t(f"fill_empty_slots (loop {loop_count})", _ts)
@@ -305,19 +304,32 @@ class ThoughtEngine:
         # ── 루프 종료 후 ConceptDifferentiation (최종 1회) ───────────────────
         concept_differentiation.run(tg)
 
-        # ── EmptySlot → 해시 분류 (near/far 그룹 기반) ───────────────────────
-        # _fill_empty_slots에서 채워진 노드는 compute_hash(hint)로 address_hash가
-        # 결정된다. 루프 종료 후 tg에 노드가 존재하면 해당 그룹에 귀속한다.
-        for ref in translated.near_refs:
-            if isinstance(ref, EmptySlot):
+        # ── importance 기반 key/ref 분류 ─────────────────────────────────────
+        # translated.nodes의 모든 ref에 importance 점수가 담겨 있다.
+        # EmptySlot은 ingest 후 compute_hash(hint)가 address_hash가 된다.
+        # tg에 노드가 존재하는 ref만 대상으로 상위 NEAR_RATIO → key, 하위 FAR_RATIO → ref.
+        import math as _math
+
+        scored: list[tuple[float, str]] = []   # (importance, address_hash)
+        for ref in translated.nodes:
+            if isinstance(ref, ConceptPointer):
+                h = ref.address_hash
+            else:
                 h = compute_hash(ref.concept_hint.strip())
-                if tg.get_node(h) is not None:
-                    key_hashes.add(h)
-        for ref in translated.far_refs:
-            if isinstance(ref, EmptySlot):
-                h = compute_hash(ref.concept_hint.strip())
-                if tg.get_node(h) is not None:
-                    ref_hashes.add(h)
+            if tg.get_node(h) is None:
+                continue
+            scored.append((ref.importance, h))
+
+        # 2자 미만 토큰(1자 조사 등)은 낮은 importance를 가지므로 자연스럽게 걸러짐.
+        # 명시적 필터 없이 점수 순 정렬 후 비율 절삭.
+        scored.sort(key=lambda x: x[0], reverse=True)
+        n_sel = len(scored)
+        n_near = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_NEAR_RATIO))
+        n_far  = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_FAR_RATIO))
+
+        key_hashes: set[str] = {h for _, h in scored[:n_near]}
+        far_cands:  set[str] = {h for _, h in scored[max(0, n_sel - n_far):]}
+        ref_hashes: set[str] = far_cands - key_hashes
 
         # ── 세계그래프 강한 커밋 (새로 추가된 노드/엣지) ─────────────────────
         _tc = time.perf_counter()
