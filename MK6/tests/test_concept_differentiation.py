@@ -60,8 +60,9 @@ def test_composite_score_overlap_contribution():
     """이웃이 많으면 overlap이 점수에 기여한다."""
     emb_a = _unit([1.0, 0.0])
     emb_b = _unit([0.0, 1.0])
-    # 공유 이웃 2, 비공유 0 → overlap_ratio=1.0
-    shared = {"x", "y"}
+    # 공유 이웃 3, 비공유 0 → overlap_ratio=1.0
+    # DIFFERENTIATION_MIN_NEIGHBORS가 3이므로 3개 이상이어야 alpha < 1.0이 됨
+    shared = {"x", "y", "z"}
     score = composite_score(_node(["A"], emb_a), _node(["B"], emb_b), shared, shared)
     # α < 1.0 when neighbors >= MIN_NEIGHBORS → overlap 기여
     assert score > 0.0

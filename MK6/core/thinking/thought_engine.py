@@ -31,7 +31,7 @@ from ..entities.edge import Edge
 from ..entities.word_entry import WordEntry
 from ..entities.translated_graph import TranslatedGraph, TranslatedEdge, ConceptPointer, EmptySlot
 from ..storage.world_graph import (
-    insert_node, update_node, insert_edge, update_edge,
+    insert_node, update_node, deactivate_node, insert_edge, update_edge,
     get_node as db_get_node, get_edge as db_get_edge,
     get_edge_by_endpoints as db_get_edge_by_endpoints,
     insert_word, get_word,
@@ -40,6 +40,7 @@ from ..storage.world_graph import (
 from ..utils.hash_resolver import compute_hash, normalize_text
 from .temp_thought_graph import TempThoughtGraph
 from . import concept_differentiation
+from . import concept_merge
 from ... import config
 
 
@@ -56,6 +57,7 @@ class ConclusionView:
     goal_hash: str | None
     had_empty_slots: bool
     loop_count: int
+    topic_continuity: str = "unknown"           # 주제 연속성 (new, continued, related, shifted)
     model: str | None = None                    # 이번 요청에서 사용할 생성 모델
     user_input: str | None = None               # 원래 사용자 입력 (GraphToLang 컨텍스트용)
     key_hashes: set[str] = field(default_factory=set)
@@ -224,12 +226,15 @@ class ThoughtEngine:
         translated: TranslatedGraph,
         model: str | None = None,
         user_input: str | None = None,
+        previous_key_hashes: set[str] | None = None,
     ) -> ConclusionView:
         """Think 루프를 실행하고 ConclusionView를 반환한다.
 
         Args:
-            translated: LangToGraph가 반환한 사용자 입력 번역 결과
-            model:      GraphToLang에서 사용할 생성 모델 (None이면 config 기본값)
+            translated:          LangToGraph가 반환한 사용자 입력 번역 결과
+            model:               GraphToLang에서 사용할 생성 모델 (None이면 config 기본값)
+            user_input:          원래 사용자 입력 문자열
+            previous_key_hashes: 이전 턴의 핵심 키워드 해시 집합
 
         Returns:
             ConclusionView — GraphToLang에 넘길 최종 그래프 구조
@@ -283,10 +288,15 @@ class ThoughtEngine:
                 # fill 완료 후 EmptySlot 엔드포인트 포함 TranslatedEdge 추가
                 _add_translated_edges(tg, translated.edges, _te_added_keys)
 
-            # 2. ConceptDifferentiation
+            # 2. ConceptDifferentiation & Merge
             _td = time.perf_counter()
             diff_results = concept_differentiation.run(tg)
             _t(f"concept_diff (loop {loop_count})", _td)
+            
+            _tm = time.perf_counter()
+            merge_count = concept_merge.run(tg)
+            if merge_count > 0:
+                _t(f"concept_merge (x{merge_count}) (loop {loop_count})", _tm)
 
             # 3. 유의미한 분화가 발생했으면 약한 커밋 (즉시)
             for result in diff_results:
@@ -331,6 +341,18 @@ class ThoughtEngine:
         far_cands:  set[str] = {h for _, h in scored[max(0, n_sel - n_far):]}
         ref_hashes: set[str] = far_cands - key_hashes
 
+        # ── 주제 연속성 판단 ─────────────────────────────────────────────────
+        if not previous_key_hashes:
+            topic_continuity = "new_topic"
+        else:
+            overlap = len(key_hashes.intersection(previous_key_hashes))
+            if overlap >= 2:
+                topic_continuity = "continued_topic"
+            elif overlap == 1:
+                topic_continuity = "related_topic"
+            else:
+                topic_continuity = "shifted_topic"
+
         # ── 세계그래프 강한 커밋 (새로 추가된 노드/엣지) ─────────────────────
         _tc = time.perf_counter()
         self._commit_new_content(tg)
@@ -342,6 +364,7 @@ class ThoughtEngine:
             goal_hash=tg.goal_hash,
             had_empty_slots=had_empty_slots,
             loop_count=loop_count,
+            topic_continuity=topic_continuity,
             model=model,
             user_input=user_input,
             key_hashes=key_hashes,
@@ -621,10 +644,21 @@ class ThoughtEngine:
         reset_delta()로 초기화되는 current_delta()를 쓰면 다회 루프 시
         이전 회차에서 추가된 노드/엣지가 커밋에서 누락되는 버그가 발생한다.
 
+        - 병합(Merge) 반영: 단어 테이블 재매핑 및 노드 비활성화
         - is_abstract 노드: 약한 커밋
         - is_temporary 엣지: 건너뜀 (목표 연결 엣지 등)
         - 나머지 신규 노드/엣지: 강한 커밋
         """
+        # 1. 병합(Merge) 결과 반영
+        merged_mappings = tg.merged_mappings
+        if merged_mappings:
+            for from_hash, to_hash in merged_mappings.items():
+                # 단어 매핑을 '생존' 노드로 이전
+                remap_words_to_node(self._conn, [from_hash], to_hash)
+                # 사라진 노드 비활성화
+                deactivate_node(self._conn, from_hash)
+
+        # 2. 신규 및 변경된 노드 반영
         for address_hash in tg.all_added_node_hashes:
             node = tg.get_node(address_hash)
             if node is None:

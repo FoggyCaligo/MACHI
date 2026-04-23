@@ -22,11 +22,12 @@ def test_split_sentences_cjk_period():
     assert len(parts) == 2
 
 
-def test_extract_tokens_korean_single_char():
-    # 한글 1자도 토큰이 되어야 함
+def test_extract_tokens_korean_min_length():
+    # 한글은 2자 이상만 토큰으로 추출 (MK6 정책)
     tokens = extract_tokens("이 사과가 맛있다")
-    assert "이" in tokens
-    assert "사과가" in tokens or "사과" in tokens
+    assert "이" not in tokens
+    assert "사과" in tokens
+    assert "맛있다" in tokens or "맛있" in tokens
 
 
 def test_extract_tokens_english():

@@ -80,6 +80,7 @@ def _get_pipeline() -> Pipeline:
 class ChatRequest(BaseModel):
     message: str
     model: str | None = None   # None이면 config.OLLAMA_MODEL_NAME 사용
+    session_id: str = "default"
 
 
 class ChatResponse(BaseModel):
@@ -136,7 +137,7 @@ async def get_models() -> dict:
 async def chat(req: ChatRequest) -> ChatResponse:
     try:
         pipeline = _get_pipeline()
-        result = await pipeline.run(req.message, model=req.model)
+        result = await pipeline.run(req.message, model=req.model, session_id=req.session_id)
         c = result.conclusion
         return ChatResponse(
             response=result.response_text,

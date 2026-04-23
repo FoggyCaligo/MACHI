@@ -22,14 +22,18 @@ class GraphDelta:
     """한 루프 회차에서 발생한 변경 사항을 추적한다."""
     added_nodes: list[str] = field(default_factory=list)    # address_hash
     modified_nodes: list[str] = field(default_factory=list)
+    removed_nodes: list[str] = field(default_factory=list)
     added_edges: list[str] = field(default_factory=list)    # edge_id
+    modified_edges: list[str] = field(default_factory=list)
     removed_edges: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return (
             not self.added_nodes
             and not self.modified_nodes
+            and not self.removed_nodes
             and not self.added_edges
+            and not self.modified_edges
             and not self.removed_edges
         )
 
@@ -50,6 +54,8 @@ class TempThoughtGraph:
         self._delta: GraphDelta = GraphDelta()   # 현재 루프 회차 변경 추적 (수렴 판단용)
         self._all_added_nodes: list[str] = []    # 루프 전체 누적 추가 노드 (커밋용)
         self._all_added_edges: list[str] = []    # 루프 전체 누적 추가 엣지 (커밋용)
+        self._merged_to: dict[str, str] = {}     # address_hash → 본체 hash (병합 추적)
+        self._checked_pairs: set[frozenset[str]] = set() # 이번 사고 턴에서 검증 완료한 쌍
         self._differentiated_pairs: set[frozenset[str]] = set()  # 이미 분화한 쌍 기록
         self._goal_connections: set[str] = set()  # 목표 노드에 연결된 개념 hash 집합 (중복 방지)
 
@@ -93,6 +99,30 @@ class TempThoughtGraph:
     def all_nodes(self) -> list[Node]:
         return list(self._nodes.values())
 
+    def merge_nodes(self, from_hash: str, to_hash: str) -> None:
+        """from_hash 노드를 to_hash 노드로 병합한다."""
+        if from_hash == to_hash:
+            return
+
+        # 1. 엣지 재연결
+        edges = self.get_edges_for_node(from_hash)
+        for edge in edges:
+            if edge.source_hash == from_hash:
+                edge.source_hash = to_hash
+            if edge.target_hash == from_hash:
+                edge.target_hash = to_hash
+            self.update_edge(edge)
+
+        # 2. 인접 인덱스 정리
+        self._adj.pop(from_hash, None)
+        # to_hash의 이웃은 update_edge 로직에서 자연스럽게 보강됨
+
+        # 3. 노드 제거 및 기록
+        self._nodes.pop(from_hash, None)
+        self._merged_to[from_hash] = to_hash
+        if from_hash not in self._delta.removed_nodes:
+            self._delta.removed_nodes.append(from_hash)
+
     # ── 엣지 조작 ─────────────────────────────────────────────────────────────
 
     def add_edge(self, edge: Edge) -> None:
@@ -100,6 +130,17 @@ class TempThoughtGraph:
         self._delta.added_edges.append(edge.edge_id)
         self._all_added_edges.append(edge.edge_id)
         # 인접 인덱스 업데이트
+        self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
+        self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
+
+    def update_edge(self, edge: Edge) -> None:
+        """엣지 정보를 업데이트하고 인접 인덱스를 갱신한다."""
+        self._edges[edge.edge_id] = edge
+        if (edge.edge_id not in self._delta.added_edges and 
+            edge.edge_id not in self._delta.modified_edges):
+            self._delta.modified_edges.append(edge.edge_id)
+        
+        # 인접 인덱스 최신화
         self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
         self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
 
@@ -181,6 +222,18 @@ class TempThoughtGraph:
         """두 노드를 분화 완료 쌍으로 기록한다."""
         self._differentiated_pairs.add(frozenset({hash_a, hash_b}))
 
+    def is_pair_checked(self, hash_a: str, hash_b: str) -> bool:
+        """두 노드 쌍이 이미 유사도 검사를 마쳤는지 확인한다."""
+        return frozenset({hash_a, hash_b}) in self._checked_pairs
+
+    def mark_pair_checked(self, hash_a: str, hash_b: str) -> None:
+        """두 노드 쌍을 검사 완료로 기록한다."""
+        self._checked_pairs.add(frozenset({hash_a, hash_b}))
+
+    def reset_pair_checks(self) -> None:
+        """검사 이력을 초기화한다 (노드 수정 시 호출)."""
+        self._checked_pairs.clear()
+
     # ── 수렴 판단 ─────────────────────────────────────────────────────────────
 
     def current_delta(self) -> GraphDelta:
@@ -204,8 +257,12 @@ class TempThoughtGraph:
         """루프 전체에 걸쳐 add_edge()로 추가된 엣지의 edge_id 목록 (커밋용)."""
         return self._all_added_edges
 
-    # ── 읽기 전용 속성 ────────────────────────────────────────────────────────
+    @property
+    def merged_mappings(self) -> dict[str, str]:
+        """루프 전체에 걸쳐 발생한 노드 병합 매핑 (from_hash -> to_hash)."""
+        return self._merged_to
 
+    # ── 읽기 전용 속성 ────────────────────────────────────────────────────────
     @property
     def goal_hash(self) -> str | None:
         return self._goal_hash

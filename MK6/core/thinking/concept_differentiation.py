@@ -168,13 +168,28 @@ def run(tg: TempThoughtGraph) -> list[DifferentiationResult]:
         for n in nodes
     }
 
+    # 이번 루프 회차에서 변경/추가된 노드들 (Delta 활용)
+    delta = tg.current_delta()
+    modified_hashes = set(delta.added_nodes) | set(delta.modified_nodes)
+
     for node_a, node_b in combinations(nodes, 2):
-        # 이미 분화한 쌍은 건너뛴다.
-        if tg.is_differentiated(node_a.address_hash, node_b.address_hash):
+        hash_a, hash_b = node_a.address_hash, node_b.address_hash
+
+        # 1. 이미 분화한 쌍은 건너뛴다.
+        if tg.is_differentiated(hash_a, hash_b):
             continue
 
-        neighbors_a = neighbor_cache[node_a.address_hash]
-        neighbors_b = neighbor_cache[node_b.address_hash]
+        # 2. 증분 검사 최적화: 
+        # 두 노드 모두 이번 회차에서 변한 게 없고, 이미 이전 회차들에서 검사했다면 스킵.
+        if hash_a not in modified_hashes and hash_b not in modified_hashes:
+            if tg.is_pair_checked(hash_a, hash_b):
+                continue
+
+        # 검사 완료 마킹
+        tg.mark_pair_checked(hash_a, hash_b)
+
+        neighbors_a = neighbor_cache[hash_a]
+        neighbors_b = neighbor_cache[hash_b]
 
         score = composite_score(node_a, node_b, neighbors_a, neighbors_b)
 

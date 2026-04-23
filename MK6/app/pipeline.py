@@ -116,8 +116,18 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
     user_msg = conclusion.user_input or ""
 
+    # 주제 연속성 힌트 (MK5 정책 이식)
+    continuity_hints = {
+        "new_topic": "새로운 주제의 시작입니다.",
+        "continued_topic": "이전 대화와 밀접하게 이어지는 주제입니다.",
+        "related_topic": "이전 대화와 느슨하게 연관된 주제입니다.",
+        "shifted_topic": "이전 대화와는 다른 새로운 주제로 전환되었습니다.",
+    }
+    continuity_hint = continuity_hints.get(conclusion.topic_continuity, "")
+
     system_msg = (
         "당신은 인지 그래프 기반 AI 어시스턴트입니다.\n"
+        f"{continuity_hint}\n"
         "아래는 사용자 입력에 대해 인지 그래프 위에서 사고 과정을 거쳐 도달한 당신의 현재 인식 상태입니다.\n"
         "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
         "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
@@ -194,13 +204,21 @@ class Pipeline:
     def __init__(self, db_path: str | None = None) -> None:
         self._conn = open_db(db_path or config.DB_PATH)
         self._goal_node = _get_or_create_goal_node(self._conn)
+        # 세션별 이전 키워드 해시 저장 (메모리상 임시 저장)
+        self._session_memory: dict[str, set[str]] = {}
 
-    async def run(self, user_input: str, model: str | None = None) -> PipelineResult:
+    async def run(
+        self,
+        user_input: str,
+        model: str | None = None,
+        session_id: str = "default",
+    ) -> PipelineResult:
         """사용자 입력을 처리하고 언어 출력을 반환한다.
 
         Args:
             user_input: 사용자 메시지 (파일 내용 포함 가능)
             model:      사용할 생성 모델 (None이면 config.OLLAMA_MODEL_NAME)
+            session_id: 대화 세션 식별자
         """
         _p0 = time.perf_counter()
 
@@ -216,7 +234,18 @@ class Pipeline:
             search_fn=_search,
             goal_node=self._goal_node,
         )
-        conclusion = await engine.think(translated, model=model, user_input=user_input)
+        # 이전 키워드 전달
+        prev_hashes = self._session_memory.get(session_id)
+        conclusion = await engine.think(
+            translated,
+            model=model,
+            user_input=user_input,
+            previous_key_hashes=prev_hashes,
+        )
+
+        # 현재 키워드 세션 메모리에 업데이트
+        self._session_memory[session_id] = conclusion.key_hashes
+
         _p2 = time.perf_counter()
         print(f"[pipeline] think: {_p2 - _p1:.3f}s")
 
