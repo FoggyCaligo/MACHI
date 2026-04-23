@@ -38,6 +38,7 @@ from ..storage.world_graph import (
     remap_words_to_node,
 )
 from ..utils.hash_resolver import compute_hash, normalize_text
+from ..utils.local_graph_extractor import extract as extract_subgraph
 from .temp_thought_graph import TempThoughtGraph
 from . import concept_differentiation
 from . import concept_merge
@@ -246,15 +247,51 @@ class ThoughtEngine:
         tg.set_goal_node(self._goal_node)
         tg.load_from_translated(translated)
 
+        # 주제 지속 시 이전 핵심 노드들을 강제로 로드 (Memory Activation)
+        if previous_key_hashes:
+            for h in previous_key_hashes:
+                if tg.get_node(h): 
+                    continue
+                # DB에서 해당 노드 중심의 국소 그래프 추출 후 로드 (WorldGraph 조회)
+                subgraph = extract_subgraph(self._conn, h)
+                for n in subgraph.nodes:
+                    if not tg.get_node(n.address_hash):
+                        # add_node를 통해 delta에 기록되지 않도록 직접 dict 조작 고려 가능하나, 
+                        # 여기선 단순히 로드하는 것이므로 add_node 활용 (커밋 대상 아님 판단은 나중에)
+                        tg._nodes[n.address_hash] = n
+                for e in subgraph.edges:
+                    if e.edge_id not in tg._edges:
+                        tg._edges[e.edge_id] = e
+                        # 인접 인덱스 갱신
+                        tg._adj.setdefault(e.source_hash, set()).add(e.target_hash)
+                        tg._adj.setdefault(e.target_hash, set()).add(e.source_hash)
+
         # TranslatedEdge → TempThoughtGraph 변환 (CP↔CP는 즉시, EmptySlot 포함은 fill 후)
         _te_added_keys: set[tuple[str, str]] = set()
         _add_translated_edges(tg, translated.edges, _te_added_keys)
 
-        # 모든 ConceptPointer를 목표 노드에 임시 연결
-        # key_hashes / ref_hashes는 Think 루프 후 importance 기반으로 결정한다.
+        # 모든 ConceptPointer를 목표 노드 및 사용자 앵커 노드에 임시 연결
+        from ..utils.hash_resolver import ANCHOR_USER, ANCHOR_ASSISTANT
         for ref in translated.nodes:
             if isinstance(ref, ConceptPointer):
                 tg.connect_to_goal(ref.address_hash)
+                # 구조적 귀속: 현재 사용자 입력 개념들을 '사용자' 앵커 노드에 연결
+                tg.connect_to_identity(ref.address_hash, ANCHOR_USER)
+
+        # ── 정체성 기반 기억 회상 (Identity Memory Activation) ─────────────
+        # 사용자/AI 앵커 주변의 국부 활성화 그래프를 추출하여 사고 공간에 로드합니다.
+        identity_anchors = [ANCHOR_USER, ANCHOR_ASSISTANT]
+        for anchor_h in identity_anchors:
+            # BFS 기반 N-hop 국부 그래프 추출 (기본 N=2)
+            subgraph = extract_subgraph(self._conn, anchor_h)
+            for n in subgraph.nodes:
+                if not tg.get_node(n.address_hash):
+                    tg._nodes[n.address_hash] = n
+            for e in subgraph.edges:
+                if e.edge_id not in tg._edges:
+                    tg._edges[e.edge_id] = e
+                    tg._adj.setdefault(e.source_hash, set()).add(e.target_hash)
+                    tg._adj.setdefault(e.target_hash, set()).add(e.source_hash)
 
         _t0 = _t("graph init", _t0)
 
@@ -340,6 +377,11 @@ class ThoughtEngine:
         key_hashes: set[str] = {h for _, h in scored[:n_near]}
         far_cands:  set[str] = {h for _, h in scored[max(0, n_sel - n_far):]}
         ref_hashes: set[str] = far_cands - key_hashes
+
+        # ── 메모리 노드 활성화 반영 ─────────────────────────────────────────
+        # 이전 턴의 키워드들을 참고 개념(ref)에 추가하여 GraphToLang이 LLM에게 전달하게 함.
+        if previous_key_hashes:
+            ref_hashes |= (previous_key_hashes - key_hashes)
 
         # ── 주제 연속성 판단 ─────────────────────────────────────────────────
         if not previous_key_hashes:

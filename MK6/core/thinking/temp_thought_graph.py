@@ -176,18 +176,22 @@ class TempThoughtGraph:
     # ── 엣지 연결 (목표 노드 ↔ 입력 개념) ───────────────────────────────────
 
     def connect_to_goal(self, concept_hash: str) -> None:
-        """개념 노드를 목표 노드에 임시 연결한다.
-
-        같은 concept_hash가 이미 연결돼 있으면 중복 엣지를 생성하지 않는다.
-        """
+        """개념 노드를 목표 노드에 임시 연결한다."""
         if self._goal_hash is None:
             return
-        if concept_hash in self._goal_connections:
+        self.connect_to_identity(concept_hash, self._goal_hash, edge_id_prefix="goal")
+
+    def connect_to_identity(self, concept_hash: str, identity_hash: str, edge_id_prefix: str = "identity") -> None:
+        """개념 노드를 참여자 앵커(사용자/AI) 노드에 임시 연결한다."""
+        # 중복 방지를 위해 복합 키 사용
+        conn_key = f"{identity_hash}::{concept_hash}"
+        if conn_key in self._goal_connections: # 기존 필드 재활용 (이름은 goal_이지만 실제론 임시 연결 관리용)
             return
-        self._goal_connections.add(concept_hash)
+        self._goal_connections.add(conn_key)
+        
         edge = Edge(
             edge_id=str(uuid.uuid4()),
-            source_hash=self._goal_hash,
+            source_hash=identity_hash,
             target_hash=concept_hash,
             edge_family="relation",
             connect_type="neutral",

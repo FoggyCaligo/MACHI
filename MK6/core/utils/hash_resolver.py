@@ -18,6 +18,10 @@ _KO_PARTICLES: frozenset[str] = frozenset({
 # scope prefix — 의미 그래프 노드 해시와의 충돌 방지
 _SCOPE_PREFIX = "word::"
 
+# 참여자 앵커용 고정 해시 (MK5 정책 이식)
+ANCHOR_USER      = hashlib.sha256(b"identity_anchor::participant_user").hexdigest()[:32]
+ANCHOR_ASSISTANT = hashlib.sha256(b"identity_anchor::participant_assistant").hexdigest()[:32]
+
 
 def normalize_text(token: str) -> str:
     """토큰을 해시 계산에 쓸 정규화 형태로 변환한다.

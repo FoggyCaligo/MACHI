@@ -68,8 +68,11 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             continue
         if src.is_abstract or tgt.is_abstract:
             continue
-        src_str = src.labels[0] if src.labels else edge.source_hash[:8]
-        tgt_str = tgt.labels[0] if tgt.labels else edge.target_hash[:8]
+        # 앵커 노드 가독성 처리 (사용자/AI)
+        from ..core.utils.hash_resolver import ANCHOR_USER, ANCHOR_ASSISTANT
+        identity_names = {ANCHOR_USER: "사용자", ANCHOR_ASSISTANT: "AI"}
+        src_str = identity_names.get(src.address_hash) or (src.labels[0] if src.labels else edge.source_hash[:8])
+        tgt_str = identity_names.get(tgt.address_hash) or (tgt.labels[0] if tgt.labels else edge.target_hash[:8])
         sort_key = (
             0 if edge.connect_type != "neutral" else 1,   # non-neutral 우선
             -edge.edge_weight,                             # 높은 weight 우선
@@ -184,6 +187,34 @@ def _get_or_create_goal_node(conn: sqlite3.Connection) -> Node:
     return goal_node
 
 
+def _initialize_identity_anchors(conn: sqlite3.Connection) -> None:
+    """사용자와 AI를 구분하기 위한 고정 앵커 노드를 생성한다."""
+    from datetime import datetime, timezone
+    from ..core.utils.hash_resolver import ANCHOR_USER, ANCHOR_ASSISTANT
+    
+    anchors = [
+        (ANCHOR_USER, "사용자", "User"),
+        (ANCHOR_ASSISTANT, "AI", "Assistant"),
+    ]
+    
+    now = datetime.now(timezone.utc)
+    for h, label_ko, label_en in anchors:
+        if db_get_node(conn, h) is None:
+            node = Node(
+                address_hash=h,
+                node_kind="concept",
+                formation_source="ingest",
+                labels=[label_ko, label_en],
+                trust_score=1.0,
+                stability_score=1.0,
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+            insert_node(conn, node)
+    conn.commit()
+
+
 # ── 파이프라인 ────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -204,6 +235,7 @@ class Pipeline:
     def __init__(self, db_path: str | None = None) -> None:
         self._conn = open_db(db_path or config.DB_PATH)
         self._goal_node = _get_or_create_goal_node(self._conn)
+        _initialize_identity_anchors(self._conn)
         # 세션별 이전 키워드 해시 저장 (메모리상 임시 저장)
         self._session_memory: dict[str, set[str]] = {}
 
@@ -245,6 +277,7 @@ class Pipeline:
 
         # 현재 키워드 세션 메모리에 업데이트
         self._session_memory[session_id] = conclusion.key_hashes
+        print(f"[pipeline] topic_continuity: {conclusion.topic_continuity} (overlap with {len(prev_hashes or set())} prev keys)")
 
         _p2 = time.perf_counter()
         print(f"[pipeline] think: {_p2 - _p1:.3f}s")
