@@ -92,24 +92,31 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         weight_str = f"{weight:.2f}".rstrip("0").rstrip(".")
         edge_lines.append(f"  - {src_str} →[{connect_type}, {weight_str}]→ {tgt_str}")
 
-    # ── 검색 컨텍스트: 이번 세션에서 search_summary가 설정된 노드만 수집 ──────
-    # conclusion.search_node_hashes: _ingest_slot이 이번 요청 중 search_summary를
-    # 실제로 설정한 노드 해시 집합. 이전 세션에서 로드된 이웃 노드의 summary가
-    # 새어나오는 것을 방지한다.
-    _SEARCH_CTX_MAX = 600   # 시스템 메시지에 포함할 검색 요약 최대 길이
+    # ── 지식 및 검색 컨텍스트: 핵심 키워드 내부 자료 + 이번 세션 검색 결과 ──────
+    # - 핵심 키워드(key_hashes): 이미 알고 있는 지식(과거 검색 결과 등) 로드
+    # - 신규 검색(search_node_hashes): 이번 요청에서 새로 알아낸 정보 로드
+    _SEARCH_CTX_MAX = 800   # 요약 최대 길이 확대
     seen_summaries: set[str] = set()
     search_ctx_parts: list[str] = []
+    
     for node in conclusion.nodes:
-        if node.address_hash not in conclusion.search_node_hashes:
+        is_newly_searched = node.address_hash in conclusion.search_node_hashes
+        is_key_topic = node.address_hash in conclusion.key_hashes
+        
+        if not (is_newly_searched or is_key_topic):
             continue
+            
         summary = node.payload.get("search_summary", "")
         if not summary:
             continue
+            
         snippet = summary[:_SEARCH_CTX_MAX]
         if snippet not in seen_summaries:
             seen_summaries.add(snippet)
-            search_ctx_parts.append(snippet)
-            if len(search_ctx_parts) >= 2:   # 최대 2개 (중복 제거 후)
+            # 출처 표시 보강
+            prefix = "[내부 지식]" if not is_newly_searched else "[검색 결과]"
+            search_ctx_parts.append(f"{prefix} {snippet}")
+            if len(search_ctx_parts) >= 3:   # 정보량 확보를 위해 최대 3개로 확대
                 break
 
     key_text    = ", ".join(key_labels) if key_labels else "(없음)"
@@ -134,14 +141,14 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "아래는 사용자 입력에 대해 인지 그래프 위에서 사고 과정을 거쳐 도달한 당신의 현재 인식 상태입니다.\n"
         "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
         "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
-        "검색 컨텍스트가 있으면 이를 근거로 구체적인 정보를 답변에 포함하십시오. 단, 검색결과를 언급하지 않아도 되면 빼도 됩니다.\n"
+        "제공된 지식 및 검색 결과를 근거로 구체적이고 정확한 정보를 답변에 포함하십시오. 단, 검색결과를 언급하지 않아도 되면 빼도 됩니다.\n"
         "근거 연결이 있으면 그 관계를 자연스럽게 반영하십시오.\n"
         "인식 상태 구조 자체를 설명하거나 나열하지 마십시오.\n"
         "확실하지 않거나 모르는 게 있으면 얼버무리지 않고, 모른다고 솔직하게 답하십시오.\n\n"
         f"[핵심 키워드]\n{key_text}\n\n"
         f"[참고 개념]\n{ref_text}\n\n"
         f"[근거 연결]\n{edge_text}\n\n"
-        f"[검색 컨텍스트]\n{search_text}"
+        f"[지식 및 검색 결과]\n{search_text}"
     )
 
     print("\n" + "─" * 60)
