@@ -1,4 +1,13 @@
 {
+ {
+  "models": [
+    {
+      "title": "Qwen Local",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b"
+    }
+   ]
+ }
  "chat.tools.terminal.autoApprove": {
   "/^cd D:/git/MACHI/MK5 && python -c \"import sys; sys\\.path\\.insert\\(0, '\\.'\\); from tests\\.unit\\.test_pattern_repository_smoke import test_pattern_repository_smoke; test_pattern_repository_smoke\\(\\)\"$/": {
    "approve": true,
