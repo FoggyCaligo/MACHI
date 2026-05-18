@@ -23,7 +23,7 @@ from ..entities.edge import Edge
 from ..entities.node import Node
 from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedEdge, TranslatedGraph
 from ..entities.word_entry import WordEntry
-from ..profile import ProfileActivationView, attach_profile_references
+from ..profile import ProfileActivationView, attach_identity_surface_candidates, attach_profile_references
 from ..storage.world_graph import (
     deactivate_node,
     get_edge as db_get_edge,
@@ -368,7 +368,16 @@ class ThoughtEngine:
         profile_hashes |= {compute_hash(ref.concept_hint.strip()) for ref in translated.nodes if isinstance(ref, EmptySlot)}
         attach_profile_references(self._conn, profile_hashes)
 
-        claim_conflict_graph, _claim_conflict = build_claim_conflict_graph(tg, translated, previous_assertion_state)
+        subject_binding_hashes = _profile_subject_binding_hashes(profile_activation_view)
+        if subject_binding_hashes:
+            attach_identity_surface_candidates(self._conn, subject_binding_hashes)
+
+        claim_conflict_graph, _claim_conflict = build_claim_conflict_graph(
+            tg,
+            translated,
+            previous_assertion_state,
+            subject_binding_hashes=subject_binding_hashes,
+        )
         if claim_conflict_graph is not None:
             apply_claim_conflict_pressure(tg, previous_assertion_state)
             topic_continuity = "continued_topic"
@@ -623,3 +632,14 @@ class ThoughtEngine:
             _copy_committed_edge_state(edge, committed)
 
         self._conn.commit()
+
+
+def _profile_subject_binding_hashes(profile_activation_view: ProfileActivationView | None) -> set[str]:
+    """ClaimAssertion subject로 쓸 현재 사용자 identity surface 후보.
+
+    문자열 패턴으로 이름을 추측하지 않고, 현재 입력과 UserProfile reference가 겹쳐
+    ProfileActivationView에서 matched된 concept만 1차 subject binding 후보로 사용한다.
+    """
+    if profile_activation_view is None or not profile_activation_view.is_active:
+        return set()
+    return set(profile_activation_view.matched_hashes)
