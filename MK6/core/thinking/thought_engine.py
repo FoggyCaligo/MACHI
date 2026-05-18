@@ -41,6 +41,7 @@ from ..utils.hash_resolver import compute_hash, normalize_text
 from ..utils.local_graph_extractor import extract as extract_subgraph
 from ... import config
 from . import concept_differentiation, concept_merge
+from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
 from .temp_thought_graph import TempThoughtGraph
 
 
@@ -55,6 +56,14 @@ def _t(label: str, start: float) -> float:
 
 @dataclass
 class ConclusionView:
+    """GraphToLang에 전달되는 결론 뷰.
+
+    기존 호환 필드(nodes/edges/key_hashes/ref_hashes)는 유지한다. 다만 MK6의
+    장기 계약에서 결론 본체는 node list가 아니라 selected_graphs에 담기는
+    ConclusionGraph다. 현재는 계약 추가 단계이며, 실제 Think scoring 전환은
+    후속 PR에서 진행한다.
+    """
+
     nodes: list[Node]
     edges: list[Edge]
     goal_hash: str | None
@@ -66,6 +75,8 @@ class ConclusionView:
     key_hashes: set[str] = field(default_factory=set)
     ref_hashes: set[str] = field(default_factory=set)
     search_node_hashes: set[str] = field(default_factory=set)
+    selected_graphs: list[ConclusionGraph] = field(default_factory=list)
+    rejected_graphs: list[RejectedConclusionGraph] = field(default_factory=list)
 
 
 def _commit_strong(conn: sqlite3.Connection, node: Node) -> None:
