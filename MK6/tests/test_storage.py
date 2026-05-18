@@ -1,6 +1,7 @@
 """Storage(WorldGraph) 단위 테스트 — in-memory SQLite 사용."""
 from __future__ import annotations
 
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 
@@ -10,7 +11,8 @@ from MK6.core.storage.db import open_db
 from MK6.core.storage.world_graph import (
     insert_node, get_node, update_node, deactivate_node, get_active_nodes,
     insert_edge, get_edge, get_edges_for_node,
-    insert_word, get_word, get_words_for_node, remap_words_to_node,
+    insert_word, get_words_for_surface, get_words_for_node,
+    word_link_exists, remap_words_to_node,
 )
 from MK6.core.entities.node import Node
 from MK6.core.entities.edge import Edge
@@ -157,9 +159,9 @@ def test_get_edges_for_node(conn):
     assert len(edges_tgt) == 1
 
 
-# ── 단어 ──────────────────────────────────────────────────────────────────────
+# ── 단어/표면형 링크 ─────────────────────────────────────────────────────────
 
-def test_insert_and_get_word(conn):
+def test_insert_and_get_words_for_surface(conn):
     node = _make_node()
     insert_node(conn, node)
     now = datetime.now(timezone.utc)
@@ -173,9 +175,50 @@ def test_insert_and_get_word(conn):
     insert_word(conn, word)
     conn.commit()
 
-    fetched = get_word(conn, "사과")
-    assert fetched is not None
-    assert fetched.address_hash == node.address_hash
+    fetched = get_words_for_surface(conn, "사과")
+    assert len(fetched) == 1
+    assert fetched[0].address_hash == node.address_hash
+
+
+def test_same_surface_can_link_to_multiple_nodes(conn):
+    n_a = _make_node(labels=["십자가"])
+    n_b = _make_node(labels=["교차 동작"])
+    insert_node(conn, n_a)
+    insert_node(conn, n_b)
+
+    now = datetime.now(timezone.utc)
+    insert_word(conn, WordEntry(str(uuid.uuid4()), "cross", n_a.address_hash, "en", now))
+    insert_word(conn, WordEntry(str(uuid.uuid4()), "cross", n_b.address_hash, "en", now))
+    conn.commit()
+
+    entries = get_words_for_surface(conn, "cross")
+    assert {entry.address_hash for entry in entries} == {
+        n_a.address_hash,
+        n_b.address_hash,
+    }
+
+
+def test_same_surface_same_node_duplicate_is_rejected(conn):
+    node = _make_node()
+    insert_node(conn, node)
+    now = datetime.now(timezone.utc)
+    insert_word(conn, WordEntry(str(uuid.uuid4()), "cross", node.address_hash, "en", now))
+    conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_word(conn, WordEntry(str(uuid.uuid4()), "cross", node.address_hash, "en", now))
+        conn.commit()
+
+
+def test_word_link_exists(conn):
+    node = _make_node()
+    insert_node(conn, node)
+    now = datetime.now(timezone.utc)
+    insert_word(conn, WordEntry(str(uuid.uuid4()), "사과", node.address_hash, "ko", now))
+    conn.commit()
+
+    assert word_link_exists(conn, "사과", node.address_hash) is True
+    assert word_link_exists(conn, "사과", "missing") is False
 
 
 def test_get_words_for_node(conn):
@@ -211,5 +254,30 @@ def test_remap_words_to_node(conn):
     remap_words_to_node(conn, [n_a.address_hash, n_b.address_hash], n_merged.address_hash)
     conn.commit()
 
-    assert get_word(conn, "사과").address_hash == n_merged.address_hash
-    assert get_word(conn, "apple").address_hash == n_merged.address_hash
+    assert {
+        w.address_hash
+        for w in get_words_for_surface(conn, "사과")
+    } == {n_merged.address_hash}
+    assert {
+        w.address_hash
+        for w in get_words_for_surface(conn, "apple")
+    } == {n_merged.address_hash}
+
+
+def test_remap_words_to_node_deduplicates_existing_surface_link(conn):
+    n_a = _make_node(labels=["십자가"])
+    n_b = _make_node(labels=["교차 동작"])
+    for n in [n_a, n_b]:
+        insert_node(conn, n)
+
+    now = datetime.now(timezone.utc)
+    insert_word(conn, WordEntry(str(uuid.uuid4()), "cross", n_a.address_hash, "en", now))
+    insert_word(conn, WordEntry(str(uuid.uuid4()), "cross", n_b.address_hash, "en", now))
+    conn.commit()
+
+    remap_words_to_node(conn, [n_b.address_hash], n_a.address_hash)
+    conn.commit()
+
+    entries = get_words_for_surface(conn, "cross")
+    assert len(entries) == 1
+    assert entries[0].address_hash == n_a.address_hash
