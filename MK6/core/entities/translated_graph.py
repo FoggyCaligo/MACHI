@@ -92,6 +92,23 @@ class TranslatedEdge:
 
 
 @dataclass(slots=True)
+class InputGraphBundle:
+    """현재 사용자 입력을 국소그래프 묶음으로 표현한 1단계 산출물.
+
+    LangToGraph가 이미 만든 ConceptPointer/TranslatedEdge를 버리지 않고,
+    입력 전체를 임시 사고 그래프의 단위로 명시한다.
+    """
+
+    source: str
+    center_hashes: set[str] = field(default_factory=set)
+    direct_hashes: set[str] = field(default_factory=set)
+    context_hashes: set[str] = field(default_factory=set)
+    empty_hints: list[str] = field(default_factory=list)
+    local_subgraphs: list[LocalSubgraph] = field(default_factory=list)
+    sentence_edges: list[TranslatedEdge] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class TranslatedGraph:
     """LangToGraph의 최종 반환값.
 
@@ -102,8 +119,11 @@ class TranslatedGraph:
            중요도 필터링 없이 전체를 포함한다.
            각 ref의 importance 필드에 centroid 기반 중요도 점수가 담겨 있다.
            ThoughtEngine이 이 점수를 사용해 key/ref 분류를 수행한다.
+    input_bundle: 현재 입력을 국소그래프 묶음으로 명시한 view.
+                  1단계에서는 기존 nodes/edges와 동치 정보를 구조화해 보존한다.
     """
 
     nodes: list[ConceptRef]
     edges: list[TranslatedEdge]
     source: str    # 원문 (provenance용)
+    input_bundle: InputGraphBundle | None = None
