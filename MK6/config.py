@@ -73,6 +73,9 @@ COMMIT_TRUST_STRONG = _env_float("COMMIT_TRUST_STRONG", 0.7)
 COMMIT_TRUST_WEAK = _env_float("COMMIT_TRUST_WEAK", 0.15)
 COMMIT_STABILITY_STRONG = _env_float("COMMIT_STABILITY_STRONG", 0.6)
 COMMIT_STABILITY_WEAK = _env_float("COMMIT_STABILITY_WEAK", 0.1)
+# 같은 endpoint의 관측 edge가 반복될 때 세계 그래프에 반영할 강화 비율.
+# 1.0이면 기존처럼 현재 관측치를 전량 누적하고, 0.5이면 현재 관측치의 절반만 누적한다.
+WORLD_EDGE_REINFORCE_ALPHA = _env_float("WORLD_EDGE_REINFORCE_ALPHA", 0.5)
 
 # ── GraphToLang ──────────────────────────────────────────────────────────────
 # 정렬 후 상위 RATIO 비율의 엣지만 LLM 컨텍스트에 포함한다.
