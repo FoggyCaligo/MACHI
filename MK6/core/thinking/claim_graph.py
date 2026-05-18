@@ -144,9 +144,8 @@ def build_claim_conflict_graph(
 ) -> tuple[ConclusionGraph | None, ClaimConflict | None]:
     """현재 사용자 claim과 직전 assertion state 사이의 conflict 후보를 만든다.
 
-    CorrectionGraph를 별도 케이스 그래프로 만들지 않는다. 현재 사용자 assertion과
-    직전 assertion state가 같은 국소 사고공간에 들어왔을 때 ClaimConflict를 만들고,
-    그것을 conflict_paths를 가진 일반 ConclusionGraph로 projection한다.
+    보수적 skeleton: 단순 shared node나 neutral adjacency만으로는 conflict를 만들지 않는다.
+    이미 그래프 안에 conflict/opposite 구조가 있을 때만 ClaimConflict로 projection한다.
     """
     if previous_state is None:
         return None, None
@@ -160,49 +159,41 @@ def build_claim_conflict_graph(
     if not current_hashes or not previous_hashes:
         return None, None
 
-    shared_hashes = current_hashes.intersection(previous_hashes)
-    novel_hashes = current_hashes - previous_hashes
-    adjacent_pairs = _current_previous_adjacency(tg, current_hashes, previous_hashes)
-
-    if not shared_hashes and not adjacent_pairs:
-        return None, None
-    if not novel_hashes and not adjacent_pairs:
+    explicit_pairs = _current_previous_explicit_conflict_adjacency(tg, current_hashes, previous_hashes)
+    if not explicit_pairs:
         return None, None
 
     now = datetime.now(timezone.utc)
     conflict_edges: list[Edge] = []
-    core_hashes = set(novel_hashes) if novel_hashes else set(shared_hashes)
-    related_previous = set(shared_hashes)
-    related_previous |= {p for _, p in adjacent_pairs}
-    if not related_previous:
-        related_previous = set(list(previous_hashes)[:3])
+    core_hashes = {current for current, _ in explicit_pairs}
+    related_previous = {previous for _, previous in explicit_pairs}
+    shared_hashes = current_hashes.intersection(previous_hashes)
 
-    for current_hash in sorted(core_hashes):
-        for previous_hash in sorted(related_previous):
-            if current_hash == previous_hash:
-                continue
-            edge = Edge(
-                edge_id=str(uuid.uuid4()),
-                source_hash=current_hash,
-                target_hash=previous_hash,
-                edge_family="relation",
-                connect_type="conflict",
-                provenance_source="user_policy",
-                proposed_connect_type="claim_conflict",
-                proposal_reason="현재 사용자 assertion이 직전 assertion state와 구조적으로 충돌하는 후보",
-                trust_score=0.8,
-                edge_weight=0.8,
-                is_temporary=True,
-                payload={
-                    "claim_conflict_candidate": True,
-                    "current_assertion_id": current_assertion.assertion_id,
-                    "previous_assertion_edge_ids": sorted(previous_state.edge_ids),
-                },
-                created_at=now,
-                updated_at=now,
-            )
-            tg.add_edge(edge)
-            conflict_edges.append(edge)
+    for current_hash, previous_hash in sorted(explicit_pairs):
+        if current_hash == previous_hash:
+            continue
+        edge = Edge(
+            edge_id=str(uuid.uuid4()),
+            source_hash=current_hash,
+            target_hash=previous_hash,
+            edge_family="relation",
+            connect_type="conflict",
+            provenance_source="user_policy",
+            proposed_connect_type="claim_conflict",
+            proposal_reason="현재 사용자 assertion과 직전 assertion state 사이에 명시적 conflict/opposite 구조가 있는 후보",
+            trust_score=0.8,
+            edge_weight=0.8,
+            is_temporary=True,
+            payload={
+                "claim_conflict_candidate": True,
+                "current_assertion_id": current_assertion.assertion_id,
+                "previous_assertion_edge_ids": sorted(previous_state.edge_ids),
+            },
+            created_at=now,
+            updated_at=now,
+        )
+        tg.add_edge(edge)
+        conflict_edges.append(edge)
 
     if not conflict_edges:
         return None, None
@@ -288,15 +279,21 @@ def _translated_hashes(translated: TranslatedGraph, tg: TempThoughtGraph) -> set
     return hashes
 
 
-def _current_previous_adjacency(
+def _current_previous_explicit_conflict_adjacency(
     tg: TempThoughtGraph,
     current_hashes: set[str],
     previous_hashes: set[str],
 ) -> set[tuple[str, str]]:
+    """current/previous 사이의 명시적 conflict/opposite 인접만 반환한다.
+
+    neutral co-occurrence, shared topic, temporal continuation은 conflict의 충분조건이 아니다.
+    """
     pairs: set[tuple[str, str]] = set()
     for current_hash in current_hashes:
         for edge in tg.get_edges_for_node(current_hash):
             if edge.is_temporary:
+                continue
+            if edge.connect_type not in {"conflict", "opposite"}:
                 continue
             other = edge.target_hash if edge.source_hash == current_hash else edge.source_hash
             if other in previous_hashes:
