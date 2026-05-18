@@ -5,19 +5,21 @@
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import sqlite3
 import time
 from dataclasses import dataclass
 
-from ..core.entities.node import Node
-from ..core.storage.db import open_db, close_db
-from ..core.storage.world_graph import get_node as db_get_node, insert_node
-from ..core.translation.lang_to_graph import translate as lang_to_graph
-from ..core.thinking.thought_engine import ThoughtEngine, ConclusionView
-from ..tools.ollama_client import get_embedding, chat as llm_chat
-from ..tools.search_client import search as _search
 from .. import config
+from ..core.entities.node import Node
+from ..core.storage.db import close_db, open_db
+from ..core.storage.world_graph import get_node as db_get_node, insert_node
+from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
+from ..core.translation.lang_to_graph import translate as lang_to_graph
+from ..core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
+from ..tools.ollama_client import chat as llm_chat, get_embedding
+from ..tools.search_client import search as _search
 
 
 # ── GraphToLang ───────────────────────────────────────────────────────────────
@@ -28,62 +30,53 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     사용자 입력과 인지 그래프 구조를 함께 LLM에 전달한다.
     레이블 없는 추상 노드는 이웃 노드의 레이블과 엣지 관계로 간접 표현한다.
     """
-    # ── 구조 직렬화 ───────────────────────────────────────────────────────────
-    # ── 노드 분류: known_hashes → 핵심 키워드, 신규 ingest → 참고 개념 ────────
     key_labels: list[str] = []
     ref_labels: list[str] = []
     node_map = {n.address_hash: n for n in conclusion.nodes}
+    identity_names = {ANCHOR_USER: "사용자", ANCHOR_ASSISTANT: "AI"}
 
     for node in conclusion.nodes:
         if node.address_hash == conclusion.goal_hash:
             continue
-        # abstract 노드는 GraphToLang 출력에서 제외.
-        # 분화 결과로 생성된 구조 노드이며, LLM 컨텍스트에 노이즈만 추가한다.
         if node.is_abstract:
             continue
         if not node.labels:
             continue
 
-        label_str = node.labels[0]
-
-        # 핵심 키워드: near 그룹 — centroid에 가까운 토큰 (문장 대표 개념).
-        # 참고 개념:  far 그룹  — centroid에서 먼 토큰 (도메인 특이 개념·고유명사).
-        # 두 기준 모두 언어 구조 기반이며 그래프 상태(DB 존재 여부)와 무관하다.
+        label_str = identity_names.get(node.address_hash) or node.labels[0]
         if node.address_hash in conclusion.key_hashes:
             key_labels.append(label_str)
         elif node.address_hash in conclusion.ref_hashes:
             ref_labels.append(label_str)
 
-    # ── 엣지: 비임시 엣지 → 근거 연결 ───────────────────────────────────────
-    # abstract 노드가 엔드포인트인 엣지는 제외 (분화 구조 엣지 → LLM 컨텍스트 노이즈)
-    # 정렬: non-neutral 먼저 > edge_weight 내림차순 > search 외 provenance 먼저
-    # 상한: 정렬 후 상위 GRAPH_TO_LANG_EDGE_RATIO(30%)만 포함
-    _edge_candidates: list[tuple] = []   # (sort_key, src_str, tgt_str, connect_type, weight)
+    edge_map: dict[tuple[str, str, str, str], tuple[int, str, str, str, float]] = {}
     for edge in conclusion.edges:
-        if edge.is_temporary:
-            continue
         src = node_map.get(edge.source_hash)
         tgt = node_map.get(edge.target_hash)
         if src is None or tgt is None:
             continue
         if src.is_abstract or tgt.is_abstract:
             continue
-        # 앵커 노드 가독성 처리 (사용자/AI)
-        from ..core.utils.hash_resolver import ANCHOR_USER, ANCHOR_ASSISTANT
-        identity_names = {ANCHOR_USER: "사용자", ANCHOR_ASSISTANT: "AI"}
+
+        is_identity_view = edge.is_temporary and edge.edge_family == "relation" and edge.source_hash in identity_names
+        if edge.is_temporary and not is_identity_view:
+            continue
+
         src_str = identity_names.get(src.address_hash) or (src.labels[0] if src.labels else edge.source_hash[:8])
         tgt_str = identity_names.get(tgt.address_hash) or (tgt.labels[0] if tgt.labels else edge.target_hash[:8])
-        sort_key = (
-            0 if edge.connect_type != "neutral" else 1,   # non-neutral 우선
-            -edge.edge_weight,                             # 높은 weight 우선
-            0 if edge.provenance_source != "search" else 1,  # search 외 provenance 우선
-        )
-        _edge_candidates.append((sort_key, src_str, tgt_str, edge.connect_type, edge.edge_weight))
+        key = (edge.source_hash, edge.target_hash, edge.edge_family, edge.connect_type)
 
-    _edge_candidates.sort(key=lambda x: x[0])
+        priority = 0 if is_identity_view else 1 if edge.connect_type != "neutral" else 2
+        candidate = (priority, src_str, tgt_str, edge.connect_type, edge.edge_weight)
+        previous = edge_map.get(key)
+        if previous is None or candidate[0] < previous[0] or candidate[4] > previous[4]:
+            edge_map[key] = candidate
 
-    # 상위 30% 절삭 — 노드 수 n에서 생성되는 pairwise 엣지는 O(n²)이므로
-    # 정렬 후 상위 비율만 LLM에 전달한다.
+    _edge_candidates = sorted(
+        edge_map.values(),
+        key=lambda x: (x[0], -x[4]),
+    )
+
     _n_edges = max(1, math.ceil(len(_edge_candidates) * config.GRAPH_TO_LANG_EDGE_RATIO))
     _edge_candidates = _edge_candidates[:_n_edges]
 
@@ -92,17 +85,13 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         weight_str = f"{weight:.2f}".rstrip("0").rstrip(".")
         edge_lines.append(f"  - {src_str} →[{connect_type}, {weight_str}]→ {tgt_str}")
 
-    # ── 지식 및 검색 컨텍스트: 핵심 키워드 내부 자료 + 이번 세션 검색 결과 ──────
-    # - 핵심 키워드(key_hashes): 이미 알고 있는 지식(과거 검색 결과 등) 로드
-    # - 신규 검색(search_node_hashes): 이번 요청에서 새로 알아낸 정보 로드
-    _SEARCH_CTX_MAX = 800   # 요약 최대 길이 확대
+    _SEARCH_CTX_MAX = 800
     seen_summaries: set[str] = set()
     search_ctx_parts: list[str] = []
 
     for node in conclusion.nodes:
         is_newly_searched = node.address_hash in conclusion.search_node_hashes
         is_key_topic = node.address_hash in conclusion.key_hashes
-
         if not (is_newly_searched or is_key_topic):
             continue
 
@@ -113,20 +102,17 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         snippet = summary[:_SEARCH_CTX_MAX]
         if snippet not in seen_summaries:
             seen_summaries.add(snippet)
-            # 출처 표시 보강
             prefix = "[내부 지식]" if not is_newly_searched else "[검색 결과]"
             search_ctx_parts.append(f"{prefix} {snippet}")
-            if len(search_ctx_parts) >= 3:   # 정보량 확보를 위해 최대 3개로 확대
+            if len(search_ctx_parts) >= 3:
                 break
 
     key_text = ", ".join(key_labels) if key_labels else "(없음)"
     ref_text = ", ".join(ref_labels) if ref_labels else "(없음)"
     edge_text = "\n".join(edge_lines) if edge_lines else "  (없음)"
-    search_text = ("\n---\n".join(search_ctx_parts)) if search_ctx_parts else "(없음)"
-
+    search_text = "\n---\n".join(search_ctx_parts) if search_ctx_parts else "(없음)"
     user_msg = conclusion.user_input or ""
 
-    # 주제 연속성 힌트 (MK5 정책 이식)
     continuity_hints = {
         "new_topic": "새로운 주제의 시작입니다.",
         "continued_topic": "이전 대화와 밀접하게 이어지는 주제입니다.",
@@ -176,13 +162,12 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
 def _get_or_create_goal_node(conn: sqlite3.Connection) -> Node:
     """세계그래프에서 목표 노드를 로드하거나 최초 생성한다."""
-    import hashlib
-    from datetime import datetime, timezone
-
     goal_hash = hashlib.sha256(b"goal::machi_ai_intent").hexdigest()[:32]
     node = db_get_node(conn, goal_hash)
     if node is not None:
         return node
+
+    from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
     goal_node = Node(
@@ -207,7 +192,6 @@ def _get_or_create_goal_node(conn: sqlite3.Connection) -> Node:
 def _initialize_identity_anchors(conn: sqlite3.Connection) -> None:
     """사용자와 AI를 구분하기 위한 고정 앵커 노드를 생성한다."""
     from datetime import datetime, timezone
-    from ..core.utils.hash_resolver import ANCHOR_USER, ANCHOR_ASSISTANT
 
     anchors = [
         (ANCHOR_USER, "사용자", "User"),
@@ -232,8 +216,6 @@ def _initialize_identity_anchors(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-# ── 파이프라인 ────────────────────────────────────────────────────────────────
-
 @dataclass
 class PipelineResult:
     response_text: str
@@ -241,19 +223,12 @@ class PipelineResult:
 
 
 class Pipeline:
-    """MK6 전체 파이프라인.
-
-    사용 예:
-        pipeline = Pipeline()
-        result = await pipeline.run("사과는 과일이야")
-        print(result.response_text)
-    """
+    """MK6 전체 파이프라인."""
 
     def __init__(self, db_path: str | None = None) -> None:
         self._conn = open_db(db_path or config.DB_PATH)
         self._goal_node = _get_or_create_goal_node(self._conn)
         _initialize_identity_anchors(self._conn)
-        # 세션별 이전 키워드 해시 저장 (메모리상 임시 저장)
         self._session_memory: dict[str, set[str]] = {}
 
     async def run(
@@ -262,28 +237,18 @@ class Pipeline:
         model: str | None = None,
         session_id: str = "default",
     ) -> PipelineResult:
-        """사용자 입력을 처리하고 언어 출력을 반환한다.
-
-        Args:
-            user_input: 사용자 메시지 (파일 내용 포함 가능)
-            model:      사용할 생성 모델 (None이면 config.OLLAMA_MODEL_NAME)
-            session_id: 대화 세션 식별자
-        """
         _p0 = time.perf_counter()
 
-        # 1. 언어 → 그래프 번역
         translated = await lang_to_graph(user_input, self._conn, get_embedding)
         _p1 = time.perf_counter()
         print(f"[pipeline] lang_to_graph: {_p1 - _p0:.3f}s")
 
-        # 2. Think 루프
         engine = ThoughtEngine(
             conn=self._conn,
             embed_fn=get_embedding,
             search_fn=_search,
             goal_node=self._goal_node,
         )
-        # 이전 키워드 전달
         prev_hashes = self._session_memory.get(session_id)
         conclusion = await engine.think(
             translated,
@@ -292,14 +257,12 @@ class Pipeline:
             previous_key_hashes=prev_hashes,
         )
 
-        # 현재 키워드 세션 메모리에 업데이트
         self._session_memory[session_id] = conclusion.key_hashes
         print(f"[pipeline] topic_continuity: {conclusion.topic_continuity} (overlap with {len(prev_hashes or set())} prev keys)")
 
         _p2 = time.perf_counter()
         print(f"[pipeline] think: {_p2 - _p1:.3f}s")
 
-        # 3. 그래프 → 언어
         response_text = await graph_to_lang(conclusion)
         print(f"[pipeline] graph_to_lang+LLM: {time.perf_counter() - _p2:.3f}s")
 
