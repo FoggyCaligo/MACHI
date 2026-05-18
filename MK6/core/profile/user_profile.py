@@ -205,6 +205,23 @@ def attach_identity_surface_candidates(
             existing.payload["last_seen_at"] = now.isoformat()
             existing.touch()
             update_edge(conn, existing)
+            continue
+
+        if is_profile_reference_edge(existing):
+            # 동일 endpoint에는 edge를 하나만 둘 수 있다. 이미 profile_reference로 존재하는
+            # concept이 identity 후보로 재활성화되면, 문자열 규칙으로 새 노드를 만들지 않고
+            # 같은 edge에 identity_surface 역할을 추가한다.
+            existing.payload["identity_surface"] = True
+            existing.payload["identity_surface_role"] = USER_PROFILE_IDENTITY_EDGE_TYPE
+            existing.payload["identity_last_seen_at"] = now.isoformat()
+            existing.connect_type = "flow"
+            existing.proposed_connect_type = USER_PROFILE_IDENTITY_EDGE_TYPE
+            existing.proposal_reason = "profile_reference로 존재하던 concept을 현재 사용자 identity surface 후보로 승격"
+            existing.support_count += 1
+            existing.trust_score = max(existing.trust_score, 0.85)
+            existing.edge_weight = min(1.5, max(existing.edge_weight, edge_weight) + 0.1)
+            existing.touch()
+            update_edge(conn, existing)
 
     conn.commit()
     return profile_view
