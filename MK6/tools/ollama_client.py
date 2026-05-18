@@ -113,6 +113,7 @@ async def chat(
     Raises:
         ValueError: 모델명 미설정 또는 Ollama 거부 (400)
         TimeoutError: 응답 타임아웃
+        RuntimeError: Ollama가 빈 content를 정상 응답처럼 반환한 경우
         httpx.HTTPError: 그 외 네트워크/HTTP 오류
     """
     model_name = model or config.OLLAMA_MODEL_NAME
@@ -147,7 +148,19 @@ async def chat(
             "임베딩 전용 모델을 선택했거나 모델 이름이 올바르지 않을 수 있습니다."
         )
     r.raise_for_status()
-    return r.json()["message"]["content"]
+
+    data = r.json()
+    message = data.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError(
+            "Ollama chat 응답 content가 비어 있습니다. "
+            f"model='{model_name}', "
+            f"http_status={r.status_code}, "
+            f"done={data.get('done')!r}, "
+            f"done_reason={data.get('done_reason')!r}"
+        )
+    return content
 
 
 async def list_models() -> list[str]:

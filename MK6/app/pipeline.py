@@ -15,7 +15,7 @@ from ..core.storage.db import open_db, close_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.thinking.thought_engine import ThoughtEngine, ConclusionView
-from ..tools.ollama_client import get_embedding, generate, chat as llm_chat
+from ..tools.ollama_client import get_embedding, chat as llm_chat
 from ..tools.search_client import search as _search
 from .. import config
 
@@ -98,18 +98,18 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     _SEARCH_CTX_MAX = 800   # 요약 최대 길이 확대
     seen_summaries: set[str] = set()
     search_ctx_parts: list[str] = []
-    
+
     for node in conclusion.nodes:
         is_newly_searched = node.address_hash in conclusion.search_node_hashes
         is_key_topic = node.address_hash in conclusion.key_hashes
-        
+
         if not (is_newly_searched or is_key_topic):
             continue
-            
+
         summary = node.payload.get("search_summary", "")
         if not summary:
             continue
-            
+
         snippet = summary[:_SEARCH_CTX_MAX]
         if snippet not in seen_summaries:
             seen_summaries.add(snippet)
@@ -119,9 +119,9 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             if len(search_ctx_parts) >= 3:   # 정보량 확보를 위해 최대 3개로 확대
                 break
 
-    key_text    = ", ".join(key_labels) if key_labels else "(없음)"
-    ref_text    = ", ".join(ref_labels) if ref_labels else "(없음)"
-    edge_text   = "\n".join(edge_lines) if edge_lines else "  (없음)"
+    key_text = ", ".join(key_labels) if key_labels else "(없음)"
+    ref_text = ", ".join(ref_labels) if ref_labels else "(없음)"
+    edge_text = "\n".join(edge_lines) if edge_lines else "  (없음)"
     search_text = ("\n---\n".join(search_ctx_parts)) if search_ctx_parts else "(없음)"
 
     user_msg = conclusion.user_input or ""
@@ -159,7 +159,17 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     print(user_msg)
     print("─" * 60 + "\n")
 
-    return await llm_chat(system_msg, user_msg, model=conclusion.model)
+    response_text = await llm_chat(system_msg, user_msg, model=conclusion.model)
+    if not response_text.strip():
+        model_name = conclusion.model or config.OLLAMA_MODEL_NAME or "(unset)"
+        raise RuntimeError(
+            "GraphToLang이 빈 응답을 반환했습니다. "
+            f"model='{model_name}', "
+            f"topic_continuity='{conclusion.topic_continuity}', "
+            f"key_count={len(conclusion.key_hashes)}, "
+            f"ref_count={len(conclusion.ref_hashes)}"
+        )
+    return response_text
 
 
 # ── 목표 노드 ─────────────────────────────────────────────────────────────────
@@ -198,12 +208,12 @@ def _initialize_identity_anchors(conn: sqlite3.Connection) -> None:
     """사용자와 AI를 구분하기 위한 고정 앵커 노드를 생성한다."""
     from datetime import datetime, timezone
     from ..core.utils.hash_resolver import ANCHOR_USER, ANCHOR_ASSISTANT
-    
+
     anchors = [
         (ANCHOR_USER, "사용자", "User"),
         (ANCHOR_ASSISTANT, "AI", "Assistant"),
     ]
-    
+
     now = datetime.now(timezone.utc)
     for h, label_ko, label_en in anchors:
         if db_get_node(conn, h) is None:
