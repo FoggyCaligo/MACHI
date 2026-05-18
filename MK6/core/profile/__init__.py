@@ -11,20 +11,26 @@ from .profile_activation import (
 )
 from .user_profile import (
     USER_PROFILE_EDGE_TYPE,
+    USER_PROFILE_IDENTITY_EDGE_TYPE,
     UserProfileView,
+    attach_identity_surface_candidates,
     attach_profile_references,
     ensure_user_profile,
+    is_identity_surface_edge,
     is_profile_reference_edge,
     is_user_profile_node,
 )
 
 __all__ = [
     "USER_PROFILE_EDGE_TYPE",
+    "USER_PROFILE_IDENTITY_EDGE_TYPE",
     "ProfileActivationView",
     "UserProfileView",
+    "attach_identity_surface_candidates",
     "attach_profile_references",
     "build_profile_activation_view",
     "ensure_user_profile",
+    "is_identity_surface_edge",
     "is_profile_reference_edge",
     "is_user_profile_node",
     "profile_context_labels",
