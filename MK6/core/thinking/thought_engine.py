@@ -34,7 +34,7 @@ from ..storage.world_graph import (
     insert_node, update_node, deactivate_node, insert_edge, update_edge,
     get_node as db_get_node, get_edge as db_get_edge,
     get_edge_by_endpoints as db_get_edge_by_endpoints,
-    insert_word, get_word,
+    insert_word, get_words_for_surface, word_link_exists,
     remap_words_to_node,
 )
 from ..utils.hash_resolver import compute_hash, normalize_text
@@ -250,13 +250,13 @@ class ThoughtEngine:
         # 주제 지속 시 이전 핵심 노드들을 강제로 로드 (Memory Activation)
         if previous_key_hashes:
             for h in previous_key_hashes:
-                if tg.get_node(h): 
+                if tg.get_node(h):
                     continue
                 # DB에서 해당 노드 중심의 국소 그래프 추출 후 로드 (WorldGraph 조회)
                 subgraph = extract_subgraph(self._conn, h)
                 for n in subgraph.nodes:
                     if not tg.get_node(n.address_hash):
-                        # add_node를 통해 delta에 기록되지 않도록 직접 dict 조작 고려 가능하나, 
+                        # add_node를 통해 delta에 기록되지 않도록 직접 dict 조작 고려 가능하나,
                         # 여기선 단순히 로드하는 것이므로 add_node 활용 (커밋 대상 아님 판단은 나중에)
                         tg._nodes[n.address_hash] = n
                 for e in subgraph.edges:
@@ -329,7 +329,7 @@ class ThoughtEngine:
             _td = time.perf_counter()
             diff_results = concept_differentiation.run(tg)
             _t(f"concept_diff (loop {loop_count})", _td)
-            
+
             _tm = time.perf_counter()
             merge_count = concept_merge.run(tg)
             if merge_count > 0:
@@ -372,10 +372,10 @@ class ThoughtEngine:
         scored.sort(key=lambda x: x[0], reverse=True)
         n_sel = len(scored)
         n_near = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_NEAR_RATIO))
-        n_far  = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_FAR_RATIO))
+        n_far = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_FAR_RATIO))
 
         key_hashes: set[str] = {h for _, h in scored[:n_near]}
-        far_cands:  set[str] = {h for _, h in scored[max(0, n_sel - n_far):]}
+        far_cands: set[str] = {h for _, h in scored[max(0, n_sel - n_far):]}
         ref_hashes: set[str] = far_cands - key_hashes
 
         # ── 메모리 노드 활성화 반영 ─────────────────────────────────────────
@@ -425,7 +425,7 @@ class ThoughtEngine:
 
         처리 순서:
         1. extract_tokens으로 토크나이징 (구두점·조사 제거)
-        2. 각 토큰을 normalize → words 테이블 exact match → address_hash 획득
+        2. 각 토큰을 normalize → words 테이블 exact match → address_hash 후보들 획득
         3. 해당 hash가 TempThoughtGraph에 존재하면 "언급된 기존 노드" 목록에 추가
         4. 목록 내 모든 쌍에 co_occurrence 엣지 생성 (이미 연결된 쌍 제외)
         """
@@ -441,16 +441,14 @@ class ThoughtEngine:
         seen_hashes: set[str] = set()
         for token in tokens:
             normalized = normalize_text(token)
-            word_entry = get_word(self._conn, normalized)
-            if word_entry is None:
-                continue
-            h = word_entry.address_hash
-            if h in seen_hashes:
-                continue
-            if tg.get_node(h) is None:
-                continue
-            seen_hashes.add(h)
-            mentioned.append(h)
+            for word_entry in get_words_for_surface(self._conn, normalized):
+                h = word_entry.address_hash
+                if h in seen_hashes:
+                    continue
+                if tg.get_node(h) is None:
+                    continue
+                seen_hashes.add(h)
+                mentioned.append(h)
 
         if len(mentioned) < 2:
             return
@@ -604,7 +602,7 @@ class ThoughtEngine:
         2. 이미 WorldGraph에 있으면 재사용
            (search_text가 새로 주어지고 기존 노드에 요약이 없으면 payload 보강)
         3. 없으면 임베딩 계산 → 신규 Node 생성 → 약한 커밋
-        4. words 테이블에도 등록 (없는 경우에만)
+        4. words 테이블에도 표면형-노드 링크 등록 (없는 경우에만)
 
         Args:
             slot:        처리할 EmptySlot
@@ -665,9 +663,9 @@ class ThoughtEngine:
         # WorldGraph 약한 커밋
         insert_node(self._conn, node)
 
-        # words 테이블 등록
+        # words 테이블 링크 등록
         normalized = normalize_text(hint)
-        if get_word(self._conn, normalized) is None:
+        if not word_link_exists(self._conn, normalized, address_hash):
             insert_word(self._conn, WordEntry(
                 word_id=str(uuid.uuid4()),
                 surface_form=normalized,
