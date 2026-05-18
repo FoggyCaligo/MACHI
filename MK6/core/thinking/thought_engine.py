@@ -358,6 +358,9 @@ class ThoughtEngine:
             overlap = len(key_hashes.intersection(previous_key_hashes))
             topic_continuity = "continued_topic" if overlap >= 2 else "related_topic" if overlap == 1 else "shifted_topic"
 
+        if profile_activation_view and profile_activation_view.is_active and topic_continuity == "new_topic":
+            topic_continuity = "related_topic"
+
         _tc = time.perf_counter()
         tg.merge_duplicate_edges()
         self._commit_new_content(tg)
