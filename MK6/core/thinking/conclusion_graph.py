@@ -5,6 +5,7 @@ from typing import Literal
 
 
 PathDirection = Literal["forward", "reverse"]
+ConclusionGraphKind = Literal["answer", "correction"]
 RejectionReason = Literal[
     "input_restatement",
     "insufficient_goal_alignment",
@@ -91,6 +92,7 @@ class ConclusionGraph:
     """
 
     graph_id: str
+    graph_kind: ConclusionGraphKind = "answer"
     input_hashes: set[str] = field(default_factory=set)
     goal_hashes: set[str] = field(default_factory=set)
     node_hashes: set[str] = field(default_factory=set)
