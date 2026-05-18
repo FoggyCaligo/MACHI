@@ -186,10 +186,12 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
                 break
 
     profile_context = "(없음)"
+    has_profile_context = False
     if conclusion.profile_activation_view and conclusion.profile_activation_view.is_active:
         profile_labels = profile_context_labels(conclusion.profile_activation_view, node_map)
         if profile_labels:
             profile_context = ", ".join(profile_labels)
+            has_profile_context = True
 
     key_text = ", ".join(key_labels) if key_labels else "(없음)"
     ref_text = ", ".join(ref_labels) if ref_labels else "(없음)"
@@ -207,6 +209,15 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     }
     continuity_hint = continuity_hints.get(conclusion.topic_continuity, "")
 
+    profile_instruction = ""
+    if has_profile_context:
+        profile_instruction = (
+            "현재 사용자 맥락이 비어 있지 않으면, 시스템이 재활성화한 사용자 관련 기억 후보가 있다는 뜻입니다. "
+            "이 경우 '기억하지 못한다', '처음 만난다', '이전 대화가 초기화된다'라고 단정하지 마십시오. "
+            "대신 현재 사용자 맥락에 있는 개념들을 근거로, 제한적으로 기억나는 범위를 자연스럽게 요약하십시오. "
+            "다만 해당 맥락은 확정 사실 목록이 아니라 재활성화된 concept 후보이므로 과장하지 마십시오.\n"
+        )
+
     system_msg = (
         "당신은 인지 그래프 기반 AI 어시스턴트입니다.\n"
         f"{continuity_hint}\n"
@@ -214,6 +225,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
         "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
         "현재 사용자 맥락이 제공되면, 그것은 내부 profile edge가 아니라 이 사용자와 관련해 재활성화된 개념 후보로만 활용하십시오.\n"
+        f"{profile_instruction}"
         "결론 그래프가 제공되면, 단일 키워드가 아니라 해당 국소 그래프의 관계 구조를 우선 반영하십시오.\n"
         "ClaimConflict가 제공되면, 새 사용자 assertion과 이전 assertion이 충돌할 수 있음을 우선 고려하고 정정/분리 방향으로 응답하십시오.\n"
         "제공된 지식 및 검색 결과를 근거로 구체적이고 정확한 정보를 답변에 포함하십시오. 단, 검색결과를 언급하지 않아도 되면 빼도 됩니다.\n"
