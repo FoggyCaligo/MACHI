@@ -109,31 +109,37 @@ def build_assertion_state_from_conclusion(conclusion, *, source_role: AssertionS
 def build_user_assertion_from_translated(
     tg: TempThoughtGraph,
     translated: TranslatedGraph,
+    *,
+    subject_binding_hashes: set[str] | None = None,
 ) -> ClaimAssertion | None:
     """현재 사용자 발화를 일반 ClaimAssertion으로 projection한다.
 
-    사용자 자기진술을 별도 SelfClaimGraph로 만들지 않는다. source가 사용자이고,
-    subject/object가 현재 입력 그래프에서 나온 일반 claim으로만 표현한다.
-
-    TODO: subject binding 고도화
-      - 사용자 identity/persona node가 안정화되면 subject_hashes를 ANCHOR_USER 또는
-        USER_PERSON::<surface>로 resolve한다.
-      - temporal_scope는 별도 Temporal/StateScope primitive로 옮긴다.
+    source는 항상 사용자다. subject는 가능하면 UserProfile identity surface 후보로 resolve된
+    concept을 사용하고, 아직 binding 근거가 없으면 현재 입력 그래프의 concept projection을
+    임시 subject로 사용한다.
     """
     current_hashes = _translated_hashes(translated, tg)
     if not current_hashes:
         return None
 
-    assertion_id = _stable_hash("assertion::user::" + "|".join(sorted(current_hashes)))
+    binding_hashes = {h for h in (subject_binding_hashes or set()) if h in current_hashes and tg.get_node(h) is not None}
+    subject_hashes = binding_hashes or set(current_hashes)
+    object_hashes = set(current_hashes) - set(subject_hashes)
+
+    assertion_id = _stable_hash(
+        "assertion::user::"
+        + "subjects=" + "|".join(sorted(subject_hashes))
+        + "::objects=" + "|".join(sorted(object_hashes))
+    )
     return ClaimAssertion(
         assertion_id=assertion_id,
         source_hash=ANCHOR_USER,
         source_role="user",
-        subject_hashes=set(current_hashes),
-        object_hashes=set(),
+        subject_hashes=set(subject_hashes),
+        object_hashes=object_hashes,
         edge_ids=set(),
         provenance="user_statement",
-        confidence=0.85,
+        confidence=0.9 if binding_hashes else 0.85,
     )
 
 
@@ -141,6 +147,8 @@ def build_claim_conflict_graph(
     tg: TempThoughtGraph,
     translated: TranslatedGraph,
     previous_state: AssertionState | None,
+    *,
+    subject_binding_hashes: set[str] | None = None,
 ) -> tuple[ConclusionGraph | None, ClaimConflict | None]:
     """현재 사용자 claim과 직전 assertion state 사이의 conflict 후보를 만든다.
 
@@ -150,7 +158,11 @@ def build_claim_conflict_graph(
     if previous_state is None:
         return None, None
 
-    current_assertion = build_user_assertion_from_translated(tg, translated)
+    current_assertion = build_user_assertion_from_translated(
+        tg,
+        translated,
+        subject_binding_hashes=subject_binding_hashes,
+    )
     if current_assertion is None:
         return None, None
 
