@@ -13,6 +13,7 @@ from .. import config
 from ..core.goal import initialize_global_goal_graph
 from ..core.storage.db import close_db, open_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
+from ..core.thinking.correction_graph import PreviousAssistantState, build_previous_assistant_state
 from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
@@ -93,8 +94,12 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         edge_lines.append(f"  - {src_str} →[{connect_type}, {weight_str}]→ {tgt_str}")
 
     conclusion_graph_lines: list[str] = []
+    correction_graph_lines: list[str] = []
     selected_graph_node_hashes: set[str] = set()
-    for idx, graph in enumerate(conclusion.selected_graphs[:3], start=1):
+    answer_graphs = [g for g in conclusion.selected_graphs if g.graph_kind == "answer"]
+    correction_graphs = [g for g in conclusion.selected_graphs if g.graph_kind == "correction"]
+
+    for idx, graph in enumerate(answer_graphs[:3], start=1):
         selected_graph_node_hashes |= graph.node_hashes
         core = ", ".join(_node_label(h) for h in sorted(graph.core_hashes)) or "(없음)"
         bridge = ", ".join(_node_label(h) for h in sorted(graph.bridge_hashes)) or "(없음)"
@@ -112,6 +117,21 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             f"  {idx}. core={core} / bridge={bridge} / exception={exceptions} / "
             f"score={graph.score:.3f} / uncertainty={graph.uncertainty:.2f}\n"
             f"     edges: {edge_summary}"
+        )
+
+    for idx, graph in enumerate(correction_graphs[:2], start=1):
+        selected_graph_node_hashes |= graph.node_hashes
+        current = ", ".join(_node_label(h) for h in sorted(graph.core_hashes)) or "(없음)"
+        previous = ", ".join(_node_label(h) for h in sorted(graph.exception_hashes | graph.condition_hashes)) or "(없음)"
+        conflicts = []
+        for path in graph.conflict_paths[:4]:
+            for step in path.steps:
+                conflicts.append(f"{_node_label(step.source_hash)} →[conflict]→ {_node_label(step.target_hash)}")
+        conflict_summary = "; ".join(conflicts) if conflicts else "(없음)"
+        correction_graph_lines.append(
+            f"  {idx}. current={current} / previous_assertion={previous} / "
+            f"uncertainty={graph.uncertainty:.2f}\n"
+            f"     conflicts: {conflict_summary}"
         )
 
     _SEARCH_CTX_MAX = 800
@@ -141,6 +161,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     ref_text = ", ".join(ref_labels) if ref_labels else "(없음)"
     edge_text = "\n".join(edge_lines) if edge_lines else "  (없음)"
     conclusion_graph_text = "\n".join(conclusion_graph_lines) if conclusion_graph_lines else "  (없음)"
+    correction_graph_text = "\n".join(correction_graph_lines) if correction_graph_lines else "  (없음)"
     search_text = "\n---\n".join(search_ctx_parts) if search_ctx_parts else "(없음)"
     user_msg = conclusion.user_input or ""
 
@@ -159,12 +180,14 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
         "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
         "결론 그래프가 제공되면, 단일 키워드가 아니라 해당 국소 그래프의 관계 구조를 우선 반영하십시오.\n"
+        "CorrectionGraph가 제공되면, 직전 응답의 일부가 사용자 입력과 충돌할 수 있음을 우선 인정하고 정정 방향으로 응답하십시오.\n"
         "제공된 지식 및 검색 결과를 근거로 구체적이고 정확한 정보를 답변에 포함하십시오. 단, 검색결과를 언급하지 않아도 되면 빼도 됩니다.\n"
         "근거 연결이 있으면 그 관계를 자연스럽게 반영하십시오.\n"
         "인식 상태 구조 자체를 설명하거나 나열하지 마십시오.\n"
         "확실하지 않거나 모르는 게 있으면 얼버무리지 않고, 모른다고 솔직하게 답하십시오.\n\n"
         f"[핵심 키워드]\n{key_text}\n\n"
         f"[참고 개념]\n{ref_text}\n\n"
+        f"[CorrectionGraph]\n{correction_graph_text}\n\n"
         f"[결론 그래프]\n{conclusion_graph_text}\n\n"
         f"[근거 연결]\n{edge_text}\n\n"
         f"[지식 및 검색 결과]\n{search_text}"
@@ -234,6 +257,7 @@ class Pipeline:
         self._goal_node = self._goal_view.root_node
         _initialize_identity_anchors(self._conn)
         self._session_memory: dict[str, set[str]] = {}
+        self._previous_assistant_state: dict[str, PreviousAssistantState] = {}
 
     async def run(
         self,
@@ -254,14 +278,17 @@ class Pipeline:
             goal_node=self._goal_node,
         )
         prev_hashes = self._session_memory.get(session_id)
+        previous_assistant_state = self._previous_assistant_state.get(session_id)
         conclusion = await engine.think(
             translated,
             model=model,
             user_input=user_input,
             previous_key_hashes=prev_hashes,
+            previous_assistant_state=previous_assistant_state,
         )
 
         self._session_memory[session_id] = conclusion.key_hashes
+        self._previous_assistant_state[session_id] = build_previous_assistant_state(conclusion)
         print(f"[pipeline] topic_continuity: {conclusion.topic_continuity} (overlap with {len(prev_hashes or set())} prev keys)")
 
         _p2 = time.perf_counter()
