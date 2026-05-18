@@ -48,7 +48,8 @@ def build_profile_activation_view(
     규칙:
     - UserProfile은 항상 보장한다.
     - 하지만 profile reference 전체를 항상 활성화하지는 않는다.
-    - 현재 입력 concept과 profile reference target이 겹칠 때만 활성화한다.
+    - 현재 입력 direct concept과 profile_reference target이 겹칠 때만 활성화한다.
+    - semantic_local_candidate는 주변 context 후보이지 activation cue가 아니다.
     - profile_reference edge 자체는 언어화 대상이 아니라 내부 context index다.
     - 활성화 seed는 문자열 패턴이 아니라 edge support/weight/구조 연결도 기준으로 정제한다.
     """
@@ -60,7 +61,7 @@ def build_profile_activation_view(
         for edge in reference_edges
         if edge.source_hash == profile_hash and _is_active_node(conn, edge.target_hash)
     }
-    current_hashes = _translated_hashes(translated)
+    current_hashes = _translated_direct_hashes(translated)
     matched_hashes = current_hashes.intersection(reference_hashes)
 
     if not matched_hashes:
@@ -126,7 +127,7 @@ def build_profile_activation_view(
         seed_hashes=seed_hashes,
         seed_scores=seed_scores,
         confidence=confidence,
-        activation_reason="current_input_overlaps_profile_reference",
+        activation_reason="current_direct_input_overlaps_profile_reference",
     )
 
 
@@ -162,10 +163,12 @@ def _profile_reference_edges(conn, profile_hash: str) -> list[Edge]:
     ]
 
 
-def _translated_hashes(translated: TranslatedGraph) -> set[str]:
+def _translated_direct_hashes(translated: TranslatedGraph) -> set[str]:
     hashes: set[str] = set()
     for ref in translated.nodes:
         if isinstance(ref, ConceptPointer):
+            if not ref.is_direct_input_match:
+                continue
             hashes.add(ref.address_hash)
         elif isinstance(ref, EmptySlot) and ref.concept_hint.strip():
             hashes.add(compute_hash(ref.concept_hint.strip()))
