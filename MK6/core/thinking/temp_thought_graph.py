@@ -136,10 +136,10 @@ class TempThoughtGraph:
     def update_edge(self, edge: Edge) -> None:
         """엣지 정보를 업데이트하고 인접 인덱스를 갱신한다."""
         self._edges[edge.edge_id] = edge
-        if (edge.edge_id not in self._delta.added_edges and 
+        if (edge.edge_id not in self._delta.added_edges and
             edge.edge_id not in self._delta.modified_edges):
             self._delta.modified_edges.append(edge.edge_id)
-        
+
         # 인접 인덱스 최신화
         self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
         self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
@@ -173,6 +173,52 @@ class TempThoughtGraph:
     def all_edges(self) -> list[Edge]:
         return list(self._edges.values())
 
+    def merge_duplicate_edges(self) -> None:
+        """동일 endpoint/관계 구조의 현재 그래프 edge를 하나로 병합한다.
+
+        병합 기준은 edge_family + connect_type + 방향(source_hash → target_hash)이다.
+        임시 edge는 별도 뷰 관계이므로 영구 edge와 섞지 않는다.
+        """
+        grouped: dict[tuple[str, str, str, str, bool], Edge] = {}
+        duplicate_ids: list[str] = []
+
+        for edge in list(self._edges.values()):
+            key = (
+                edge.source_hash,
+                edge.target_hash,
+                edge.edge_family,
+                edge.connect_type,
+                edge.is_temporary,
+            )
+            existing = grouped.get(key)
+            if existing is None:
+                grouped[key] = edge
+                continue
+
+            existing.edge_weight += edge.edge_weight
+            existing.support_count += edge.support_count + 1
+            existing.conflict_count += edge.conflict_count
+            existing.contradiction_pressure += edge.contradiction_pressure
+            existing.trust_score = max(existing.trust_score, edge.trust_score)
+            if existing.translation_confidence is None:
+                existing.translation_confidence = edge.translation_confidence
+            elif edge.translation_confidence is not None:
+                existing.translation_confidence = max(
+                    existing.translation_confidence,
+                    edge.translation_confidence,
+                )
+            existing.touch()
+            duplicate_ids.append(edge.edge_id)
+            if edge.edge_id in self._all_added_edges:
+                self._all_added_edges.remove(edge.edge_id)
+            if existing.edge_id not in self._delta.modified_edges:
+                self._delta.modified_edges.append(existing.edge_id)
+
+        for edge_id in duplicate_ids:
+            self._edges.pop(edge_id, None)
+            if edge_id not in self._delta.removed_edges:
+                self._delta.removed_edges.append(edge_id)
+
     # ── 엣지 연결 (목표 노드 ↔ 입력 개념) ───────────────────────────────────
 
     def connect_to_goal(self, concept_hash: str) -> None:
@@ -188,7 +234,7 @@ class TempThoughtGraph:
         if conn_key in self._goal_connections: # 기존 필드 재활용 (이름은 goal_이지만 실제론 임시 연결 관리용)
             return
         self._goal_connections.add(conn_key)
-        
+
         edge = Edge(
             edge_id=str(uuid.uuid4()),
             source_hash=identity_hash,
