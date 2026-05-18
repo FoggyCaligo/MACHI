@@ -53,6 +53,7 @@ def ensure_user_profile(conn, *, user_anchor_hash: str = ANCHOR_USER) -> UserPro
             stability_score=1.0,
             is_active=True,
             payload={
+                "is_user_profile": True,
                 "profile_for": user_anchor_hash,
                 "profile_role": "conversation_context_index",
                 "note": "사용자에 대한 사실 저장소가 아니라, 이 사용자 대화에서 등장한 concept node에 대한 참조 허브다.",
@@ -61,10 +62,19 @@ def ensure_user_profile(conn, *, user_anchor_hash: str = ANCHOR_USER) -> UserPro
             updated_at=now,
         )
         insert_node(conn, profile)
-    elif not profile.is_active:
-        profile.is_active = True
-        profile.touch()
-        update_node(conn, profile)
+    else:
+        changed = False
+        if not profile.is_active:
+            profile.is_active = True
+            changed = True
+        if not profile.payload.get("is_user_profile"):
+            profile.payload["is_user_profile"] = True
+            profile.payload["profile_for"] = user_anchor_hash
+            profile.payload["profile_role"] = "conversation_context_index"
+            changed = True
+        if changed:
+            profile.touch()
+            update_node(conn, profile)
 
     _ensure_user_to_profile_edge(conn, user_anchor_hash, profile_hash, now)
     conn.commit()
@@ -92,6 +102,8 @@ def attach_profile_references(
             continue
         node = get_node(conn, concept_hash)
         if node is None or not node.is_active:
+            continue
+        if is_user_profile_node(node):
             continue
 
         existing = get_edge_by_endpoints(conn, profile_hash, concept_hash)
@@ -133,8 +145,8 @@ def attach_profile_references(
     return profile_view
 
 
-def is_user_profile_hash(address_hash: str) -> bool:
-    return address_hash.startswith(_stable_hash_prefix(USER_PROFILE_HASH_PREFIX))
+def is_user_profile_node(node: Node) -> bool:
+    return bool(node.payload.get("is_user_profile"))
 
 
 def is_profile_reference_edge(edge: Edge) -> bool:
@@ -182,9 +194,3 @@ def _profile_hash(user_anchor_hash: str) -> str:
 
 def _stable_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
-
-
-def _stable_hash_prefix(value: str) -> str:
-    # 현재 address_hash가 32자 sha prefix이므로 prefix 문자열 자체를 직접 확인할 수 없다.
-    # 향후 hash namespace registry가 생기면 이 함수는 registry lookup으로 대체한다.
-    return ""
