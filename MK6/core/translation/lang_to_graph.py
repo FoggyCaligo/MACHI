@@ -39,6 +39,7 @@ def _clone_pointer(ptr: ConceptPointer) -> ConceptPointer:
         address_hash=ptr.address_hash,
         local_subgraph=ptr.local_subgraph,
         importance=ptr.importance,
+        resolution_source=ptr.resolution_source,
     )
 
 
@@ -154,6 +155,7 @@ async def translate(
                 ConceptPointer(
                     address_hash=node.address_hash,
                     local_subgraph=subgraph,
+                    resolution_source="exact_match",
                 )
             )
 
@@ -218,6 +220,7 @@ async def translate(
                         ConceptPointer(
                             address_hash=best_node.address_hash,
                             local_subgraph=subgraph,
+                            resolution_source="semantic_local_candidate",
                         )
                     ]
                 else:

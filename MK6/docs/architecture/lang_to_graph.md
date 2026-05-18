@@ -35,6 +35,12 @@ ConceptPointer:
   - local_subgraph: 해당 노드 중심의 국소그래프 (N-hop)
   - importance: float   # centroid 기반 중요도 점수
                         # ThoughtEngine이 key_hashes/ref_hashes 분류에 사용
+  - resolution_source:
+      - exact_match
+      - semantic_local_candidate
+      - search_ingest
+      - profile_context
+      - unknown
 
 EmptySlot:
   - concept_hint: 번역하려 했던 의미 단위
@@ -70,6 +76,42 @@ LangToGraph는 이 후보 중 하나를 문자열 규칙으로 고르지 않는�
 
 ---
 
+## resolution_source 정책
+
+ConceptPointer는 해당 concept이 현재 입력에서 어떻게 들어왔는지 보존한다.
+
+```text
+exact_match
+  현재 입력 token surface가 words table과 직접 일치한 후보
+
+semantic_local_candidate
+  exact match로 로드된 local graph 내부 노드 중 embedding 유사도로 연결된 후보
+
+search_ingest / profile_context
+  후속 확장용 예약값
+```
+
+중요한 구분:
+
+```text
+exact_match
+  = 현재 입력에서 직접 온 concept 후보
+  = 사용자 앵커 임시 edge 연결 가능
+  = 핵심 키워드/key_hash 후보 우선권 있음
+  = profile activation overlap cue로 사용 가능
+
+semantic_local_candidate
+  = 현재 입력이 직접 말한 concept이 아니라 local graph에서 떠오른 주변 후보
+  = 사용자 앵커 임시 edge 연결 금지
+  = 핵심 키워드로 직접 승격 금지
+  = profile activation overlap cue로 사용 금지
+  = bridge/ref/context 후보로만 사용
+```
+
+이 정책은 `MK5`처럼 사용자가 직접 말하지 않은 profile/local context concept이 `사용자 → MK5`, `핵심 키워드: MK5`처럼 현재 발화의 본체로 승격되는 것을 막기 위한 것이다.
+
+---
+
 ## 내부 처리 순서
 
 ```
@@ -86,12 +128,14 @@ LangToGraph(sentence)
   1패스 — exact match:
   ├─ normalize_text(token) → words.surface_form 조회
   ├─ [있음] → 연결된 모든 active node를 ConceptPointer 후보로 변환
+  │           resolution_source = exact_match
   └─ [없음] → 다음 단계로
   │
   2패스 — 임베딩 유사도:
   ├─ token 임베딩 계산
   ├─ 1패스 LocalSubgraph 합산 후보 풀과 코사인 유사도 비교
   ├─ 유사도 ≥ threshold → ConceptPointer
+  │                       resolution_source = semantic_local_candidate
   └─ 유사도 < threshold, 또는 후보 없음 → EmptySlot
   │
   ▼
@@ -110,8 +154,33 @@ LangToGraph(sentence)
 ```
 
 **near/far 20% 필터링은 ThoughtEngine에서 수행한다.**  
-LangToGraph는 모든 토큰 후보를 importance 점수와 함께 넘긴다.  
-ThoughtEngine이 루프 후 점수 기준으로 상위 20% → key_hashes, 하위 20% → ref_hashes로 분류한다.
+다만 ThoughtEngine은 `resolution_source`를 이용해 direct input concept과 semantic local candidate를 다르게 취급한다.
+
+---
+
+## ThoughtEngine에서의 사용
+
+ThoughtEngine은 `resolution_source`를 다음처럼 사용한다.
+
+```text
+사용자 앵커 임시 edge
+  exact_match ConceptPointer에만 연결
+
+key_hashes
+  exact_match ConceptPointer 우선
+  exact direct concept이 없을 때만 EmptySlot ingest를 사용
+
+ref_hashes
+  exact_match의 far group 우선
+  exact direct concept이 없을 때만 semantic_local_candidate 일부를 참고 개념으로 사용
+
+profile reference 저장
+  exact_match ConceptPointer와 EmptySlot ingest 중심
+  semantic_local_candidate는 현재 입력의 직접 발화 concept으로 저장하지 않음
+
+ProfileActivationView overlap
+  exact_match ConceptPointer와 EmptySlot ingest만 cue로 사용
+```
 
 ---
 
@@ -145,8 +214,8 @@ LangToGraph 반환값 예시:
 
 TranslatedGraph {
   nodes: [
-    ConceptPointer(address_hash="abc...", importance=0.85),
-    ConceptPointer(address_hash="def...", importance=0.85),   ← 같은 표면형의 다른 후보
+    ConceptPointer(address_hash="abc...", importance=0.85, resolution_source="exact_match"),
+    ConceptPointer(address_hash="def...", importance=0.85, resolution_source="semantic_local_candidate"),
     EmptySlot(concept_hint="설명해줄래", importance=0.62),
     ...
   ]
@@ -172,11 +241,12 @@ TranslatedGraph {
 - `normalize_text(token)` → `words.surface_form` 조회
 - 있으면 → 연결된 모든 active node를 `ConceptPointer` 후보로 반환
 - 각 후보는 `LocalGraphExtractor.extract(node)` 결과를 함께 담는다
+- `resolution_source = exact_match`
 
 **단계 3 — 없으면 임베딩 기반 유사도 조회 (2패스):**
 - 모든 토큰 임베딩 계산
 - 1패스 LocalSubgraph 합산 노드와 코사인 유사도 비교
-- 유사도 ≥ threshold → ConceptPointer
+- 유사도 ≥ threshold → ConceptPointer(`resolution_source = semantic_local_candidate`)
 - 유사도 < threshold, 또는 후보 없음 → EmptySlot
 
 **단계 4 — 중요도 점수 할당 및 전체 노드 반환:**

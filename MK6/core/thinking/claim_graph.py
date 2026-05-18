@@ -115,10 +115,10 @@ def build_user_assertion_from_translated(
     """현재 사용자 발화를 일반 ClaimAssertion으로 projection한다.
 
     source는 항상 사용자다. subject는 가능하면 UserProfile identity surface 후보로 resolve된
-    concept을 사용하고, 아직 binding 근거가 없으면 현재 입력 그래프의 concept projection을
-    임시 subject로 사용한다.
+    concept을 사용한다. 입력 concept projection은 현재 입력 direct match와 EmptySlot ingest만
+    사용하고, semantic local candidate는 claim 본체가 아니라 주변 context 후보로 남긴다.
     """
-    current_hashes = _translated_hashes(translated, tg)
+    current_hashes = _translated_direct_hashes(translated, tg)
     if not current_hashes:
         return None
 
@@ -277,10 +277,12 @@ def apply_claim_conflict_pressure(tg: TempThoughtGraph, previous_state: Assertio
         tg.update_edge(edge)
 
 
-def _translated_hashes(translated: TranslatedGraph, tg: TempThoughtGraph) -> set[str]:
+def _translated_direct_hashes(translated: TranslatedGraph, tg: TempThoughtGraph) -> set[str]:
     hashes: set[str] = set()
     for ref in translated.nodes:
         if isinstance(ref, ConceptPointer):
+            if not ref.is_direct_input_match:
+                continue
             h = ref.address_hash
         elif isinstance(ref, EmptySlot):
             h = compute_hash(ref.concept_hint.strip())

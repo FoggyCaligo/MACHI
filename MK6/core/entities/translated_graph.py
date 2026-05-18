@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from .edge import EdgeFamily, ConnectType
 
 if TYPE_CHECKING:
     from .node import Node
     from .edge import Edge
+
+
+ResolutionSource = Literal["exact_match", "semantic_local_candidate", "search_ingest", "profile_context", "unknown"]
 
 
 # ── 국소 그래프 ───────────────────────────────────────────────────────────────
@@ -36,11 +39,20 @@ class ConceptPointer:
     local_subgraph: 해당 노드 중심의 N-hop 국소 그래프 (TempThoughtGraph 로드용).
     importance: 문장 centroid 임베딩과의 cosine 유사도 기반 중요도 점수.
                 ThoughtEngine이 key_hashes / ref_hashes 분류에 사용한다.
+    resolution_source:
+        - exact_match: 현재 입력 token surface가 words table과 직접 일치
+        - semantic_local_candidate: exact match로 로드된 local graph 내부 후보와 임베딩 유사도로 연결
+        - search_ingest/profile_context: 후속 단계용 예약값
     """
 
     address_hash: str
     local_subgraph: LocalSubgraph
     importance: float = 0.0
+    resolution_source: ResolutionSource = "unknown"
+
+    @property
+    def is_direct_input_match(self) -> bool:
+        return self.resolution_source == "exact_match"
 
 
 @dataclass(slots=True)

@@ -285,7 +285,8 @@ class ThoughtEngine:
         for ref in translated.nodes:
             if isinstance(ref, ConceptPointer):
                 tg.connect_to_goal(ref.address_hash)
-                tg.connect_to_identity(ref.address_hash, ANCHOR_USER)
+                if ref.is_direct_input_match:
+                    tg.connect_to_identity(ref.address_hash, ANCHOR_USER)
 
         for anchor_h in [ANCHOR_USER, ANCHOR_ASSISTANT]:
             _load_subgraph_into_tg(tg, extract_subgraph(self._conn, anchor_h))
@@ -305,7 +306,8 @@ class ThoughtEngine:
             if tg.has_empty_slots():
                 _ts = time.perf_counter()
                 existing_cp_hashes = {
-                    ref.address_hash for ref in translated.nodes if isinstance(ref, ConceptPointer)
+                    ref.address_hash for ref in translated.nodes
+                    if isinstance(ref, ConceptPointer) and ref.is_direct_input_match
                 }
                 newly_searched = await self._fill_empty_slots(
                     tg, user_input=user_input, concept_hashes=existing_cp_hashes
@@ -336,19 +338,36 @@ class ThoughtEngine:
         concept_differentiation.run(tg)
 
         import math as _math
-        scored: list[tuple[float, str]] = []
+        scored_direct: list[tuple[float, str]] = []
+        scored_context: list[tuple[float, str]] = []
+        scored_slots: list[tuple[float, str]] = []
         for ref in translated.nodes:
-            h = ref.address_hash if isinstance(ref, ConceptPointer) else compute_hash(ref.concept_hint.strip())
-            if tg.get_node(h) is not None:
-                scored.append((ref.importance, h))
+            if isinstance(ref, ConceptPointer):
+                h = ref.address_hash
+                if tg.get_node(h) is None:
+                    continue
+                if ref.is_direct_input_match:
+                    scored_direct.append((ref.importance, h))
+                else:
+                    scored_context.append((ref.importance, h))
+            else:
+                h = compute_hash(ref.concept_hint.strip())
+                if tg.get_node(h) is not None:
+                    scored_slots.append((ref.importance, h))
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        n_sel = len(scored)
-        n_near = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_NEAR_RATIO))
-        n_far = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_FAR_RATIO))
-        key_hashes: set[str] = {h for _, h in scored[:n_near]}
-        far_cands: set[str] = {h for _, h in scored[max(0, n_sel - n_far):]}
+        scored_direct.sort(key=lambda x: x[0], reverse=True)
+        scored_context.sort(key=lambda x: x[0], reverse=True)
+        scored_slots.sort(key=lambda x: x[0], reverse=True)
+        primary_scored = scored_direct or scored_slots
+        n_sel = len(primary_scored)
+        n_near = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_NEAR_RATIO)) if n_sel else 0
+        n_far = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_FAR_RATIO)) if n_sel else 0
+        key_hashes: set[str] = {h for _, h in primary_scored[:n_near]}
+        far_cands: set[str] = {h for _, h in primary_scored[max(0, n_sel - n_far):]} if n_sel else set()
         ref_hashes: set[str] = far_cands - key_hashes
+        if not scored_direct:
+            # 현재 입력에서 exact direct concept이 없을 때만 semantic local candidates를 참고 개념으로 사용한다.
+            ref_hashes |= {h for _, h in scored_context[:max(1, n_far or 1)]}
         if previous_key_hashes:
             ref_hashes |= (previous_key_hashes - key_hashes)
 
@@ -364,7 +383,7 @@ class ThoughtEngine:
         _t("commit_new_content", _tc)
 
         profile_hashes = set(key_hashes) | set(ref_hashes)
-        profile_hashes |= {ref.address_hash for ref in translated.nodes if isinstance(ref, ConceptPointer)}
+        profile_hashes |= {ref.address_hash for ref in translated.nodes if isinstance(ref, ConceptPointer) and ref.is_direct_input_match}
         profile_hashes |= {compute_hash(ref.concept_hint.strip()) for ref in translated.nodes if isinstance(ref, EmptySlot)}
         attach_profile_references(self._conn, profile_hashes)
 
