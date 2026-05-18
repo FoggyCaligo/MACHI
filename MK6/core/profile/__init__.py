@@ -10,7 +10,7 @@ from .user_profile import (
     attach_profile_references,
     ensure_user_profile,
     is_profile_reference_edge,
-    is_user_profile_hash,
+    is_user_profile_node,
 )
 
 __all__ = [
@@ -19,5 +19,5 @@ __all__ = [
     "attach_profile_references",
     "ensure_user_profile",
     "is_profile_reference_edge",
-    "is_user_profile_hash",
+    "is_user_profile_node",
 ]
