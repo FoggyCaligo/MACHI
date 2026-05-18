@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 
 from .. import config
-from ..core.goal import initialize_global_goal_graph
+from ..core.goal import GOAL_ROOT_HASH, GLOBAL_GOAL_AXIS_SEEDS, initialize_global_goal_graph
 from ..core.storage.db import close_db, open_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.thinking.correction_graph import PreviousAssistantState, build_previous_assistant_state
@@ -34,17 +34,28 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     node_map = {n.address_hash: n for n in conclusion.nodes}
     edge_by_id = {e.edge_id: e for e in conclusion.edges}
     identity_names = {ANCHOR_USER: "사용자", ANCHOR_ASSISTANT: "AI"}
+    internal_goal_hashes = {GOAL_ROOT_HASH, *(seed.node_hash for seed in GLOBAL_GOAL_AXIS_SEEDS)}
+    if conclusion.goal_hash:
+        internal_goal_hashes.add(conclusion.goal_hash)
+
+    def _is_internal_goal_hash(address_hash: str) -> bool:
+        return address_hash in internal_goal_hashes
+
+    def _is_verbalizable_hash(address_hash: str) -> bool:
+        return not _is_internal_goal_hash(address_hash)
 
     def _node_label(address_hash: str) -> str:
         node = node_map.get(address_hash)
         if address_hash in identity_names:
             return identity_names[address_hash]
+        if _is_internal_goal_hash(address_hash):
+            return "내부 목표"
         if node and node.labels:
             return node.labels[0]
         return address_hash[:8]
 
     for node in conclusion.nodes:
-        if node.address_hash == conclusion.goal_hash:
+        if not _is_verbalizable_hash(node.address_hash):
             continue
         if node.is_abstract:
             continue
@@ -59,6 +70,8 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
     edge_map: dict[tuple[str, str, str, str], tuple[int, str, str, str, float]] = {}
     for edge in conclusion.edges:
+        if _is_internal_goal_hash(edge.source_hash) or _is_internal_goal_hash(edge.target_hash):
+            continue
         src = node_map.get(edge.source_hash)
         tgt = node_map.get(edge.target_hash)
         if src is None or tgt is None:
@@ -100,19 +113,26 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     correction_graphs = [g for g in conclusion.selected_graphs if g.graph_kind == "correction"]
 
     for idx, graph in enumerate(answer_graphs[:3], start=1):
-        selected_graph_node_hashes |= graph.node_hashes
-        core = ", ".join(_node_label(h) for h in sorted(graph.core_hashes)) or "(없음)"
-        bridge = ", ".join(_node_label(h) for h in sorted(graph.bridge_hashes)) or "(없음)"
-        exceptions = ", ".join(_node_label(h) for h in sorted(graph.exception_hashes)) or "(없음)"
+        selected_graph_node_hashes |= {h for h in graph.node_hashes if _is_verbalizable_hash(h)}
+        core_hashes = sorted(h for h in graph.core_hashes if _is_verbalizable_hash(h))
+        bridge_hashes = sorted(h for h in graph.bridge_hashes if _is_verbalizable_hash(h))
+        exception_hashes = sorted(h for h in graph.exception_hashes if _is_verbalizable_hash(h))
+        core = ", ".join(_node_label(h) for h in core_hashes) or "(없음)"
+        bridge = ", ".join(_node_label(h) for h in bridge_hashes) or "(없음)"
+        exceptions = ", ".join(_node_label(h) for h in exception_hashes) or "(없음)"
         edges = []
         for edge_id in sorted(graph.edge_ids):
             edge = edge_by_id.get(edge_id)
             if edge is None or edge.is_temporary:
                 continue
+            if _is_internal_goal_hash(edge.source_hash) or _is_internal_goal_hash(edge.target_hash):
+                continue
             edges.append(f"{_node_label(edge.source_hash)} →[{edge.connect_type}]→ {_node_label(edge.target_hash)}")
             if len(edges) >= 4:
                 break
         edge_summary = "; ".join(edges) if edges else "(없음)"
+        if core == "(없음)" and bridge == "(없음)" and exceptions == "(없음)" and edge_summary == "(없음)":
+            continue
         conclusion_graph_lines.append(
             f"  {idx}. core={core} / bridge={bridge} / exception={exceptions} / "
             f"score={graph.score:.3f} / uncertainty={graph.uncertainty:.2f}\n"
@@ -120,12 +140,16 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         )
 
     for idx, graph in enumerate(correction_graphs[:2], start=1):
-        selected_graph_node_hashes |= graph.node_hashes
-        current = ", ".join(_node_label(h) for h in sorted(graph.core_hashes)) or "(없음)"
-        previous = ", ".join(_node_label(h) for h in sorted(graph.exception_hashes | graph.condition_hashes)) or "(없음)"
+        selected_graph_node_hashes |= {h for h in graph.node_hashes if _is_verbalizable_hash(h)}
+        current_hashes = sorted(h for h in graph.core_hashes if _is_verbalizable_hash(h))
+        previous_hashes = sorted(h for h in (graph.exception_hashes | graph.condition_hashes) if _is_verbalizable_hash(h))
+        current = ", ".join(_node_label(h) for h in current_hashes) or "(없음)"
+        previous = ", ".join(_node_label(h) for h in previous_hashes) or "(없음)"
         conflicts = []
         for path in graph.conflict_paths[:4]:
             for step in path.steps:
+                if _is_internal_goal_hash(step.source_hash) or _is_internal_goal_hash(step.target_hash):
+                    continue
                 conflicts.append(f"{_node_label(step.source_hash)} →[conflict]→ {_node_label(step.target_hash)}")
         conflict_summary = "; ".join(conflicts) if conflicts else "(없음)"
         correction_graph_lines.append(
@@ -142,6 +166,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     # selected ConclusionGraph에 실제로 포함된 searched node만 사용한다.
     # selected graph가 없으면 검색 결과가 답변을 오염시키지 않도록 비운다.
     allowed_search_hashes = selected_graph_node_hashes.intersection(conclusion.search_node_hashes)
+    allowed_search_hashes = {h for h in allowed_search_hashes if _is_verbalizable_hash(h)}
     for h in allowed_search_hashes:
         node = node_map.get(h)
         if node is None:
