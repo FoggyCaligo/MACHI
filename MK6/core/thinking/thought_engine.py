@@ -43,6 +43,7 @@ from ... import config
 from . import concept_differentiation, concept_merge
 from .activation import build_activation_conclusion_graphs
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
+from .correction_graph import PreviousAssistantState, apply_correction_pressure, build_correction_graph
 from .temp_thought_graph import TempThoughtGraph
 
 
@@ -253,6 +254,7 @@ class ThoughtEngine:
         model: str | None = None,
         user_input: str | None = None,
         previous_key_hashes: set[str] | None = None,
+        previous_assistant_state: PreviousAssistantState | None = None,
     ) -> ConclusionView:
         _t0 = time.perf_counter()
         tg = TempThoughtGraph()
@@ -266,6 +268,12 @@ class ThoughtEngine:
 
         if previous_key_hashes:
             for h in previous_key_hashes:
+                if tg.get_node(h):
+                    continue
+                _load_subgraph_into_tg(tg, extract_subgraph(self._conn, h))
+
+        if previous_assistant_state:
+            for h in previous_assistant_state.node_hashes:
                 if tg.get_node(h):
                     continue
                 _load_subgraph_into_tg(tg, extract_subgraph(self._conn, h))
@@ -355,6 +363,11 @@ class ThoughtEngine:
         self._commit_new_content(tg)
         _t("commit_new_content", _tc)
 
+        correction_graph = build_correction_graph(tg, translated, previous_assistant_state)
+        if correction_graph is not None:
+            apply_correction_pressure(tg, previous_assistant_state)
+            topic_continuity = "continued_topic"
+
         _ta = time.perf_counter()
         activation_result = build_activation_conclusion_graphs(
             tg,
@@ -363,6 +376,10 @@ class ThoughtEngine:
             previous_key_hashes=previous_key_hashes,
         )
         _t("activation_conclusion_graphs", _ta)
+
+        selected_graphs = list(activation_result.selected_graphs)
+        if correction_graph is not None:
+            selected_graphs.insert(0, correction_graph)
 
         return ConclusionView(
             nodes=tg.all_nodes(),
@@ -376,7 +393,7 @@ class ThoughtEngine:
             key_hashes=key_hashes,
             ref_hashes=ref_hashes,
             search_node_hashes=search_node_hashes,
-            selected_graphs=activation_result.selected_graphs,
+            selected_graphs=selected_graphs,
             rejected_graphs=activation_result.rejected_graphs,
         )
 
