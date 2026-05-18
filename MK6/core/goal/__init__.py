@@ -12,6 +12,7 @@ from .goal_graph import (
     load_goal_view,
 )
 from .goal_view import GoalAxisRef, GoalView
+from .turn_goal import TurnGoalView, build_turn_goal_view
 
 __all__ = [
     "GLOBAL_GOAL_AXIS_SEEDS",
@@ -19,6 +20,8 @@ __all__ = [
     "GoalAxisSeed",
     "GoalAxisRef",
     "GoalView",
+    "TurnGoalView",
+    "build_turn_goal_view",
     "initialize_global_goal_graph",
     "load_goal_view",
 ]

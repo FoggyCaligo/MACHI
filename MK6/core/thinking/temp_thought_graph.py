@@ -6,6 +6,7 @@ Think가 끝나면 변경된 내용 중 필요한 부분만 WorldGraph로 커밋
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from ..utils.hash_resolver import ANCHOR_USER
 
 USER_ANCHOR_TEMP_EDGE_WEIGHT = 1.35
 GOAL_ANCHOR_TEMP_EDGE_WEIGHT = 0.85
+TURN_GOAL_TEMP_EDGE_WEIGHT = 0.95
 DEFAULT_ANCHOR_TEMP_EDGE_WEIGHT = 1.0
 
 
@@ -56,6 +58,7 @@ class TempThoughtGraph:
         self._edges: dict[str, Edge] = {}
         self._adj: dict[str, set[str]] = {}      # address_hash → 이웃 hash 집합 (O(1) 조회)
         self._goal_hash: str | None = None       # 목표 노드 address_hash
+        self._turn_goal_hash: str | None = None  # 이번 턴 목적 node hash
         self._empty_slots: list[EmptySlot] = []  # 아직 채워지지 않은 자리
         self._delta: GraphDelta = GraphDelta()   # 현재 루프 회차 변경 추적 (수렴 판단용)
         self._all_added_nodes: list[str] = []    # 루프 전체 누적 추가 노드 (커밋용)
@@ -94,6 +97,8 @@ class TempThoughtGraph:
         for subgraph in bundle.local_subgraphs:
             self._load_local_subgraph(subgraph)
 
+        self._load_turn_goal_from_bundle(bundle)
+
         if empty_slots is None:
             empty_slots = [EmptySlot(concept_hint=hint) for hint in bundle.empty_hints]
         self._empty_slots.extend(empty_slots)
@@ -106,6 +111,56 @@ class TempThoughtGraph:
                 self._edges[edge.edge_id] = edge
                 self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
                 self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
+
+    def _load_turn_goal_from_bundle(self, bundle: InputGraphBundle) -> None:
+        """현재 입력 bundle에서 이번 턴 목적 node와 임시 목적 연결을 만든다."""
+        turn_goal_hash = _turn_goal_hash(bundle.source)
+        self._turn_goal_hash = turn_goal_hash
+        now = datetime.now(timezone.utc)
+        if turn_goal_hash not in self._nodes:
+            self._nodes[turn_goal_hash] = Node(
+                address_hash=turn_goal_hash,
+                node_kind="goal",
+                formation_source="runtime",
+                labels=["TurnGoal", "이번 턴 목적"],
+                is_abstract=False,
+                trust_score=1.0,
+                stability_score=0.2,
+                is_active=True,
+                embedding=None,
+                payload={
+                    "runtime_view": True,
+                    "goal_scope": "turn",
+                    "source": bundle.source,
+                },
+                created_at=now,
+                updated_at=now,
+            )
+
+        if self._goal_hash is not None:
+            self._add_temporary_edge(self._goal_hash, turn_goal_hash, weight=GOAL_ANCHOR_TEMP_EDGE_WEIGHT)
+
+        for concept_hash in sorted(bundle.direct_hashes or bundle.center_hashes):
+            if concept_hash in self._nodes:
+                self._add_temporary_edge(turn_goal_hash, concept_hash, weight=TURN_GOAL_TEMP_EDGE_WEIGHT)
+
+    def _add_temporary_edge(self, source_hash: str, target_hash: str, *, weight: float) -> None:
+        conn_key = f"{source_hash}::{target_hash}"
+        if conn_key in self._goal_connections:
+            return
+        self._goal_connections.add(conn_key)
+        self.add_edge(Edge(
+            edge_id=str(uuid.uuid4()),
+            source_hash=source_hash,
+            target_hash=target_hash,
+            edge_family="relation",
+            connect_type="neutral",
+            edge_weight=weight,
+            provenance_source="runtime_goal_view",
+            is_temporary=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        ))
 
     def set_goal_node(self, node: Node) -> None:
         """목표 노드를 설정하고 그래프에 추가한다."""
@@ -135,7 +190,6 @@ class TempThoughtGraph:
         if from_hash == to_hash:
             return
 
-        # 1. 엣지 재연결
         edges = self.get_edges_for_node(from_hash)
         for edge in edges:
             if edge.source_hash == from_hash:
@@ -144,11 +198,8 @@ class TempThoughtGraph:
                 edge.target_hash = to_hash
             self.update_edge(edge)
 
-        # 2. 인접 인덱스 정리
         self._adj.pop(from_hash, None)
-        # to_hash의 이웃은 update_edge 로직에서 자연스럽게 보강됨
 
-        # 3. 노드 제거 및 기록
         self._nodes.pop(from_hash, None)
         self._merged_to[from_hash] = to_hash
         if from_hash not in self._delta.removed_nodes:
@@ -160,7 +211,6 @@ class TempThoughtGraph:
         self._edges[edge.edge_id] = edge
         self._delta.added_edges.append(edge.edge_id)
         self._all_added_edges.append(edge.edge_id)
-        # 인접 인덱스 업데이트
         self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
         self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
 
@@ -171,7 +221,6 @@ class TempThoughtGraph:
             edge.edge_id not in self._delta.modified_edges):
             self._delta.modified_edges.append(edge.edge_id)
 
-        # 인접 인덱스 최신화
         self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
         self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
 
@@ -180,7 +229,6 @@ class TempThoughtGraph:
         if edge is None:
             return
         self._delta.removed_edges.append(edge_id)
-        # 인접 인덱스에서 해당 방향 제거 (다른 엣지로 여전히 연결돼 있을 수 있으므로 잔존 확인)
         def _still_connected(src: str, tgt: str) -> bool:
             return any(
                 (e.source_hash == src and e.target_hash == tgt) or
@@ -265,9 +313,8 @@ class TempThoughtGraph:
         사용자 앵커 edge는 일반 co-occurrence보다 강하게, goal edge는 내부 방향성
         보조로만 약하게 둔다. 실제 사용자 정체성은 UserProfile identity_surface에서 누적한다.
         """
-        # 중복 방지를 위해 복합 키 사용
         conn_key = f"{identity_hash}::{concept_hash}"
-        if conn_key in self._goal_connections: # 기존 필드 재활용 (이름은 goal_이지만 실제론 임시 연결 관리용)
+        if conn_key in self._goal_connections:
             return
         self._goal_connections.add(conn_key)
 
@@ -288,6 +335,8 @@ class TempThoughtGraph:
     def _temporary_anchor_weight(self, identity_hash: str) -> float:
         if identity_hash == ANCHOR_USER:
             return USER_ANCHOR_TEMP_EDGE_WEIGHT
+        if identity_hash == self._turn_goal_hash:
+            return TURN_GOAL_TEMP_EDGE_WEIGHT
         if identity_hash == self._goal_hash:
             return GOAL_ANCHOR_TEMP_EDGE_WEIGHT
         return DEFAULT_ANCHOR_TEMP_EDGE_WEIGHT
@@ -356,6 +405,10 @@ class TempThoughtGraph:
         """루프 전체에 걸쳐 발생한 노드 병합 매핑 (from_hash -> to_hash)."""
         return self._merged_to
 
+    @property
+    def turn_goal_hash(self) -> str | None:
+        return self._turn_goal_hash
+
     # ── 읽기 전용 속성 ────────────────────────────────────────────────────────
     @property
     def goal_hash(self) -> str | None:
@@ -364,3 +417,7 @@ class TempThoughtGraph:
     def neighbor_hashes(self, address_hash: str) -> set[str]:
         """노드의 이웃 노드 hash 집합을 O(1)로 반환한다."""
         return set(self._adj.get(address_hash, set()))
+
+
+def _turn_goal_hash(source: str) -> str:
+    return hashlib.sha256(f"turn-goal::{source}".encode("utf-8")).hexdigest()[:32]
