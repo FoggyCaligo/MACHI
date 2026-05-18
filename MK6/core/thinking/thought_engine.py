@@ -179,6 +179,38 @@ def _add_translated_edges(
         ))
 
 
+def _search_queries_from_slots(slots: list[EmptySlot], user_input: str | None) -> list[str]:
+    """EmptySlot 중요도 구조에서 검색 쿼리 후보를 만든다.
+
+    원문 전체를 첫 검색 쿼리로 쓰지 않는다. 문장 centroid 기준 near/far 슬롯을
+    함께 선택해 문장 대표 개념과 도메인 특이 개념을 모두 검색 대상으로 남긴다.
+    """
+    ordered_slots = [slot for slot in slots if slot.concept_hint.strip()]
+    if not ordered_slots:
+        return [user_input.strip()] if user_input and user_input.strip() else []
+
+    n = max(1, int(len(ordered_slots) * 0.2 + 0.9999))
+    by_importance = sorted(ordered_slots, key=lambda slot: slot.importance, reverse=True)
+    selected: list[EmptySlot] = []
+    for slot in by_importance[:n] + by_importance[-n:]:
+        if slot not in selected:
+            selected.append(slot)
+
+    queries: list[str] = []
+    combined = " ".join(slot.concept_hint.strip() for slot in selected)
+    if combined:
+        queries.append(combined)
+    for slot in selected:
+        hint = slot.concept_hint.strip()
+        if hint and hint not in queries:
+            queries.append(hint)
+
+    if user_input and user_input.strip() and user_input.strip() not in queries:
+        queries.append(user_input.strip())
+
+    return queries[:5]
+
+
 class ThoughtEngine:
     def __init__(
         self,
@@ -379,21 +411,38 @@ class ThoughtEngine:
         if not slots:
             return set()
 
-        query = user_input or " ".join(slot.concept_hint for slot in slots)
-        print(f"[think] search start  query_len={len(query)}  slots={len(slots)}")
+        queries = _search_queries_from_slots(slots, user_input)
+        print(f"[think] search start  queries={queries!r}  slots={len(slots)}")
+
+        async def _run_query(query: str) -> tuple[str, str | None]:
+            try:
+                text = await asyncio.wait_for(self._search_fn(query), timeout=config.SEARCH_TIMEOUT)
+            except asyncio.TimeoutError:
+                print(f"[think] search_fn timeout ({config.SEARCH_TIMEOUT}s) query={query!r}")
+                return query, None
+            return query, text
+
         _ts = time.perf_counter()
-        try:
-            search_text = await asyncio.wait_for(self._search_fn(query), timeout=config.SEARCH_TIMEOUT)
-        except asyncio.TimeoutError:
-            print(f"[think] search_fn timeout ({config.SEARCH_TIMEOUT}s) — 검색 결과 없이 계속")
-            search_text = None
-        _t(f"search_fn ({len(slots)} slots)", _ts)
+        query_results = await asyncio.gather(*[_run_query(q) for q in queries]) if queries else []
+        _t(f"search_fn ({len(queries)} queries)", _ts)
+
+        search_by_query: dict[str, str] = {
+            query: text
+            for query, text in query_results
+            if text
+        }
+        combined_search_text = " ".join(
+            f"[검색어: {query}] {text}"
+            for query, text in search_by_query.items()
+        ) or None
 
         ingested_nodes: list[Node] = []
         session_search_hashes: set[str] = set()
         _ti = time.perf_counter()
         for slot in slots:
-            node, got_search = await self._ingest_slot(slot, search_text=search_text)
+            hint = slot.concept_hint.strip()
+            slot_search_text = search_by_query.get(hint)
+            node, got_search = await self._ingest_slot(slot, search_text=slot_search_text)
             if node is not None:
                 tg.fill_slot(slot, node)
                 tg.connect_to_goal(node.address_hash)
@@ -441,8 +490,8 @@ class ThoughtEngine:
                             updated_at=now,
                         ))
 
-        if search_text:
-            self._add_search_result_edges(tg, search_text)
+        if combined_search_text:
+            self._add_search_result_edges(tg, combined_search_text)
         return session_search_hashes
 
     async def _ingest_slot(self, slot: EmptySlot, search_text: str | None = None) -> tuple[Node | None, bool]:
