@@ -105,6 +105,7 @@ class ConclusionGraph:
     support_paths: list[ReasoningPath] = field(default_factory=list)
     goal_paths: list[ReasoningPath] = field(default_factory=list)
     conflict_paths: list[ReasoningPath] = field(default_factory=list)
+    contrast_paths: list[ReasoningPath] = field(default_factory=list)
 
     score: float = 0.0
     uncertainty: float = 0.0
