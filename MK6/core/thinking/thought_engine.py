@@ -48,7 +48,6 @@ EmbedFn = Callable[[str], Awaitable[list[float]]]
 
 
 def _t(label: str, start: float) -> float:
-    """경과 시간을 출력하고 현재 시각을 반환한다."""
     elapsed = time.perf_counter() - start
     print(f"[think] {label}: {elapsed:.3f}s")
     return time.perf_counter()
@@ -56,8 +55,6 @@ def _t(label: str, start: float) -> float:
 
 @dataclass
 class ConclusionView:
-    """Think 루프 종료 후 GraphToLang에 전달되는 최종 구조."""
-
     nodes: list[Node]
     edges: list[Edge]
     goal_hash: str | None
@@ -71,10 +68,7 @@ class ConclusionView:
     search_node_hashes: set[str] = field(default_factory=set)
 
 
-# ── 세계그래프 커밋 ───────────────────────────────────────────────────────────
-
 def _commit_strong(conn: sqlite3.Connection, node: Node) -> None:
-    """강한 커밋 — 정상 trust/stability로 저장."""
     existing = db_get_node(conn, node.address_hash)
     if existing is None:
         insert_node(conn, node)
@@ -84,7 +78,6 @@ def _commit_strong(conn: sqlite3.Connection, node: Node) -> None:
 
 
 def _commit_weak(conn: sqlite3.Connection, node: Node) -> None:
-    """약한 커밋 — 매우 낮은 trust/stability로 저장."""
     node.trust_score = min(node.trust_score, config.COMMIT_TRUST_WEAK)
     node.stability_score = min(node.stability_score, config.COMMIT_STABILITY_WEAK)
     node.touch()
@@ -110,7 +103,6 @@ def _commit_edge(conn: sqlite3.Connection, edge: Edge, strong: bool) -> Edge:
 
     strong edge의 endpoint가 이미 WorldGraph에 존재하면 현재 사고 그래프의 병합된
     edge_weight와 세계 그래프 edge_weight 사이의 양의 차이 중 일부만 반영한다.
-    이로써 반복 대화가 세계 그래프에 주는 충격을 완화한다.
     """
     if not strong:
         edge.trust_score = min(edge.trust_score, config.COMMIT_TRUST_WEAK)
@@ -139,30 +131,18 @@ def _commit_edge(conn: sqlite3.Connection, edge: Edge, strong: bool) -> Edge:
     return edge
 
 
-# ── 수렴 판단 ─────────────────────────────────────────────────────────────────
-
 def _has_converged(tg: TempThoughtGraph, prev_node_count: int, prev_edge_count: int) -> bool:
-    """구조적 변화 감지 기반 수렴 판단."""
     delta = tg.current_delta()
     if delta.is_empty():
         return True
+    return len(tg.all_nodes()) == prev_node_count and len(tg.all_edges()) == prev_edge_count
 
-    current_node_count = len(tg.all_nodes())
-    current_edge_count = len(tg.all_edges())
-    if current_node_count == prev_node_count and current_edge_count == prev_edge_count:
-        return True
-
-    return False
-
-
-# ── TranslatedEdge → TempThoughtGraph 변환 ───────────────────────────────────
 
 def _add_translated_edges(
     tg: TempThoughtGraph,
     translated_edges: list[TranslatedEdge],
     added_keys: set[tuple[str, str]],
 ) -> None:
-    """TranslatedEdge 목록에서 해결 가능한 항목을 TempThoughtGraph에 추가한다."""
     now = datetime.now(timezone.utc)
     for te in translated_edges:
         if isinstance(te.source_ref, ConceptPointer):
@@ -183,7 +163,6 @@ def _add_translated_edges(
         if key in added_keys:
             continue
         added_keys.add(key)
-
         tg.add_edge(Edge(
             edge_id=str(uuid.uuid4()),
             source_hash=src_hash,
@@ -201,8 +180,6 @@ def _add_translated_edges(
 
 
 class ThoughtEngine:
-    """Think 루프 실행기."""
-
     def __init__(
         self,
         conn: sqlite3.Connection,
@@ -222,10 +199,8 @@ class ThoughtEngine:
         user_input: str | None = None,
         previous_key_hashes: set[str] | None = None,
     ) -> ConclusionView:
-        """Think 루프를 실행하고 ConclusionView를 반환한다."""
         _t0 = time.perf_counter()
         tg = TempThoughtGraph()
-
         tg.set_goal_node(self._goal_node)
         tg.load_from_translated(translated)
 
@@ -252,8 +227,7 @@ class ThoughtEngine:
                 tg.connect_to_goal(ref.address_hash)
                 tg.connect_to_identity(ref.address_hash, ANCHOR_USER)
 
-        identity_anchors = [ANCHOR_USER, ANCHOR_ASSISTANT]
-        for anchor_h in identity_anchors:
+        for anchor_h in [ANCHOR_USER, ANCHOR_ASSISTANT]:
             subgraph = extract_subgraph(self._conn, anchor_h)
             for n in subgraph.nodes:
                 if not tg.get_node(n.address_hash):
@@ -265,7 +239,6 @@ class ThoughtEngine:
                     tg._adj.setdefault(e.target_hash, set()).add(e.source_hash)
 
         _t0 = _t("graph init", _t0)
-
         had_empty_slots = tg.has_empty_slots()
         loop_count = 0
         prev_node_count = len(tg.all_nodes())
@@ -280,9 +253,7 @@ class ThoughtEngine:
             if tg.has_empty_slots():
                 _ts = time.perf_counter()
                 existing_cp_hashes = {
-                    ref.address_hash
-                    for ref in translated.nodes
-                    if isinstance(ref, ConceptPointer)
+                    ref.address_hash for ref in translated.nodes if isinstance(ref, ConceptPointer)
                 }
                 newly_searched = await self._fill_empty_slots(
                     tg, user_input=user_input, concept_hashes=existing_cp_hashes
@@ -307,33 +278,25 @@ class ThoughtEngine:
 
             if _has_converged(tg, prev_node_count, prev_edge_count):
                 break
-
             prev_node_count = len(tg.all_nodes())
             prev_edge_count = len(tg.all_edges())
 
         concept_differentiation.run(tg)
 
         import math as _math
-
         scored: list[tuple[float, str]] = []
         for ref in translated.nodes:
-            if isinstance(ref, ConceptPointer):
-                h = ref.address_hash
-            else:
-                h = compute_hash(ref.concept_hint.strip())
-            if tg.get_node(h) is None:
-                continue
-            scored.append((ref.importance, h))
+            h = ref.address_hash if isinstance(ref, ConceptPointer) else compute_hash(ref.concept_hint.strip())
+            if tg.get_node(h) is not None:
+                scored.append((ref.importance, h))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         n_sel = len(scored)
         n_near = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_NEAR_RATIO))
         n_far = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_FAR_RATIO))
-
         key_hashes: set[str] = {h for _, h in scored[:n_near]}
         far_cands: set[str] = {h for _, h in scored[max(0, n_sel - n_far):]}
         ref_hashes: set[str] = far_cands - key_hashes
-
         if previous_key_hashes:
             ref_hashes |= (previous_key_hashes - key_hashes)
 
@@ -341,12 +304,7 @@ class ThoughtEngine:
             topic_continuity = "new_topic"
         else:
             overlap = len(key_hashes.intersection(previous_key_hashes))
-            if overlap >= 2:
-                topic_continuity = "continued_topic"
-            elif overlap == 1:
-                topic_continuity = "related_topic"
-            else:
-                topic_continuity = "shifted_topic"
+            topic_continuity = "continued_topic" if overlap >= 2 else "related_topic" if overlap == 1 else "shifted_topic"
 
         _tc = time.perf_counter()
         tg.merge_duplicate_edges()
@@ -368,10 +326,8 @@ class ThoughtEngine:
         )
 
     def _add_search_result_edges(self, tg: TempThoughtGraph, search_text: str) -> None:
-        """검색 결과 텍스트에서 TempThoughtGraph에 이미 존재하는 노드 사이의 엣지를 추가한다."""
         from ..translation.token_splitter import extract_tokens
         from ..utils.hash_resolver import normalize_text
-
         tokens = extract_tokens(search_text)
         if not tokens:
             return
@@ -382,9 +338,7 @@ class ThoughtEngine:
             normalized = normalize_text(token)
             for word_entry in get_words_for_surface(self._conn, normalized):
                 h = word_entry.address_hash
-                if h in seen_hashes:
-                    continue
-                if tg.get_node(h) is None:
+                if h in seen_hashes or tg.get_node(h) is None:
                     continue
                 seen_hashes.add(h)
                 mentioned.append(h)
@@ -421,14 +375,12 @@ class ThoughtEngine:
         user_input: str | None = None,
         concept_hashes: set[str] | None = None,
     ) -> set[str]:
-        """EmptySlot 전체를 1회 검색 → 각 슬롯을 ingest."""
         slots = list(tg.empty_slots)
         if not slots:
             return set()
 
         query = user_input or " ".join(slot.concept_hint for slot in slots)
         print(f"[think] search start  query_len={len(query)}  slots={len(slots)}")
-
         _ts = time.perf_counter()
         try:
             search_text = await asyncio.wait_for(self._search_fn(query), timeout=config.SEARCH_TIMEOUT)
@@ -468,7 +420,6 @@ class ThoughtEngine:
                         created_at=now,
                         updated_at=now,
                     ))
-
             if concept_hashes:
                 for ingest_node in ingested_nodes:
                     for cp_hash in concept_hashes:
@@ -492,11 +443,9 @@ class ThoughtEngine:
 
         if search_text:
             self._add_search_result_edges(tg, search_text)
-
         return session_search_hashes
 
     async def _ingest_slot(self, slot: EmptySlot, search_text: str | None = None) -> tuple[Node | None, bool]:
-        """EmptySlot을 hint 기반 신규 노드로 등록한다."""
         _SUMMARY_MAX = 800
         hint = slot.concept_hint.strip()
         if not hint:
@@ -553,7 +502,6 @@ class ThoughtEngine:
         return node, bool(search_text)
 
     def _commit_new_content(self, tg: TempThoughtGraph) -> None:
-        """임시 사고 그래프의 결과를 WorldGraph에 반영한다."""
         merged_mappings = tg.merged_mappings
         if merged_mappings:
             for from_hash, to_hash in merged_mappings.items():
