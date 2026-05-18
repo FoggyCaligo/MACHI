@@ -64,6 +64,10 @@ DIFFERENTIATION_ALPHA_DECAY_RATE = _env_float("DIFFERENTIATION_ALPHA_DECAY_RATE"
 
 # ── Think 루프 ───────────────────────────────────────────────────────────────
 THINK_MAX_LOOPS = _env_int("THINK_MAX_LOOPS", 10)
+# Think activation은 기본 2-hop으로 시작한다. TurnGoalView가 명시 구조로 승격되면
+# 이 값과 depth decay 정책을 다시 조정할 수 있다.
+THINK_ACTIVATION_HOPS = _env_int("THINK_ACTIVATION_HOPS", 2)
+THINK_CONCLUSION_GRAPH_LIMIT = _env_int("THINK_CONCLUSION_GRAPH_LIMIT", 5)
 # 검색 전체(DDG + Wikipedia)에 대한 asyncio 레벨 타임아웃 (초).
 # 이 시간 안에 search_fn이 완료되지 않으면 검색 결과 없이 계속 진행한다.
 SEARCH_TIMEOUT = _env_float("SEARCH_TIMEOUT", 20.0)

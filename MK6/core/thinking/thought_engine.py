@@ -41,6 +41,7 @@ from ..utils.hash_resolver import compute_hash, normalize_text
 from ..utils.local_graph_extractor import extract as extract_subgraph
 from ... import config
 from . import concept_differentiation, concept_merge
+from .activation import build_activation_conclusion_graphs
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
 from .temp_thought_graph import TempThoughtGraph
 
@@ -60,8 +61,7 @@ class ConclusionView:
 
     기존 호환 필드(nodes/edges/key_hashes/ref_hashes)는 유지한다. 다만 MK6의
     장기 계약에서 결론 본체는 node list가 아니라 selected_graphs에 담기는
-    ConclusionGraph다. 현재는 계약 추가 단계이며, 실제 Think scoring 전환은
-    후속 PR에서 진행한다.
+    ConclusionGraph다.
     """
 
     nodes: list[Node]
@@ -147,6 +147,18 @@ def _has_converged(tg: TempThoughtGraph, prev_node_count: int, prev_edge_count: 
     if delta.is_empty():
         return True
     return len(tg.all_nodes()) == prev_node_count and len(tg.all_edges()) == prev_edge_count
+
+
+def _load_subgraph_into_tg(tg: TempThoughtGraph, subgraph) -> None:
+    """WorldGraph에서 읽은 LocalSubgraph를 TempThoughtGraph에 읽기 전용으로 적재한다."""
+    for n in subgraph.nodes:
+        if not tg.get_node(n.address_hash):
+            tg._nodes[n.address_hash] = n
+    for e in subgraph.edges:
+        if e.edge_id not in tg._edges:
+            tg._edges[e.edge_id] = e
+            tg._adj.setdefault(e.source_hash, set()).add(e.target_hash)
+            tg._adj.setdefault(e.target_hash, set()).add(e.source_hash)
 
 
 def _add_translated_edges(
@@ -245,21 +257,18 @@ class ThoughtEngine:
         _t0 = time.perf_counter()
         tg = TempThoughtGraph()
         tg.set_goal_node(self._goal_node)
+
+        # GlobalGoalGraph를 현재 사고 그래프에 읽기 전용으로 로드한다.
+        # TODO: TurnGoalView가 명시 구조로 생기면 이 위치에서 함께 로드/정렬한다.
+        _load_subgraph_into_tg(tg, extract_subgraph(self._conn, self._goal_node.address_hash))
+
         tg.load_from_translated(translated)
 
         if previous_key_hashes:
             for h in previous_key_hashes:
                 if tg.get_node(h):
                     continue
-                subgraph = extract_subgraph(self._conn, h)
-                for n in subgraph.nodes:
-                    if not tg.get_node(n.address_hash):
-                        tg._nodes[n.address_hash] = n
-                for e in subgraph.edges:
-                    if e.edge_id not in tg._edges:
-                        tg._edges[e.edge_id] = e
-                        tg._adj.setdefault(e.source_hash, set()).add(e.target_hash)
-                        tg._adj.setdefault(e.target_hash, set()).add(e.source_hash)
+                _load_subgraph_into_tg(tg, extract_subgraph(self._conn, h))
 
         _te_added_keys: set[tuple[str, str]] = set()
         _add_translated_edges(tg, translated.edges, _te_added_keys)
@@ -271,15 +280,7 @@ class ThoughtEngine:
                 tg.connect_to_identity(ref.address_hash, ANCHOR_USER)
 
         for anchor_h in [ANCHOR_USER, ANCHOR_ASSISTANT]:
-            subgraph = extract_subgraph(self._conn, anchor_h)
-            for n in subgraph.nodes:
-                if not tg.get_node(n.address_hash):
-                    tg._nodes[n.address_hash] = n
-            for e in subgraph.edges:
-                if e.edge_id not in tg._edges:
-                    tg._edges[e.edge_id] = e
-                    tg._adj.setdefault(e.source_hash, set()).add(e.target_hash)
-                    tg._adj.setdefault(e.target_hash, set()).add(e.source_hash)
+            _load_subgraph_into_tg(tg, extract_subgraph(self._conn, anchor_h))
 
         _t0 = _t("graph init", _t0)
         had_empty_slots = tg.has_empty_slots()
@@ -354,6 +355,15 @@ class ThoughtEngine:
         self._commit_new_content(tg)
         _t("commit_new_content", _tc)
 
+        _ta = time.perf_counter()
+        activation_result = build_activation_conclusion_graphs(
+            tg,
+            translated,
+            conn=self._conn,
+            previous_key_hashes=previous_key_hashes,
+        )
+        _t("activation_conclusion_graphs", _ta)
+
         return ConclusionView(
             nodes=tg.all_nodes(),
             edges=tg.all_edges(),
@@ -366,6 +376,8 @@ class ThoughtEngine:
             key_hashes=key_hashes,
             ref_hashes=ref_hashes,
             search_node_hashes=search_node_hashes,
+            selected_graphs=activation_result.selected_graphs,
+            rejected_graphs=activation_result.rejected_graphs,
         )
 
     def _add_search_result_edges(self, tg: TempThoughtGraph, search_text: str) -> None:

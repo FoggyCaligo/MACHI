@@ -31,7 +31,16 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     key_labels: list[str] = []
     ref_labels: list[str] = []
     node_map = {n.address_hash: n for n in conclusion.nodes}
+    edge_by_id = {e.edge_id: e for e in conclusion.edges}
     identity_names = {ANCHOR_USER: "사용자", ANCHOR_ASSISTANT: "AI"}
+
+    def _node_label(address_hash: str) -> str:
+        node = node_map.get(address_hash)
+        if address_hash in identity_names:
+            return identity_names[address_hash]
+        if node and node.labels:
+            return node.labels[0]
+        return address_hash[:8]
 
     for node in conclusion.nodes:
         if node.address_hash == conclusion.goal_hash:
@@ -83,6 +92,26 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         weight_str = f"{weight:.2f}".rstrip("0").rstrip(".")
         edge_lines.append(f"  - {src_str} →[{connect_type}, {weight_str}]→ {tgt_str}")
 
+    conclusion_graph_lines: list[str] = []
+    for idx, graph in enumerate(conclusion.selected_graphs[:3], start=1):
+        core = ", ".join(_node_label(h) for h in sorted(graph.core_hashes)) or "(없음)"
+        bridge = ", ".join(_node_label(h) for h in sorted(graph.bridge_hashes)) or "(없음)"
+        exceptions = ", ".join(_node_label(h) for h in sorted(graph.exception_hashes)) or "(없음)"
+        edges = []
+        for edge_id in sorted(graph.edge_ids):
+            edge = edge_by_id.get(edge_id)
+            if edge is None:
+                continue
+            edges.append(f"{_node_label(edge.source_hash)} →[{edge.connect_type}]→ {_node_label(edge.target_hash)}")
+            if len(edges) >= 4:
+                break
+        edge_summary = "; ".join(edges) if edges else "(없음)"
+        conclusion_graph_lines.append(
+            f"  {idx}. core={core} / bridge={bridge} / exception={exceptions} / "
+            f"score={graph.score:.3f} / uncertainty={graph.uncertainty:.2f}\n"
+            f"     edges: {edge_summary}"
+        )
+
     _SEARCH_CTX_MAX = 800
     seen_summaries: set[str] = set()
     search_ctx_parts: list[str] = []
@@ -108,6 +137,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     key_text = ", ".join(key_labels) if key_labels else "(없음)"
     ref_text = ", ".join(ref_labels) if ref_labels else "(없음)"
     edge_text = "\n".join(edge_lines) if edge_lines else "  (없음)"
+    conclusion_graph_text = "\n".join(conclusion_graph_lines) if conclusion_graph_lines else "  (없음)"
     search_text = "\n---\n".join(search_ctx_parts) if search_ctx_parts else "(없음)"
     user_msg = conclusion.user_input or ""
 
@@ -125,12 +155,14 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "아래는 사용자 입력에 대해 인지 그래프 위에서 사고 과정을 거쳐 도달한 당신의 현재 인식 상태입니다.\n"
         "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
         "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
+        "결론 그래프가 제공되면, 단일 키워드가 아니라 해당 국소 그래프의 관계 구조를 우선 반영하십시오.\n"
         "제공된 지식 및 검색 결과를 근거로 구체적이고 정확한 정보를 답변에 포함하십시오. 단, 검색결과를 언급하지 않아도 되면 빼도 됩니다.\n"
         "근거 연결이 있으면 그 관계를 자연스럽게 반영하십시오.\n"
         "인식 상태 구조 자체를 설명하거나 나열하지 마십시오.\n"
         "확실하지 않거나 모르는 게 있으면 얼버무리지 않고, 모른다고 솔직하게 답하십시오.\n\n"
         f"[핵심 키워드]\n{key_text}\n\n"
         f"[참고 개념]\n{ref_text}\n\n"
+        f"[결론 그래프]\n{conclusion_graph_text}\n\n"
         f"[근거 연결]\n{edge_text}\n\n"
         f"[지식 및 검색 결과]\n{search_text}"
     )
