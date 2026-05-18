@@ -269,7 +269,7 @@ def _row_to_edge(row: sqlite3.Row) -> Edge:
     )
 
 
-# ── 단어 ─────────────────────────────────────────────────────────────────────
+# ── 단어/표면형 링크 ─────────────────────────────────────────────────────────
 
 def insert_word(conn: sqlite3.Connection, entry: WordEntry) -> None:
     conn.execute(
@@ -287,20 +287,52 @@ def insert_word(conn: sqlite3.Connection, entry: WordEntry) -> None:
     )
 
 
-def get_word(conn: sqlite3.Connection, surface_form: str) -> WordEntry | None:
+def get_words_for_surface(
+    conn: sqlite3.Connection,
+    surface_form: str,
+) -> list[WordEntry]:
+    """surface_form에 연결된 모든 WordEntry를 반환한다.
+
+    words는 다대다 링크 집합이므로 surface_form 단독으로 단일 노드를
+    결정하지 않는다. 호출자는 반환된 후보들을 그래프 구조에서 처리해야 한다.
+    """
+    rows = conn.execute(
+        """
+        SELECT * FROM words
+        WHERE surface_form = ?
+        ORDER BY created_at ASC, word_id ASC
+        """,
+        (surface_form,),
+    ).fetchall()
+    return [_row_to_word(r) for r in rows]
+
+
+def word_link_exists(
+    conn: sqlite3.Connection,
+    surface_form: str,
+    address_hash: str,
+) -> bool:
     row = conn.execute(
-        "SELECT * FROM words WHERE surface_form = ?", (surface_form,)
+        """
+        SELECT 1 FROM words
+        WHERE surface_form = ? AND address_hash = ?
+        LIMIT 1
+        """,
+        (surface_form, address_hash),
     ).fetchone()
-    if row is None:
-        return None
-    return _row_to_word(row)
+    return row is not None
 
 
 def get_words_for_node(
     conn: sqlite3.Connection, address_hash: str
 ) -> list[WordEntry]:
     rows = conn.execute(
-        "SELECT * FROM words WHERE address_hash = ?", (address_hash,)
+        """
+        SELECT * FROM words
+        WHERE address_hash = ?
+        ORDER BY created_at ASC, word_id ASC
+        """,
+        (address_hash,),
     ).fetchall()
     return [_row_to_word(r) for r in rows]
 
@@ -310,12 +342,38 @@ def remap_words_to_node(
     from_hashes: Iterable[str],
     to_hash: str,
 ) -> None:
-    """Merge 시 여러 노드에 연결된 단어들을 하나의 노드로 일괄 재연결한다."""
+    """Merge 시 여러 노드에 연결된 표면형 링크를 생존 노드로 재연결한다.
+
+    다대다 구조에서는 이미 같은 surface_form → to_hash 링크가 존재할 수 있다.
+    이 경우 from_hash 쪽 링크를 삭제해 (surface_form, address_hash) 중복을
+    만들지 않고 링크 집합을 정규화한다.
+    """
     for h in from_hashes:
-        conn.execute(
-            "UPDATE words SET address_hash = ? WHERE address_hash = ?",
-            (to_hash, h),
-        )
+        rows = conn.execute(
+            "SELECT * FROM words WHERE address_hash = ?",
+            (h,),
+        ).fetchall()
+        for row in rows:
+            surface_form = row["surface_form"]
+            word_id = row["word_id"]
+            duplicate = conn.execute(
+                """
+                SELECT 1 FROM words
+                WHERE surface_form = ? AND address_hash = ? AND word_id <> ?
+                LIMIT 1
+                """,
+                (surface_form, to_hash, word_id),
+            ).fetchone()
+            if duplicate is not None:
+                conn.execute(
+                    "DELETE FROM words WHERE word_id = ?",
+                    (word_id,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE words SET address_hash = ? WHERE word_id = ?",
+                    (to_hash, word_id),
+                )
 
 
 def _row_to_word(row: sqlite3.Row) -> WordEntry:

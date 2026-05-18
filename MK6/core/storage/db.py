@@ -17,8 +17,13 @@ CREATE TABLE IF NOT EXISTS words (
     created_at    TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_words_surface
+DROP INDEX IF EXISTS idx_words_surface;
+
+CREATE INDEX IF NOT EXISTS idx_words_surface
     ON words(surface_form);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_words_surface_address
+    ON words(surface_form, address_hash);
 
 CREATE INDEX IF NOT EXISTS idx_words_address_hash
     ON words(address_hash);

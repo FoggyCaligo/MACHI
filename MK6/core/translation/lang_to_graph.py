@@ -11,7 +11,7 @@ from ..entities.translated_graph import (
     ConceptPointer, EmptySlot, ConceptRef,
     TranslatedEdge, TranslatedGraph, LocalSubgraph,
 )
-from ..storage.world_graph import get_node, get_word
+from ..storage.world_graph import get_node, get_words_for_surface
 from ..utils.hash_resolver import normalize_text
 from ..utils.local_graph_extractor import extract as extract_subgraph
 from .input_classifier import classify, InputType
@@ -31,6 +31,15 @@ def _cosine(a: list[float], b: list[float]) -> float:
     if na == 0 or nb == 0:
         return 0.0
     return dot / (na * nb)
+
+
+def _clone_pointer(ptr: ConceptPointer) -> ConceptPointer:
+    """같은 후보 노드라도 토큰 위치마다 독립 importance를 가질 수 있게 복제한다."""
+    return ConceptPointer(
+        address_hash=ptr.address_hash,
+        local_subgraph=ptr.local_subgraph,
+        importance=ptr.importance,
+    )
 
 
 # ── 토큰 중요도 ───────────────────────────────────────────────────────────────
@@ -87,12 +96,13 @@ async def translate(
 
     저장은 하지 않는다. World Graph는 변경되지 않는다.
 
-    반환되는 TranslatedGraph.nodes에는 문장의 모든 토큰이 포함된다.
-    중요도 필터링(near/far 20%)은 ThoughtEngine에서 수행한다.
-    각 ref의 importance 필드에 centroid 기반 중요도 점수가 담겨 있다.
+    반환되는 TranslatedGraph.nodes에는 문장의 모든 토큰 후보가 포함된다.
+    한 surface_form이 여러 노드에 연결되어 있으면 각 노드를 별도
+    ConceptPointer 후보로 포함한다. 중요도 필터링(near/far 20%)은
+    ThoughtEngine에서 수행한다.
 
     후보 풀 구성 원칙 (2패스):
-      1패스: words 테이블 exact match → ConceptPointer 확보
+      1패스: words 테이블 exact match → ConceptPointer 후보들 확보
       2패스: 1패스에서 얻은 LocalSubgraph 내 노드만 임베딩 유사도 후보로 사용
       후보가 없으면 바로 EmptySlot — Think 루프에서 검색으로 채운다.
 
@@ -102,7 +112,7 @@ async def translate(
         embed_fn: async 임베딩 함수 (str → list[float])
 
     Returns:
-        TranslatedGraph — nodes(전체 ConceptRef), edges(TranslatedEdge)
+        TranslatedGraph — nodes(전체 ConceptRef 후보), edges(TranslatedEdge)
     """
     # ── 입력 타입 분류 ────────────────────────────────────────────────────────
     input_type: InputType = await classify(
@@ -127,31 +137,39 @@ async def translate(
     sentences = tokenize(text)
     all_tokens: list[str] = [t for sent in sentences for t in sent]
 
-    # 1패스 — exact match만으로 ConceptPointer 수집
-    exact_pointers: dict[str, ConceptPointer] = {}   # normalized → ConceptPointer
+    # 1패스 — exact match만으로 ConceptPointer 후보 수집
+    exact_pointers: dict[str, list[ConceptPointer]] = {}   # normalized → candidates
     for token in all_tokens:
         normalized = normalize_text(token)
-        word_entry = get_word(conn, normalized)
-        if word_entry is None:
+        if normalized in exact_pointers:
             continue
-        node = get_node(conn, word_entry.address_hash)
-        if node is None or not node.is_active:
-            continue
-        subgraph = extract_subgraph(conn, node.address_hash, cache=_subgraph_cache)
-        exact_pointers[normalized] = ConceptPointer(
-            address_hash=node.address_hash,
-            local_subgraph=subgraph,
-        )
+
+        pointer_candidates: list[ConceptPointer] = []
+        for word_entry in get_words_for_surface(conn, normalized):
+            node = get_node(conn, word_entry.address_hash)
+            if node is None or not node.is_active:
+                continue
+            subgraph = extract_subgraph(conn, node.address_hash, cache=_subgraph_cache)
+            pointer_candidates.append(
+                ConceptPointer(
+                    address_hash=node.address_hash,
+                    local_subgraph=subgraph,
+                )
+            )
+
+        if pointer_candidates:
+            exact_pointers[normalized] = pointer_candidates
 
     # 2패스용 후보 풀 — 1패스 LocalSubgraph 합산
     candidate_nodes: list[Node] = []
     if exact_pointers:
         seen: set[str] = set()
-        for ptr in exact_pointers.values():
-            for n in ptr.local_subgraph.nodes:
-                if n.address_hash not in seen and n.embedding is not None:
-                    candidate_nodes.append(n)
-                    seen.add(n.address_hash)
+        for ptrs in exact_pointers.values():
+            for ptr in ptrs:
+                for n in ptr.local_subgraph.nodes:
+                    if n.address_hash not in seen and n.embedding is not None:
+                        candidate_nodes.append(n)
+                        seen.add(n.address_hash)
 
     # 전체 토큰 임베딩 — 중요도 스코어링 및 2패스 resolution 공용
     # ConceptPointer 여부와 무관하게 모든 토큰을 실시간 embed한다.
@@ -173,12 +191,15 @@ async def translate(
 
     # 토큰별 resolve → 중요도 할당 → nodes/edges 추가
     for sentence_tokens in sentences:
-        # 1. 각 토큰을 ConceptPointer 또는 EmptySlot으로 resolve
-        sentence_pairs: list[tuple[str, ConceptRef]] = []
+        # 1. 각 토큰을 ConceptPointer 후보들 또는 EmptySlot으로 resolve
+        sentence_groups: list[tuple[str, list[ConceptRef]]] = []
         for token in sentence_tokens:
             normalized = normalize_text(token)
             if normalized in exact_pointers:
-                ref: ConceptRef = exact_pointers[normalized]
+                refs: list[ConceptRef] = [
+                    _clone_pointer(ptr)
+                    for ptr in exact_pointers[normalized]
+                ]
             elif candidate_nodes and token in token_embs:
                 # 2패스: 미리 계산된 임베딩으로 후보 비교
                 tok_emb = token_embs[token]
@@ -193,40 +214,51 @@ async def translate(
                         best_node = node
                 if best_node is not None and best_score >= config.LANG_TO_GRAPH_SIMILARITY_THRESHOLD:
                     subgraph = extract_subgraph(conn, best_node.address_hash, cache=_subgraph_cache)
-                    ref = ConceptPointer(
-                        address_hash=best_node.address_hash,
-                        local_subgraph=subgraph,
-                    )
+                    refs = [
+                        ConceptPointer(
+                            address_hash=best_node.address_hash,
+                            local_subgraph=subgraph,
+                        )
+                    ]
                 else:
-                    ref = EmptySlot(concept_hint=token)
+                    refs = [EmptySlot(concept_hint=token)]
             else:
                 # 후보 없음 → EmptySlot
-                ref = EmptySlot(concept_hint=token)
-            sentence_pairs.append((token, ref))
+                refs = [EmptySlot(concept_hint=token)]
+            sentence_groups.append((token, refs))
 
-        # 2. 모든 토큰에 중요도 점수 할당 (in-place)
+        sentence_pairs: list[tuple[str, ConceptRef]] = [
+            (token, ref)
+            for token, refs in sentence_groups
+            for ref in refs
+        ]
+
+        # 2. 모든 토큰 후보에 중요도 점수 할당 (in-place)
         _assign_importances(sentence_pairs, token_embs)
 
-        # 3. 모든 토큰을 nodes에 추가 (필터링 없음)
+        # 3. 모든 토큰 후보를 nodes에 추가 (필터링 없음)
         #    중요도 필터링(near/far 20%)은 ThoughtEngine에서 수행한다.
         for _, ref in sentence_pairs:
             nodes.append(ref)
 
-        # 4. 인접 토큰 쌍 → TranslatedEdge (양쪽 모두 2자 이상 토큰인 경우만)
+        # 4. 인접 토큰 후보 쌍 → TranslatedEdge
+        #    한 토큰이 여러 후보 노드로 열리면 인접 토큰과 후보 간 조합을 만든다.
         #    엣지는 의미 단위 간 관계 후보. connect_type은 ThoughtEngine이 확정.
-        for i in range(len(sentence_pairs) - 1):
-            tok_a, ref_a = sentence_pairs[i]
-            tok_b, ref_b = sentence_pairs[i + 1]
+        for i in range(len(sentence_groups) - 1):
+            tok_a, refs_a = sentence_groups[i]
+            tok_b, refs_b = sentence_groups[i + 1]
             if len(tok_a) >= 2 and len(tok_b) >= 2:
-                edges.append(
-                    TranslatedEdge(
-                        source_ref=ref_a,
-                        target_ref=ref_b,
-                        edge_family="concept",
-                        connect_type="neutral",
-                        confidence=0.5,
-                        proposed_connect_type=None,
-                    )
-                )
+                for ref_a in refs_a:
+                    for ref_b in refs_b:
+                        edges.append(
+                            TranslatedEdge(
+                                source_ref=ref_a,
+                                target_ref=ref_b,
+                                edge_family="concept",
+                                connect_type="neutral",
+                                confidence=0.5,
+                                proposed_connect_type=None,
+                            )
+                        )
 
     return TranslatedGraph(nodes=nodes, edges=edges, source=text)

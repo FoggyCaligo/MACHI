@@ -8,36 +8,45 @@
 ## 물리적 구조
 
 단일 SQLite 파일 (`data/memory.db`) 에 세 테이블로 구성된다.  
-단어 테이블과 의미 그래프 테이블이 `address_hash`로 연결되므로 같은 파일이 적합하다.
+표면형 링크 테이블과 의미 그래프 테이블이 `address_hash`로 연결되므로 같은 파일이 적합하다.
 
 ---
 
 ## 테이블
 
-### words — 단어 해시테이블
+### words — 표면형 ↔ 의미 노드 후보 링크
 
-단어 → 의미 그래프 노드로의 조회 테이블이다.  
-그래프라기보다 해시테이블에 가깝다. 단어가 "단어 연결 Edge"로 의미 그래프 노드에 연결되는 구조다.
+`words`는 단어를 단일 의미 노드에 고정하는 1:1 해시테이블이 아니다.  
+정규화된 표면형(`surface_form`)과 의미 그래프 노드(`nodes.address_hash`) 사이의 **후보 링크 집합**이다.
+
+- 같은 `surface_form`은 여러 노드에 연결될 수 있다.
+- 같은 노드는 여러 `surface_form`을 가질 수 있다.
+- 중복은 `(surface_form, address_hash)` 쌍 기준으로만 금지한다.
 
 ```sql
 CREATE TABLE words (
     word_id       TEXT PRIMARY KEY,      -- UUID
-    surface_form  TEXT NOT NULL,         -- 원형 단어 ("사과", "apple")
+    surface_form  TEXT NOT NULL,         -- 정규화된 표면형 ("사과", "apple")
     address_hash  TEXT NOT NULL          -- → nodes.address_hash (FK)
                   REFERENCES nodes(address_hash),
     language      TEXT,                  -- 언어 코드 (ko, en, ...), nullable
     created_at    TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX idx_words_surface ON words(surface_form);
+CREATE INDEX idx_words_surface ON words(surface_form);
+CREATE UNIQUE INDEX idx_words_surface_address
+    ON words(surface_form, address_hash);
 CREATE INDEX idx_words_address_hash ON words(address_hash);
 ```
 
 **조회 흐름:**
-1. 토큰 → `normalize_text(token)` → `sha256` → `surface_hash`
+1. 토큰 → `normalize_text(token)` → `surface_form`
 2. `words` 테이블에서 `surface_form` 일치 검색
-3. 있으면 → `address_hash` 반환 (의미 그래프 노드 주소)
-4. 없으면 → EmptySlot (검색 트리거)
+3. 있으면 → 연결된 모든 `address_hash`를 후보로 반환
+4. 각 후보 노드를 조회해 active 노드만 `ConceptPointer`로 변환
+5. 후보가 하나도 없으면 → EmptySlot (검색 트리거)
+
+이 구조는 동음이의어, 번역어, 분화된 개념, 불명확한 표면형을 문자열 규칙으로 하나만 고르지 않고 그래프 후보로 남기기 위한 것이다.
 
 ---
 
@@ -118,24 +127,21 @@ CREATE INDEX idx_edges_connect_type ON edges(connect_type);
 입력 문자열
   │
   ▼
-1단계: 정규식 규칙 (명확한 패턴)
+1단계: 정규식 규칙
   - url:    ^https?:// | ^ftp://
-  - path:   (^[./\\]|[/\\]) + 확장자 패턴 (.py|.js|.ts|.md|.txt 등)
+  - path:   (^[./\]|[/\]) + 확장자 패턴 (.py|.js|.ts|.md|.txt 등)
   - code:   들여쓰기 블록 + 코드 키워드 (def |class |function |const |import |{...})
   - 위 모두 불일치 → 2단계로
 
-2단계: 임베딩 유사도 (모호한 경우)
+2단계: 임베딩 유사도
   - "natural language text", "source code", "file path", "url" 프로토타입 임베딩 준비
   - 입력 임베딩 → 프로토타입과 코사인 유사도 → 가장 가까운 카테고리
-  - 유사도 차이 < threshold → "natural"로 폴백 (안전한 기본값)
-
-처리 경로:
-  - "natural" → 문장 분리 → 토큰 추출 → 의미 그래프 조회
-  - "code" | "path" | "url" → 전체를 단일 단위로 임베딩 폴백
+  - 유사도 차이 < threshold → "natural"로 폴백
 ```
 
-비자연어 입력은 전체를 하나의 단위로 임베딩에 넘긴다.  
-코드/파일 도구 레이어(2차)가 붙으면 해당 경로가 확장된다.
+처리 경로:
+- `"natural"` → 문장 분리 → 토큰 추출 → 의미 그래프 조회
+- `"code" | "path" | "url"` → 전체를 단일 단위로 임베딩 폴백
 
 ---
 
@@ -146,19 +152,19 @@ CREATE INDEX idx_edges_connect_type ON edges(connect_type);
 **문장 분리 — Unicode 문장 종결 문자 포함:**
 ```python
 _SENTENCE_SPLIT_RE = re.compile(
-    r"(?:\r?\n)+"                        # 개행
-    r"|(?<=[.!?])\s+"                    # 기본 영어 종결
-    r"|(?<=[。．｡])"                     # CJK 마침표
-    r"|(?<=[！？｢｣])\s*"                # 전각 느낌표/물음표
-    r"|(?<=[‼‽⁇⁈⁉])\s*"               # 복합 구두점
-    r"|(?<=[…‥])\s*"                    # 말줄임표
-    r"|(?<=[؟۔।॥។៕၊])\s*"            # 아랍/인도/동남아
-    r"|(?<=[᙮᠃᠉])\s*"                 # 캐나다 음절/몽골
-    r"|(?<=[።፧፨])\s*"                  # 에티오피아
+    r"(?:\r?\n)+"
+    r"|(?<=[.!?])\s+"
+    r"|(?<=[。．｡])"
+    r"|(?<=[！？｢｣])\s*"
+    r"|(?<=[‼‽⁇⁈⁉])\s*"
+    r"|(?<=[…‥])\s*"
+    r"|(?<=[؟۔।॥។៕၊])\s*"
+    r"|(?<=[᙮᠃᠉])\s*"
+    r"|(?<=[።፧፨])\s*"
 )
 ```
 
-**토큰 추출 — 한글 1자 이상으로 수정:**
+**토큰 추출:**
 ```python
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_+\-./#]+|[가-힣]+")
 ```
@@ -168,28 +174,33 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9_+\-./#]+|[가-힣]+")
 - 한국어 조사 제거 (은/는/이/가/을/를/에/의/도/로 등)
 - 앞뒤 공백/구두점 제거
 
-**해시 계산:**
+**주소 계산:**
 ```python
 address_hash = sha256(f"word::{normalize_text(token)}").hexdigest()[:32]
 ```
 
-scope prefix를 `"word::"`로 고정해 의미 그래프 노드 해시와 충돌을 방지한다.
+`compute_hash()`는 신규 EmptySlot을 노드로 ingest할 때 사용하는 주소 계산이다.  
+`words.surface_form` 조회는 해시가 아니라 정규화된 표면형 자체로 수행한다.
 
 ---
 
 ## 의미 그래프 조회 방식
 
-토큰 분리 이후 의미 그래프 노드 탐색은 **임베딩 기반 유사도**로 진행한다.  
-(MK5 SearchScopeGate의 nomic-embed-text 방식과 동일)
+토큰 분리 이후 의미 그래프 노드 탐색은 2패스로 진행한다.
 
 ```
-토큰 → embedding 계산 (nomic-embed-text)
-     → nodes 테이블에서 코사인 유사도 상위 N개 후보 검색
-     → 유사도 ≥ threshold → ConceptPointer 반환
-     → 유사도 < threshold → EmptySlot
+토큰
+  → normalize_text(token)
+  → words.surface_form exact match
+      → 연결된 모든 active node를 ConceptPointer 후보로 반환
+  → exact 후보가 없으면
+      → 1패스 LocalSubgraph 후보 풀과 임베딩 유사도 비교
+      → 유사도 ≥ threshold → ConceptPointer
+      → 유사도 < threshold 또는 후보 없음 → EmptySlot
 ```
 
-`words` 테이블이 exact match를 담당하고, 임베딩은 exact match 실패 시 또는 의미 확인용으로 사용한다.
+표면형이 여러 노드에 연결된 경우 LangToGraph는 하나를 고르지 않는다.  
+모든 후보를 `TranslatedGraph.nodes`에 포함시키고, 인접 토큰 관계는 후보 조합으로 `TranslatedEdge`를 만든다.
 
 ---
 
@@ -197,43 +208,44 @@ scope prefix를 `"word::"`로 고정해 의미 그래프 노드 해시와 충돌
 
 ConceptDifferentiation이 노드를 merge하거나 differentiate할 때 words 테이블도 함께 갱신한다.
 
-### Merge (두 노드 → 하나)
+### Merge (여러 노드 → 하나)
 
 ```
 병합 전:
-  words: [사과 → node_A], [apple → node_A], [과일 → node_B], [fruit → node_B]
-  노드: node_A, node_B → 병합 → node_merged
+  words: [cross → node_A], [cross → node_B], [apple → node_B]
+  노드: node_B → node_A로 병합
 
 병합 후:
-  words: [사과 → node_merged], [apple → node_merged],
-         [과일 → node_merged], [fruit → node_merged]
+  words: [cross → node_A], [apple → node_A]
 ```
 
-- node_A와 node_B에 연결된 모든 단어의 `address_hash`를 `node_merged`로 일괄 업데이트
-- node_A, node_B는 비활성화 (`is_active=0`)
+- 병합되는 노드에 연결된 모든 표면형 링크를 생존 노드로 이전한다.
+- 이미 같은 `(surface_form, survivor_hash)` 링크가 있으면 병합 대상 링크는 삭제한다.
+- 병합된 노드는 비활성화한다 (`is_active=0`).
 
-### Differentiation (하나 → 둘)
+### Differentiation (하나 → 둘 이상)
 
 ```
 분화 전:
   words: [십자가 → node_X], [cross → node_X]
-  노드: node_X → 분화 → node_X1 (둥근 십자가), node_X2 (네모난 십자가)
 
 분화 후:
-  words: [십자가 → node_X1],  ← 배분 기준으로 할당
-         [cross → node_X2]    ← 또는 둘 다 공유 가능
+  words: [십자가 → node_X1],
+         [cross → node_X2]
+  또는 불명확하면:
+         [cross → node_X1], [cross → node_X2]
 ```
 
-- 기존 단어들을 두 노드에 배분한다
-- 배분 기준: 각 단어의 임베딩과 두 신규 노드 임베딩의 코사인 유사도 → 더 가까운 노드에 할당
-- 배분이 불명확한 경우(유사도 차이 < threshold): 두 노드 모두에 연결 (중복 허용)
+- 기존 단어들을 신규 노드에 배분할 수 있다.
+- 배분 기준은 각 단어의 임베딩과 신규 노드 임베딩의 코사인 유사도를 사용할 수 있다.
+- 배분이 불명확하면 같은 surface_form을 여러 노드에 연결한다.
 
 ---
 
 ## 관계 요약
 
 ```
-words.address_hash → nodes.address_hash   (단어 → 의미 노드)
-edges.source_hash  → nodes.address_hash   (엣지 출발)
-edges.target_hash  → nodes.address_hash   (엣지 도착)
+words.surface_form  ↔ nodes.address_hash   (표면형 후보 링크)
+edges.source_hash   → nodes.address_hash   (엣지 출발)
+edges.target_hash   → nodes.address_hash   (엣지 도착)
 ```
