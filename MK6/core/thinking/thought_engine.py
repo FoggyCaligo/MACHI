@@ -207,33 +207,24 @@ def _add_translated_edges(
 def _search_queries_from_slots(slots: list[EmptySlot], user_input: str | None) -> list[str]:
     """EmptySlot 중요도 구조에서 검색 쿼리 후보를 만든다.
 
-    원문 전체를 첫 검색 쿼리로 쓰지 않는다. 문장 centroid 기준 near/far 슬롯을
-    함께 선택해 문장 대표 개념과 도메인 특이 개념을 모두 검색 대상으로 남긴다.
+    안정화 단계에서는 모든 EmptySlot을 검색하지 않는다. 낮은 근거의 단일 토큰 검색은
+    잡음이 크므로, 중요도 상위 슬롯을 묶은 대표 쿼리 1개만 만든다. 외부 정보가
+    실제로 필요하다는 별도 판단은 후속 SearchNeed primitive에서 다룬다.
     """
     ordered_slots = [slot for slot in slots if slot.concept_hint.strip()]
     if not ordered_slots:
-        return [user_input.strip()] if user_input and user_input.strip() else []
+        return []
 
-    n = max(1, int(len(ordered_slots) * 0.2 + 0.9999))
-    by_importance = sorted(ordered_slots, key=lambda slot: slot.importance, reverse=True)
-    selected: list[EmptySlot] = []
-    for slot in by_importance[:n] + by_importance[-n:]:
-        if slot not in selected:
-            selected.append(slot)
+    ranked = sorted(ordered_slots, key=lambda slot: slot.importance, reverse=True)
+    keep_count = min(3, max(1, int(len(ranked) * 0.25 + 0.9999)))
+    selected = [slot for slot in ranked[:keep_count] if slot.importance >= 0.05]
+    if not selected:
+        return []
 
-    queries: list[str] = []
     combined = " ".join(slot.concept_hint.strip() for slot in selected)
-    if combined:
-        queries.append(combined)
-    for slot in selected:
-        hint = slot.concept_hint.strip()
-        if hint and hint not in queries:
-            queries.append(hint)
-
-    if user_input and user_input.strip() and user_input.strip() not in queries:
-        queries.append(user_input.strip())
-
-    return queries[:5]
+    if not combined.strip():
+        return []
+    return [combined]
 
 
 class ThoughtEngine:
@@ -459,6 +450,8 @@ class ThoughtEngine:
 
         queries = _search_queries_from_slots(slots, user_input)
         print(f"[think] search start  queries={queries!r}  slots={len(slots)}")
+        if not queries:
+            return set()
 
         async def _run_query(query: str) -> tuple[str, str | None]:
             try:
@@ -469,7 +462,7 @@ class ThoughtEngine:
             return query, text
 
         _ts = time.perf_counter()
-        query_results = await asyncio.gather(*[_run_query(q) for q in queries]) if queries else []
+        query_results = await asyncio.gather(*[_run_query(q) for q in queries])
         _t(f"search_fn ({len(queries)} queries)", _ts)
 
         search_by_query: dict[str, str] = {
