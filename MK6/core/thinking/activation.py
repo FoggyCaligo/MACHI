@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from ... import config
 from ..entities.edge import Edge
-from ..entities.node import Node
 from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedGraph
 from ..goal import load_goal_view
 from ..utils.hash_resolver import compute_hash
@@ -43,13 +42,11 @@ def build_activation_conclusion_graphs(
 ) -> ActivationResult:
     """input/goal 양방향 activation으로 ConclusionGraph skeleton을 만든다.
 
-    정책 반영 범위:
-    - TurnGoalView는 아직 명시 구조로 만들지 않는다. 현재는 입력 그래프 +
-      GlobalGoalGraph activation으로 간접 구성한다.  # TODO: TurnGoalView 명시화 후 재정렬 고도화
-    - evidence/source node 분리는 아직 하지 않는다. search_summary payload는 기존
-      GraphToLang 경로를 유지한다.  # TODO: evidence/source node 분리 후 evidence_energy 전파
-    - restatement graph는 제거하지 않고 score를 낮춘다.
-    - role은 core/bridge 중심으로 채우고, conflict/opposite edge는 exception/contrast path로 보존한다.
+    주의:
+    - TempThoughtGraph의 `is_temporary=True` edge는 현재 턴의 view/귀속 연결이다.
+      결론 근거나 goal support path로 사용하지 않는다.
+    - restatement graph는 폐기하지 않고 rejected_graphs로 강등한다.
+    - evidence/source node 분리는 아직 하지 않는다. # TODO: evidence/source 분리 후 support 재계산
     """
     max_hops = config.THINK_ACTIVATION_HOPS if max_hops is None else max_hops
     graph_limit = config.THINK_CONCLUSION_GRAPH_LIMIT if graph_limit is None else graph_limit
@@ -58,12 +55,12 @@ def build_activation_conclusion_graphs(
     goal_sources = _goal_source_hashes(tg, conn)
     context_sources = {h for h in (previous_key_hashes or set()) if tg.get_node(h) is not None}
 
-    input_paths = _spread(tg, input_sources, max_hops=max_hops, energy_kind="input")
-    goal_paths = _spread(tg, goal_sources, max_hops=max_hops, energy_kind="goal")
-    context_paths = _spread(tg, context_sources, max_hops=max_hops, energy_kind="context")
+    input_paths = _spread(tg, input_sources, max_hops=max_hops)
+    goal_paths = _spread(tg, goal_sources, max_hops=max_hops)
+    context_paths = _spread(tg, context_sources, max_hops=max_hops)
 
     activation = _combine_activation(input_paths, goal_paths, context_paths, input_sources)
-    selected = _build_conclusion_graphs(
+    selected, rejected = _build_conclusion_graphs(
         tg,
         input_sources=input_sources,
         goal_sources=goal_sources,
@@ -76,7 +73,7 @@ def build_activation_conclusion_graphs(
     return ActivationResult(
         activation=activation,
         selected_graphs=selected,
-        rejected_graphs=[],
+        rejected_graphs=rejected,
     )
 
 
@@ -112,9 +109,12 @@ def _spread(
     source_hashes: set[str],
     *,
     max_hops: int,
-    energy_kind: str,
 ) -> dict[str, ReasoningPath]:
-    """source_hashes에서 bounded BFS로 가장 강한 ReasoningPath를 기록한다."""
+    """source_hashes에서 bounded BFS로 가장 강한 ReasoningPath를 기록한다.
+
+    `is_temporary=True` edge는 전파하지 않는다. 목표/정체성 임시 연결은 현재 턴의
+    조회 view일 뿐, 결론 근거로 사용하면 입력 토큰 전체가 goal-aligned로 오염된다.
+    """
     best_paths: dict[str, ReasoningPath] = {}
     best_energy: dict[str, float] = {}
     queue: deque[tuple[str, ReasoningPath, float, int]] = deque()
@@ -131,6 +131,9 @@ def _spread(
             continue
 
         for edge in tg.get_edges_for_node(current_hash):
+            if edge.is_temporary:
+                continue
+
             next_hash, direction = _edge_next(edge, current_hash)
             if next_hash is None or tg.get_node(next_hash) is None:
                 continue
@@ -180,10 +183,8 @@ def _edge_gain(edge: Edge, *, direction: str) -> float:
     elif edge.connect_type == "neutral":
         connect_gain = 0.65
     elif edge.connect_type == "opposite":
-        # 대비축은 버리지 않는다. 낮은 activation으로 contrast 후보를 보존한다.
         connect_gain = 0.45
     elif edge.connect_type == "conflict":
-        # conflict도 차단하지 않는다. 낮은 activation과 별도 conflict_pressure로 보존한다.
         connect_gain = 0.35
     else:
         connect_gain = 0.5
@@ -223,7 +224,7 @@ def _build_conclusion_graphs(
     goal_paths: dict[str, ReasoningPath],
     activation: dict[str, ActivationState],
     graph_limit: int,
-) -> list[ConclusionGraph]:
+) -> tuple[list[ConclusionGraph], list[RejectedConclusionGraph]]:
     meeting_hashes = [
         h for h, state in activation.items()
         if state.input_energy > 0 and state.goal_energy > 0 and h not in goal_sources
@@ -235,8 +236,9 @@ def _build_conclusion_graphs(
         reverse=True,
     )
 
-    graphs: list[ConclusionGraph] = []
-    for h in scored[:graph_limit]:
+    selected: list[ConclusionGraph] = []
+    rejected: list[RejectedConclusionGraph] = []
+    for h in scored:
         graph = _make_conclusion_graph(
             tg,
             core_hash=h,
@@ -246,8 +248,34 @@ def _build_conclusion_graphs(
             goal_path=goal_paths[h],
             activation=activation,
         )
-        graphs.append(graph)
-    return graphs
+        rejection_reason = _rejection_reason(graph, tg)
+        if rejection_reason is not None:
+            rejected.append(RejectedConclusionGraph(
+                graph=graph,
+                reason=rejection_reason,
+                notes=["ConclusionGraph is kept for trace but not exposed to GraphToLang as selected context."],
+            ))
+            continue
+        selected.append(graph)
+        if len(selected) >= graph_limit:
+            break
+    return selected, rejected
+
+
+def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph) -> str | None:
+    if graph.is_likely_restatement:
+        return "input_restatement"
+    if not graph.edge_ids:
+        return "insufficient_support"
+    has_non_temporary_edge = any(
+        (edge := tg.get_edge(edge_id)) is not None and not edge.is_temporary
+        for edge_id in graph.edge_ids
+    )
+    if not has_non_temporary_edge:
+        return "insufficient_support"
+    if not graph.has_non_input_structure and not graph.exception_hashes and not graph.bridge_hashes:
+        return "input_restatement"
+    return None
 
 
 def _candidate_score(core_hash: str, state: ActivationState, input_sources: set[str]) -> float:
@@ -255,7 +283,6 @@ def _candidate_score(core_hash: str, state: ActivationState, input_sources: set[
     score += state.context_energy * 0.2
     score += state.novelty_score * 0.15
     if core_hash in input_sources:
-        # 재진술은 제거하지 않고 강등한다.
         score *= 0.55
     score -= state.conflict_pressure * 0.3
     return score
@@ -278,6 +305,8 @@ def _make_conclusion_graph(
     exception_hashes: set[str] = set()
 
     for edge in tg.get_edges_for_node(core_hash):
+        if edge.is_temporary:
+            continue
         other_hash, direction = _edge_next(edge, core_hash)
         if other_hash is None:
             continue
@@ -302,7 +331,6 @@ def _make_conclusion_graph(
 
     score = _candidate_score(core_hash, activation.get(core_hash, ActivationState()), input_sources)
     if core_hash in input_sources:
-        # 입력 재진술 가능성은 제거하지 않고 불확실성을 올린다.
         uncertainty = 0.35
     else:
         uncertainty = 0.15 + min(0.5, len(conflict_paths) * 0.1)

@@ -93,14 +93,16 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         edge_lines.append(f"  - {src_str} →[{connect_type}, {weight_str}]→ {tgt_str}")
 
     conclusion_graph_lines: list[str] = []
+    selected_graph_node_hashes: set[str] = set()
     for idx, graph in enumerate(conclusion.selected_graphs[:3], start=1):
+        selected_graph_node_hashes |= graph.node_hashes
         core = ", ".join(_node_label(h) for h in sorted(graph.core_hashes)) or "(없음)"
         bridge = ", ".join(_node_label(h) for h in sorted(graph.bridge_hashes)) or "(없음)"
         exceptions = ", ".join(_node_label(h) for h in sorted(graph.exception_hashes)) or "(없음)"
         edges = []
         for edge_id in sorted(graph.edge_ids):
             edge = edge_by_id.get(edge_id)
-            if edge is None:
+            if edge is None or edge.is_temporary:
                 continue
             edges.append(f"{_node_label(edge.source_hash)} →[{edge.connect_type}]→ {_node_label(edge.target_hash)}")
             if len(edges) >= 4:
@@ -116,12 +118,14 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     seen_summaries: set[str] = set()
     search_ctx_parts: list[str] = []
 
-    for node in conclusion.nodes:
-        is_newly_searched = node.address_hash in conclusion.search_node_hashes
-        is_key_topic = node.address_hash in conclusion.key_hashes
-        if not (is_newly_searched or is_key_topic):
+    # 검색 요약은 더 이상 key_hash라는 이유만으로 주입하지 않는다.
+    # selected ConclusionGraph에 실제로 포함된 searched node만 사용한다.
+    # selected graph가 없으면 검색 결과가 답변을 오염시키지 않도록 비운다.
+    allowed_search_hashes = selected_graph_node_hashes.intersection(conclusion.search_node_hashes)
+    for h in allowed_search_hashes:
+        node = node_map.get(h)
+        if node is None:
             continue
-
         summary = node.payload.get("search_summary", "")
         if not summary:
             continue
@@ -129,8 +133,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         snippet = summary[:_SEARCH_CTX_MAX]
         if snippet not in seen_summaries:
             seen_summaries.add(snippet)
-            prefix = "[내부 지식]" if not is_newly_searched else "[검색 결과]"
-            search_ctx_parts.append(f"{prefix} {snippet}")
+            search_ctx_parts.append(f"[검색 결과] {snippet}")
             if len(search_ctx_parts) >= 3:
                 break
 
