@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ... import config
 from ..goal import GOAL_ROOT_HASH, GLOBAL_GOAL_AXIS_SEEDS
 from ..profile import is_profile_reference_edge, is_user_profile_node, profile_context_labels
 from ..utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
@@ -12,6 +11,9 @@ if TYPE_CHECKING:
     from ..entities.edge import Edge
     from ..entities.node import Node
     from ..thinking.thought_engine import ConclusionView
+
+
+EVIDENCE_EDGE_RATIO = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +154,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
         selected_graph_edge_ids=selected_graph_edge_ids,
         node_label=node_label,
         is_verbalizable_hash=is_verbalizable_hash,
-        limit=5,
+        evidence_ratio=EVIDENCE_EDGE_RATIO,
     )
 
     search_context_parts = _select_search_context(
@@ -369,17 +371,15 @@ def _select_evidence_lines(
     selected_graph_edge_ids: set[str],
     node_label,
     is_verbalizable_hash,
-    limit: int,
+    evidence_ratio: float,
 ) -> list[str]:
-    """GraphToLang에 넘길 근거 edge를 최대 limit개로 제한한다."""
+    """GraphToLang에 넘길 근거 edge를 후보 풀의 상위 evidence_ratio 비율로 제한한다."""
 
     evidence: list[tuple[int, float, str]] = []
     used_keys: set[tuple[str, str, str]] = set()
     key_or_ref_hashes = set(conclusion.key_hashes) | set(conclusion.ref_hashes)
 
     def add_edge(edge: "Edge", *, priority: int) -> None:
-        if len(evidence) >= limit * 3:
-            return
         if is_profile_reference_edge(edge):
             return
         if edge.is_temporary and not (edge.edge_family == "relation" and edge.source_hash == ANCHOR_USER):
@@ -412,7 +412,14 @@ def _select_evidence_lines(
             continue
         add_edge(edge, priority=2)
 
-    return [line for _, _, line in sorted(evidence)[:limit]]
+    if not evidence:
+        return []
+
+    ratio = max(0.0, min(1.0, evidence_ratio))
+    if ratio <= 0.0:
+        return []
+    keep_count = max(1, int(len(evidence) * ratio + 0.999999))
+    return [line for _, _, line in sorted(evidence)[:keep_count]]
 
 
 def _select_search_context(
