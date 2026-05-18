@@ -9,7 +9,7 @@ from typing import Callable, Awaitable
 from ..entities.node import Node
 from ..entities.translated_graph import (
     ConceptPointer, EmptySlot, ConceptRef,
-    TranslatedEdge, TranslatedGraph, LocalSubgraph,
+    TranslatedEdge, TranslatedGraph, LocalSubgraph, InputGraphBundle,
 )
 from ..storage.world_graph import get_node, get_words_for_surface
 from ..utils.hash_resolver import normalize_text
@@ -43,6 +43,42 @@ def _clone_pointer(ptr: ConceptPointer) -> ConceptPointer:
     )
 
 
+def _build_input_bundle(source: str, nodes: list[ConceptRef], edges: list[TranslatedEdge]) -> InputGraphBundle:
+    """TranslatedGraph의 기존 산출물을 입력 국소그래프 묶음으로 명시화한다."""
+    center_hashes: set[str] = set()
+    direct_hashes: set[str] = set()
+    context_hashes: set[str] = set()
+    empty_hints: list[str] = []
+    local_subgraphs: list[LocalSubgraph] = []
+    seen_subgraphs: set[str] = set()
+
+    for ref in nodes:
+        if isinstance(ref, ConceptPointer):
+            center_hashes.add(ref.address_hash)
+            if ref.is_direct_input_match:
+                direct_hashes.add(ref.address_hash)
+            else:
+                context_hashes.add(ref.address_hash)
+            center = ref.local_subgraph.center_hash
+            if center not in seen_subgraphs:
+                seen_subgraphs.add(center)
+                local_subgraphs.append(ref.local_subgraph)
+        else:
+            hint = ref.concept_hint.strip()
+            if hint:
+                empty_hints.append(hint)
+
+    return InputGraphBundle(
+        source=source,
+        center_hashes=center_hashes,
+        direct_hashes=direct_hashes,
+        context_hashes=context_hashes,
+        empty_hints=empty_hints,
+        local_subgraphs=local_subgraphs,
+        sentence_edges=list(edges),
+    )
+
+
 # ── 토큰 중요도 ───────────────────────────────────────────────────────────────
 
 def _assign_importances(
@@ -65,10 +101,8 @@ def _assign_importances(
     tokens = [t for t, _ in sentence_pairs]
     embs: list[list[float] | None] = [token_embs.get(t) for t in tokens]
 
-    # centroid 계산
     valid_embs = [e for e in embs if e is not None]
     if not valid_embs:
-        # 임베딩 없음 → 길이만으로 점수
         max_len = max(len(t) for t in tokens) if tokens else 1
         for token, (_, ref) in zip(tokens, sentence_pairs):
             ref.importance = len(token) / max_len
@@ -93,53 +127,28 @@ async def translate(
     conn: sqlite3.Connection,
     embed_fn: EmbedFn,
 ) -> TranslatedGraph:
-    """언어 입력 하나를 TranslatedGraph로 번역한다.
-
-    저장은 하지 않는다. World Graph는 변경되지 않는다.
-
-    반환되는 TranslatedGraph.nodes에는 문장의 모든 토큰 후보가 포함된다.
-    한 surface_form이 여러 노드에 연결되어 있으면 각 노드를 별도
-    ConceptPointer 후보로 포함한다. 중요도 필터링(near/far 20%)은
-    ThoughtEngine에서 수행한다.
-
-    후보 풀 구성 원칙 (2패스):
-      1패스: words 테이블 exact match → ConceptPointer 후보들 확보
-      2패스: 1패스에서 얻은 LocalSubgraph 내 노드만 임베딩 유사도 후보로 사용
-      후보가 없으면 바로 EmptySlot — Think 루프에서 검색으로 채운다.
-
-    Args:
-        text:     번역할 언어 입력
-        conn:     World Graph DB 커넥션
-        embed_fn: async 임베딩 함수 (str → list[float])
-
-    Returns:
-        TranslatedGraph — nodes(전체 ConceptRef 후보), edges(TranslatedEdge)
-    """
-    # ── 입력 타입 분류 ────────────────────────────────────────────────────────
+    """언어 입력 하나를 TranslatedGraph로 번역한다."""
     input_type: InputType = await classify(
         text,
         embed_fn,
         config.INPUT_CLASSIFIER_EMBED_THRESHOLD,
     )
 
-    # 요청 단위 LocalSubgraph 캐시 — 같은 center_hash에 대한 BFS/DB 재조회 방지
     _subgraph_cache: dict[str, LocalSubgraph] = {}
 
     nodes: list[ConceptRef] = []
     edges: list[TranslatedEdge] = []
 
     if input_type != "natural":
-        # 비자연어 — exact match 시도 후 없으면 EmptySlot
         ref = EmptySlot(concept_hint=text)
         nodes.append(ref)
-        return TranslatedGraph(nodes=nodes, edges=edges, source=text)
+        bundle = _build_input_bundle(text, nodes, edges)
+        return TranslatedGraph(nodes=nodes, edges=edges, source=text, input_bundle=bundle)
 
-    # ── 자연어 경로 ───────────────────────────────────────────────────────────
     sentences = tokenize(text)
     all_tokens: list[str] = [t for sent in sentences for t in sent]
 
-    # 1패스 — exact match만으로 ConceptPointer 후보 수집
-    exact_pointers: dict[str, list[ConceptPointer]] = {}   # normalized → candidates
+    exact_pointers: dict[str, list[ConceptPointer]] = {}
     for token in all_tokens:
         normalized = normalize_text(token)
         if normalized in exact_pointers:
@@ -162,7 +171,6 @@ async def translate(
         if pointer_candidates:
             exact_pointers[normalized] = pointer_candidates
 
-    # 2패스용 후보 풀 — 1패스 LocalSubgraph 합산
     candidate_nodes: list[Node] = []
     if exact_pointers:
         seen: set[str] = set()
@@ -173,14 +181,9 @@ async def translate(
                         candidate_nodes.append(n)
                         seen.add(n.address_hash)
 
-    # 전체 토큰 임베딩 — 중요도 스코어링 및 2패스 resolution 공용
-    # ConceptPointer 여부와 무관하게 모든 토큰을 실시간 embed한다.
-    # → centroid가 그래프 상태(WorldGraph 저장 임베딩)에 오염되지 않음.
     token_embs: dict[str, list[float]] = {}
     if all_tokens:
-        unique_tokens = list(dict.fromkeys(all_tokens))  # 중복 제거, 순서 유지
-        # return_exceptions=True: 일부 임베딩 실패(ReadTimeout 등)가 있어도
-        # 나머지는 정상 처리. 실패한 토큰은 token_embs에서 누락 → 길이 기반 폴백.
+        unique_tokens = list(dict.fromkeys(all_tokens))
         emb_results = await asyncio.gather(
             *[embed_fn(normalize_text(t)) for t in unique_tokens],
             return_exceptions=True,
@@ -191,19 +194,13 @@ async def translate(
             if isinstance(emb, list)
         }
 
-    # 토큰별 resolve → 중요도 할당 → nodes/edges 추가
     for sentence_tokens in sentences:
-        # 1. 각 토큰을 ConceptPointer 후보들 또는 EmptySlot으로 resolve
         sentence_groups: list[tuple[str, list[ConceptRef]]] = []
         for token in sentence_tokens:
             normalized = normalize_text(token)
             if normalized in exact_pointers:
-                refs: list[ConceptRef] = [
-                    _clone_pointer(ptr)
-                    for ptr in exact_pointers[normalized]
-                ]
+                refs: list[ConceptRef] = [_clone_pointer(ptr) for ptr in exact_pointers[normalized]]
             elif candidate_nodes and token in token_embs:
-                # 2패스: 미리 계산된 임베딩으로 후보 비교
                 tok_emb = token_embs[token]
                 best_node: Node | None = None
                 best_score = -1.0
@@ -226,7 +223,6 @@ async def translate(
                 else:
                     refs = [EmptySlot(concept_hint=token)]
             else:
-                # 후보 없음 → EmptySlot
                 refs = [EmptySlot(concept_hint=token)]
             sentence_groups.append((token, refs))
 
@@ -236,17 +232,11 @@ async def translate(
             for ref in refs
         ]
 
-        # 2. 모든 토큰 후보에 중요도 점수 할당 (in-place)
         _assign_importances(sentence_pairs, token_embs)
 
-        # 3. 모든 토큰 후보를 nodes에 추가 (필터링 없음)
-        #    중요도 필터링(near/far 20%)은 ThoughtEngine에서 수행한다.
         for _, ref in sentence_pairs:
             nodes.append(ref)
 
-        # 4. 인접 토큰 후보 쌍 → TranslatedEdge
-        #    한 토큰이 여러 후보 노드로 열리면 인접 토큰과 후보 간 조합을 만든다.
-        #    엣지는 의미 단위 간 관계 후보. connect_type은 ThoughtEngine이 확정.
         for i in range(len(sentence_groups) - 1):
             tok_a, refs_a = sentence_groups[i]
             tok_b, refs_b = sentence_groups[i + 1]
@@ -264,4 +254,5 @@ async def translate(
                             )
                         )
 
-    return TranslatedGraph(nodes=nodes, edges=edges, source=text)
+    bundle = _build_input_bundle(text, nodes, edges)
+    return TranslatedGraph(nodes=nodes, edges=edges, source=text, input_bundle=bundle)
