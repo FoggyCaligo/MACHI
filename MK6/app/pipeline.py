@@ -11,7 +11,12 @@ from dataclasses import dataclass
 
 from .. import config
 from ..core.goal import GOAL_ROOT_HASH, GLOBAL_GOAL_AXIS_SEEDS, initialize_global_goal_graph
-from ..core.profile import is_profile_reference_edge, is_user_profile_node
+from ..core.profile import (
+    build_profile_activation_view,
+    is_profile_reference_edge,
+    is_user_profile_node,
+    profile_context_labels,
+)
 from ..core.storage.db import close_db, open_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.thinking.claim_graph import AssertionState, build_assertion_state_from_conclusion
@@ -180,6 +185,12 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             if len(search_ctx_parts) >= 3:
                 break
 
+    profile_context = "(없음)"
+    if conclusion.profile_activation_view and conclusion.profile_activation_view.is_active:
+        profile_labels = profile_context_labels(conclusion.profile_activation_view, node_map)
+        if profile_labels:
+            profile_context = ", ".join(profile_labels)
+
     key_text = ", ".join(key_labels) if key_labels else "(없음)"
     ref_text = ", ".join(ref_labels) if ref_labels else "(없음)"
     edge_text = "\n".join(edge_lines) if edge_lines else "  (없음)"
@@ -202,6 +213,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "아래는 사용자 입력에 대해 인지 그래프 위에서 사고 과정을 거쳐 도달한 당신의 현재 인식 상태입니다.\n"
         "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
         "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
+        "현재 사용자 맥락이 제공되면, 그것은 내부 profile edge가 아니라 이 사용자와 관련해 재활성화된 개념 후보로만 활용하십시오.\n"
         "결론 그래프가 제공되면, 단일 키워드가 아니라 해당 국소 그래프의 관계 구조를 우선 반영하십시오.\n"
         "ClaimConflict가 제공되면, 새 사용자 assertion과 이전 assertion이 충돌할 수 있음을 우선 고려하고 정정/분리 방향으로 응답하십시오.\n"
         "제공된 지식 및 검색 결과를 근거로 구체적이고 정확한 정보를 답변에 포함하십시오. 단, 검색결과를 언급하지 않아도 되면 빼도 됩니다.\n"
@@ -210,6 +222,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "확실하지 않거나 모르는 게 있으면 얼버무리지 않고, 모른다고 솔직하게 답하십시오.\n\n"
         f"[핵심 키워드]\n{key_text}\n\n"
         f"[참고 개념]\n{ref_text}\n\n"
+        f"[현재 사용자 맥락]\n{profile_context}\n\n"
         f"[ClaimConflict]\n{claim_conflict_text}\n\n"
         f"[결론 그래프]\n{conclusion_graph_text}\n\n"
         f"[근거 연결]\n{edge_text}\n\n"
@@ -284,6 +297,8 @@ class Pipeline:
         _p1 = time.perf_counter()
         print(f"[pipeline] lang_to_graph: {_p1 - _p0:.3f}s")
 
+        profile_activation_view = build_profile_activation_view(self._conn, translated)
+
         engine = ThoughtEngine(conn=self._conn, embed_fn=get_embedding, search_fn=_search, goal_node=self._goal_node)
         prev_hashes = self._session_memory.get(session_id)
         previous_assertion_state = self._previous_assertion_state.get(session_id)
@@ -293,6 +308,7 @@ class Pipeline:
             user_input=user_input,
             previous_key_hashes=prev_hashes,
             previous_assertion_state=previous_assertion_state,
+            profile_activation_view=profile_activation_view,
         )
 
         self._session_memory[session_id] = conclusion.key_hashes

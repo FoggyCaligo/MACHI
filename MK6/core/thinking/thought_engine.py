@@ -23,7 +23,7 @@ from ..entities.edge import Edge
 from ..entities.node import Node
 from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedEdge, TranslatedGraph
 from ..entities.word_entry import WordEntry
-from ..profile import attach_profile_references
+from ..profile import ProfileActivationView, attach_profile_references
 from ..storage.world_graph import (
     deactivate_node,
     get_edge as db_get_edge,
@@ -79,6 +79,7 @@ class ConclusionView:
     search_node_hashes: set[str] = field(default_factory=set)
     selected_graphs: list[ConclusionGraph] = field(default_factory=list)
     rejected_graphs: list[RejectedConclusionGraph] = field(default_factory=list)
+    profile_activation_view: ProfileActivationView | None = None
 
 
 def _commit_strong(conn: sqlite3.Connection, node: Node) -> None:
@@ -247,6 +248,7 @@ class ThoughtEngine:
         user_input: str | None = None,
         previous_key_hashes: set[str] | None = None,
         previous_assertion_state: AssertionState | None = None,
+        profile_activation_view: ProfileActivationView | None = None,
     ) -> ConclusionView:
         _t0 = time.perf_counter()
         tg = TempThoughtGraph()
@@ -257,6 +259,12 @@ class ThoughtEngine:
         _load_subgraph_into_tg(tg, extract_subgraph(self._conn, self._goal_node.address_hash))
 
         tg.load_from_translated(translated)
+
+        if profile_activation_view and profile_activation_view.is_active:
+            for h in profile_activation_view.seed_hashes:
+                if tg.get_node(h):
+                    continue
+                _load_subgraph_into_tg(tg, extract_subgraph(self._conn, h))
 
         if previous_key_hashes:
             for h in previous_key_hashes:
@@ -366,11 +374,12 @@ class ThoughtEngine:
             topic_continuity = "continued_topic"
 
         _ta = time.perf_counter()
+        profile_context_hashes = profile_activation_view.seed_hashes if profile_activation_view else set()
         activation_result = build_activation_conclusion_graphs(
             tg,
             translated,
             conn=self._conn,
-            previous_key_hashes=previous_key_hashes,
+            previous_key_hashes=set(previous_key_hashes or set()) | set(profile_context_hashes),
         )
         _t("activation_conclusion_graphs", _ta)
 
@@ -392,6 +401,7 @@ class ThoughtEngine:
             search_node_hashes=search_node_hashes,
             selected_graphs=selected_graphs,
             rejected_graphs=activation_result.rejected_graphs,
+            profile_activation_view=profile_activation_view,
         )
 
     def _add_search_result_edges(self, tg: TempThoughtGraph, search_text: str) -> None:
