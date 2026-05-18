@@ -23,6 +23,7 @@ from ..entities.edge import Edge
 from ..entities.node import Node
 from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedEdge, TranslatedGraph
 from ..entities.word_entry import WordEntry
+from ..profile import attach_profile_references
 from ..storage.world_graph import (
     deactivate_node,
     get_edge as db_get_edge,
@@ -42,8 +43,8 @@ from ..utils.local_graph_extractor import extract as extract_subgraph
 from ... import config
 from . import concept_differentiation, concept_merge
 from .activation import build_activation_conclusion_graphs
+from .claim_graph import AssertionState, apply_claim_conflict_pressure, build_claim_conflict_graph
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
-from .correction_graph import PreviousAssistantState, apply_correction_pressure, build_correction_graph
 from .temp_thought_graph import TempThoughtGraph
 
 
@@ -254,7 +255,7 @@ class ThoughtEngine:
         model: str | None = None,
         user_input: str | None = None,
         previous_key_hashes: set[str] | None = None,
-        previous_assistant_state: PreviousAssistantState | None = None,
+        previous_assertion_state: AssertionState | None = None,
     ) -> ConclusionView:
         _t0 = time.perf_counter()
         tg = TempThoughtGraph()
@@ -272,8 +273,8 @@ class ThoughtEngine:
                     continue
                 _load_subgraph_into_tg(tg, extract_subgraph(self._conn, h))
 
-        if previous_assistant_state:
-            for h in previous_assistant_state.node_hashes:
+        if previous_assertion_state:
+            for h in previous_assertion_state.node_hashes:
                 if tg.get_node(h):
                     continue
                 _load_subgraph_into_tg(tg, extract_subgraph(self._conn, h))
@@ -363,9 +364,14 @@ class ThoughtEngine:
         self._commit_new_content(tg)
         _t("commit_new_content", _tc)
 
-        correction_graph = build_correction_graph(tg, translated, previous_assistant_state)
-        if correction_graph is not None:
-            apply_correction_pressure(tg, previous_assistant_state)
+        profile_hashes = set(key_hashes) | set(ref_hashes)
+        profile_hashes |= {ref.address_hash for ref in translated.nodes if isinstance(ref, ConceptPointer)}
+        profile_hashes |= {compute_hash(ref.concept_hint.strip()) for ref in translated.nodes if isinstance(ref, EmptySlot)}
+        attach_profile_references(self._conn, profile_hashes)
+
+        claim_conflict_graph, _claim_conflict = build_claim_conflict_graph(tg, translated, previous_assertion_state)
+        if claim_conflict_graph is not None:
+            apply_claim_conflict_pressure(tg, previous_assertion_state)
             topic_continuity = "continued_topic"
 
         _ta = time.perf_counter()
@@ -378,8 +384,8 @@ class ThoughtEngine:
         _t("activation_conclusion_graphs", _ta)
 
         selected_graphs = list(activation_result.selected_graphs)
-        if correction_graph is not None:
-            selected_graphs.insert(0, correction_graph)
+        if claim_conflict_graph is not None:
+            selected_graphs.insert(0, claim_conflict_graph)
 
         return ConclusionView(
             nodes=tg.all_nodes(),

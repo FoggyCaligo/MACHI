@@ -5,7 +5,6 @@ from typing import Literal
 
 
 PathDirection = Literal["forward", "reverse"]
-ConclusionGraphKind = Literal["answer", "correction"]
 RejectionReason = Literal[
     "input_restatement",
     "insufficient_goal_alignment",
@@ -87,12 +86,12 @@ class ConclusionGraph:
     Machi에서 결론은 단일 노드가 아니다. 입력 그래프와 Goal 그래프 사이에서
     선택된 node/edge 집합이며, 조건/예외/행동/bridge까지 포함하는 구조다.
 
-    role 필드는 node_kind가 아니다. 같은 노드라도 다른 ConclusionGraph 안에서는
-    다른 역할을 가질 수 있다. 역할은 이 결론 그래프 내부의 위치와 경로에서 나온다.
+    특정 상황 이름(correction/self-claim/preference 등)을 graph kind로 박지 않는다.
+    정정, 자기진술, 선호, 계획 같은 차이는 Claim/Assertion, conflict_paths,
+    temporal/provenance 구조에서 파생되어야 한다.
     """
 
     graph_id: str
-    graph_kind: ConclusionGraphKind = "answer"
     input_hashes: set[str] = field(default_factory=set)
     goal_hashes: set[str] = field(default_factory=set)
     node_hashes: set[str] = field(default_factory=set)
@@ -120,6 +119,10 @@ class ConclusionGraph:
     @property
     def has_non_input_structure(self) -> bool:
         return bool(self.node_hashes - self.input_hashes)
+
+    @property
+    def has_conflict_structure(self) -> bool:
+        return bool(self.conflict_paths or self.exception_hashes)
 
     @property
     def is_likely_restatement(self) -> bool:
