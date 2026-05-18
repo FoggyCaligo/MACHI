@@ -31,6 +31,20 @@ def _get_client() -> httpx.AsyncClient:
 _EMBEDDING_ONLY_FAMILIES: frozenset[str] = frozenset({"nomic-bert", "bert", "clip"})
 
 
+def _generation_options() -> dict:
+    return {"num_predict": config.OLLAMA_NUM_PREDICT}
+
+
+def _generation_payload(base: dict) -> dict:
+    payload = {
+        **base,
+        "stream": False,
+        "options": _generation_options(),
+    }
+    payload["think"] = config.OLLAMA_THINK
+    return payload
+
+
 async def get_embedding(text: str) -> list[float]:
     """nomic-embed-text (또는 설정된 모델)로 임베딩 벡터를 반환한다.
 
@@ -73,12 +87,10 @@ async def generate(prompt: str, model: str | None = None) -> str:
         async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_SECONDS) as client:
             r = await client.post(
                 url,
-                json={
+                json=_generation_payload({
                     "model": model_name,
                     "prompt": prompt,
-                    "stream": False,
-                    "options": {"num_predict": config.OLLAMA_NUM_PREDICT},
-                },
+                }),
             )
     except httpx.ReadTimeout:
         raise TimeoutError(
@@ -127,15 +139,13 @@ async def chat(
         async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_SECONDS) as client:
             r = await client.post(
                 url,
-                json={
+                json=_generation_payload({
                     "model": model_name,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user",   "content": user},
                     ],
-                    "stream": False,
-                    "options": {"num_predict": config.OLLAMA_NUM_PREDICT},
-                },
+                }),
             )
     except httpx.ReadTimeout:
         raise TimeoutError(
@@ -158,7 +168,9 @@ async def chat(
             f"model='{model_name}', "
             f"http_status={r.status_code}, "
             f"done={data.get('done')!r}, "
-            f"done_reason={data.get('done_reason')!r}"
+            f"done_reason={data.get('done_reason')!r}, "
+            f"think={config.OLLAMA_THINK!r}, "
+            f"num_predict={config.OLLAMA_NUM_PREDICT}"
         )
     return content
 

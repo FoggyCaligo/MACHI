@@ -17,6 +17,18 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 # ── DB ──────────────────────────────────────────────────────────────────────
 DB_PATH = os.getenv("MK6_DB_PATH", "data/memory.db")
 
@@ -81,4 +93,10 @@ _excluded_from_env: list[str] = [
 OLLAMA_EXCLUDED_MODELS: frozenset[str] = frozenset(["embeddinggemma:latest"] + _excluded_from_env)
 OLLAMA_TIMEOUT_SECONDS = _env_float("OLLAMA_TIMEOUT_SECONDS", 600.0)
 OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "gemma3:4b").strip()
-OLLAMA_NUM_PREDICT = _env_int("OLLAMA_NUM_PREDICT", 512)  # GraphToLang 최대 생성 토큰 수
+# thinking 계열 모델은 응답 전 내부 사고 토큰으로 예산을 소진할 수 있으므로
+# GraphToLang 기본 생성 예산을 512보다 넉넉하게 둔다.
+OLLAMA_NUM_PREDICT = _env_int("OLLAMA_NUM_PREDICT", 2048)
+# Ollama chat API가 지원하는 경우 thinking 출력을 비활성화한다.
+# 지원하지 않는 모델/버전에서는 서버가 무시할 수 있으므로, 최종 응답 계약은
+# ollama_client.chat()의 content 검증이 담당한다.
+OLLAMA_THINK = _env_bool("OLLAMA_THINK", False)
