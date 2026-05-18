@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from ..entities.node import Node
 from ..entities.edge import Edge
 from ..entities.translated_graph import (
-    TranslatedGraph, ConceptPointer, EmptySlot,
+    TranslatedGraph, ConceptPointer, EmptySlot, InputGraphBundle,
 )
 from ..utils.hash_resolver import ANCHOR_USER
 
@@ -68,19 +68,44 @@ class TempThoughtGraph:
     # ── 구성 ──────────────────────────────────────────────────────────────────
 
     def load_from_translated(self, tg: TranslatedGraph) -> None:
-        """TranslatedGraph에서 ConceptPointer들의 국소 서브그래프를 로드한다."""
+        """TranslatedGraph를 TempThoughtGraph에 로드한다.
+
+        InputGraphBundle이 있으면 bundle을 우선 경로로 사용한다. EmptySlot은 중요도
+        점수 보존을 위해 기존 TranslatedGraph.nodes의 객체를 그대로 넘긴다.
+        """
+        if tg.input_bundle is not None:
+            empty_slots = [ref for ref in tg.nodes if isinstance(ref, EmptySlot)]
+            self.load_from_input_bundle(tg.input_bundle, empty_slots=empty_slots)
+            return
+
         for ref in tg.nodes:
             if isinstance(ref, ConceptPointer):
-                subgraph = ref.local_subgraph
-                for node in subgraph.nodes:
-                    self._nodes.setdefault(node.address_hash, node)
-                for edge in subgraph.edges:
-                    if edge.edge_id not in self._edges:
-                        self._edges[edge.edge_id] = edge
-                        self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
-                        self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
+                self._load_local_subgraph(ref.local_subgraph)
             elif isinstance(ref, EmptySlot):
                 self._empty_slots.append(ref)
+
+    def load_from_input_bundle(
+        self,
+        bundle: InputGraphBundle,
+        *,
+        empty_slots: list[EmptySlot] | None = None,
+    ) -> None:
+        """InputGraphBundle의 국소그래프 묶음을 현재 사고 그래프에 로드한다."""
+        for subgraph in bundle.local_subgraphs:
+            self._load_local_subgraph(subgraph)
+
+        if empty_slots is None:
+            empty_slots = [EmptySlot(concept_hint=hint) for hint in bundle.empty_hints]
+        self._empty_slots.extend(empty_slots)
+
+    def _load_local_subgraph(self, subgraph) -> None:
+        for node in subgraph.nodes:
+            self._nodes.setdefault(node.address_hash, node)
+        for edge in subgraph.edges:
+            if edge.edge_id not in self._edges:
+                self._edges[edge.edge_id] = edge
+                self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
+                self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
 
     def set_goal_node(self, node: Node) -> None:
         """목표 노드를 설정하고 그래프에 추가한다."""
