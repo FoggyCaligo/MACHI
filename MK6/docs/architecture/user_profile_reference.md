@@ -89,6 +89,7 @@ ProfileActivationView
   - reference_hashes
   - matched_hashes
   - seed_hashes
+  - seed_scores
   - confidence
   - activation_reason
 ```
@@ -101,6 +102,7 @@ ProfileActivationView
 3. 현재 입력 concept과 profile_reference target이 겹칠 때만 활성화한다.
 4. 활성화되면 seed_hashes의 local subgraph를 Think에 read-only context로 로드한다.
 5. GraphToLang에는 profile_reference edge가 아니라 활성화된 concept label 요약만 제공한다.
+6. seed 선정은 문자열 차단 목록이 아니라 support_count, edge_weight, 구조 연결도, current overlap으로 정제한다.
 ```
 
 예:
@@ -117,7 +119,41 @@ ProfileActivationView
 
 ---
 
-## 5. 왜 이 구조가 필요한가
+## 5. Profile context 정제 기준
+
+`profile_reference`는 대화에서 등장한 모든 concept을 연결하므로, 그대로 노출하면 인사말/어미/저정보량 concept이 섞일 수 있다.
+
+따라서 GraphToLang에 들어가는 `[현재 사용자 맥락]`은 다음 구조 점수로 정제한다.
+
+```text
+profile context score
+  = current input overlap bonus
+  + profile_reference support_count
+  + profile_reference edge_weight
+  + profile/user anchor 밖의 구조 연결도
+```
+
+금지하는 방식:
+
+```text
+- 특정 문자열을 하드코딩해 제거
+- '안녕', '이라', '있구나' 같은 surface form 직접 차단
+```
+
+허용하는 방식:
+
+```text
+- 현재 입력과 profile reference의 overlap 여부
+- 해당 concept의 profile_reference support_count
+- 해당 concept이 profile/user anchor 밖에서 가진 non-profile edge 수
+- edge_weight / trust 계열 점수
+```
+
+이 기준은 완성된 ontology가 아니라, profile context 노이즈를 줄이기 위한 임시 salience gate다.
+
+---
+
+## 6. 왜 이 구조가 필요한가
 
 이 구조는 다음 문제를 줄인다.
 
@@ -131,7 +167,7 @@ ProfileActivationView
 
 ---
 
-## 6. GraphToLang 노출 규칙
+## 7. GraphToLang 노출 규칙
 
 UserProfile 자체와 profile_reference edge는 내부 구조다.
 
@@ -154,7 +190,7 @@ UserProfile 자체와 profile_reference edge는 내부 구조다.
 
 ---
 
-## 7. TODO
+## 8. TODO
 
 ```text
 1. UserProfile reference edge의 salience/decay 정책 추가
@@ -163,4 +199,5 @@ UserProfile 자체와 profile_reference edge는 내부 구조다.
 4. USER_PERSON::<surface> identity binding 추가
 5. ClaimAssertion subject binding과 UserProfile 연결
 6. ProfileActivationView를 activation score에 더 정교하게 반영
+7. 핵심 키워드/참고 개념 선정도 ConclusionGraph 기반으로 이전
 ```
