@@ -153,7 +153,76 @@ profile context score
 
 ---
 
-## 6. 왜 이 구조가 필요한가
+## 6. 사용자 identity surface binding
+
+`USER_PROFILE → profile_reference → Concept`는 사실/정체성 주장이 아니다. 따라서 이름/호칭/정체성 후보는 별도 edge로 누적한다.
+
+```text
+USER_PROFILE
+  → identity_surface
+  → Concept
+```
+
+`identity_surface`는 다음을 의미한다.
+
+```text
+이 concept은 현재 사용자 프로필의 이름/호칭/정체성 표면 후보다.
+```
+
+다음을 의미하지 않는다.
+
+```text
+사용자와 해당 concept이 완전히 동일한 존재로 확정되었다.
+```
+
+초기 skeleton에서는 문자열 패턴으로 이름을 추측하지 않는다. 대신 다음처럼 보수적으로 승격한다.
+
+```text
+1. concept이 이미 USER_PROFILE의 profile_reference에 존재한다.
+2. 현재 입력 concept과 profile_reference target이 겹쳐 ProfileActivationView.matched_hashes에 들어온다.
+3. 이 matched concept을 identity_surface 후보로 연결/강화한다.
+```
+
+즉 최초 등장 concept은 보통 `profile_reference`에 머물고, 반복/재활성화된 concept이 identity 후보로 올라간다.
+
+---
+
+## 7. 사용자 앵커 임시 edge weight
+
+`ANCHOR_USER → Concept` 임시 edge는 claim이 아니다. 이 edge는 현재 턴에서 사용자가 해당 concept을 발화했다는 관측/활성화 view다.
+
+다만 사용자 발화 주체와 concept의 연결은 일반 co-occurrence보다 중요하므로, 기본 weight를 분리한다.
+
+```text
+ANCHOR_USER → Concept temporary edge: 1.35
+Goal → Concept temporary edge: 0.85
+기타 anchor temporary edge: 1.0
+```
+
+이 weight는 사용자 identity 확정 신뢰도가 아니다. identity 확정/후보 누적은 `identity_surface`와 향후 `USER_PERSON::<surface>` 계층에서 담당한다.
+
+---
+
+## 8. ClaimAssertion subject binding 1차
+
+사용자 발화에서 생성되는 ClaimAssertion은 source가 사용자다.
+
+```text
+ClaimAssertion.source = ANCHOR_USER
+```
+
+subject는 아직 완전한 의미 분석이 아니므로 다음 순서로 잡는다.
+
+```text
+1. ProfileActivationView.matched_hashes가 있으면 해당 concept을 subject 후보로 사용
+2. 없으면 현재 입력 graph의 concept projection을 임시 subject로 사용
+```
+
+이 구조는 self-claim 전용 그래프가 아니다. 일반 ClaimAssertion의 subject binding을 UserProfile identity 후보와 연결하는 1차 skeleton이다.
+
+---
+
+## 9. 왜 이 구조가 필요한가
 
 이 구조는 다음 문제를 줄인다.
 
@@ -167,7 +236,7 @@ profile context score
 
 ---
 
-## 7. GraphToLang 노출 규칙
+## 10. GraphToLang 노출 규칙
 
 UserProfile 자체와 profile_reference edge는 내부 구조다.
 
@@ -190,14 +259,14 @@ UserProfile 자체와 profile_reference edge는 내부 구조다.
 
 ---
 
-## 8. TODO
+## 11. TODO
 
 ```text
 1. UserProfile reference edge의 salience/decay 정책 추가
 2. 반복 등장 concept의 support_count/edge_weight 조정 정책 개선
 3. profile activation cue를 overlap 외 구조로 확장
 4. USER_PERSON::<surface> identity binding 추가
-5. ClaimAssertion subject binding과 UserProfile 연결
+5. ClaimAssertion relation/object/temporal_scope 고도화
 6. ProfileActivationView를 activation score에 더 정교하게 반영
 7. 핵심 키워드/참고 개념 선정도 ConclusionGraph 기반으로 이전
 ```

@@ -15,6 +15,12 @@ from ..entities.edge import Edge
 from ..entities.translated_graph import (
     TranslatedGraph, ConceptPointer, EmptySlot,
 )
+from ..utils.hash_resolver import ANCHOR_USER
+
+
+USER_ANCHOR_TEMP_EDGE_WEIGHT = 1.35
+GOAL_ANCHOR_TEMP_EDGE_WEIGHT = 0.85
+DEFAULT_ANCHOR_TEMP_EDGE_WEIGHT = 1.0
 
 
 @dataclass
@@ -228,7 +234,12 @@ class TempThoughtGraph:
         self.connect_to_identity(concept_hash, self._goal_hash, edge_id_prefix="goal")
 
     def connect_to_identity(self, concept_hash: str, identity_hash: str, edge_id_prefix: str = "identity") -> None:
-        """개념 노드를 참여자 앵커(사용자/AI) 노드에 임시 연결한다."""
+        """개념 노드를 참여자 앵커(사용자/AI/목표) 노드에 임시 연결한다.
+
+        이 edge는 identity claim이 아니라 이번 턴의 관측/활성화 view다.
+        사용자 앵커 edge는 일반 co-occurrence보다 강하게, goal edge는 내부 방향성
+        보조로만 약하게 둔다. 실제 사용자 정체성은 UserProfile identity_surface에서 누적한다.
+        """
         # 중복 방지를 위해 복합 키 사용
         conn_key = f"{identity_hash}::{concept_hash}"
         if conn_key in self._goal_connections: # 기존 필드 재활용 (이름은 goal_이지만 실제론 임시 연결 관리용)
@@ -241,12 +252,20 @@ class TempThoughtGraph:
             target_hash=concept_hash,
             edge_family="relation",
             connect_type="neutral",
+            edge_weight=self._temporary_anchor_weight(identity_hash),
             provenance_source="lang_to_graph",
             is_temporary=True,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
         self.add_edge(edge)
+
+    def _temporary_anchor_weight(self, identity_hash: str) -> float:
+        if identity_hash == ANCHOR_USER:
+            return USER_ANCHOR_TEMP_EDGE_WEIGHT
+        if identity_hash == self._goal_hash:
+            return GOAL_ANCHOR_TEMP_EDGE_WEIGHT
+        return DEFAULT_ANCHOR_TEMP_EDGE_WEIGHT
 
     # ── EmptySlot 관리 ────────────────────────────────────────────────────────
 
