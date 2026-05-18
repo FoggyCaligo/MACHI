@@ -82,9 +82,24 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             return True
         if address_hash in conclusion.search_node_hashes:
             return True
-        if conclusion.profile_activation_view and address_hash in conclusion.profile_activation_view.seed_hashes:
+        if conclusion.profile_activation_view and address_hash in conclusion.profile_activation_view.display_hashes:
             return True
         return _display_degree(address_hash) >= 2
+
+    def _profile_recall_view_text(profile_labels: list[str]) -> str:
+        if not conclusion.profile_activation_view or not profile_labels:
+            return "(없음)"
+        confidence = f"{conclusion.profile_activation_view.confidence:.2f}"
+        display_context = ", ".join(profile_labels)
+        return (
+            "status=active_profile_context\n"
+            f"confidence={confidence}\n"
+            f"display_context={display_context}\n"
+            "response_contract=현재 사용자 맥락 후보가 재활성화되었으므로, "
+            "사용자에게 제한적으로 기억나는 범위를 인정한다. "
+            "이 맥락은 확정 사실 목록이 아니라 후보이므로 단정하지 않는다. "
+            "세션 초기화나 일반 모델 한계를 이유로 '기억하지 못한다/처음 만난다'고 반박하지 않는다."
+        )
 
     for node in conclusion.nodes:
         if not _is_verbalizable_hash(node.address_hash):
@@ -212,11 +227,13 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
                 break
 
     profile_context = "(없음)"
+    profile_recall_view = "(없음)"
     has_profile_context = False
     if conclusion.profile_activation_view and conclusion.profile_activation_view.is_active:
         profile_labels = profile_context_labels(conclusion.profile_activation_view, node_map)
         if profile_labels:
             profile_context = ", ".join(profile_labels)
+            profile_recall_view = _profile_recall_view_text(profile_labels)
             has_profile_context = True
 
     key_text = ", ".join(key_labels) if key_labels else "(없음)"
@@ -238,9 +255,11 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     profile_instruction = ""
     if has_profile_context:
         profile_instruction = (
-            "현재 사용자 맥락이 비어 있지 않으면, 시스템이 재활성화한 사용자 관련 기억 후보가 있다는 뜻입니다. "
-            "이 경우 '기억하지 못한다', '처음 만난다', '이전 대화가 초기화된다'라고 단정하지 마십시오. "
-            "대신 현재 사용자 맥락에 있는 개념들을 근거로, 제한적으로 기억나는 범위를 자연스럽게 요약하십시오. "
+            "ProfileRecallView가 active이면, 시스템이 현재 사용자와 관련된 기억 후보를 재활성화한 상태입니다. "
+            "이 경우 첫 응답 방향은 '일부 맥락은 제한적으로 기억난다'여야 합니다. "
+            "'기억하지 못한다', '처음 만난다', '이전 대화가 초기화된다', '세션이 초기화된다'라고 단정하지 마십시오. "
+            "대신 현재 사용자 맥락과 ProfileRecallView의 display_context에 있는 개념들을 근거로, "
+            "제한적으로 기억나는 범위를 자연스럽게 요약하십시오. "
             "다만 해당 맥락은 확정 사실 목록이 아니라 재활성화된 concept 후보이므로 과장하지 마십시오.\n"
         )
 
@@ -261,6 +280,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         f"[핵심 키워드]\n{key_text}\n\n"
         f"[참고 개념]\n{ref_text}\n\n"
         f"[현재 사용자 맥락]\n{profile_context}\n\n"
+        f"[ProfileRecallView]\n{profile_recall_view}\n\n"
         f"[ClaimConflict]\n{claim_conflict_text}\n\n"
         f"[결론 그래프]\n{conclusion_graph_text}\n\n"
         f"[근거 연결]\n{edge_text}\n\n"

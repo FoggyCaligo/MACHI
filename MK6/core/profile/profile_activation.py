@@ -7,10 +7,11 @@ from ..entities.node import Node
 from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedGraph
 from ..storage.world_graph import get_edges_for_node, get_node
 from ..utils.hash_resolver import ANCHOR_USER, compute_hash
-from .user_profile import ensure_user_profile, is_profile_reference_edge
+from .user_profile import ensure_user_profile, is_identity_surface_edge, is_profile_reference_edge
 
 
 MIN_PROFILE_CONTEXT_SCORE = 0.75
+MIN_PROFILE_DISPLAY_SCORE = 1.0
 MIN_STRUCTURAL_CONTEXT_FOR_MATCH = 1
 MIN_STRUCTURAL_CONTEXT_FOR_REFERENCE = 2
 
@@ -27,13 +28,19 @@ class ProfileActivationView:
     reference_hashes: set[str] = field(default_factory=set)
     matched_hashes: set[str] = field(default_factory=set)
     seed_hashes: set[str] = field(default_factory=set)
+    display_hashes: set[str] = field(default_factory=set)
     seed_scores: dict[str, float] = field(default_factory=dict)
+    display_scores: dict[str, float] = field(default_factory=dict)
     confidence: float = 0.0
     activation_reason: str | None = None
 
     @property
     def is_active(self) -> bool:
         return bool(self.seed_hashes)
+
+    @property
+    def has_display_context(self) -> bool:
+        return bool(self.display_hashes)
 
 
 def build_profile_activation_view(
@@ -42,6 +49,7 @@ def build_profile_activation_view(
     *,
     user_anchor_hash: str = ANCHOR_USER,
     max_seed_refs: int = 12,
+    max_display_refs: int = 6,
 ) -> ProfileActivationView:
     """현재 입력에 대응하는 ProfileActivationView를 만든다.
 
@@ -50,12 +58,13 @@ def build_profile_activation_view(
     - 하지만 profile reference 전체를 항상 활성화하지는 않는다.
     - 현재 입력 direct concept과 profile_reference target이 겹칠 때만 활성화한다.
     - semantic_local_candidate는 주변 context 후보이지 activation cue가 아니다.
-    - profile_reference edge 자체는 언어화 대상이 아니라 내부 context index다.
-    - 활성화 seed는 문자열 패턴이 아니라 edge support/weight/구조 연결도 기준으로 정제한다.
+    - profile_reference/identity_surface edge 자체는 언어화 대상이 아니라 내부 context index다.
+    - Think용 seed와 GraphToLang용 display context를 분리한다.
+    - 활성화 seed/display 선정은 문자열 패턴이 아니라 edge support/weight/구조 연결도 기준으로 정제한다.
     """
     profile_view = ensure_user_profile(conn, user_anchor_hash=user_anchor_hash)
     profile_hash = profile_view.profile_hash
-    reference_edges = _profile_reference_edges(conn, profile_hash)
+    reference_edges = _profile_context_edges(conn, profile_hash)
     reference_hashes = {
         edge.target_hash
         for edge in reference_edges
@@ -70,13 +79,17 @@ def build_profile_activation_view(
             reference_hashes=reference_hashes,
             matched_hashes=set(),
             seed_hashes=set(),
+            display_hashes=set(),
             seed_scores={},
+            display_scores={},
             confidence=0.0,
             activation_reason=None,
         )
 
     scored_edges: list[tuple[float, Edge]] = []
+    display_edges: list[tuple[float, Edge]] = []
     seed_scores: dict[str, float] = {}
+    display_scores: dict[str, float] = {}
     for edge in reference_edges:
         if edge.target_hash not in reference_hashes:
             continue
@@ -87,14 +100,26 @@ def build_profile_activation_view(
             user_anchor_hash=user_anchor_hash,
         )
         matched = edge.target_hash in matched_hashes
-        if not _is_reference_seed_allowed(edge, structural_context, matched=matched):
+        identity_surface = is_identity_surface_edge(edge)
+        if not _is_reference_seed_allowed(edge, structural_context, matched=matched, identity_surface=identity_surface):
             continue
 
-        score = _reference_seed_score(edge, structural_context, matched=matched)
+        score = _reference_seed_score(edge, structural_context, matched=matched, identity_surface=identity_surface)
         if score < MIN_PROFILE_CONTEXT_SCORE:
             continue
         seed_scores[edge.target_hash] = score
         scored_edges.append((score, edge))
+
+        if _is_display_context_allowed(edge, structural_context, matched=matched, identity_surface=identity_surface):
+            display_score = _display_context_score(
+                edge,
+                structural_context,
+                matched=matched,
+                identity_surface=identity_surface,
+            )
+            if display_score >= MIN_PROFILE_DISPLAY_SCORE:
+                display_scores[edge.target_hash] = display_score
+                display_edges.append((display_score, edge))
 
     ranked_edges = sorted(
         scored_edges,
@@ -108,13 +133,35 @@ def build_profile_activation_view(
         seed_hashes.add(edge.target_hash)
         seed_scores[edge.target_hash] = score
 
+    ranked_display_edges = sorted(
+        display_edges,
+        key=lambda item: (
+            not is_identity_surface_edge(item[1]),
+            item[1].target_hash not in matched_hashes,
+            -item[0],
+            -item[1].support_count,
+            -item[1].edge_weight,
+        ),
+    )
+
+    display_hashes: set[str] = set()
+    for score, edge in ranked_display_edges:
+        if len(display_hashes) >= max_display_refs:
+            break
+        if edge.target_hash not in seed_hashes:
+            continue
+        display_hashes.add(edge.target_hash)
+        display_scores[edge.target_hash] = score
+
     if not seed_hashes:
         return ProfileActivationView(
             profile_hash=profile_hash,
             reference_hashes=reference_hashes,
             matched_hashes=matched_hashes,
             seed_hashes=set(),
+            display_hashes=set(),
             seed_scores={},
+            display_scores={},
             confidence=0.0,
             activation_reason=None,
         )
@@ -125,7 +172,9 @@ def build_profile_activation_view(
         reference_hashes=reference_hashes,
         matched_hashes=matched_hashes,
         seed_hashes=seed_hashes,
+        display_hashes=display_hashes,
         seed_scores=seed_scores,
+        display_scores=display_scores,
         confidence=confidence,
         activation_reason="current_direct_input_overlaps_profile_reference",
     )
@@ -134,16 +183,24 @@ def build_profile_activation_view(
 def profile_context_labels(view: ProfileActivationView, node_map: dict[str, Node], *, limit: int = 8) -> list[str]:
     """GraphToLang에 줄 사용자 맥락 라벨을 만든다.
 
-    profile edge 자체가 아니라, 활성화된 seed concept의 label만 노출한다.
+    profile edge 자체가 아니라, 활성화된 display concept의 label만 노출한다.
+    Think용 seed_hashes와 언어화용 display_hashes를 분리해, 저정보량 cue가
+    사고에는 쓰이더라도 사용자 맥락 문구로 바로 새지 않도록 한다.
     라벨 선정은 문자열 차단 목록이 아니라 ProfileActivationView의 구조 점수에 따른다.
     """
     labels: list[str] = []
+    display_hashes = view.display_hashes or set()
     ranked_hashes = sorted(
-        view.seed_hashes,
-        key=lambda h: (h not in view.matched_hashes, -view.seed_scores.get(h, 0.0), h),
+        display_hashes,
+        key=lambda h: (
+            h not in view.matched_hashes,
+            -view.display_scores.get(h, view.seed_scores.get(h, 0.0)),
+            h,
+        ),
     )
     for h in ranked_hashes:
-        if view.seed_scores.get(h, 0.0) < MIN_PROFILE_CONTEXT_SCORE:
+        score = view.display_scores.get(h, view.seed_scores.get(h, 0.0))
+        if score < MIN_PROFILE_DISPLAY_SCORE:
             continue
         node = node_map.get(h)
         if node is None or node.is_abstract or not node.labels:
@@ -156,10 +213,14 @@ def profile_context_labels(view: ProfileActivationView, node_map: dict[str, Node
     return labels
 
 
-def _profile_reference_edges(conn, profile_hash: str) -> list[Edge]:
+def _profile_context_edges(conn, profile_hash: str) -> list[Edge]:
     return [
         edge for edge in get_edges_for_node(conn, profile_hash)
-        if edge.source_hash == profile_hash and edge.is_active and is_profile_reference_edge(edge)
+        if (
+            edge.source_hash == profile_hash
+            and edge.is_active
+            and (is_profile_reference_edge(edge) or is_identity_surface_edge(edge))
+        )
     ]
 
 
@@ -196,7 +257,7 @@ def _structural_context_count(
     for edge in get_edges_for_node(conn, address_hash):
         if not edge.is_active or edge.is_temporary:
             continue
-        if is_profile_reference_edge(edge):
+        if is_profile_reference_edge(edge) or is_identity_surface_edge(edge):
             continue
         other_hash = edge.target_hash if edge.source_hash == address_hash else edge.source_hash
         if other_hash in {profile_hash, user_anchor_hash}:
@@ -207,15 +268,52 @@ def _structural_context_count(
     return count
 
 
-def _is_reference_seed_allowed(edge: Edge, structural_context: int, *, matched: bool) -> bool:
+def _is_reference_seed_allowed(
+    edge: Edge,
+    structural_context: int,
+    *,
+    matched: bool,
+    identity_surface: bool,
+) -> bool:
+    if identity_surface:
+        return edge.support_count >= 1
     if matched:
         return structural_context >= MIN_STRUCTURAL_CONTEXT_FOR_MATCH
     return structural_context >= MIN_STRUCTURAL_CONTEXT_FOR_REFERENCE and edge.support_count >= 2
 
 
-def _reference_seed_score(edge: Edge, structural_context: int, *, matched: bool) -> float:
+def _is_display_context_allowed(
+    edge: Edge,
+    structural_context: int,
+    *,
+    matched: bool,
+    identity_surface: bool,
+) -> bool:
+    """GraphToLang에 직접 노출할 profile context 후보인지 판단한다.
+
+    현재 입력과 겹친 cue라는 이유만으로 display하지 않는다. display는 더 보수적으로,
+    identity 후보이거나 반복 support/구조 연결을 갖춘 concept에 한정한다.
+    """
+    if identity_surface:
+        return edge.support_count >= 1
+    if matched:
+        return edge.support_count >= 2 or structural_context >= 3
+    return edge.support_count >= 2 and structural_context >= MIN_STRUCTURAL_CONTEXT_FOR_REFERENCE
+
+
+def _reference_seed_score(edge: Edge, structural_context: int, *, matched: bool, identity_surface: bool) -> float:
     match_bonus = 0.55 if matched else 0.0
+    identity_bonus = 0.35 if identity_surface else 0.0
     support_score = min(0.5, edge.support_count * 0.1)
     structure_score = min(0.7, structural_context * 0.18)
     weight_score = min(0.4, edge.edge_weight * 0.4)
-    return match_bonus + support_score + structure_score + weight_score
+    return match_bonus + identity_bonus + support_score + structure_score + weight_score
+
+
+def _display_context_score(edge: Edge, structural_context: int, *, matched: bool, identity_surface: bool) -> float:
+    match_bonus = 0.2 if matched else 0.0
+    identity_bonus = 0.75 if identity_surface else 0.0
+    support_score = min(0.7, edge.support_count * 0.14)
+    structure_score = min(0.8, structural_context * 0.18)
+    weight_score = min(0.45, edge.edge_weight * 0.45)
+    return match_bonus + identity_bonus + support_score + structure_score + weight_score
