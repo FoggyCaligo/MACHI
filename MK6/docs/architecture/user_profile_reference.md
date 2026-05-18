@@ -77,7 +77,47 @@ USER_PROFILE → profile_reference → 개발자
 
 ---
 
-## 4. 왜 이 구조가 필요한가
+## 4. ProfileActivationView
+
+UserProfile을 만든 것만으로는 현재 턴의 Think가 사용자 맥락을 자동으로 쓰지 않는다.
+
+따라서 Update/Context 준비 단계에서 `ProfileActivationView`를 만든다.
+
+```text
+ProfileActivationView
+  - profile_hash
+  - reference_hashes
+  - matched_hashes
+  - seed_hashes
+  - confidence
+  - activation_reason
+```
+
+동작 원칙:
+
+```text
+1. UserProfile은 항상 보장한다.
+2. profile_reference 전체를 항상 활성화하지 않는다.
+3. 현재 입력 concept과 profile_reference target이 겹칠 때만 활성화한다.
+4. 활성화되면 seed_hashes의 local subgraph를 Think에 read-only context로 로드한다.
+5. GraphToLang에는 profile_reference edge가 아니라 활성화된 concept label 요약만 제공한다.
+```
+
+예:
+
+```text
+현재 입력: 난 신재용이라고 해. 날 기억하니?
+프로필 참조: 신재용, 개발자, 기획자, MK6
+입력/프로필 overlap: 신재용
+
+→ ProfileActivationView 활성화
+→ 신재용 및 주요 profile reference concept local subgraph 로드
+→ GraphToLang [현재 사용자 맥락]에 concept label 요약 제공
+```
+
+---
+
+## 5. 왜 이 구조가 필요한가
 
 이 구조는 다음 문제를 줄인다.
 
@@ -86,11 +126,12 @@ USER_PROFILE → profile_reference → 개발자
 2. 사용자 자기정보와 외부 세계지식을 섞지 않는다.
 3. 동명이인/동일 surface form 문제에서 사용자별 맥락을 분리할 수 있다.
 4. SelfClaimGraph 같은 케이스별 그래프를 만들 필요가 줄어든다.
+5. 현재 사용자 맥락을 Think에 넘기되, 내부 profile edge가 언어화로 새는 것을 막는다.
 ```
 
 ---
 
-## 5. GraphToLang 노출 규칙
+## 6. GraphToLang 노출 규칙
 
 UserProfile 자체와 profile_reference edge는 내부 구조다.
 
@@ -102,16 +143,24 @@ UserProfile 자체와 profile_reference edge는 내부 구조다.
 - USER_PROFILE → profile_reference → Concept edge
 ```
 
-단, UserProfile이 참조하는 Concept 자체는 일반 WorldGraph concept이므로 다른 경로에서 결론 구조에 포함될 수 있다.
+대신 ProfileActivationView가 활성화된 경우에만 다음 섹션을 제공한다.
+
+```text
+[현재 사용자 맥락]
+신재용, 개발자, 기획자, MK6
+```
+
+단, 이는 확정된 사용자 사실 목록이 아니라 현재 사용자 프로필에서 재활성화된 concept 후보들이다.
 
 ---
 
-## 6. TODO
+## 7. TODO
 
 ```text
 1. UserProfile reference edge의 salience/decay 정책 추가
 2. 반복 등장 concept의 support_count/edge_weight 조정 정책 개선
-3. profile reference를 local activation seed로 사용할지 결정
+3. profile activation cue를 overlap 외 구조로 확장
 4. USER_PERSON::<surface> identity binding 추가
 5. ClaimAssertion subject binding과 UserProfile 연결
+6. ProfileActivationView를 activation score에 더 정교하게 반영
 ```
