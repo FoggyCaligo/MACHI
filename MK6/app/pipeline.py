@@ -11,9 +11,10 @@ from dataclasses import dataclass
 
 from .. import config
 from ..core.goal import GOAL_ROOT_HASH, GLOBAL_GOAL_AXIS_SEEDS, initialize_global_goal_graph
+from ..core.profile import is_profile_reference_edge, is_user_profile_node
 from ..core.storage.db import close_db, open_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
-from ..core.thinking.correction_graph import PreviousAssistantState, build_previous_assistant_state
+from ..core.thinking.claim_graph import AssertionState, build_assertion_state_from_conclusion
 from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
@@ -24,11 +25,7 @@ from ..tools.search_client import search as _search
 # ── GraphToLang ───────────────────────────────────────────────────────────────
 
 async def graph_to_lang(conclusion: ConclusionView) -> str:
-    """ConclusionView를 자연어로 변환한다.
-
-    사용자 입력과 인지 그래프 구조를 함께 LLM에 전달한다.
-    레이블 없는 추상 노드는 이웃 노드의 레이블과 엣지 관계로 간접 표현한다.
-    """
+    """ConclusionView를 자연어로 변환한다."""
     key_labels: list[str] = []
     ref_labels: list[str] = []
     node_map = {n.address_hash: n for n in conclusion.nodes}
@@ -41,8 +38,12 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     def _is_internal_goal_hash(address_hash: str) -> bool:
         return address_hash in internal_goal_hashes
 
+    def _is_internal_profile_hash(address_hash: str) -> bool:
+        node = node_map.get(address_hash)
+        return bool(node and is_user_profile_node(node))
+
     def _is_verbalizable_hash(address_hash: str) -> bool:
-        return not _is_internal_goal_hash(address_hash)
+        return not _is_internal_goal_hash(address_hash) and not _is_internal_profile_hash(address_hash)
 
     def _node_label(address_hash: str) -> str:
         node = node_map.get(address_hash)
@@ -50,6 +51,8 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             return identity_names[address_hash]
         if _is_internal_goal_hash(address_hash):
             return "내부 목표"
+        if _is_internal_profile_hash(address_hash):
+            return "사용자 프로필"
         if node and node.labels:
             return node.labels[0]
         return address_hash[:8]
@@ -70,7 +73,11 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
     edge_map: dict[tuple[str, str, str, str], tuple[int, str, str, str, float]] = {}
     for edge in conclusion.edges:
+        if is_profile_reference_edge(edge):
+            continue
         if _is_internal_goal_hash(edge.source_hash) or _is_internal_goal_hash(edge.target_hash):
+            continue
+        if _is_internal_profile_hash(edge.source_hash) or _is_internal_profile_hash(edge.target_hash):
             continue
         src = node_map.get(edge.source_hash)
         tgt = node_map.get(edge.target_hash)
@@ -93,11 +100,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         if previous is None or candidate[0] < previous[0] or candidate[4] > previous[4]:
             edge_map[key] = candidate
 
-    _edge_candidates = sorted(
-        edge_map.values(),
-        key=lambda x: (x[0], -x[4]),
-    )
-
+    _edge_candidates = sorted(edge_map.values(), key=lambda x: (x[0], -x[4]))
     _n_edges = max(1, math.ceil(len(_edge_candidates) * config.GRAPH_TO_LANG_EDGE_RATIO))
     _edge_candidates = _edge_candidates[:_n_edges]
 
@@ -107,10 +110,10 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         edge_lines.append(f"  - {src_str} →[{connect_type}, {weight_str}]→ {tgt_str}")
 
     conclusion_graph_lines: list[str] = []
-    correction_graph_lines: list[str] = []
+    claim_conflict_lines: list[str] = []
     selected_graph_node_hashes: set[str] = set()
-    answer_graphs = [g for g in conclusion.selected_graphs if g.graph_kind == "answer"]
-    correction_graphs = [g for g in conclusion.selected_graphs if g.graph_kind == "correction"]
+    answer_graphs = [g for g in conclusion.selected_graphs if not g.has_conflict_structure]
+    conflict_graphs = [g for g in conclusion.selected_graphs if g.has_conflict_structure]
 
     for idx, graph in enumerate(answer_graphs[:3], start=1):
         selected_graph_node_hashes |= {h for h in graph.node_hashes if _is_verbalizable_hash(h)}
@@ -123,9 +126,9 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         edges = []
         for edge_id in sorted(graph.edge_ids):
             edge = edge_by_id.get(edge_id)
-            if edge is None or edge.is_temporary:
+            if edge is None or edge.is_temporary or is_profile_reference_edge(edge):
                 continue
-            if _is_internal_goal_hash(edge.source_hash) or _is_internal_goal_hash(edge.target_hash):
+            if not _is_verbalizable_hash(edge.source_hash) or not _is_verbalizable_hash(edge.target_hash):
                 continue
             edges.append(f"{_node_label(edge.source_hash)} →[{edge.connect_type}]→ {_node_label(edge.target_hash)}")
             if len(edges) >= 4:
@@ -139,7 +142,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             f"     edges: {edge_summary}"
         )
 
-    for idx, graph in enumerate(correction_graphs[:2], start=1):
+    for idx, graph in enumerate(conflict_graphs[:2], start=1):
         selected_graph_node_hashes |= {h for h in graph.node_hashes if _is_verbalizable_hash(h)}
         current_hashes = sorted(h for h in graph.core_hashes if _is_verbalizable_hash(h))
         previous_hashes = sorted(h for h in (graph.exception_hashes | graph.condition_hashes) if _is_verbalizable_hash(h))
@@ -148,11 +151,11 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         conflicts = []
         for path in graph.conflict_paths[:4]:
             for step in path.steps:
-                if _is_internal_goal_hash(step.source_hash) or _is_internal_goal_hash(step.target_hash):
+                if not _is_verbalizable_hash(step.source_hash) or not _is_verbalizable_hash(step.target_hash):
                     continue
                 conflicts.append(f"{_node_label(step.source_hash)} →[conflict]→ {_node_label(step.target_hash)}")
         conflict_summary = "; ".join(conflicts) if conflicts else "(없음)"
-        correction_graph_lines.append(
+        claim_conflict_lines.append(
             f"  {idx}. current={current} / previous_assertion={previous} / "
             f"uncertainty={graph.uncertainty:.2f}\n"
             f"     conflicts: {conflict_summary}"
@@ -161,10 +164,6 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     _SEARCH_CTX_MAX = 800
     seen_summaries: set[str] = set()
     search_ctx_parts: list[str] = []
-
-    # 검색 요약은 더 이상 key_hash라는 이유만으로 주입하지 않는다.
-    # selected ConclusionGraph에 실제로 포함된 searched node만 사용한다.
-    # selected graph가 없으면 검색 결과가 답변을 오염시키지 않도록 비운다.
     allowed_search_hashes = selected_graph_node_hashes.intersection(conclusion.search_node_hashes)
     allowed_search_hashes = {h for h in allowed_search_hashes if _is_verbalizable_hash(h)}
     for h in allowed_search_hashes:
@@ -174,7 +173,6 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         summary = node.payload.get("search_summary", "")
         if not summary:
             continue
-
         snippet = summary[:_SEARCH_CTX_MAX]
         if snippet not in seen_summaries:
             seen_summaries.add(snippet)
@@ -186,7 +184,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     ref_text = ", ".join(ref_labels) if ref_labels else "(없음)"
     edge_text = "\n".join(edge_lines) if edge_lines else "  (없음)"
     conclusion_graph_text = "\n".join(conclusion_graph_lines) if conclusion_graph_lines else "  (없음)"
-    correction_graph_text = "\n".join(correction_graph_lines) if correction_graph_lines else "  (없음)"
+    claim_conflict_text = "\n".join(claim_conflict_lines) if claim_conflict_lines else "  (없음)"
     search_text = "\n---\n".join(search_ctx_parts) if search_ctx_parts else "(없음)"
     user_msg = conclusion.user_input or ""
 
@@ -205,14 +203,14 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "이 인식 상태를 바탕으로 사용자에게 자연스러운 한국어로 응답하십시오.\n"
         "핵심 키워드를 중심으로 응답을 구성하고, 참고 개념은 필요한 경우에만 활용하십시오.\n"
         "결론 그래프가 제공되면, 단일 키워드가 아니라 해당 국소 그래프의 관계 구조를 우선 반영하십시오.\n"
-        "CorrectionGraph가 제공되면, 직전 응답의 일부가 사용자 입력과 충돌할 수 있음을 우선 인정하고 정정 방향으로 응답하십시오.\n"
+        "ClaimConflict가 제공되면, 새 사용자 assertion과 이전 assertion이 충돌할 수 있음을 우선 고려하고 정정/분리 방향으로 응답하십시오.\n"
         "제공된 지식 및 검색 결과를 근거로 구체적이고 정확한 정보를 답변에 포함하십시오. 단, 검색결과를 언급하지 않아도 되면 빼도 됩니다.\n"
         "근거 연결이 있으면 그 관계를 자연스럽게 반영하십시오.\n"
         "인식 상태 구조 자체를 설명하거나 나열하지 마십시오.\n"
         "확실하지 않거나 모르는 게 있으면 얼버무리지 않고, 모른다고 솔직하게 답하십시오.\n\n"
         f"[핵심 키워드]\n{key_text}\n\n"
         f"[참고 개념]\n{ref_text}\n\n"
-        f"[CorrectionGraph]\n{correction_graph_text}\n\n"
+        f"[ClaimConflict]\n{claim_conflict_text}\n\n"
         f"[결론 그래프]\n{conclusion_graph_text}\n\n"
         f"[근거 연결]\n{edge_text}\n\n"
         f"[지식 및 검색 결과]\n{search_text}"
@@ -244,11 +242,7 @@ def _initialize_identity_anchors(conn) -> None:
     from datetime import datetime, timezone
     from ..core.entities.node import Node
 
-    anchors = [
-        (ANCHOR_USER, "사용자", "User"),
-        (ANCHOR_ASSISTANT, "AI", "Assistant"),
-    ]
-
+    anchors = [(ANCHOR_USER, "사용자", "User"), (ANCHOR_ASSISTANT, "AI", "Assistant")]
     now = datetime.now(timezone.utc)
     for h, label_ko, label_en in anchors:
         if db_get_node(conn, h) is None:
@@ -282,50 +276,34 @@ class Pipeline:
         self._goal_node = self._goal_view.root_node
         _initialize_identity_anchors(self._conn)
         self._session_memory: dict[str, set[str]] = {}
-        self._previous_assistant_state: dict[str, PreviousAssistantState] = {}
+        self._previous_assertion_state: dict[str, AssertionState] = {}
 
-    async def run(
-        self,
-        user_input: str,
-        model: str | None = None,
-        session_id: str = "default",
-    ) -> PipelineResult:
+    async def run(self, user_input: str, model: str | None = None, session_id: str = "default") -> PipelineResult:
         _p0 = time.perf_counter()
-
         translated = await lang_to_graph(user_input, self._conn, get_embedding)
         _p1 = time.perf_counter()
         print(f"[pipeline] lang_to_graph: {_p1 - _p0:.3f}s")
 
-        engine = ThoughtEngine(
-            conn=self._conn,
-            embed_fn=get_embedding,
-            search_fn=_search,
-            goal_node=self._goal_node,
-        )
+        engine = ThoughtEngine(conn=self._conn, embed_fn=get_embedding, search_fn=_search, goal_node=self._goal_node)
         prev_hashes = self._session_memory.get(session_id)
-        previous_assistant_state = self._previous_assistant_state.get(session_id)
+        previous_assertion_state = self._previous_assertion_state.get(session_id)
         conclusion = await engine.think(
             translated,
             model=model,
             user_input=user_input,
             previous_key_hashes=prev_hashes,
-            previous_assistant_state=previous_assistant_state,
+            previous_assertion_state=previous_assertion_state,
         )
 
         self._session_memory[session_id] = conclusion.key_hashes
-        self._previous_assistant_state[session_id] = build_previous_assistant_state(conclusion)
+        self._previous_assertion_state[session_id] = build_assertion_state_from_conclusion(conclusion)
         print(f"[pipeline] topic_continuity: {conclusion.topic_continuity} (overlap with {len(prev_hashes or set())} prev keys)")
 
         _p2 = time.perf_counter()
         print(f"[pipeline] think: {_p2 - _p1:.3f}s")
-
         response_text = await graph_to_lang(conclusion)
         print(f"[pipeline] graph_to_lang+LLM: {time.perf_counter() - _p2:.3f}s")
-
-        return PipelineResult(
-            response_text=response_text,
-            conclusion=conclusion,
-        )
+        return PipelineResult(response_text=response_text, conclusion=conclusion)
 
     def close(self) -> None:
         close_db(self._conn)
