@@ -8,7 +8,14 @@ from typing import Literal
 
 EdgeFamily = Literal["concept", "relation"]
 ConnectType = Literal["flow", "neutral", "opposite", "conflict"]
-ProvenanceSource = Literal["lang_to_graph", "model_assertion", "search", "differentiation"]
+ProvenanceSource = Literal[
+    "lang_to_graph",
+    "model_assertion",
+    "search",
+    "differentiation",
+    "system_policy",
+    "user_policy",
+]
 
 
 @dataclass(slots=True)

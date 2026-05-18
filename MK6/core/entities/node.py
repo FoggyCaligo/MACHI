@@ -7,7 +7,7 @@ from typing import Literal
 
 
 NodeKind = Literal["concept", "relation", "event", "goal"]
-FormationSource = Literal["ingest", "differentiation", "search"]
+FormationSource = Literal["ingest", "differentiation", "search", "system_policy", "user_policy"]
 
 
 @dataclass(slots=True)

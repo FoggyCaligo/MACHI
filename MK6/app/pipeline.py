@@ -5,14 +5,12 @@
 """
 from __future__ import annotations
 
-import hashlib
 import math
-import sqlite3
 import time
 from dataclasses import dataclass
 
 from .. import config
-from ..core.entities.node import Node
+from ..core.goal import initialize_global_goal_graph
 from ..core.storage.db import close_db, open_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
@@ -158,40 +156,10 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     return response_text
 
 
-# ── 목표 노드 ─────────────────────────────────────────────────────────────────
-
-def _get_or_create_goal_node(conn: sqlite3.Connection) -> Node:
-    """세계그래프에서 목표 노드를 로드하거나 최초 생성한다."""
-    goal_hash = hashlib.sha256(b"goal::machi_ai_intent").hexdigest()[:32]
-    node = db_get_node(conn, goal_hash)
-    if node is not None:
-        return node
-
-    from datetime import datetime, timezone
-
-    now = datetime.now(timezone.utc)
-    goal_node = Node(
-        address_hash=goal_hash,
-        node_kind="goal",
-        formation_source="ingest",
-        labels=["목표", "AI_intent"],
-        is_abstract=False,
-        trust_score=1.0,
-        stability_score=1.0,
-        is_active=True,
-        embedding=None,
-        payload={},
-        created_at=now,
-        updated_at=now,
-    )
-    insert_node(conn, goal_node)
-    conn.commit()
-    return goal_node
-
-
-def _initialize_identity_anchors(conn: sqlite3.Connection) -> None:
+def _initialize_identity_anchors(conn) -> None:
     """사용자와 AI를 구분하기 위한 고정 앵커 노드를 생성한다."""
     from datetime import datetime, timezone
+    from ..core.entities.node import Node
 
     anchors = [
         (ANCHOR_USER, "사용자", "User"),
@@ -227,7 +195,8 @@ class Pipeline:
 
     def __init__(self, db_path: str | None = None) -> None:
         self._conn = open_db(db_path or config.DB_PATH)
-        self._goal_node = _get_or_create_goal_node(self._conn)
+        self._goal_view = initialize_global_goal_graph(self._conn)
+        self._goal_node = self._goal_view.root_node
         _initialize_identity_anchors(self._conn)
         self._session_memory: dict[str, set[str]] = {}
 
