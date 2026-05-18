@@ -62,12 +62,38 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             return node.labels[0]
         return address_hash[:8]
 
+    def _display_degree(address_hash: str) -> int:
+        degree = 0
+        for edge in conclusion.edges:
+            if edge.is_temporary and not (edge.edge_family == "relation" and edge.source_hash in identity_names):
+                continue
+            if is_profile_reference_edge(edge):
+                continue
+            if _is_internal_goal_hash(edge.source_hash) or _is_internal_goal_hash(edge.target_hash):
+                continue
+            if _is_internal_profile_hash(edge.source_hash) or _is_internal_profile_hash(edge.target_hash):
+                continue
+            if address_hash in {edge.source_hash, edge.target_hash}:
+                degree += 1
+        return degree
+
+    def _is_keyword_candidate(address_hash: str) -> bool:
+        if address_hash in identity_names:
+            return True
+        if address_hash in conclusion.search_node_hashes:
+            return True
+        if conclusion.profile_activation_view and address_hash in conclusion.profile_activation_view.seed_hashes:
+            return True
+        return _display_degree(address_hash) >= 2
+
     for node in conclusion.nodes:
         if not _is_verbalizable_hash(node.address_hash):
             continue
         if node.is_abstract:
             continue
         if not node.labels:
+            continue
+        if not _is_keyword_candidate(node.address_hash):
             continue
 
         label_str = identity_names.get(node.address_hash) or node.labels[0]
