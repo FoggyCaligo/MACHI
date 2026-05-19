@@ -19,11 +19,16 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
+class KeywordSignal:
+    label: str
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
 class AnswerContract:
     continuity: str
     max_sentences: int
-    key_labels: list[str] = field(default_factory=list)
-    ref_labels: list[str] = field(default_factory=list)
+    keywords: list[KeywordSignal] = field(default_factory=list)
     profile_labels: list[str] = field(default_factory=list)
     profile_recall_confidence: float | None = None
     conclusion_lines: list[str] = field(default_factory=list)
@@ -62,19 +67,25 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
                 degree += 1
         return degree
 
-    def ranked_labels(hashes: set[str], *, limit: int) -> list[str]:
-        labels: list[str] = []
-        ranked = sorted((h for h in hashes if is_verbalizable_hash(h)), key=lambda h: (-display_degree(h), node_label(h), h))
+    def ranked_keywords(scores: dict[str, float], *, limit: int) -> list[KeywordSignal]:
+        signals: list[KeywordSignal] = []
+        ranked = sorted(
+            (h for h in scores if is_verbalizable_hash(h)),
+            key=lambda h: (-scores[h], -display_degree(h), node_label(h), h),
+        )
+        seen_labels: set[str] = set()
         for h in ranked:
             node = node_map.get(h)
             if node and (node.is_abstract or not node.labels):
                 continue
             label = node_label(h)
-            if label not in labels:
-                labels.append(label)
-            if len(labels) >= limit:
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
+            signals.append(KeywordSignal(label=label, score=scores[h]))
+            if len(signals) >= limit:
                 break
-        return labels
+        return signals
 
     profile_labels: list[str] = []
     profile_conf: float | None = None
@@ -90,11 +101,15 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     selected_node_hashes = {h for graph in conclusion.selected_graphs for h in graph.node_hashes if is_verbalizable_hash(h)}
     selected_edge_ids = {edge_id for graph in conclusion.selected_graphs for edge_id in graph.edge_ids}
 
+    keyword_scores = dict(conclusion.keyword_scores)
+    if not keyword_scores:
+        keyword_scores = {h: 1.0 for h in conclusion.key_hashes}
+        keyword_scores.update({h: 0.5 for h in conclusion.ref_hashes if h not in keyword_scores})
+
     return AnswerContract(
         continuity=conclusion.topic_continuity,
         max_sentences=5 if conflict_lines else 4,
-        key_labels=ranked_labels(set(conclusion.key_hashes), limit=5),
-        ref_labels=ranked_labels(set(conclusion.ref_hashes), limit=4),
+        keywords=ranked_keywords(keyword_scores, limit=12),
         profile_labels=profile_labels,
         profile_recall_confidence=profile_conf,
         conclusion_lines=conclusion_lines,
@@ -106,10 +121,12 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
 
 def render_answer_contract(contract: AnswerContract) -> str:
     lines = ["[AnswerContract]", f"continuity={contract.continuity}", f"max_sentences={contract.max_sentences}"]
-    if contract.key_labels:
-        lines.append("key_concepts=" + ", ".join(contract.key_labels))
-    if contract.ref_labels:
-        lines.append("reference_concepts=" + ", ".join(contract.ref_labels))
+    if contract.keywords:
+        rendered_keywords = ", ".join(
+            f"{keyword.label}({keyword.score:.2f})"
+            for keyword in contract.keywords
+        )
+        lines.append("keywords=" + rendered_keywords)
     if contract.profile_labels:
         confidence = f"{contract.profile_recall_confidence:.2f}" if contract.profile_recall_confidence is not None else "unknown"
         lines.extend(["[ProfileRecall]", "active=true", f"confidence={confidence}", "context=" + ", ".join(contract.profile_labels)])
