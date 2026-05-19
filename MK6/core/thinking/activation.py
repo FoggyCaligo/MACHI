@@ -45,11 +45,11 @@ def build_activation_conclusion_graphs(
 
     주의:
     - 대부분의 `is_temporary=True` edge는 현재 턴의 view/귀속 연결이므로 결론
-      근거나 goal support path로 사용하지 않는다.
-    - 단, `view_scope=input_sentence` edge는 사용자 입력 자체를 이루는 국소그래프
-      연결이므로 bounded activation 전파에만 사용한다.
+      근거나 evidence edge로 직접 사용하지 않는다.
+    - `view_scope=input_sentence` edge는 입력 국소그래프 전파용으로 사용한다.
+    - `view_scope=goal_anchor|turn_goal_anchor` edge는 목적 activation 경로용으로만
+      사용한다. 이 edge들은 결론 graph의 bridge/evidence 본체가 아니라 goal 압력이다.
     - restatement graph는 폐기하지 않고 rejected_graphs로 강등한다.
-    - evidence/source node 분리는 아직 하지 않는다. # TODO: evidence/source 분리 후 support 재계산
     """
     max_hops = config.THINK_ACTIVATION_HOPS if max_hops is None else max_hops
     graph_limit = config.THINK_CONCLUSION_GRAPH_LIMIT if graph_limit is None else graph_limit
@@ -113,13 +113,7 @@ def _spread(
     *,
     max_hops: int,
 ) -> dict[str, ReasoningPath]:
-    """source_hashes에서 bounded BFS로 가장 강한 ReasoningPath를 기록한다.
-
-    목표/정체성 임시 연결은 현재 턴의 조회 view일 뿐, 결론 근거로 사용하면 입력
-    토큰 전체가 goal-aligned로 오염된다. 반면 input_sentence runtime edge는
-    사용자 입력 안에서 direct concept들이 어떤 국소 구조를 이루는지를 나타내므로
-    activation 전파에는 사용한다.
-    """
+    """source_hashes에서 bounded BFS로 가장 강한 ReasoningPath를 기록한다."""
     best_paths: dict[str, ReasoningPath] = {}
     best_energy: dict[str, float] = {}
     queue: deque[tuple[str, ReasoningPath, float, int]] = deque()
@@ -174,7 +168,22 @@ def _spread(
 def _can_spread_over(edge: Edge) -> bool:
     if not edge.is_temporary:
         return True
-    return edge.payload.get("view_scope") == "input_sentence"
+    return edge.payload.get("view_scope") in {
+        "input_sentence",
+        "goal_anchor",
+        "turn_goal_anchor",
+    }
+
+
+def _is_runtime_path_edge(edge: Edge | None) -> bool:
+    if edge is None or not edge.is_temporary:
+        return False
+    return edge.payload.get("view_scope") in {
+        "goal_anchor",
+        "turn_goal_anchor",
+        "identity_anchor",
+        "anchor",
+    }
 
 
 def _edge_next(edge: Edge, current_hash: str) -> tuple[str | None, str]:
@@ -324,7 +333,11 @@ def _make_conclusion_graph(
     activation: dict[str, ActivationState],
 ) -> ConclusionGraph:
     node_hashes = set(input_path.node_hashes) | set(goal_path.node_hashes) | {core_hash}
-    edge_ids = set(input_path.edge_ids) | set(goal_path.edge_ids)
+    raw_edge_ids = set(input_path.edge_ids) | set(goal_path.edge_ids)
+    edge_ids = {
+        edge_id for edge_id in raw_edge_ids
+        if not _is_runtime_path_edge(tg.get_edge(edge_id))
+    }
     conflict_paths: list[ReasoningPath] = []
     contrast_paths: list[ReasoningPath] = []
     exception_hashes: set[str] = set()
