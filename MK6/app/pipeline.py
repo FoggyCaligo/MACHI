@@ -29,7 +29,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "SurfaceFrame에 없는 사실을 새로 만들지 마십시오.\n"
         "사용자 입력 문장을 추정해서 따라하지 마십시오.\n"
         "copy_user_input=false이면 사용자의 방금 문장을 확인문이나 재진술문으로 바꾸지 마십시오.\n"
-        "mode=acknowledge_context_update이면 새 정보 수용을 짧게 답하십시오.\n"
+        "mode=brief_acknowledgement이면 focus를 나열하지 말고 짧게 반응만 하십시오.\n"
         "mode=answer_from_conclusion이면 frames의 관계를 자연스럽게 설명하십시오.\n"
         "mode=conflict_resolution이면 conflicts를 중심으로 충돌을 짧게 정리하십시오.\n"
         "max_sentences 안에서 최종 답변만 한국어로 쓰십시오."
