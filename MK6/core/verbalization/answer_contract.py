@@ -51,11 +51,9 @@ class SurfaceNodeFrame:
 
 @dataclass(frozen=True, slots=True)
 class SurfaceActionFrame:
-    action: str
     actor: str
     target: str
     target_display: list[str] = field(default_factory=list)
-    input_context: list[str] = field(default_factory=list)
     confidence: float = 0.0
 
 
@@ -104,24 +102,26 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     answer_graphs = [graph for graph in selected_graphs if not graph.has_conflict_structure]
     relation_graphs = answer_graphs or selected_graphs
     action_graphs = [graph for graph in relation_graphs if _is_turn_response_graph(graph, node_map)]
+    non_action_graphs = [graph for graph in relation_graphs if graph not in action_graphs]
 
     actions = _build_action_frames(action_graphs, node_map, node_label)
-    frames = _build_node_frames(relation_graphs, edge_by_id, node_label, is_internal_hash)
+    frames = _build_node_frames(non_action_graphs, edge_by_id, node_label, is_internal_hash)
     conflicts = _build_conflict_frames(
         [graph for graph in selected_graphs if graph.has_conflict_structure],
         node_label,
         is_internal_hash,
     )
 
-    primary_hashes = _action_focus_hashes(action_graphs, node_map)
-    if not primary_hashes:
-        primary_hashes = _rank_graph_hashes(relation_graphs, node_map, node_label, is_internal_hash, limit=5)
-    supporting_hashes = _rank_supporting_hashes(relation_graphs, primary_hashes, node_map, node_label, is_internal_hash, limit=7)
+    primary_hashes: list[str] = []
+    supporting_hashes: list[str] = []
+    if not actions:
+        primary_hashes = _rank_graph_hashes(non_action_graphs, node_map, node_label, is_internal_hash, limit=5)
+        supporting_hashes = _rank_supporting_hashes(non_action_graphs, primary_hashes, node_map, node_label, is_internal_hash, limit=7)
 
     mode = _select_mode(
         has_conflict=bool(conflicts),
         has_action=bool(actions),
-        has_graph=bool(relation_graphs),
+        has_graph=bool(non_action_graphs),
     )
 
     return AnswerContract(
@@ -174,32 +174,13 @@ def _build_action_frames(graphs: list["ConclusionGraph"], node_map: dict[str, "N
             actor_hash = node.payload.get("actor_hash") or ANCHOR_ASSISTANT
             target_hash = node.payload.get("target_hash") or ANCHOR_USER
             display_hashes = [h for h in node.payload.get("target_display_hashes", []) if isinstance(h, str)]
-            context_hashes = [h for h in node.payload.get("input_context_hashes", []) if isinstance(h, str)]
             result.append(SurfaceActionFrame(
-                action=node_label(action_hash),
                 actor=node_label(actor_hash),
                 target=node_label(target_hash),
                 target_display=[node_label(h) for h in display_hashes],
-                input_context=[node_label(h) for h in context_hashes],
                 confidence=round(float(node.payload.get("confidence", graph.score)), 3),
             ))
     return result
-
-
-def _action_focus_hashes(graphs: list["ConclusionGraph"], node_map: dict[str, "Node"]) -> list[str]:
-    focus: list[str] = []
-    for graph in graphs:
-        for action_hash in sorted(graph.action_hashes | graph.core_hashes):
-            node = node_map.get(action_hash)
-            if node is None or not node.payload.get("response_action"):
-                continue
-            for h in node.payload.get("target_display_hashes", []):
-                if isinstance(h, str) and h not in focus:
-                    focus.append(h)
-            target_hash = node.payload.get("target_hash")
-            if isinstance(target_hash, str) and target_hash not in focus:
-                focus.append(target_hash)
-    return focus
 
 
 def _rank_graph_hashes(graphs, node_map, node_label, is_internal_hash, *, limit: int) -> list[str]:
