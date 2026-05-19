@@ -78,6 +78,7 @@ class ConclusionView:
     user_input: str | None = None
     key_hashes: set[str] = field(default_factory=set)
     ref_hashes: set[str] = field(default_factory=set)
+    keyword_scores: dict[str, float] = field(default_factory=dict)
     search_node_hashes: set[str] = field(default_factory=set)
     selected_graphs: list[ConclusionGraph] = field(default_factory=list)
     rejected_graphs: list[RejectedConclusionGraph] = field(default_factory=list)
@@ -378,8 +379,13 @@ class ThoughtEngine:
         primary_scored = scored_direct + scored_slots
         key_hashes: set[str] = {h for _, h in primary_scored}
         ref_hashes: set[str] = {h for _, h in scored_context if h not in key_hashes}
+        keyword_scores: dict[str, float] = {}
+        for importance, h in primary_scored + scored_context:
+            keyword_scores[h] = max(keyword_scores.get(h, 0.0), importance)
         if previous_key_hashes:
             ref_hashes |= (previous_key_hashes - key_hashes)
+            for h in previous_key_hashes:
+                keyword_scores.setdefault(h, 0.25)
 
         if not previous_key_hashes:
             topic_continuity = "new_topic"
@@ -436,6 +442,7 @@ class ThoughtEngine:
             user_input=user_input,
             key_hashes=key_hashes,
             ref_hashes=ref_hashes,
+            keyword_scores=keyword_scores,
             search_node_hashes=search_node_hashes,
             selected_graphs=selected_graphs,
             rejected_graphs=activation_result.rejected_graphs,
