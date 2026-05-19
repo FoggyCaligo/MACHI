@@ -20,6 +20,9 @@ from .conclusion_graph import (
 from .temp_thought_graph import TempThoughtGraph
 
 
+MIN_INPUT_ONLY_BODY_SUPPORT = 2
+
+
 @dataclass(frozen=True, slots=True)
 class ActivationResult:
     """Think activation 결과 projection.
@@ -48,6 +51,8 @@ def build_activation_conclusion_graphs(
     - input_sentence runtime edge는 같은 endpoint의 persistent edge가 있으면 그 edge를
       ConclusionGraph body edge로 materialize한다.
     - goal_anchor/turn_goal_anchor edge는 목적 압력용 path로만 사용하고 evidence/body에서는 제외한다.
+    - goal-aligned만으로 결론 승격하지 않는다. body edge가 input-only이면 반복 support가
+      충분하거나 비입력 구조가 있어야 selected ConclusionGraph가 된다.
     - restatement graph는 폐기하지 않고 rejected_graphs로 강등한다.
     """
     max_hops = config.THINK_ACTIVATION_HOPS if max_hops is None else max_hops
@@ -292,18 +297,11 @@ def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) 
         return "input_restatement"
     if not graph.edge_ids:
         return "insufficient_support"
-    has_non_temporary_edge = any(
-        (edge := tg.get_edge(edge_id)) is not None and not edge.is_temporary
-        for edge_id in graph.edge_ids
-    )
-    if not has_non_temporary_edge:
+    body_edges = [edge for edge_id in graph.edge_ids if (edge := tg.get_edge(edge_id)) is not None]
+    persistent_edges = [edge for edge in body_edges if not edge.is_temporary]
+    if not persistent_edges:
         return "insufficient_support"
-    if (
-        not graph.has_non_input_structure
-        and not graph.goal_paths
-        and not graph.exception_hashes
-        and not graph.bridge_hashes
-    ):
+    if not _has_body_structure_beyond_single_turn_input(graph, persistent_edges):
         return "input_restatement"
     if quality.average_edge_score <= 0.0 or quality.support_strength <= 0.0:
         return "insufficient_support"
@@ -314,6 +312,18 @@ def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) 
     if graph.has_conflict_structure and quality.conflict_pressure > quality.support_strength:
         return "conflict_dominant"
     return None
+
+
+def _has_body_structure_beyond_single_turn_input(graph: ConclusionGraph, edges: list[Edge]) -> bool:
+    if graph.bridge_hashes or graph.exception_hashes or graph.condition_hashes or graph.action_hashes:
+        return True
+    for edge in edges:
+        endpoints = {edge.source_hash, edge.target_hash}
+        if not endpoints <= graph.input_hashes:
+            return True
+        if edge.support_count >= MIN_INPUT_ONLY_BODY_SUPPORT:
+            return True
+    return False
 
 
 def _candidate_score(core_hash: str, state: ActivationState, input_sources: set[str]) -> float:
