@@ -25,6 +25,7 @@
 3. 문장 내부 인접 관계는 입력 의미를 구성하는 temporary edge로 유지된다.
 4. 검색 결과 원문은 GraphToLang에 직접 전달하지 않는다.
 5. 기존 profile, topic, user/AI identity, resolution provenance 정책은 유지한다.
+6. 기존 graph에 없어서 EmptySlot으로 시작했더라도, 사고 루프에서 채워진 입력 concept은 key/ref 후보 선정에서 direct 입력 성격을 잃지 않는다.
 
 ## 1단계 구현
 
