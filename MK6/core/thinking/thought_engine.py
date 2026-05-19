@@ -376,15 +376,15 @@ class ThoughtEngine:
         scored_direct.sort(key=lambda x: x[0], reverse=True)
         scored_context.sort(key=lambda x: x[0], reverse=True)
         scored_slots.sort(key=lambda x: x[0], reverse=True)
-        primary_scored = scored_direct or scored_slots
+        primary_scored = scored_direct + scored_slots
         n_sel = len(primary_scored)
         n_near = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_NEAR_RATIO)) if n_sel else 0
         n_far = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_FAR_RATIO)) if n_sel else 0
         key_hashes: set[str] = {h for _, h in primary_scored[:n_near]}
         far_cands: set[str] = {h for _, h in primary_scored[max(0, n_sel - n_far):]} if n_sel else set()
         ref_hashes: set[str] = far_cands - key_hashes
-        if not scored_direct:
-            # 현재 입력에서 exact direct concept이 없을 때만 semantic local candidates를 참고 개념으로 사용한다.
+        if not primary_scored:
+            # 현재 입력에서 직접 concept을 확정하지 못할 때만 semantic local candidates를 참고 개념으로 사용한다.
             ref_hashes |= {h for _, h in scored_context[:max(1, n_far or 1)]}
         if previous_key_hashes:
             ref_hashes |= (previous_key_hashes - key_hashes)
