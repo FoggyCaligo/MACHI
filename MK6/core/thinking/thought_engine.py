@@ -41,7 +41,7 @@ from ..storage.world_graph import (
 from ..utils.hash_resolver import compute_hash, normalize_text
 from ..utils.local_graph_extractor import extract as extract_subgraph
 from ... import config
-from . import concept_differentiation, concept_merge
+from . import concept_differentiation, concept_merge, surface_variant_evidence
 from .activation import build_activation_conclusion_graphs
 from .claim_graph import AssertionState, apply_claim_conflict_pressure, build_claim_conflict_graph
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
@@ -336,6 +336,11 @@ class ThoughtEngine:
             _td = time.perf_counter()
             diff_results = concept_differentiation.run(tg)
             _t(f"concept_diff (loop {loop_count})", _td)
+
+            _tsv = time.perf_counter()
+            surface_variant_results = surface_variant_evidence.run(tg)
+            if surface_variant_results:
+                _t(f"surface_variant_evidence (x{len(surface_variant_results)}) (loop {loop_count})", _tsv)
 
             _tm = time.perf_counter()
             merge_count = concept_merge.run(tg)
