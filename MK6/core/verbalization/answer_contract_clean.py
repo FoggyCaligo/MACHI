@@ -99,7 +99,11 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     conclusion_lines = _render_conclusion_graph_lines(answer_graphs, edge_by_id=edge_by_id, node_label=node_label, is_verbalizable_hash=is_verbalizable_hash, limit=2)
     conflict_lines = _render_conflict_graph_lines(conflict_graphs, node_label=node_label, is_verbalizable_hash=is_verbalizable_hash, limit=2)
     selected_node_hashes = {h for graph in conclusion.selected_graphs for h in graph.node_hashes if is_verbalizable_hash(h)}
-    selected_edge_ids = {edge_id for graph in conclusion.selected_graphs for edge_id in graph.edge_ids}
+    graph_by_edge_id = {
+        edge_id: graph
+        for graph in conclusion.selected_graphs
+        for edge_id in graph.edge_ids
+    }
 
     keyword_scores = dict(conclusion.keyword_scores)
     if not keyword_scores:
@@ -114,7 +118,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
         profile_recall_confidence=profile_conf,
         conclusion_lines=conclusion_lines,
         conflict_lines=conflict_lines,
-        evidence_lines=_select_evidence_lines(conclusion, edge_by_id=edge_by_id, selected_graph_edge_ids=selected_edge_ids, node_label=node_label, is_verbalizable_hash=is_verbalizable_hash, evidence_ratio=EVIDENCE_EDGE_RATIO),
+        evidence_lines=_select_evidence_lines(conclusion, edge_by_id=edge_by_id, graph_by_edge_id=graph_by_edge_id, node_label=node_label, is_verbalizable_hash=is_verbalizable_hash, evidence_ratio=EVIDENCE_EDGE_RATIO),
         search_context_parts=_select_search_context(conclusion, node_map=node_map, selected_graph_node_hashes=selected_node_hashes, is_verbalizable_hash=is_verbalizable_hash, limit=2),
     )
 
