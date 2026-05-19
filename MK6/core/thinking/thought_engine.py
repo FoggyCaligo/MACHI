@@ -78,6 +78,7 @@ class ConclusionView:
     user_input: str | None = None
     key_hashes: set[str] = field(default_factory=set)
     ref_hashes: set[str] = field(default_factory=set)
+    keyword_scores: dict[str, float] = field(default_factory=dict)
     search_node_hashes: set[str] = field(default_factory=set)
     selected_graphs: list[ConclusionGraph] = field(default_factory=list)
     rejected_graphs: list[RejectedConclusionGraph] = field(default_factory=list)
@@ -355,7 +356,6 @@ class ThoughtEngine:
 
         concept_differentiation.run(tg)
 
-        import math as _math
         scored_direct: list[tuple[float, str]] = []
         scored_context: list[tuple[float, str]] = []
         scored_slots: list[tuple[float, str]] = []
@@ -377,17 +377,15 @@ class ThoughtEngine:
         scored_context.sort(key=lambda x: x[0], reverse=True)
         scored_slots.sort(key=lambda x: x[0], reverse=True)
         primary_scored = scored_direct + scored_slots
-        n_sel = len(primary_scored)
-        n_near = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_NEAR_RATIO)) if n_sel else 0
-        n_far = max(1, _math.ceil(n_sel * config.TOKEN_IMPORTANCE_FAR_RATIO)) if n_sel else 0
-        key_hashes: set[str] = {h for _, h in primary_scored[:n_near]}
-        far_cands: set[str] = {h for _, h in primary_scored[max(0, n_sel - n_far):]} if n_sel else set()
-        ref_hashes: set[str] = far_cands - key_hashes
-        if not primary_scored:
-            # 현재 입력에서 직접 concept을 확정하지 못할 때만 semantic local candidates를 참고 개념으로 사용한다.
-            ref_hashes |= {h for _, h in scored_context[:max(1, n_far or 1)]}
+        key_hashes: set[str] = {h for _, h in primary_scored}
+        ref_hashes: set[str] = {h for _, h in scored_context if h not in key_hashes}
+        keyword_scores: dict[str, float] = {}
+        for importance, h in primary_scored + scored_context:
+            keyword_scores[h] = max(keyword_scores.get(h, 0.0), importance)
         if previous_key_hashes:
             ref_hashes |= (previous_key_hashes - key_hashes)
+            for h in previous_key_hashes:
+                keyword_scores.setdefault(h, 0.25)
 
         if not previous_key_hashes:
             topic_continuity = "new_topic"
@@ -444,6 +442,7 @@ class ThoughtEngine:
             user_input=user_input,
             key_hashes=key_hashes,
             ref_hashes=ref_hashes,
+            keyword_scores=keyword_scores,
             search_node_hashes=search_node_hashes,
             selected_graphs=selected_graphs,
             rejected_graphs=activation_result.rejected_graphs,
