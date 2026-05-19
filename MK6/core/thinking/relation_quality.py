@@ -41,6 +41,7 @@ def score_graph_relations(tg: TempThoughtGraph, graph: ConclusionGraph) -> Graph
     edge_scores: dict[str, EdgeRelationQuality] = {}
     support_edge_ids = _path_edge_ids(graph.support_paths)
     goal_edge_ids = _path_edge_ids(graph.goal_paths)
+    goal_touched_hashes = _path_node_hashes(graph.goal_paths)
 
     for edge_id in graph.edge_ids:
         edge = tg.get_edge(edge_id)
@@ -51,6 +52,7 @@ def score_graph_relations(tg: TempThoughtGraph, graph: ConclusionGraph) -> Graph
             graph,
             support_edge_ids=support_edge_ids,
             goal_edge_ids=goal_edge_ids,
+            goal_touched_hashes=goal_touched_hashes,
         )
 
     if not edge_scores:
@@ -100,10 +102,12 @@ def score_edge_relation(
     *,
     support_edge_ids: set[str] | None = None,
     goal_edge_ids: set[str] | None = None,
+    goal_touched_hashes: set[str] | None = None,
 ) -> EdgeRelationQuality:
     """edge 하나의 relation 품질을 구조적으로 계산한다."""
     support_edge_ids = support_edge_ids or set()
     goal_edge_ids = goal_edge_ids or set()
+    goal_touched_hashes = goal_touched_hashes or set()
 
     if edge.is_temporary:
         return EdgeRelationQuality(
@@ -125,6 +129,7 @@ def score_edge_relation(
     endpoints = {edge.source_hash, edge.target_hash}
     touches_input = bool(endpoints & graph.input_hashes)
     touches_goal = bool(endpoints & graph.goal_hashes)
+    touches_goal_path = bool(endpoints & goal_touched_hashes)
     touches_bridge = bool(endpoints & graph.bridge_hashes)
     touches_core = bool(endpoints & graph.core_hashes)
     input_only = edge.source_hash in graph.input_hashes and edge.target_hash in graph.input_hashes
@@ -133,6 +138,8 @@ def score_edge_relation(
     if edge.edge_id in goal_edge_ids:
         goal_relevance += 0.55
     if touches_goal:
+        goal_relevance += 0.25
+    if touches_goal_path:
         goal_relevance += 0.25
     if touches_core and graph.goal_paths:
         goal_relevance += 0.10
@@ -144,11 +151,17 @@ def score_edge_relation(
         bridge_value += 0.20
     if touches_core and not input_only:
         bridge_value += 0.15
+    if touches_core and touches_goal_path:
+        bridge_value += 0.10
 
     restatement_risk = 0.0
     if input_only:
-        restatement_risk += 0.70 if edge.connect_type == "neutral" else 0.45
-    if edge.edge_id not in support_edge_ids and edge.edge_id not in goal_edge_ids and not touches_bridge:
+        # input끼리의 neutral edge라도 goal path 위에서 선택된 경우에는 단순 재진술로만 보지 않는다.
+        if touches_goal_path or graph.goal_paths:
+            restatement_risk += 0.35 if edge.connect_type == "neutral" else 0.25
+        else:
+            restatement_risk += 0.70 if edge.connect_type == "neutral" else 0.45
+    if edge.edge_id not in support_edge_ids and edge.edge_id not in goal_edge_ids and not touches_bridge and not touches_goal_path:
         restatement_risk += 0.15
 
     conflict_pressure = max(0.0, edge.contradiction_pressure)
@@ -208,6 +221,10 @@ def _fallback_edge_score(edge: Edge) -> float:
 
 def _path_edge_ids(paths) -> set[str]:
     return {edge_id for path in paths for edge_id in path.edge_ids}
+
+
+def _path_node_hashes(paths) -> set[str]:
+    return {node_hash for path in paths for node_hash in path.node_hashes}
 
 
 def _connect_gain(connect_type: str) -> float:
