@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     from ..thinking.thought_engine import ConclusionView
 
 
+INPUT_DELTA_PRIMARY_LIMIT = 2
+INPUT_DELTA_SUPPORT_LIMIT = 0
+
+
 @dataclass(frozen=True, slots=True)
 class SurfaceResponse:
     mode: str
@@ -151,7 +155,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
             node_label,
             is_verbalizable_hash,
             display_degree,
-            limit=5,
+            limit=INPUT_DELTA_PRIMARY_LIMIT,
         )
         supporting_hashes = _rank_fallback_hashes(
             set(conclusion.ref_hashes) - set(primary_hashes),
@@ -160,15 +164,9 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
             node_label,
             is_verbalizable_hash,
             display_degree,
-            limit=7,
+            limit=INPUT_DELTA_SUPPORT_LIMIT,
         )
-        frames = _build_input_delta_frames(
-            primary_hashes,
-            conclusion.edges,
-            node_label,
-            is_verbalizable_hash,
-            limit_per_node=4,
-        )
+        frames: list[SurfaceNodeFrame] = []
         source = "input_delta"
 
     conflicts = _build_conflict_frames(
@@ -180,7 +178,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     mode = _select_mode(
         has_conflict=bool(conflicts),
         has_conclusion=bool(answer_graphs),
-        has_frame=bool(frames or primary_hashes or supporting_hashes),
+        has_focus=bool(primary_hashes or supporting_hashes),
     )
 
     return AnswerContract(
@@ -189,7 +187,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
         response=SurfaceResponse(
             mode=mode,
             continuity=conclusion.topic_continuity,
-            max_sentences=5 if mode == "conflict_resolution" else 2 if mode == "acknowledge_context_update" else 4,
+            max_sentences=5 if mode == "conflict_resolution" else 1 if mode == "brief_acknowledgement" else 4,
         ),
         focus=SurfaceFocus(
             primary=[node_label(h) for h in primary_hashes],
@@ -206,13 +204,13 @@ def render_answer_contract(contract: AnswerContract) -> str:
     return json.dumps(asdict(contract), ensure_ascii=False, indent=2)
 
 
-def _select_mode(*, has_conflict: bool, has_conclusion: bool, has_frame: bool) -> str:
+def _select_mode(*, has_conflict: bool, has_conclusion: bool, has_focus: bool) -> str:
     if has_conflict:
         return "conflict_resolution"
     if has_conclusion:
         return "answer_from_conclusion"
-    if has_frame:
-        return "acknowledge_context_update"
+    if has_focus:
+        return "brief_acknowledgement"
     return "minimal_response"
 
 
@@ -266,7 +264,9 @@ def _rank_fallback_hashes(
     *,
     limit: int,
 ) -> list[str]:
-    ranked = _rank_hashes(hashes, node_map, node_label, is_verbalizable_hash, display_degree, limit=limit * 2)
+    if limit <= 0:
+        return []
+    ranked = _rank_hashes(hashes, node_map, node_label, is_verbalizable_hash, display_degree, limit=limit * 3)
     return sorted(
         ranked,
         key=lambda h: (-keyword_scores.get(h, 0.0), -display_degree(h), node_label(h), h),
@@ -330,21 +330,6 @@ def _build_conclusion_frames(
     return _dedupe_frames(frames)
 
 
-def _build_input_delta_frames(
-    primary_hashes: list[str],
-    edges: list["Edge"],
-    node_label,
-    is_verbalizable_hash,
-    *,
-    limit_per_node: int,
-) -> list[SurfaceNodeFrame]:
-    frames: list[SurfaceNodeFrame] = []
-    for source_hash in primary_hashes:
-        frame_edges = _surface_edges_from_edge_list(source_hash, edges, node_label, is_verbalizable_hash, limit=limit_per_node)
-        frames.append(SurfaceNodeFrame(source=node_label(source_hash), role="input", edges=frame_edges))
-    return _dedupe_frames(frames)
-
-
 def _surface_edges_from_graph(
     source_hash: str,
     graph: "ConclusionGraph",
@@ -371,32 +356,6 @@ def _surface_edges_from_graph(
     return [_to_surface_edge(source_hash, edge, node_label, score) for score, edge in ranked[:limit]]
 
 
-def _surface_edges_from_edge_list(
-    source_hash: str,
-    edges: list["Edge"],
-    node_label,
-    is_verbalizable_hash,
-    *,
-    limit: int,
-) -> list[SurfaceEdge]:
-    ranked: list[tuple[float, "Edge"]] = []
-    for edge in edges:
-        if edge.is_temporary and edge.payload.get("view_scope") != "input_sentence":
-            continue
-        if is_profile_reference_edge(edge):
-            continue
-        if source_hash not in {edge.source_hash, edge.target_hash}:
-            continue
-        if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
-            continue
-        score = _fallback_edge_score(edge)
-        if score <= 0.0:
-            continue
-        ranked.append((score, edge))
-    ranked.sort(key=lambda item: (-item[0], -item[1].edge_weight, item[1].edge_id))
-    return [_to_surface_edge(source_hash, edge, node_label, score) for score, edge in ranked[:limit]]
-
-
 def _to_surface_edge(source_hash: str, edge: "Edge", node_label, score: float) -> SurfaceEdge:
     if edge.source_hash == source_hash:
         target_hash = edge.target_hash
@@ -414,19 +373,6 @@ def _to_surface_edge(source_hash: str, edge: "Edge", node_label, score: float) -
         support=edge.support_count,
         score=round(score, 3),
     )
-
-
-def _fallback_edge_score(edge: "Edge") -> float:
-    base = max(0.0, edge.edge_weight) * max(0.0, edge.trust_score)
-    if edge.connect_type == "neutral":
-        base *= 0.55
-    elif edge.connect_type == "opposite":
-        base *= 0.70
-    elif edge.connect_type == "conflict":
-        base *= 0.30
-    base += min(0.15, max(0, edge.support_count) * 0.03)
-    base -= max(0.0, edge.contradiction_pressure) * 0.20
-    return max(0.0, base)
 
 
 def _node_role_in_graph(address_hash: str, graph: "ConclusionGraph") -> str:
