@@ -1,7 +1,7 @@
 # MK6 InputGraphBundle 설계
 
 작성: 2026-05-18
-상태: 2단계 구현 기준 문서
+상태: 3단계 구현 기준 문서
 
 ## 배경
 
@@ -27,6 +27,7 @@
 5. 기존 profile, topic, user/AI identity, resolution provenance 정책은 유지한다.
 6. 기존 graph에 없어서 EmptySlot으로 시작했더라도, 사고 루프에서 채워진 입력 concept은 keyword 후보 선정에서 direct 입력 성격을 잃지 않는다.
 7. GraphToLang에는 key/reference 이분법보다 keyword와 중요도 점수를 함께 전달한다.
+8. 입력 문장 edge는 WorldGraph에 커밋할 지식이 아니라 현재 턴 activation view다.
 
 ## 1단계 구현
 
@@ -57,6 +58,43 @@ TempThoughtGraph.load_from_translated(translated)
 - profile/topic/user-AI identity/provenance 로직은 건드리지 않는다.
 ```
 
+## 3단계 구현
+
+3단계에서는 `InputGraphBundle.sentence_edges`를 TempThoughtGraph의 런타임 activation edge로 로드한다.
+
+```text
+InputGraphBundle.sentence_edges
+→ TempThoughtGraph._pending_sentence_edges
+→ resolve 가능한 endpoint만 input_sentence temporary edge로 적재
+→ EmptySlot이 fill_slot으로 채워지면 보류 edge 재시도
+→ activation._spread()에서 input_sentence edge만 temporary 예외 전파 허용
+```
+
+이 edge는 다음 성격을 가진다.
+
+```text
+is_temporary=True
+provenance_source=lang_to_graph
+payload.runtime_view=True
+payload.view_scope=input_sentence
+```
+
+따라서 입력 문장 edge는 다음에는 사용된다.
+
+```text
+- 입력 국소그래프 사이의 activation 전파
+- 사용자의 현재 문장이 만든 임시 구조 보존
+- EmptySlot ingest 이후 새로 채워진 노드와 기존 입력 concept의 연결 복원
+```
+
+반대로 다음에는 사용하지 않는다.
+
+```text
+- WorldGraph 영구 edge commit
+- GraphToLang EvidenceEdges 직접 노출
+- 사용자 identity/profile claim 저장
+```
+
 ## InputGraphBundle 구조
 
 ```text
@@ -85,16 +123,15 @@ sentence_edges   문장 내부 임시 연결 후보
 ## 아직 하지 않는 것
 
 ```text
-TurnGoalGraph 생성
-GraphPatch 기반 reasoning loop
-patch overlap 수렴 조건
+TurnGoalGraph의 별도 명시 구조화
 RecallNeed/SearchNeed 완전 분리
-ConclusionGraph relation 품질 고도화
+입력 문장 edge의 connect_type 구조 추론 고도화
+input_sentence edge를 이용한 goal patch 생성 정책
 ```
 
 ## 이후 단계
 
-다음 단계부터는 InputGraphBundle을 기반으로 TurnGoalGraph를 만들고, 현재 입력 그래프를 목적 그래프에 맞게 수정하는 GraphReasoningLoop로 확장한다.
+다음 단계부터는 InputGraphBundle을 기반으로 TurnGoalGraph를 더 명시적으로 만들고, 현재 입력 그래프를 목적 그래프에 맞게 수정하는 GraphReasoningLoop로 확장한다.
 
 최종 목표는 다음이다.
 

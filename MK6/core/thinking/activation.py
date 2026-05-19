@@ -44,8 +44,10 @@ def build_activation_conclusion_graphs(
     """input/goal 양방향 activation으로 ConclusionGraph skeleton을 만든다.
 
     주의:
-    - TempThoughtGraph의 `is_temporary=True` edge는 현재 턴의 view/귀속 연결이다.
-      결론 근거나 goal support path로 사용하지 않는다.
+    - 대부분의 `is_temporary=True` edge는 현재 턴의 view/귀속 연결이므로 결론
+      근거나 goal support path로 사용하지 않는다.
+    - 단, `view_scope=input_sentence` edge는 사용자 입력 자체를 이루는 국소그래프
+      연결이므로 bounded activation 전파에만 사용한다.
     - restatement graph는 폐기하지 않고 rejected_graphs로 강등한다.
     - evidence/source node 분리는 아직 하지 않는다. # TODO: evidence/source 분리 후 support 재계산
     """
@@ -113,8 +115,10 @@ def _spread(
 ) -> dict[str, ReasoningPath]:
     """source_hashes에서 bounded BFS로 가장 강한 ReasoningPath를 기록한다.
 
-    `is_temporary=True` edge는 전파하지 않는다. 목표/정체성 임시 연결은 현재 턴의
-    조회 view일 뿐, 결론 근거로 사용하면 입력 토큰 전체가 goal-aligned로 오염된다.
+    목표/정체성 임시 연결은 현재 턴의 조회 view일 뿐, 결론 근거로 사용하면 입력
+    토큰 전체가 goal-aligned로 오염된다. 반면 input_sentence runtime edge는
+    사용자 입력 안에서 direct concept들이 어떤 국소 구조를 이루는지를 나타내므로
+    activation 전파에는 사용한다.
     """
     best_paths: dict[str, ReasoningPath] = {}
     best_energy: dict[str, float] = {}
@@ -132,7 +136,7 @@ def _spread(
             continue
 
         for edge in tg.get_edges_for_node(current_hash):
-            if edge.is_temporary:
+            if not _can_spread_over(edge):
                 continue
 
             next_hash, direction = _edge_next(edge, current_hash)
@@ -165,6 +169,12 @@ def _spread(
             queue.append((next_hash, next_path, next_energy, depth + 1))
 
     return best_paths
+
+
+def _can_spread_over(edge: Edge) -> bool:
+    if not edge.is_temporary:
+        return True
+    return edge.payload.get("view_scope") == "input_sentence"
 
 
 def _edge_next(edge: Edge, current_hash: str) -> tuple[str | None, str]:

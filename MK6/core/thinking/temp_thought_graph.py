@@ -14,15 +14,16 @@ from datetime import datetime, timezone
 from ..entities.node import Node
 from ..entities.edge import Edge
 from ..entities.translated_graph import (
-    TranslatedGraph, ConceptPointer, EmptySlot, InputGraphBundle,
+    TranslatedGraph, ConceptPointer, EmptySlot, InputGraphBundle, TranslatedEdge,
 )
-from ..utils.hash_resolver import ANCHOR_USER
+from ..utils.hash_resolver import ANCHOR_USER, compute_hash
 from .graph_patch import GraphPatch
 
 
 USER_ANCHOR_TEMP_EDGE_WEIGHT = 1.35
 GOAL_ANCHOR_TEMP_EDGE_WEIGHT = 0.85
 TURN_GOAL_TEMP_EDGE_WEIGHT = 0.95
+INPUT_SENTENCE_TEMP_EDGE_WEIGHT = 0.70
 DEFAULT_ANCHOR_TEMP_EDGE_WEIGHT = 1.0
 
 
@@ -68,6 +69,8 @@ class TempThoughtGraph:
         self._checked_pairs: set[frozenset[str]] = set()
         self._differentiated_pairs: set[frozenset[str]] = set()
         self._goal_connections: set[str] = set()
+        self._input_sentence_edge_keys: set[tuple[str, str, str, str]] = set()
+        self._pending_sentence_edges: list[TranslatedEdge] = []
         self._loop_index: int = 0
         self._current_patches: list[GraphPatch] = []
         self._all_patches: list[GraphPatch] = []
@@ -97,6 +100,8 @@ class TempThoughtGraph:
         for subgraph in bundle.local_subgraphs:
             self._load_local_subgraph(subgraph)
 
+        self._pending_sentence_edges.extend(bundle.sentence_edges)
+        self._load_input_sentence_edges()
         self._load_turn_goal_from_bundle(bundle)
 
         if empty_slots is None:
@@ -111,6 +116,54 @@ class TempThoughtGraph:
                 self._edges[edge.edge_id] = edge
                 self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
                 self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
+
+    def _load_input_sentence_edges(self) -> None:
+        """현재 입력 문장 내부 연결을 이번 턴 activation edge로 적재한다.
+
+        sentence edge는 WorldGraph에 커밋할 지식이 아니라 입력 국소그래프 묶음의
+        런타임 view다. 아직 EmptySlot이 노드로 채워지지 않은 edge는 보류했다가
+        fill_slot 이후 다시 적재한다.
+        """
+        now = datetime.now(timezone.utc)
+        for te in self._pending_sentence_edges:
+            src_hash = self._resolve_input_ref(te.source_ref)
+            tgt_hash = self._resolve_input_ref(te.target_ref)
+            if src_hash is None or tgt_hash is None:
+                continue
+
+            key = (src_hash, tgt_hash, te.edge_family, te.connect_type)
+            if key in self._input_sentence_edge_keys:
+                continue
+            self._input_sentence_edge_keys.add(key)
+
+            self.add_edge(Edge(
+                edge_id=str(uuid.uuid4()),
+                source_hash=src_hash,
+                target_hash=tgt_hash,
+                edge_family=te.edge_family,
+                connect_type=te.connect_type,
+                edge_weight=max(0.0, te.confidence) * INPUT_SENTENCE_TEMP_EDGE_WEIGHT,
+                translation_confidence=te.confidence,
+                provenance_source="lang_to_graph",
+                proposed_connect_type=te.proposed_connect_type,
+                proposal_reason="input_graph_bundle_sentence_edge",
+                is_temporary=True,
+                payload={
+                    "runtime_view": True,
+                    "view_scope": "input_sentence",
+                },
+                created_at=now,
+                updated_at=now,
+            ))
+
+    def _resolve_input_ref(self, ref: ConceptPointer | EmptySlot) -> str | None:
+        if isinstance(ref, ConceptPointer):
+            return ref.address_hash if ref.address_hash in self._nodes else None
+        hint = ref.concept_hint.strip()
+        if not hint:
+            return None
+        address_hash = compute_hash(hint)
+        return address_hash if address_hash in self._nodes else None
 
     def _load_turn_goal_from_bundle(self, bundle: InputGraphBundle) -> None:
         """현재 입력 bundle에서 이번 턴 목적 node와 임시 목적 연결을 만든다."""
@@ -245,6 +298,8 @@ class TempThoughtGraph:
     # ── 엣지 조작 ─────────────────────────────────────────────────────────────
 
     def add_edge(self, edge: Edge) -> None:
+        if self._should_ignore_persistent_duplicate_of_input_view(edge):
+            return
         existed = edge.edge_id in self._edges
         self._edges[edge.edge_id] = edge
         self._delta.added_edges.append(edge.edge_id)
@@ -261,6 +316,23 @@ class TempThoughtGraph:
             reason="add_edge",
             loop_index=self._loop_index,
         ))
+
+    def _should_ignore_persistent_duplicate_of_input_view(self, edge: Edge) -> bool:
+        """입력 문장 runtime edge를 같은 턴의 영구 edge로 중복 추가하지 않는다."""
+        if edge.is_temporary or edge.provenance_source != "lang_to_graph":
+            return False
+        key = (edge.source_hash, edge.target_hash, edge.edge_family, edge.connect_type)
+        if key not in self._input_sentence_edge_keys:
+            return False
+        return any(
+            existing.is_temporary
+            and existing.payload.get("view_scope") == "input_sentence"
+            and existing.source_hash == edge.source_hash
+            and existing.target_hash == edge.target_hash
+            and existing.edge_family == edge.edge_family
+            and existing.connect_type == edge.connect_type
+            for existing in self._edges.values()
+        )
 
     def update_edge(self, edge: Edge) -> None:
         """엣지 정보를 업데이트하고 인접 인덱스를 갱신한다."""
@@ -447,6 +519,7 @@ class TempThoughtGraph:
             reason="fill_slot",
             loop_index=self._loop_index,
         ))
+        self._load_input_sentence_edges()
 
     # ── ConceptDifferentiation 쌍 추적 ──────────────────────────────────────
 
