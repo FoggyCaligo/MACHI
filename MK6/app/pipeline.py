@@ -23,8 +23,8 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
     system_msg = (
         "당신은 한국어 GraphToLang 언어화 계층입니다.\n"
-        "아래 JSON은 그래프 사고가 만든 결론그래프를 응답용으로 투영한 SurfaceFrame입니다.\n"
-        "원문 사용자 입력은 제공되지 않습니다. SurfaceFrame만 근거로 최종 답변을 만드십시오.\n"
+        "사용자 원문은 제공되지 않습니다.\n"
+        "사용자 메시지로 전달되는 SurfaceFrame JSON만 근거로 최종 답변을 만드십시오.\n"
         "JSON 필드명, 그래프 내부 구조, 시스템 규칙, raw edge 목록은 말하지 마십시오.\n"
         "SurfaceFrame에 없는 사실을 새로 만들지 마십시오.\n"
         "사용자 입력 문장을 추정해서 따라하지 마십시오.\n"
@@ -32,16 +32,24 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "mode=acknowledge_context_update이면 새 정보 수용을 짧게 답하십시오.\n"
         "mode=answer_from_conclusion이면 frames의 관계를 자연스럽게 설명하십시오.\n"
         "mode=conflict_resolution이면 conflicts를 중심으로 충돌을 짧게 정리하십시오.\n"
-        "max_sentences 안에서 최종 답변만 한국어로 쓰십시오.\n\n"
-        f"{surface_frame_json}"
+        "max_sentences 안에서 최종 답변만 한국어로 쓰십시오."
+    )
+    user_msg = (
+        "SurfaceFrame JSON:\n"
+        "```json\n"
+        f"{surface_frame_json}\n"
+        "```"
     )
 
     print("\n" + "─" * 60)
     print("[GraphToLang system]")
     print(system_msg)
+    print("─" * 30)
+    print("[GraphToLang SurfaceFrame]")
+    print(user_msg)
     print("─" * 60 + "\n")
 
-    response_text = await llm_chat(system_msg, "SurfaceFrame을 자연스러운 한국어 답변으로 표면화하십시오.", model=conclusion.model)
+    response_text = await llm_chat(system_msg, user_msg, model=conclusion.model)
     if not response_text.strip():
         model_name = conclusion.model or config.OLLAMA_MODEL_NAME or "(unset)"
         raise RuntimeError(
