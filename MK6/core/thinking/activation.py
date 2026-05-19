@@ -8,6 +8,7 @@ from ... import config
 from ..entities.edge import Edge
 from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedGraph
 from ..goal import load_goal_view
+from ..profile import is_identity_surface_edge, is_profile_reference_edge, is_user_profile_node
 from ..utils.hash_resolver import compute_hash
 from . import relation_quality
 from .conclusion_graph import (
@@ -18,9 +19,6 @@ from .conclusion_graph import (
     RejectedConclusionGraph,
 )
 from .temp_thought_graph import TempThoughtGraph
-
-
-MIN_INPUT_ONLY_BODY_SUPPORT = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,8 +49,11 @@ def build_activation_conclusion_graphs(
     - input_sentence runtime edge는 같은 endpoint의 persistent edge가 있으면 그 edge를
       ConclusionGraph body edge로 materialize한다.
     - goal_anchor/turn_goal_anchor edge는 목적 압력용 path로만 사용하고 evidence/body에서는 제외한다.
-    - goal-aligned만으로 결론 승격하지 않는다. body edge가 input-only이면 반복 support가
-      충분하거나 persistent body edge가 입력 바깥 구조와 직접 연결되어야 selected ConclusionGraph가 된다.
+    - profile_reference/identity_surface/current_profile edge는 개인화 조회 scaffolding이다.
+      activation body, bridge, 결론 승격 근거로 직접 쓰지 않는다.
+    - goal-aligned만으로 결론 승격하지 않는다.
+    - input-only body edge는 support_count가 누적되어도 결론그래프 본체로 승격하지 않는다.
+      반드시 현재 입력 boundary 바깥의 non-input 구조와 직접 연결된 persistent body edge가 필요하다.
     - restatement graph는 폐기하지 않고 rejected_graphs로 강등한다.
     """
     max_hops = config.THINK_ACTIVATION_HOPS if max_hops is None else max_hops
@@ -85,16 +86,28 @@ def build_activation_conclusion_graphs(
 
 
 def _translated_hashes(translated: TranslatedGraph, tg: TempThoughtGraph) -> set[str]:
+    """이번 턴 입력에서 직접 온 node hash boundary를 만든다.
+
+    InputGraphBundle의 center/direct hash를 우선 사용한다. context_hashes는 입력 주변의
+    로드된 국소 그래프이지 사용자 입력 자체가 아니므로 input-only 판단 boundary에 넣지 않는다.
+    """
     hashes: set[str] = set()
+
+    def add_if_loaded(address_hash: str) -> None:
+        if address_hash and tg.get_node(address_hash) is not None:
+            hashes.add(address_hash)
+
+    if translated.input_bundle is not None:
+        for h in translated.input_bundle.center_hashes | translated.input_bundle.direct_hashes:
+            add_if_loaded(h)
+        for hint in translated.input_bundle.empty_hints:
+            add_if_loaded(compute_hash(hint.strip()))
+
     for ref in translated.nodes:
         if isinstance(ref, ConceptPointer):
-            h = ref.address_hash
+            add_if_loaded(ref.address_hash)
         elif isinstance(ref, EmptySlot):
-            h = compute_hash(ref.concept_hint.strip())
-        else:
-            continue
-        if tg.get_node(h) is not None:
-            hashes.add(h)
+            add_if_loaded(compute_hash(ref.concept_hint.strip()))
     return hashes
 
 
@@ -134,7 +147,7 @@ def _spread(
             continue
 
         for edge in tg.get_edges_for_node(current_hash):
-            if not _can_spread_over(edge):
+            if not _can_spread_over(tg, edge):
                 continue
 
             next_hash, direction = _edge_next(edge, current_hash)
@@ -169,7 +182,9 @@ def _spread(
     return best_paths
 
 
-def _can_spread_over(edge: Edge) -> bool:
+def _can_spread_over(tg: TempThoughtGraph, edge: Edge) -> bool:
+    if _is_profile_scaffold_edge(tg, edge):
+        return False
     if not edge.is_temporary:
         return True
     return edge.payload.get("view_scope") in {
@@ -188,6 +203,29 @@ def _is_runtime_path_edge(edge: Edge | None) -> bool:
 def _is_runtime_node(tg: TempThoughtGraph, address_hash: str) -> bool:
     node = tg.get_node(address_hash)
     return bool(node and node.payload.get("runtime_view"))
+
+
+def _is_profile_scaffold_node(tg: TempThoughtGraph, address_hash: str) -> bool:
+    node = tg.get_node(address_hash)
+    return bool(node and is_user_profile_node(node))
+
+
+def _is_profile_scaffold_edge(tg: TempThoughtGraph, edge: Edge) -> bool:
+    if is_profile_reference_edge(edge) or is_identity_surface_edge(edge):
+        return True
+    if edge.payload.get("profile_edge"):
+        return True
+    return _is_profile_scaffold_node(tg, edge.source_hash) or _is_profile_scaffold_node(tg, edge.target_hash)
+
+
+def _is_body_edge_candidate(tg: TempThoughtGraph, edge: Edge) -> bool:
+    if edge.is_temporary:
+        return False
+    if _is_runtime_node(tg, edge.source_hash) or _is_runtime_node(tg, edge.target_hash):
+        return False
+    if _is_profile_scaffold_edge(tg, edge):
+        return False
+    return True
 
 
 def _edge_next(edge: Edge, current_hash: str) -> tuple[str | None, str]:
@@ -260,6 +298,14 @@ def _build_conclusion_graphs(
         reverse=True,
     )
 
+    print(
+        f"[activation] candidates={len(scored)} "
+        f"input_sources={len(input_sources)} goal_sources={len(goal_sources)} "
+        f"graph_limit={graph_limit}"
+    )
+    if not scored:
+        print("[activation] no candidate where input and goal activation meet")
+
     selected: list[ConclusionGraph] = []
     rejected: list[RejectedConclusionGraph] = []
     for h in scored:
@@ -278,27 +324,44 @@ def _build_conclusion_graphs(
 
         rejection_reason = _rejection_reason(graph, tg, quality=quality)
         if rejection_reason is not None:
+            _log_conclusion_decision(
+                tg,
+                graph,
+                quality,
+                decision="rejected",
+                reason=rejection_reason,
+            )
             rejected.append(RejectedConclusionGraph(
                 graph=graph,
                 reason=rejection_reason,
                 notes=["ConclusionGraph is kept for trace but not exposed to GraphToLang as selected context."],
             ))
             continue
+        _log_conclusion_decision(
+            tg,
+            graph,
+            quality,
+            decision="selected",
+            reason="accepted",
+        )
         selected.append(graph)
         if len(selected) >= graph_limit:
             break
 
     selected.sort(key=lambda graph: graph.score, reverse=True)
+    print(f"[activation] selected={len(selected)} rejected={len(rejected)}")
     return selected, rejected
 
 
 def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) -> str | None:
+    if any(_is_profile_scaffold_node(tg, h) for h in graph.core_hashes):
+        return "profile_scaffold"
     if graph.is_likely_restatement:
         return "input_restatement"
     if not graph.edge_ids:
         return "insufficient_support"
     body_edges = [edge for edge_id in graph.edge_ids if (edge := tg.get_edge(edge_id)) is not None]
-    persistent_edges = [edge for edge in body_edges if not edge.is_temporary]
+    persistent_edges = [edge for edge in body_edges if _is_body_edge_candidate(tg, edge)]
     if not persistent_edges:
         return "insufficient_support"
     if not _has_body_structure_beyond_single_turn_input(graph, persistent_edges):
@@ -314,18 +377,73 @@ def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) 
     return None
 
 
+def _log_conclusion_decision(
+    tg: TempThoughtGraph,
+    graph: ConclusionGraph,
+    quality,
+    *,
+    decision: str,
+    reason: str,
+) -> None:
+    print(
+        f"[activation] {decision} graph={graph.graph_id} reason={reason} "
+        f"score={graph.score:.4f} uncertainty={graph.uncertainty:.4f} "
+        f"quality(avg={quality.average_edge_score:.4f}, support={quality.support_strength:.4f}, "
+        f"goal={quality.goal_relevance:.4f}, bridge={quality.bridge_value:.4f}, "
+        f"restate={quality.restatement_risk:.4f}, conflict={quality.conflict_pressure:.4f})"
+    )
+    print(
+        f"[activation] graph_sets core={_format_hashes(graph.core_hashes)} "
+        f"input={_format_hashes(graph.input_hashes)} bridge={_format_hashes(graph.bridge_hashes)} "
+        f"goal={_format_hashes(graph.goal_hashes)}"
+    )
+    print(f"[activation] body_edges {_format_edges(tg, graph)}")
+
+
+def _format_hashes(hashes: set[str], *, limit: int = 8) -> str:
+    ordered = sorted(hashes)
+    visible = ",".join(h[:10] for h in ordered[:limit])
+    if len(ordered) > limit:
+        visible += f",...+{len(ordered) - limit}"
+    return "[" + visible + "]"
+
+
+def _format_edges(tg: TempThoughtGraph, graph: ConclusionGraph) -> str:
+    parts: list[str] = []
+    for edge_id in sorted(graph.edge_ids):
+        edge = tg.get_edge(edge_id)
+        if edge is None:
+            parts.append(f"{edge_id[:8]}:missing")
+            continue
+        endpoints = {edge.source_hash, edge.target_hash}
+        if _is_profile_scaffold_edge(tg, edge):
+            boundary = "profile_scaffold"
+        elif endpoints <= graph.input_hashes:
+            boundary = "input_only"
+        elif endpoints & graph.input_hashes:
+            boundary = "input_bridge"
+        else:
+            boundary = "non_input"
+        lifetime = "tmp" if edge.is_temporary else "persist"
+        parts.append(
+            f"{edge.edge_id[:8]}:{lifetime}:{edge.edge_family}/{edge.connect_type}:"
+            f"{edge.source_hash[:10]}->{edge.target_hash[:10]}:{boundary}:"
+            f"w={edge.edge_weight:.3f}:t={edge.trust_score:.3f}:s={edge.support_count}"
+        )
+    return "[" + "; ".join(parts) + "]"
+
+
 def _has_body_structure_beyond_single_turn_input(graph: ConclusionGraph, edges: list[Edge]) -> bool:
     """선택된 body edge가 단일 입력 복사본을 넘어서는지 판단한다.
 
     bridge_hashes 자체는 runtime goal path의 부산물을 포함할 수 있으므로 승격 조건으로
-    사용하지 않는다. 실제 통과 조건은 persistent body edge가 입력 바깥 노드와 직접
-    연결되거나, input-only edge가 반복 support를 충분히 가진 경우뿐이다.
+    사용하지 않는다. 실제 통과 조건은 persistent body edge가 현재 입력 boundary 밖의
+    구조와 직접 연결되는 경우뿐이다. input-only edge는 support_count가 반복 누적되어도
+    결론그래프 본체로 승격하지 않는다.
     """
     for edge in edges:
         endpoints = {edge.source_hash, edge.target_hash}
         if not endpoints <= graph.input_hashes:
-            return True
-        if edge.support_count >= MIN_INPUT_ONLY_BODY_SUPPORT:
             return True
     if graph.exception_hashes or graph.condition_hashes or graph.action_hashes:
         return any(
@@ -356,7 +474,11 @@ def _make_conclusion_graph(
     activation: dict[str, ActivationState],
 ) -> ConclusionGraph:
     raw_node_hashes = set(input_path.node_hashes) | set(goal_path.node_hashes) | {core_hash}
-    node_hashes = {h for h in raw_node_hashes if not _is_runtime_node(tg, h)} | {core_hash}
+    node_hashes = {
+        h
+        for h in raw_node_hashes
+        if not _is_runtime_node(tg, h) and not _is_profile_scaffold_node(tg, h)
+    } | {core_hash}
     edge_ids = _materialized_body_edge_ids(tg, input_path, goal_path)
     edge_ids |= _core_body_edge_ids(tg, core_hash, input_sources=input_sources, limit=4)
     conflict_paths: list[ReasoningPath] = []
@@ -364,10 +486,10 @@ def _make_conclusion_graph(
     exception_hashes: set[str] = set()
 
     for edge in tg.get_edges_for_node(core_hash):
-        if edge.is_temporary:
+        if not _is_body_edge_candidate(tg, edge):
             continue
         other_hash, direction = _edge_next(edge, core_hash)
-        if other_hash is None or _is_runtime_node(tg, other_hash):
+        if other_hash is None or _is_runtime_node(tg, other_hash) or _is_profile_scaffold_node(tg, other_hash):
             continue
         if edge.connect_type == "conflict":
             conflict_paths.append(_single_edge_path(core_hash, other_hash, edge, direction))
@@ -380,7 +502,12 @@ def _make_conclusion_graph(
             node_hashes.add(other_hash)
             edge_ids.add(edge.edge_id)
 
-    bridge_hashes = node_hashes - {core_hash} - input_sources - goal_sources - exception_hashes
+    edge_ids = {edge_id for edge_id in edge_ids if (edge := tg.get_edge(edge_id)) is not None and _is_body_edge_candidate(tg, edge)}
+    bridge_hashes = {
+        h
+        for h in node_hashes - {core_hash} - input_sources - goal_sources - exception_hashes
+        if not _is_profile_scaffold_node(tg, h)
+    }
     support_paths = [input_path]
     goal_paths = [goal_path]
 
@@ -423,7 +550,8 @@ def _materialized_body_edge_ids(tg: TempThoughtGraph, *paths: ReasoningPath) -> 
             if edge is None:
                 continue
             if not _is_runtime_path_edge(edge):
-                edge_ids.add(edge.edge_id)
+                if _is_body_edge_candidate(tg, edge):
+                    edge_ids.add(edge.edge_id)
                 continue
             edge_ids.update(_matching_persistent_edge_ids(tg, edge))
     return edge_ids
@@ -432,7 +560,7 @@ def _materialized_body_edge_ids(tg: TempThoughtGraph, *paths: ReasoningPath) -> 
 def _matching_persistent_edge_ids(tg: TempThoughtGraph, runtime_edge: Edge) -> set[str]:
     matches: list[Edge] = []
     for edge in tg.get_edges_for_node(runtime_edge.source_hash):
-        if edge.is_temporary:
+        if not _is_body_edge_candidate(tg, edge):
             continue
         if edge.source_hash != runtime_edge.source_hash or edge.target_hash != runtime_edge.target_hash:
             continue
@@ -451,9 +579,7 @@ def _core_body_edge_ids(
 ) -> set[str]:
     ranked: list[tuple[float, Edge]] = []
     for edge in tg.get_edges_for_node(core_hash):
-        if edge.is_temporary:
-            continue
-        if _is_runtime_node(tg, edge.source_hash) or _is_runtime_node(tg, edge.target_hash):
+        if not _is_body_edge_candidate(tg, edge):
             continue
         endpoints = {edge.source_hash, edge.target_hash}
         input_touch = 1.0 if endpoints & input_sources else 0.0

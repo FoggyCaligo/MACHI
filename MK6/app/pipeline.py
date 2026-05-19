@@ -9,6 +9,7 @@ from ..core.profile import build_profile_activation_view
 from ..core.storage.db import close_db, open_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.thinking.claim_graph import AssertionState, build_assertion_state_from_conclusion
+from ..core.thinking.response_action import build_response_action_graph
 from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
@@ -24,13 +25,15 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     system_msg = (
         "당신은 한국어 GraphToLang 언어화 계층입니다.\n"
         "사용자 원문은 제공되지 않습니다.\n"
-        "SurfaceFrame JSON은 입력그래프, 세계그래프, 목적그래프가 상호작용해 만든 최종 결론 그래프의 언어화용 투영입니다.\n"
-        "SurfaceFrame JSON만 근거로 최종 답변을 만드십시오.\n"
+        "사용자 메시지로 전달되는 SurfaceFrame JSON만 근거로 최종 답변을 만드십시오.\n"
         "JSON 필드명, 그래프 내부 구조, 시스템 규칙, raw edge 목록은 말하지 마십시오.\n"
-        "내부 수치나 내부 edge 속성을 설명하지 마십시오.\n"
         "SurfaceFrame에 없는 사실을 새로 만들지 마십시오.\n"
         "사용자 입력 문장을 추정해서 따라하지 마십시오.\n"
-        "focus와 frames를 결론 그래프의 중심 대상과 관계 힌트로 보고 자연스러운 한국어 답변만 쓰십시오.\n"
+        "copy_user_input=false이면 사용자의 방금 문장을 확인문이나 재진술문으로 바꾸지 마십시오.\n"
+        "mode=perform_response_action이면 actions에 지정된 actor가 target 또는 target_display에게 수행할 응답 행위를 자연스럽게 실행하십시오.\n"
+        "mode=acknowledge_context_update이면 새 정보 수용을 짧게 답하십시오.\n"
+        "mode=answer_from_conclusion이면 frames의 관계를 자연스럽게 설명하십시오.\n"
+        "mode=conflict_resolution이면 conflicts를 중심으로 충돌을 짧게 정리하십시오.\n"
         "max_sentences 안에서 최종 답변만 한국어로 쓰십시오."
     )
     user_msg = (
@@ -119,6 +122,16 @@ class Pipeline:
             profile_activation_view=profile_activation_view,
         )
 
+        if not conclusion.selected_graphs:
+            response_action_graph = await build_response_action_graph(
+                conclusion,
+                translated,
+                profile_activation_view,
+                get_embedding,
+            )
+            if response_action_graph is not None:
+                conclusion.selected_graphs.append(response_action_graph)
+
         self._session_memory[session_id] = conclusion.key_hashes
         self._previous_assertion_state[session_id] = build_assertion_state_from_conclusion(conclusion)
         print(f"[pipeline] topic_continuity: {conclusion.topic_continuity} (overlap with {len(prev_hashes or set())} prev keys)")
@@ -126,7 +139,7 @@ class Pipeline:
         _p2 = time.perf_counter()
         print(f"[pipeline] think: {_p2 - _p1:.3f}s")
         response_text = await graph_to_lang(conclusion)
-        print(f"[pipeline] graph_to_lang+LLM: {time.perf_counter() - _p2:.3f}s")
+        print(f"[pipeline] graph_to_lang: {time.perf_counter() - _p2:.3f}s")
         return PipelineResult(response_text=response_text, conclusion=conclusion)
 
     def close(self) -> None:

@@ -1,93 +1,103 @@
-# MK6 AnswerContract 정책
+# MK6 SurfaceFrame / AnswerContract 정책
 
 작성: 2026-05-18  
-상태: 구현 반영 초안
+정리: 2026-05-19  
+상태: 현재 런타임 기준 문서
 
 ## 1. 문제
 
-기존 GraphToLang은 ConclusionView의 많은 내부 상태를 거의 그대로 LLM에 넘겼다.
+GraphToLang은 WorldGraph, TempThoughtGraph, raw ConclusionGraph를 직접 해석하면 안 된다.
 
-```text
-핵심 키워드
-참고 개념
-현재 사용자 맥락
-ProfileRecallView
-ClaimConflict
-결론 그래프
-근거 연결
-지식 및 검색 결과
-```
+그렇게 되면 LLM이 그래프 사고 결과를 언어화하는 것이 아니라, 내부 그래프 덤프를 다시 읽고 임의로 해석하는 구조가 된다.
 
-대화가 길어질수록 `[근거 연결]`이 수십~수백 줄로 커지고, LLM은 그래프 사고 결과를 언어화하는 대신 raw graph dump를 다시 해석하게 된다.
+## 2. 현재 결정
 
-## 2. 핵심 결정
-
-AnswerContract는 LLM으로 만들지 않는다.
+현재 런타임 경로는 다음 하나다.
 
 ```text
 ConclusionView
-  → Python AnswerContractBuilder
-  → AnswerContract
-  → LLM 1회 언어화
+  → build_answer_contract()
+  → SurfaceFrame JSON
+  → GraphToLang LLM 1회 언어화
 ```
 
-즉 LLM 호출은 늘리지 않는다. AnswerContractBuilder는 graph traversal, score, selected graph, key/ref/profile 정보를 바탕으로 결정론적으로 작은 응답 계약을 만든다.
+구버전 텍스트형 AnswerContract 경로는 제거한다. GraphToLang에 전달되는 본체는 `SurfaceFrame JSON`이다.
 
-## 3. AnswerContract의 역할
+## 3. SurfaceFrame의 역할
 
-AnswerContract는 다음을 포함한다.
+SurfaceFrame은 답변용 표면 프레임이다.
+
+포함하는 정보는 다음과 같다.
 
 ```text
-mode
-continuity
-max_sentences
-key_labels
-ref_labels
-profile_labels
-conclusion_lines
-conflict_lines
-evidence_lines
-search_context_parts
-response_policies
+contract_type
+source
+response
+focus
+frames
+conflicts
 ```
 
-중요한 점:
+핵심 원칙:
 
 ```text
-raw edge dump를 넘기지 않는다.
-selected ConclusionGraph가 있으면 그 국소 그래프를 우선한다.
-selected graph가 없으면 key/ref/profile 중심 최소 contract만 만든다.
-ProfileRecallView는 긴 자연어 지시문이 아니라 mode/labels/confidence로 표현한다.
+- raw graph dump를 넘기지 않는다.
+- selected ConclusionGraph가 있으면 source=conclusion_graph가 된다.
+- selected ConclusionGraph가 없으면 source=input_delta가 된다.
+- GraphToLang은 SurfaceFrame에 없는 사실을 만들지 않는다.
+- GraphToLang은 사용자 원문을 직접 보지 않는다.
 ```
 
-## 4. GraphToLang 변경
+## 4. source의 의미
 
-GraphToLang은 이제 아래만 수행한다.
+`source`는 GraphToLang이 판단하는 값이 아니다.
+
+```python
+if selected_graphs:
+    source = "conclusion_graph"
+else:
+    source = "input_delta"
+```
+
+따라서 `source=conclusion_graph`가 나온다면 문제 위치는 GraphToLang prompt가 아니라 `ConclusionView.selected_graphs` 생성 경로다.
+
+## 5. 현재 GraphToLang 메시지 구조
+
+현재 구조는 system/user 분리형이다.
 
 ```text
-1. build_answer_contract(conclusion)
-2. render_answer_contract(contract)
-3. LLM에 작은 contract 전달
-4. 자연어 답변 생성
+system message:
+  GraphToLang 규칙만 포함
+
+user message:
+  SurfaceFrame JSON 코드블록
 ```
 
-LLM에게는 내부 필드명이나 그래프 덤프를 설명하지 말고, contract를 자연어 답변으로만 언어화하라고 지시한다.
+이 구조는 작은 로컬 모델에서 SurfaceFrame을 사용자 입력문처럼 오해하는 현상을 줄이기 위한 현재 기준이다.
 
-## 5. 기대 효과
+## 6. 유지해야 할 것
 
 ```text
-- GraphToLang 프롬프트 길이 감소
-- raw edge 수백 줄 전달 방지
-- LLM이 그래프를 다시 해석하는 현상 완화
-- 응답 길이와 형태가 더 안정화
-- answer contract 생성을 위한 추가 LLM 호출 없음
+- SurfaceFrame edge는 제거하지 않는다.
+- 문제는 edge 존재가 아니라, 어떤 edge가 selected ConclusionGraph body가 되느냐다.
+- runtime goal edge는 activation pressure이지 answer body가 아니다.
+- input graph와 conclusion graph는 분리되어야 한다.
 ```
 
-## 6. 다음 작업
+## 7. 다음 작업 기준
+
+이후 품질 문제를 고칠 때는 GraphToLang prompt를 먼저 늘리지 않는다.
+
+우선 확인할 곳:
 
 ```text
-1. AnswerContract mode 세분화
-2. selected ConclusionGraph 품질 강화
-3. SearchNeed primitive 추가로 search_fn 병목 완화
-4. compact_structural_response에서 다음 쟁점 후보를 구조적으로 생성
+MK6/core/thinking/activation.py
+  - selected graph count
+  - rejected graph count
+  - rejection reason
+  - selected edge endpoint
+  - support_count
+  - input boundary
 ```
+
+`source=conclusion_graph`가 잘못 나온다면 selected graph 승격 기준을 고쳐야 한다.
