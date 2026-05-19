@@ -45,10 +45,12 @@ from . import concept_differentiation, concept_merge
 from .activation import build_activation_conclusion_graphs
 from .claim_graph import AssertionState, apply_claim_conflict_pressure, build_claim_conflict_graph
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
+from .graph_patch import GraphPatch, patch_overlap_ratio
 from .temp_thought_graph import TempThoughtGraph
 
 
 EmbedFn = Callable[[str], Awaitable[list[float]]]
+PATCH_CONVERGENCE_OVERLAP_RATIO = 0.5
 
 
 def _t(label: str, start: float) -> float:
@@ -145,10 +147,23 @@ def _commit_edge(conn: sqlite3.Connection, edge: Edge, strong: bool) -> Edge:
     return edge
 
 
-def _has_converged(tg: TempThoughtGraph, prev_node_count: int, prev_edge_count: int) -> bool:
+def _has_converged(
+    tg: TempThoughtGraph,
+    prev_node_count: int,
+    prev_edge_count: int,
+    previous_patches: list[GraphPatch],
+) -> bool:
     delta = tg.current_delta()
     if delta.is_empty():
         return True
+
+    current_patches = tg.current_patches()
+    if current_patches and previous_patches:
+        overlap = patch_overlap_ratio(previous_patches, current_patches)
+        if overlap >= PATCH_CONVERGENCE_OVERLAP_RATIO:
+            print(f"[think] patch_converged overlap={overlap:.2f}")
+            return True
+
     return len(tg.all_nodes()) == prev_node_count and len(tg.all_edges()) == prev_edge_count
 
 
@@ -296,6 +311,7 @@ class ThoughtEngine:
         loop_count = 0
         prev_node_count = len(tg.all_nodes())
         prev_edge_count = len(tg.all_edges())
+        prev_loop_patches: list[GraphPatch] = []
         search_node_hashes: set[str] = set()
 
         while loop_count < config.THINK_MAX_LOOPS:
@@ -330,8 +346,10 @@ class ThoughtEngine:
                 for edge in result.edges_added:
                     _commit_edge(self._conn, edge, strong=False)
 
-            if _has_converged(tg, prev_node_count, prev_edge_count):
+            current_loop_patches = tg.current_patches()
+            if _has_converged(tg, prev_node_count, prev_edge_count, prev_loop_patches):
                 break
+            prev_loop_patches = current_loop_patches
             prev_node_count = len(tg.all_nodes())
             prev_edge_count = len(tg.all_edges())
 
