@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 EmbedFn = Callable[[str], Awaitable[list[float]]]
 
 RESPONSE_ACTION_VIEW_SCOPE = "response_action"
-TURN_RESPONSE_LABEL = "응답하기"
+TURN_RESPONSE_LABEL = "turn_response"
 
 
 async def build_response_action_graph(
@@ -30,26 +30,24 @@ async def build_response_action_graph(
 ) -> ConclusionGraph:
     """selected 결론이 비어 있을 때 단일 TurnConclusionGraph를 만든다.
 
-    응답 행위를 greeting/question/request 같은 family로 분류하지 않는다. 그런 분류는
-    response kind ontology를 계속 늘리는 방향으로 흐르기 쉽다. 이 계층은 오직 하나의
-    구조만 만든다.
+    응답 행위를 greeting/question/request 같은 family로 분류하지 않는다. 이 계층은
+    오직 하나의 구조만 만든다.
 
     - AI가
     - 현재 사용자에게
     - 이번 턴 입력 그래프를 근거로
     - 다음 발화를 생성한다
 
-    입력의 세부 의미는 별도 family 문자열이 아니라 input_hashes/support_paths/context
-    연결로 남긴다. GraphToLang은 이 결론 그래프를 보고 다음 발화를 언어화한다.
+    주의: target_display는 같은 턴 self-identification binding이 안정화되기 전까지
+    SurfaceFrame으로 노출하지 않는다. ProfileActivationView의 display 후보는 현재
+    `안녕`, `이야` 같은 입력 토큰도 포함할 수 있으므로 응답 대상 표시명으로 쓰면 안 된다.
     """
     del embed_fn
 
-    node_map = {node.address_hash: node for node in conclusion.nodes}
-    display_hashes = _rank_target_display_hashes(profile_activation_view, node_map)
     context_hashes = _translated_input_hashes(translated)
+    display_hashes: list[str] = []
     confidence = _structural_confidence(
         input_count=len(context_hashes),
-        display_count=len(display_hashes),
         profile_confidence=profile_activation_view.confidence if profile_activation_view else 0.0,
     )
 
@@ -67,40 +65,11 @@ async def build_response_action_graph(
     return graph
 
 
-def _structural_confidence(*, input_count: int, display_count: int, profile_confidence: float) -> float:
+def _structural_confidence(*, input_count: int, profile_confidence: float) -> float:
     base = 0.55
     base += min(0.25, input_count * 0.05)
-    base += min(0.10, display_count * 0.05)
     base += min(0.10, max(0.0, profile_confidence) * 0.10)
     return min(1.0, base)
-
-
-def _rank_target_display_hashes(
-    view: ProfileActivationView | None,
-    node_map: dict[str, Node],
-    *,
-    limit: int = 2,
-) -> list[str]:
-    if view is None:
-        return []
-    candidates = set(view.display_hashes or set()) | set(view.matched_hashes or set())
-    ranked = sorted(
-        candidates,
-        key=lambda h: (
-            h not in view.display_hashes,
-            -view.display_scores.get(h, view.seed_scores.get(h, 0.0)),
-            h,
-        ),
-    )
-    result: list[str] = []
-    for h in ranked:
-        node = node_map.get(h)
-        if node is None or node.is_abstract or not node.labels:
-            continue
-        result.append(h)
-        if len(result) >= limit:
-            break
-    return result
 
 
 def _make_turn_response_graph(
@@ -119,7 +88,7 @@ def _make_turn_response_graph(
         address_hash=action_hash,
         node_kind="event",
         formation_source="system_policy",
-        labels=[TURN_RESPONSE_LABEL, "turn_response"],
+        labels=[TURN_RESPONSE_LABEL],
         is_abstract=False,
         trust_score=confidence,
         stability_score=0.2,
