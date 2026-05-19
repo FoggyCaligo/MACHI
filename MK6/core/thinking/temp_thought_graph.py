@@ -217,8 +217,12 @@ class TempThoughtGraph:
             edge_family="relation",
             connect_type="neutral",
             edge_weight=weight,
-            provenance_source="runtime_goal_view",
+            provenance_source="system_policy",
             is_temporary=True,
+            payload={
+                "runtime_view": True,
+                "view_scope": "goal_anchor",
+            },
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         ))
@@ -318,21 +322,8 @@ class TempThoughtGraph:
         ))
 
     def _should_ignore_persistent_duplicate_of_input_view(self, edge: Edge) -> bool:
-        """입력 문장 runtime edge를 같은 턴의 영구 edge로 중복 추가하지 않는다."""
-        if edge.is_temporary or edge.provenance_source != "lang_to_graph":
-            return False
-        key = (edge.source_hash, edge.target_hash, edge.edge_family, edge.connect_type)
-        if key not in self._input_sentence_edge_keys:
-            return False
-        return any(
-            existing.is_temporary
-            and existing.payload.get("view_scope") == "input_sentence"
-            and existing.source_hash == edge.source_hash
-            and existing.target_hash == edge.target_hash
-            and existing.edge_family == edge.edge_family
-            and existing.connect_type == edge.connect_type
-            for existing in self._edges.values()
-        )
+        """입력 runtime edge와 영구 후보 edge는 서로 다른 계약이므로 공존시킨다."""
+        return False
 
     def update_edge(self, edge: Edge) -> None:
         """엣지 정보를 업데이트하고 인접 인덱스를 갱신한다."""
@@ -482,6 +473,10 @@ class TempThoughtGraph:
             edge_weight=self._temporary_anchor_weight(identity_hash),
             provenance_source="lang_to_graph",
             is_temporary=True,
+            payload={
+                "runtime_view": True,
+                "view_scope": self._anchor_view_scope(identity_hash),
+            },
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -495,6 +490,15 @@ class TempThoughtGraph:
         if identity_hash == self._goal_hash:
             return GOAL_ANCHOR_TEMP_EDGE_WEIGHT
         return DEFAULT_ANCHOR_TEMP_EDGE_WEIGHT
+
+    def _anchor_view_scope(self, identity_hash: str) -> str:
+        if identity_hash == self._goal_hash:
+            return "goal_anchor"
+        if identity_hash == self._turn_goal_hash:
+            return "turn_goal_anchor"
+        if identity_hash == ANCHOR_USER:
+            return "identity_anchor"
+        return "anchor"
 
     # ── EmptySlot 관리 ────────────────────────────────────────────────────────
 
