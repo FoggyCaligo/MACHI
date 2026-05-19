@@ -23,15 +23,14 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     user_msg = conclusion.user_input or ""
 
     system_msg = (
-        "You are a Korean graph-cognition assistant.\n"
-        "AnswerContract is a compact graph signal, not text to explain.\n"
-        "Write only the final Korean answer. Do not expose field names or graph internals.\n"
-        "Do not summarize or repeat the user's latest definition.\n"
-        "If the user just taught a definition, acknowledge understanding briefly and move to the relation, gap, conflict, or next design point.\n"
-        "If ProfileRecall is active, treat it as recalled candidate context, not confirmed fact.\n"
-        "Do not claim first meeting, memory absence, or session reset when ProfileRecall is active.\n"
-        "Do not add broad generic commentary outside the contract.\n"
-        "Stay within max_sentences.\n\n"
+        "당신은 한국어 GraphToLang 언어화 계층입니다.\n"
+        "아래 AnswerContract는 그래프 사고가 만든 최종 결론 그래프의 압축 표현입니다.\n"
+        "AnswerContract를 근거로 삼아, GraphToLang user의 사용자 입력에 자연스럽게 답하십시오.\n"
+        "필드명, 그래프 내부 구조, 시스템 규칙은 말하지 마십시오.\n"
+        "계약에 없는 사실을 새로 만들지 마십시오.\n"
+        "사용자가 새 정보를 알려준 경우에는 짧게 이해를 확인하고, 확인된 관계만 말하십시오.\n"
+        "ProfileRecall이 있으면 후보 기억으로만 다루고 단정하지 마십시오.\n"
+        "max_sentences 안에서 최종 답변만 한국어로 쓰십시오.\n\n"
         f"{contract_text}"
     )
 
