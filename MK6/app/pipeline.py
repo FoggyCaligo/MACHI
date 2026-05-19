@@ -24,14 +24,13 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     system_msg = (
         "당신은 한국어 GraphToLang 언어화 계층입니다.\n"
         "사용자 원문은 제공되지 않습니다.\n"
-        "사용자 메시지로 전달되는 SurfaceFrame JSON만 근거로 최종 답변을 만드십시오.\n"
+        "SurfaceFrame JSON은 입력그래프, 세계그래프, 목적그래프가 상호작용해 만든 최종 결론 그래프의 언어화용 투영입니다.\n"
+        "SurfaceFrame JSON만 근거로 최종 답변을 만드십시오.\n"
         "JSON 필드명, 그래프 내부 구조, 시스템 규칙, raw edge 목록은 말하지 마십시오.\n"
+        "내부 수치나 내부 edge 속성을 설명하지 마십시오.\n"
         "SurfaceFrame에 없는 사실을 새로 만들지 마십시오.\n"
         "사용자 입력 문장을 추정해서 따라하지 마십시오.\n"
-        "copy_user_input=false이면 사용자의 방금 문장을 확인문이나 재진술문으로 바꾸지 마십시오.\n"
-        "mode=acknowledge_context_update이면 새 정보 수용을 짧게 답하십시오.\n"
-        "mode=answer_from_conclusion이면 frames의 관계를 자연스럽게 설명하십시오.\n"
-        "mode=conflict_resolution이면 conflicts를 중심으로 충돌을 짧게 정리하십시오.\n"
+        "focus와 frames를 결론 그래프의 중심 대상과 관계 힌트로 보고 자연스러운 한국어 답변만 쓰십시오.\n"
         "max_sentences 안에서 최종 답변만 한국어로 쓰십시오."
     )
     user_msg = (
