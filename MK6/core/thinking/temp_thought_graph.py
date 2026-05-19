@@ -17,6 +17,7 @@ from ..entities.translated_graph import (
     TranslatedGraph, ConceptPointer, EmptySlot, InputGraphBundle,
 )
 from ..utils.hash_resolver import ANCHOR_USER
+from .graph_patch import GraphPatch
 
 
 USER_ANCHOR_TEMP_EDGE_WEIGHT = 1.35
@@ -28,10 +29,10 @@ DEFAULT_ANCHOR_TEMP_EDGE_WEIGHT = 1.0
 @dataclass
 class GraphDelta:
     """한 루프 회차에서 발생한 변경 사항을 추적한다."""
-    added_nodes: list[str] = field(default_factory=list)    # address_hash
+    added_nodes: list[str] = field(default_factory=list)
     modified_nodes: list[str] = field(default_factory=list)
     removed_nodes: list[str] = field(default_factory=list)
-    added_edges: list[str] = field(default_factory=list)    # edge_id
+    added_edges: list[str] = field(default_factory=list)
     modified_edges: list[str] = field(default_factory=list)
     removed_edges: list[str] = field(default_factory=list)
 
@@ -50,32 +51,31 @@ class TempThoughtGraph:
     """임시 사고 그래프.
 
     Think 루프 1회 실행 단위로 생성된다.
-    수렴 판단을 위해 루프 회차별 delta를 기록한다.
+    수렴 판단을 위해 루프 회차별 delta와 GraphPatch를 기록한다.
     """
 
     def __init__(self) -> None:
         self._nodes: dict[str, Node] = {}
         self._edges: dict[str, Edge] = {}
-        self._adj: dict[str, set[str]] = {}      # address_hash → 이웃 hash 집합 (O(1) 조회)
-        self._goal_hash: str | None = None       # 목표 노드 address_hash
-        self._turn_goal_hash: str | None = None  # 이번 턴 목적 node hash
-        self._empty_slots: list[EmptySlot] = []  # 아직 채워지지 않은 자리
-        self._delta: GraphDelta = GraphDelta()   # 현재 루프 회차 변경 추적 (수렴 판단용)
-        self._all_added_nodes: list[str] = []    # 루프 전체 누적 추가 노드 (커밋용)
-        self._all_added_edges: list[str] = []    # 루프 전체 누적 추가 엣지 (커밋용)
-        self._merged_to: dict[str, str] = {}     # address_hash → 본체 hash (병합 추적)
-        self._checked_pairs: set[frozenset[str]] = set() # 이번 사고 턴에서 검증 완료한 쌍
-        self._differentiated_pairs: set[frozenset[str]] = set()  # 이미 분화한 쌍 기록
-        self._goal_connections: set[str] = set()  # 목표 노드에 연결된 개념 hash 집합 (중복 방지)
+        self._adj: dict[str, set[str]] = {}
+        self._goal_hash: str | None = None
+        self._turn_goal_hash: str | None = None
+        self._empty_slots: list[EmptySlot] = []
+        self._delta: GraphDelta = GraphDelta()
+        self._all_added_nodes: list[str] = []
+        self._all_added_edges: list[str] = []
+        self._merged_to: dict[str, str] = {}
+        self._checked_pairs: set[frozenset[str]] = set()
+        self._differentiated_pairs: set[frozenset[str]] = set()
+        self._goal_connections: set[str] = set()
+        self._loop_index: int = 0
+        self._current_patches: list[GraphPatch] = []
+        self._all_patches: list[GraphPatch] = []
 
     # ── 구성 ──────────────────────────────────────────────────────────────────
 
     def load_from_translated(self, tg: TranslatedGraph) -> None:
-        """TranslatedGraph를 TempThoughtGraph에 로드한다.
-
-        InputGraphBundle이 있으면 bundle을 우선 경로로 사용한다. EmptySlot은 중요도
-        점수 보존을 위해 기존 TranslatedGraph.nodes의 객체를 그대로 넘긴다.
-        """
+        """TranslatedGraph를 TempThoughtGraph에 로드한다."""
         if tg.input_bundle is not None:
             empty_slots = [ref for ref in tg.nodes if isinstance(ref, EmptySlot)]
             self.load_from_input_bundle(tg.input_bundle, empty_slots=empty_slots)
@@ -136,6 +136,14 @@ class TempThoughtGraph:
                 created_at=now,
                 updated_at=now,
             )
+            self._record_patch(GraphPatch(
+                op="add",
+                target_kind="node",
+                target_id=turn_goal_hash,
+                after={"node_kind": "goal", "formation_source": "runtime"},
+                reason="turn_goal_from_input_bundle",
+                loop_index=self._loop_index,
+            ))
 
         if self._goal_hash is not None:
             self._add_temporary_edge(self._goal_hash, turn_goal_hash, weight=GOAL_ANCHOR_TEMP_EDGE_WEIGHT)
@@ -170,17 +178,37 @@ class TempThoughtGraph:
     # ── 노드 조작 ─────────────────────────────────────────────────────────────
 
     def add_node(self, node: Node) -> None:
+        existed = node.address_hash in self._nodes
         self._nodes[node.address_hash] = node
         self._delta.added_nodes.append(node.address_hash)
         self._all_added_nodes.append(node.address_hash)
+        self._record_patch(GraphPatch(
+            op="update" if existed else "add",
+            target_kind="node",
+            target_id=node.address_hash,
+            after={"node_kind": node.node_kind, "formation_source": node.formation_source},
+            reason="add_node",
+            loop_index=self._loop_index,
+        ))
 
     def get_node(self, address_hash: str) -> Node | None:
         return self._nodes.get(address_hash)
 
     def update_node(self, node: Node) -> None:
+        before_node = self._nodes.get(node.address_hash)
+        before = _node_patch_state(before_node) if before_node is not None else {}
         self._nodes[node.address_hash] = node
         if node.address_hash not in self._delta.modified_nodes:
             self._delta.modified_nodes.append(node.address_hash)
+        self._record_patch(GraphPatch(
+            op="update",
+            target_kind="node",
+            target_id=node.address_hash,
+            before=before,
+            after=_node_patch_state(node),
+            reason="update_node",
+            loop_index=self._loop_index,
+        ))
 
     def all_nodes(self) -> list[Node]:
         return list(self._nodes.values())
@@ -204,18 +232,40 @@ class TempThoughtGraph:
         self._merged_to[from_hash] = to_hash
         if from_hash not in self._delta.removed_nodes:
             self._delta.removed_nodes.append(from_hash)
+        self._record_patch(GraphPatch(
+            op="merge",
+            target_kind="node",
+            target_id=from_hash,
+            source_hash=from_hash,
+            target_hash=to_hash,
+            reason="merge_nodes",
+            loop_index=self._loop_index,
+        ))
 
     # ── 엣지 조작 ─────────────────────────────────────────────────────────────
 
     def add_edge(self, edge: Edge) -> None:
+        existed = edge.edge_id in self._edges
         self._edges[edge.edge_id] = edge
         self._delta.added_edges.append(edge.edge_id)
         self._all_added_edges.append(edge.edge_id)
         self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
         self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
+        self._record_patch(GraphPatch(
+            op="update" if existed else "add",
+            target_kind="edge",
+            target_id=edge.edge_id,
+            source_hash=edge.source_hash,
+            target_hash=edge.target_hash,
+            after=_edge_patch_state(edge),
+            reason="add_edge",
+            loop_index=self._loop_index,
+        ))
 
     def update_edge(self, edge: Edge) -> None:
         """엣지 정보를 업데이트하고 인접 인덱스를 갱신한다."""
+        before_edge = self._edges.get(edge.edge_id)
+        before = _edge_patch_state(before_edge) if before_edge is not None else {}
         self._edges[edge.edge_id] = edge
         if (edge.edge_id not in self._delta.added_edges and
             edge.edge_id not in self._delta.modified_edges):
@@ -223,6 +273,17 @@ class TempThoughtGraph:
 
         self._adj.setdefault(edge.source_hash, set()).add(edge.target_hash)
         self._adj.setdefault(edge.target_hash, set()).add(edge.source_hash)
+        self._record_patch(GraphPatch(
+            op="update",
+            target_kind="edge",
+            target_id=edge.edge_id,
+            source_hash=edge.source_hash,
+            target_hash=edge.target_hash,
+            before=before,
+            after=_edge_patch_state(edge),
+            reason="update_edge",
+            loop_index=self._loop_index,
+        ))
 
     def remove_edge(self, edge_id: str) -> None:
         edge = self._edges.pop(edge_id, None)
@@ -238,6 +299,16 @@ class TempThoughtGraph:
         if not _still_connected(edge.source_hash, edge.target_hash):
             self._adj.get(edge.source_hash, set()).discard(edge.target_hash)
             self._adj.get(edge.target_hash, set()).discard(edge.source_hash)
+        self._record_patch(GraphPatch(
+            op="remove",
+            target_kind="edge",
+            target_id=edge_id,
+            source_hash=edge.source_hash,
+            target_hash=edge.target_hash,
+            before=_edge_patch_state(edge),
+            reason="remove_edge",
+            loop_index=self._loop_index,
+        ))
 
     def get_edge(self, edge_id: str) -> Edge | None:
         """edge_id로 엣지를 O(1) 조회한다."""
@@ -274,6 +345,7 @@ class TempThoughtGraph:
                 grouped[key] = edge
                 continue
 
+            before = _edge_patch_state(existing)
             existing.edge_weight += edge.edge_weight
             existing.support_count += edge.support_count + 1
             existing.conflict_count += edge.conflict_count
@@ -292,6 +364,17 @@ class TempThoughtGraph:
                 self._all_added_edges.remove(edge.edge_id)
             if existing.edge_id not in self._delta.modified_edges:
                 self._delta.modified_edges.append(existing.edge_id)
+            self._record_patch(GraphPatch(
+                op="merge",
+                target_kind="edge",
+                target_id=edge.edge_id,
+                source_hash=edge.source_hash,
+                target_hash=edge.target_hash,
+                before=before,
+                after=_edge_patch_state(existing),
+                reason="merge_duplicate_edges",
+                loop_index=self._loop_index,
+            ))
 
         for edge_id in duplicate_ids:
             self._edges.pop(edge_id, None)
@@ -354,6 +437,16 @@ class TempThoughtGraph:
         """EmptySlot을 실제 노드로 채운다."""
         self.add_node(node)
         self._empty_slots = [s for s in self._empty_slots if s is not slot]
+        self._record_patch(GraphPatch(
+            op="fill_slot",
+            target_kind="slot",
+            target_id=slot.concept_hint,
+            target_hash=node.address_hash,
+            before={"concept_hint": slot.concept_hint, "importance": slot.importance},
+            after={"node_hash": node.address_hash},
+            reason="fill_slot",
+            loop_index=self._loop_index,
+        ))
 
     # ── ConceptDifferentiation 쌍 추적 ──────────────────────────────────────
 
@@ -364,6 +457,16 @@ class TempThoughtGraph:
     def mark_differentiated(self, hash_a: str, hash_b: str) -> None:
         """두 노드를 분화 완료 쌍으로 기록한다."""
         self._differentiated_pairs.add(frozenset({hash_a, hash_b}))
+        self._record_patch(GraphPatch(
+            op="update",
+            target_kind="pair",
+            target_id="::".join(sorted([hash_a, hash_b])),
+            source_hash=hash_a,
+            target_hash=hash_b,
+            after={"differentiated": True},
+            reason="mark_differentiated",
+            loop_index=self._loop_index,
+        ))
 
     def is_pair_checked(self, hash_a: str, hash_b: str) -> bool:
         """두 노드 쌍이 이미 유사도 검사를 마쳤는지 확인한다."""
@@ -372,6 +475,16 @@ class TempThoughtGraph:
     def mark_pair_checked(self, hash_a: str, hash_b: str) -> None:
         """두 노드 쌍을 검사 완료로 기록한다."""
         self._checked_pairs.add(frozenset({hash_a, hash_b}))
+        self._record_patch(GraphPatch(
+            op="update",
+            target_kind="pair",
+            target_id="::".join(sorted([hash_a, hash_b])),
+            source_hash=hash_a,
+            target_hash=hash_b,
+            after={"checked": True},
+            reason="mark_pair_checked",
+            loop_index=self._loop_index,
+        ))
 
     def reset_pair_checks(self) -> None:
         """검사 이력을 초기화한다 (노드 수정 시 호출)."""
@@ -385,24 +498,32 @@ class TempThoughtGraph:
     def reset_delta(self) -> None:
         """루프 회차 시작 시 delta를 초기화한다. (수렴 판단 전용)
 
-        _all_added_nodes / _all_added_edges는 초기화하지 않는다.
-        커밋 추적은 루프 전체에 걸쳐 누적된다.
+        _all_added_nodes / _all_added_edges / _all_patches는 초기화하지 않는다.
         """
+        self._loop_index += 1
         self._delta = GraphDelta()
+        self._current_patches = []
+
+    def current_patches(self) -> list[GraphPatch]:
+        return list(self._current_patches)
+
+    def all_patches(self) -> list[GraphPatch]:
+        return list(self._all_patches)
+
+    def _record_patch(self, patch: GraphPatch) -> None:
+        self._current_patches.append(patch)
+        self._all_patches.append(patch)
 
     @property
     def all_added_node_hashes(self) -> list[str]:
-        """루프 전체에 걸쳐 add_node()로 추가된 노드의 address_hash 목록 (커밋용)."""
         return self._all_added_nodes
 
     @property
     def all_added_edge_ids(self) -> list[str]:
-        """루프 전체에 걸쳐 add_edge()로 추가된 엣지의 edge_id 목록 (커밋용)."""
         return self._all_added_edges
 
     @property
     def merged_mappings(self) -> dict[str, str]:
-        """루프 전체에 걸쳐 발생한 노드 병합 매핑 (from_hash -> to_hash)."""
         return self._merged_to
 
     @property
@@ -415,9 +536,31 @@ class TempThoughtGraph:
         return self._goal_hash
 
     def neighbor_hashes(self, address_hash: str) -> set[str]:
-        """노드의 이웃 노드 hash 집합을 O(1)로 반환한다."""
         return set(self._adj.get(address_hash, set()))
 
 
 def _turn_goal_hash(source: str) -> str:
     return hashlib.sha256(f"turn-goal::{source}".encode("utf-8")).hexdigest()[:32]
+
+
+def _node_patch_state(node: Node | None) -> dict:
+    if node is None:
+        return {}
+    return {
+        "node_kind": node.node_kind,
+        "trust_score": node.trust_score,
+        "stability_score": node.stability_score,
+        "is_active": node.is_active,
+    }
+
+
+def _edge_patch_state(edge: Edge | None) -> dict:
+    if edge is None:
+        return {}
+    return {
+        "edge_family": edge.edge_family,
+        "connect_type": edge.connect_type,
+        "edge_weight": edge.edge_weight,
+        "support_count": edge.support_count,
+        "is_temporary": edge.is_temporary,
+    }
