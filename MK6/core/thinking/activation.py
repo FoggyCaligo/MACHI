@@ -44,11 +44,10 @@ def build_activation_conclusion_graphs(
     """input/goal 양방향 activation으로 ConclusionGraph skeleton을 만든다.
 
     주의:
-    - 대부분의 `is_temporary=True` edge는 현재 턴의 view/귀속 연결이므로 결론
-      근거나 evidence edge로 직접 사용하지 않는다.
-    - `view_scope=input_sentence` edge는 입력 국소그래프 전파용으로 사용한다.
-    - `view_scope=goal_anchor|turn_goal_anchor` edge는 목적 activation 경로용으로만
-      사용한다. 이 edge들은 결론 graph의 bridge/evidence 본체가 아니라 goal 압력이다.
+    - runtime edge는 activation 경로로 쓸 수 있지만 결론 본문 edge로 직접 쓰지 않는다.
+    - input_sentence runtime edge는 같은 endpoint의 persistent edge가 있으면 그 edge를
+      ConclusionGraph body edge로 materialize한다.
+    - goal_anchor/turn_goal_anchor edge는 목적 압력용 path로만 사용하고 evidence/body에서는 제외한다.
     - restatement graph는 폐기하지 않고 rejected_graphs로 강등한다.
     """
     max_hops = config.THINK_ACTIVATION_HOPS if max_hops is None else max_hops
@@ -178,12 +177,12 @@ def _can_spread_over(edge: Edge) -> bool:
 def _is_runtime_path_edge(edge: Edge | None) -> bool:
     if edge is None or not edge.is_temporary:
         return False
-    return edge.payload.get("view_scope") in {
-        "goal_anchor",
-        "turn_goal_anchor",
-        "identity_anchor",
-        "anchor",
-    }
+    return bool(edge.payload.get("runtime_view") or edge.payload.get("view_scope"))
+
+
+def _is_runtime_node(tg: TempThoughtGraph, address_hash: str) -> bool:
+    node = tg.get_node(address_hash)
+    return bool(node and node.payload.get("runtime_view"))
 
 
 def _edge_next(edge: Edge, current_hash: str) -> tuple[str | None, str]:
@@ -299,7 +298,12 @@ def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) 
     )
     if not has_non_temporary_edge:
         return "insufficient_support"
-    if not graph.has_non_input_structure and not graph.exception_hashes and not graph.bridge_hashes:
+    if (
+        not graph.has_non_input_structure
+        and not graph.goal_paths
+        and not graph.exception_hashes
+        and not graph.bridge_hashes
+    ):
         return "input_restatement"
     if quality.average_edge_score <= 0.0 or quality.support_strength <= 0.0:
         return "insufficient_support"
@@ -332,12 +336,10 @@ def _make_conclusion_graph(
     goal_path: ReasoningPath,
     activation: dict[str, ActivationState],
 ) -> ConclusionGraph:
-    node_hashes = set(input_path.node_hashes) | set(goal_path.node_hashes) | {core_hash}
-    raw_edge_ids = set(input_path.edge_ids) | set(goal_path.edge_ids)
-    edge_ids = {
-        edge_id for edge_id in raw_edge_ids
-        if not _is_runtime_path_edge(tg.get_edge(edge_id))
-    }
+    raw_node_hashes = set(input_path.node_hashes) | set(goal_path.node_hashes) | {core_hash}
+    node_hashes = {h for h in raw_node_hashes if not _is_runtime_node(tg, h)} | {core_hash}
+    edge_ids = _materialized_body_edge_ids(tg, input_path, goal_path)
+    edge_ids |= _core_body_edge_ids(tg, core_hash, input_sources=input_sources, limit=4)
     conflict_paths: list[ReasoningPath] = []
     contrast_paths: list[ReasoningPath] = []
     exception_hashes: set[str] = set()
@@ -346,7 +348,7 @@ def _make_conclusion_graph(
         if edge.is_temporary:
             continue
         other_hash, direction = _edge_next(edge, core_hash)
-        if other_hash is None:
+        if other_hash is None or _is_runtime_node(tg, other_hash):
             continue
         if edge.connect_type == "conflict":
             conflict_paths.append(_single_edge_path(core_hash, other_hash, edge, direction))
@@ -392,6 +394,56 @@ def _make_conclusion_graph(
         uncertainty=uncertainty,
         activation={h: activation[h] for h in node_hashes if h in activation},
     )
+
+
+def _materialized_body_edge_ids(tg: TempThoughtGraph, *paths: ReasoningPath) -> set[str]:
+    edge_ids: set[str] = set()
+    for path in paths:
+        for step in path.steps:
+            edge = tg.get_edge(step.edge_id)
+            if edge is None:
+                continue
+            if not _is_runtime_path_edge(edge):
+                edge_ids.add(edge.edge_id)
+                continue
+            edge_ids.update(_matching_persistent_edge_ids(tg, edge))
+    return edge_ids
+
+
+def _matching_persistent_edge_ids(tg: TempThoughtGraph, runtime_edge: Edge) -> set[str]:
+    matches: list[Edge] = []
+    for edge in tg.get_edges_for_node(runtime_edge.source_hash):
+        if edge.is_temporary:
+            continue
+        if edge.source_hash != runtime_edge.source_hash or edge.target_hash != runtime_edge.target_hash:
+            continue
+        if edge.edge_family != runtime_edge.edge_family or edge.connect_type != runtime_edge.connect_type:
+            continue
+        matches.append(edge)
+    return {edge.edge_id for edge in matches}
+
+
+def _core_body_edge_ids(
+    tg: TempThoughtGraph,
+    core_hash: str,
+    *,
+    input_sources: set[str],
+    limit: int,
+) -> set[str]:
+    ranked: list[tuple[float, Edge]] = []
+    for edge in tg.get_edges_for_node(core_hash):
+        if edge.is_temporary:
+            continue
+        if _is_runtime_node(tg, edge.source_hash) or _is_runtime_node(tg, edge.target_hash):
+            continue
+        endpoints = {edge.source_hash, edge.target_hash}
+        input_touch = 1.0 if endpoints & input_sources else 0.0
+        score = edge.edge_weight * edge.trust_score + min(0.25, edge.support_count * 0.05) + input_touch * 0.10
+        if score <= 0.0:
+            continue
+        ranked.append((score, edge))
+    ranked.sort(key=lambda item: (-item[0], -item[1].edge_weight, item[1].edge_id))
+    return {edge.edge_id for _, edge in ranked[:limit]}
 
 
 def _single_edge_path(start_hash: str, end_hash: str, edge: Edge, direction: str) -> ReasoningPath:
