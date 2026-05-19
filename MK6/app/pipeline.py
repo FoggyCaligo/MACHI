@@ -13,6 +13,7 @@ from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
 from ..core.verbalization import build_answer_contract, render_answer_contract
+from ..core.verbalization.answer_contract import AnswerContract
 from ..tools.ollama_client import chat as llm_chat, get_embedding
 from ..tools.search_client import search as _search
 
@@ -29,7 +30,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
         "SurfaceFrame에 없는 사실을 새로 만들지 마십시오.\n"
         "사용자 입력 문장을 추정해서 따라하지 마십시오.\n"
         "copy_user_input=false이면 사용자의 방금 문장을 확인문이나 재진술문으로 바꾸지 마십시오.\n"
-        "mode=acknowledge_context_update이면 새 정보 수용을 짧게 답하십시오.\n"
+        "mode=acknowledge_context_update이면 focus/frames의 항목을 사람·대상으로 일반화하지 말고 새 정보 수용만 짧게 답하십시오.\n"
         "mode=answer_from_conclusion이면 frames의 관계를 자연스럽게 설명하십시오.\n"
         "mode=conflict_resolution이면 conflicts를 중심으로 충돌을 짧게 정리하십시오.\n"
         "max_sentences 안에서 최종 답변만 한국어로 쓰십시오."
@@ -49,6 +50,14 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     print(user_msg)
     print("─" * 60 + "\n")
 
+    deterministic_response = _deterministic_graph_to_lang_response(contract)
+    if deterministic_response is not None:
+        print(
+            "[GraphToLang deterministic] "
+            f"source={contract.source} mode={contract.response.mode}"
+        )
+        return deterministic_response
+
     response_text = await llm_chat(system_msg, user_msg, model=conclusion.model)
     if not response_text.strip():
         model_name = conclusion.model or config.OLLAMA_MODEL_NAME or "(unset)"
@@ -60,6 +69,20 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
             f"ref_count={len(conclusion.ref_hashes)}"
         )
     return response_text
+
+
+def _deterministic_graph_to_lang_response(contract: AnswerContract) -> str | None:
+    """LLM 해석이 필요 없는 SurfaceFrame mode를 확정적으로 언어화한다.
+
+    acknowledge_context_update는 relation 설명 모드가 아니다. 이 모드에서 LLM을 호출하면
+    focus/frames의 표면 토큰을 사람이나 대상으로 일반화하는 오류가 생길 수 있으므로,
+    계약에 맞는 짧은 수용 응답을 직접 반환한다.
+    """
+    if contract.source == "input_delta" and contract.response.mode == "acknowledge_context_update":
+        return "알겠습니다. 반영했습니다."
+    if contract.response.mode == "minimal_response":
+        return "알겠습니다."
+    return None
 
 
 def _initialize_identity_anchors(conn) -> None:
@@ -127,7 +150,7 @@ class Pipeline:
         _p2 = time.perf_counter()
         print(f"[pipeline] think: {_p2 - _p1:.3f}s")
         response_text = await graph_to_lang(conclusion)
-        print(f"[pipeline] graph_to_lang+LLM: {time.perf_counter() - _p2:.3f}s")
+        print(f"[pipeline] graph_to_lang: {time.perf_counter() - _p2:.3f}s")
         return PipelineResult(response_text=response_text, conclusion=conclusion)
 
     def close(self) -> None:
