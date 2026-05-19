@@ -45,10 +45,12 @@ from . import concept_differentiation, concept_merge
 from .activation import build_activation_conclusion_graphs
 from .claim_graph import AssertionState, apply_claim_conflict_pressure, build_claim_conflict_graph
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
+from .graph_patch import GraphPatch, patch_overlap_ratio
 from .temp_thought_graph import TempThoughtGraph
 
 
 EmbedFn = Callable[[str], Awaitable[list[float]]]
+PATCH_CONVERGENCE_OVERLAP_RATIO = 0.5
 
 
 def _t(label: str, start: float) -> float:
@@ -145,10 +147,23 @@ def _commit_edge(conn: sqlite3.Connection, edge: Edge, strong: bool) -> Edge:
     return edge
 
 
-def _has_converged(tg: TempThoughtGraph, prev_node_count: int, prev_edge_count: int) -> bool:
+def _has_converged(
+    tg: TempThoughtGraph,
+    prev_node_count: int,
+    prev_edge_count: int,
+    previous_patches: list[GraphPatch],
+) -> bool:
     delta = tg.current_delta()
     if delta.is_empty():
         return True
+
+    current_patches = tg.current_patches()
+    if current_patches and previous_patches:
+        overlap = patch_overlap_ratio(previous_patches, current_patches)
+        if overlap >= PATCH_CONVERGENCE_OVERLAP_RATIO:
+            print(f"[think] patch_converged overlap={overlap:.2f}")
+            return True
+
     return len(tg.all_nodes()) == prev_node_count and len(tg.all_edges()) == prev_edge_count
 
 
@@ -254,8 +269,6 @@ class ThoughtEngine:
         tg = TempThoughtGraph()
         tg.set_goal_node(self._goal_node)
 
-        # GlobalGoalGraph를 현재 사고 그래프에 읽기 전용으로 로드한다.
-        # TODO: TurnGoalView가 명시 구조로 생기면 이 위치에서 함께 로드/정렬한다.
         _load_subgraph_into_tg(tg, extract_subgraph(self._conn, self._goal_node.address_hash))
 
         tg.load_from_translated(translated)
@@ -296,6 +309,7 @@ class ThoughtEngine:
         loop_count = 0
         prev_node_count = len(tg.all_nodes())
         prev_edge_count = len(tg.all_edges())
+        prev_loop_patches: list[GraphPatch] = []
         search_node_hashes: set[str] = set()
 
         while loop_count < config.THINK_MAX_LOOPS:
@@ -330,8 +344,10 @@ class ThoughtEngine:
                 for edge in result.edges_added:
                     _commit_edge(self._conn, edge, strong=False)
 
-            if _has_converged(tg, prev_node_count, prev_edge_count):
+            current_loop_patches = tg.current_patches()
+            if _has_converged(tg, prev_node_count, prev_edge_count, prev_loop_patches):
                 break
+            prev_loop_patches = current_loop_patches
             prev_node_count = len(tg.all_nodes())
             prev_edge_count = len(tg.all_edges())
 
@@ -366,7 +382,6 @@ class ThoughtEngine:
         far_cands: set[str] = {h for _, h in primary_scored[max(0, n_sel - n_far):]} if n_sel else set()
         ref_hashes: set[str] = far_cands - key_hashes
         if not scored_direct:
-            # 현재 입력에서 exact direct concept이 없을 때만 semantic local candidates를 참고 개념으로 사용한다.
             ref_hashes |= {h for _, h in scored_context[:max(1, n_far or 1)]}
         if previous_key_hashes:
             ref_hashes |= (previous_key_hashes - key_hashes)
@@ -418,247 +433,3 @@ class ThoughtEngine:
         return ConclusionView(
             nodes=tg.all_nodes(),
             edges=tg.all_edges(),
-            goal_hash=tg.goal_hash,
-            had_empty_slots=had_empty_slots,
-            loop_count=loop_count,
-            topic_continuity=topic_continuity,
-            model=model,
-            user_input=user_input,
-            key_hashes=key_hashes,
-            ref_hashes=ref_hashes,
-            search_node_hashes=search_node_hashes,
-            selected_graphs=selected_graphs,
-            rejected_graphs=activation_result.rejected_graphs,
-            profile_activation_view=profile_activation_view,
-        )
-
-    def _add_search_result_edges(self, tg: TempThoughtGraph, search_text: str) -> None:
-        from ..translation.token_splitter import extract_tokens
-        from ..utils.hash_resolver import normalize_text
-        tokens = extract_tokens(search_text)
-        if not tokens:
-            return
-
-        mentioned: list[str] = []
-        seen_hashes: set[str] = set()
-        for token in tokens:
-            normalized = normalize_text(token)
-            for word_entry in get_words_for_surface(self._conn, normalized):
-                h = word_entry.address_hash
-                if h in seen_hashes or tg.get_node(h) is None:
-                    continue
-                seen_hashes.add(h)
-                mentioned.append(h)
-
-        if len(mentioned) < 2:
-            return
-
-        now = datetime.now(timezone.utc)
-        added_keys: set[tuple[str, str]] = set()
-        for i, src_hash in enumerate(mentioned):
-            for tgt_hash in mentioned[i + 1:]:
-                key = (src_hash, tgt_hash)
-                if key in added_keys:
-                    continue
-                added_keys.add(key)
-                tg.add_edge(Edge(
-                    edge_id=str(uuid.uuid4()),
-                    source_hash=src_hash,
-                    target_hash=tgt_hash,
-                    edge_family="concept",
-                    connect_type="neutral",
-                    edge_weight=0.5,
-                    provenance_source="search",
-                    proposed_connect_type="co_occurrence",
-                    proposal_reason="검색 결과에서 함께 등장한 기존 개념",
-                    is_temporary=False,
-                    created_at=now,
-                    updated_at=now,
-                ))
-
-    async def _fill_empty_slots(
-        self,
-        tg: TempThoughtGraph,
-        user_input: str | None = None,
-        concept_hashes: set[str] | None = None,
-    ) -> set[str]:
-        slots = list(tg.empty_slots)
-        if not slots:
-            return set()
-
-        queries = _search_queries_from_slots(slots, user_input)
-        print(f"[think] search start  queries={queries!r}  slots={len(slots)}")
-        if not queries:
-            return set()
-
-        async def _run_query(query: str) -> tuple[str, str | None]:
-            try:
-                text = await asyncio.wait_for(self._search_fn(query), timeout=config.SEARCH_TIMEOUT)
-            except asyncio.TimeoutError:
-                print(f"[think] search_fn timeout ({config.SEARCH_TIMEOUT}s) query={query!r}")
-                return query, None
-            return query, text
-
-        _ts = time.perf_counter()
-        query_results = await asyncio.gather(*[_run_query(q) for q in queries])
-        _t(f"search_fn ({len(queries)} queries)", _ts)
-
-        search_by_query: dict[str, str] = {
-            query: text
-            for query, text in query_results
-            if text
-        }
-        combined_search_text = " ".join(
-            f"[검색어: {query}] {text}"
-            for query, text in search_by_query.items()
-        ) or None
-
-        ingested_nodes: list[Node] = []
-        session_search_hashes: set[str] = set()
-        _ti = time.perf_counter()
-        for slot in slots:
-            hint = slot.concept_hint.strip()
-            slot_search_text = search_by_query.get(hint)
-            node, got_search = await self._ingest_slot(slot, search_text=slot_search_text)
-            if node is not None:
-                tg.fill_slot(slot, node)
-                tg.connect_to_goal(node.address_hash)
-                ingested_nodes.append(node)
-                if got_search:
-                    session_search_hashes.add(node.address_hash)
-        _t(f"ingest_slots x{len(slots)}", _ti)
-
-        if ingested_nodes:
-            now = datetime.now(timezone.utc)
-            for i, node_a in enumerate(ingested_nodes):
-                for node_b in ingested_nodes[i + 1:]:
-                    tg.add_edge(Edge(
-                        edge_id=str(uuid.uuid4()),
-                        source_hash=node_a.address_hash,
-                        target_hash=node_b.address_hash,
-                        edge_family="concept",
-                        connect_type="neutral",
-                        edge_weight=0.5,
-                        provenance_source="search",
-                        proposed_connect_type="co_occurrence",
-                        proposal_reason="검색 컨텍스트에서 함께 등장한 개념",
-                        is_temporary=False,
-                        created_at=now,
-                        updated_at=now,
-                    ))
-            if concept_hashes:
-                for ingest_node in ingested_nodes:
-                    for cp_hash in concept_hashes:
-                        cp_node = tg.get_node(cp_hash)
-                        if cp_node is None:
-                            continue
-                        tg.add_edge(Edge(
-                            edge_id=str(uuid.uuid4()),
-                            source_hash=cp_node.address_hash,
-                            target_hash=ingest_node.address_hash,
-                            edge_family="concept",
-                            connect_type="neutral",
-                            edge_weight=0.6,
-                            provenance_source="search",
-                            proposed_connect_type="co_occurrence",
-                            proposal_reason="같은 쿼리에서 함께 등장한 개념",
-                            is_temporary=False,
-                            created_at=now,
-                            updated_at=now,
-                        ))
-
-        if combined_search_text:
-            self._add_search_result_edges(tg, combined_search_text)
-        return session_search_hashes
-
-    async def _ingest_slot(self, slot: EmptySlot, search_text: str | None = None) -> tuple[Node | None, bool]:
-        _SUMMARY_MAX = 800
-        hint = slot.concept_hint.strip()
-        if not hint:
-            return None, False
-
-        address_hash = compute_hash(hint)
-        existing = db_get_node(self._conn, address_hash)
-        if existing is not None:
-            if search_text and not existing.payload.get("search_summary"):
-                existing.payload["search_summary"] = search_text[:_SUMMARY_MAX]
-                existing.touch()
-                update_node(self._conn, existing)
-                self._conn.commit()
-                return existing, True
-            return existing, False
-
-        try:
-            embedding = await self._embed_fn(hint)
-        except Exception:
-            embedding = None
-
-        payload: dict = {}
-        if search_text:
-            payload["search_summary"] = search_text[:_SUMMARY_MAX]
-
-        now = datetime.now(timezone.utc)
-        node = Node(
-            address_hash=address_hash,
-            node_kind="concept",
-            formation_source="ingest",
-            labels=[hint],
-            is_abstract=False,
-            trust_score=config.COMMIT_TRUST_WEAK,
-            stability_score=config.COMMIT_STABILITY_WEAK,
-            is_active=True,
-            embedding=embedding,
-            payload=payload,
-            created_at=now,
-            updated_at=now,
-        )
-        insert_node(self._conn, node)
-
-        normalized = normalize_text(hint)
-        if not word_link_exists(self._conn, normalized, address_hash):
-            insert_word(self._conn, WordEntry(
-                word_id=str(uuid.uuid4()),
-                surface_form=normalized,
-                address_hash=address_hash,
-                language=None,
-                created_at=now,
-            ))
-
-        self._conn.commit()
-        return node, bool(search_text)
-
-    def _commit_new_content(self, tg: TempThoughtGraph) -> None:
-        merged_mappings = tg.merged_mappings
-        if merged_mappings:
-            for from_hash, to_hash in merged_mappings.items():
-                remap_words_to_node(self._conn, [from_hash], to_hash)
-                deactivate_node(self._conn, from_hash)
-
-        for address_hash in tg.all_added_node_hashes:
-            node = tg.get_node(address_hash)
-            if node is None:
-                continue
-            if node.is_abstract:
-                _commit_weak(self._conn, node)
-            else:
-                _commit_strong(self._conn, node)
-
-        for edge_id in tg.all_added_edge_ids:
-            edge = tg.get_edge(edge_id)
-            if edge is None or edge.is_temporary:
-                continue
-            committed = _commit_edge(self._conn, edge, strong=True)
-            _copy_committed_edge_state(edge, committed)
-
-        self._conn.commit()
-
-
-def _profile_subject_binding_hashes(profile_activation_view: ProfileActivationView | None) -> set[str]:
-    """ClaimAssertion subject로 쓸 현재 사용자 identity surface 후보.
-
-    문자열 패턴으로 이름을 추측하지 않고, 현재 입력과 UserProfile reference가 겹쳐
-    ProfileActivationView에서 matched된 concept만 1차 subject binding 후보로 사용한다.
-    """
-    if profile_activation_view is None or not profile_activation_view.is_active:
-        return set()
-    return set(profile_activation_view.matched_hashes)
