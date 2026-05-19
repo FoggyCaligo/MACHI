@@ -52,7 +52,7 @@ def build_activation_conclusion_graphs(
       ConclusionGraph body edge로 materialize한다.
     - goal_anchor/turn_goal_anchor edge는 목적 압력용 path로만 사용하고 evidence/body에서는 제외한다.
     - goal-aligned만으로 결론 승격하지 않는다. body edge가 input-only이면 반복 support가
-      충분하거나 비입력 구조가 있어야 selected ConclusionGraph가 된다.
+      충분하거나 persistent body edge가 입력 바깥 구조와 직접 연결되어야 selected ConclusionGraph가 된다.
     - restatement graph는 폐기하지 않고 rejected_graphs로 강등한다.
     """
     max_hops = config.THINK_ACTIVATION_HOPS if max_hops is None else max_hops
@@ -315,14 +315,23 @@ def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) 
 
 
 def _has_body_structure_beyond_single_turn_input(graph: ConclusionGraph, edges: list[Edge]) -> bool:
-    if graph.bridge_hashes or graph.exception_hashes or graph.condition_hashes or graph.action_hashes:
-        return True
+    """선택된 body edge가 단일 입력 복사본을 넘어서는지 판단한다.
+
+    bridge_hashes 자체는 runtime goal path의 부산물을 포함할 수 있으므로 승격 조건으로
+    사용하지 않는다. 실제 통과 조건은 persistent body edge가 입력 바깥 노드와 직접
+    연결되거나, input-only edge가 반복 support를 충분히 가진 경우뿐이다.
+    """
     for edge in edges:
         endpoints = {edge.source_hash, edge.target_hash}
         if not endpoints <= graph.input_hashes:
             return True
         if edge.support_count >= MIN_INPUT_ONLY_BODY_SUPPORT:
             return True
+    if graph.exception_hashes or graph.condition_hashes or graph.action_hashes:
+        return any(
+            bool({edge.source_hash, edge.target_hash} - graph.input_hashes)
+            for edge in edges
+        )
     return False
 
 
