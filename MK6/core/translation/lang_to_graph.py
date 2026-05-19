@@ -4,32 +4,35 @@ from __future__ import annotations
 import asyncio
 import math
 import sqlite3
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
+from ... import config
 from ..entities.node import Node
 from ..entities.translated_graph import (
-    ConceptPointer, EmptySlot, ConceptRef,
-    TranslatedEdge, TranslatedGraph, LocalSubgraph, InputGraphBundle,
+    ConceptPointer,
+    ConceptRef,
+    EmptySlot,
+    InputGraphBundle,
+    LocalSubgraph,
+    TranslatedEdge,
+    TranslatedGraph,
 )
 from ..storage.world_graph import get_node, get_words_for_surface
 from ..utils.hash_resolver import normalize_text
 from ..utils.local_graph_extractor import extract as extract_subgraph
-from .input_classifier import classify, InputType
+from .input_classifier import InputType, classify
 from .token_splitter import tokenize
-from ... import config
 
 
 EmbedFn = Callable[[str], Awaitable[list[float]]]
 
-
-# ── 유사도 ────────────────────────────────────────────────────────────────────
 
 def _cosine(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(x * x for x in b))
     if na == 0 or nb == 0:
-        return 0.0
+        raise ValueError("Cannot compare zero-length embedding vector")
     return dot / (na * nb)
 
 
@@ -44,7 +47,7 @@ def _clone_pointer(ptr: ConceptPointer) -> ConceptPointer:
 
 
 def _build_input_bundle(source: str, nodes: list[ConceptRef], edges: list[TranslatedEdge]) -> InputGraphBundle:
-    """TranslatedGraph의 기존 산출물을 입력 국소그래프 묶음으로 명시화한다."""
+    """TranslatedGraph의 산출물을 이번 입력의 국소그래프 묶음으로 명시화한다."""
     center_hashes: set[str] = set()
     direct_hashes: set[str] = set()
     context_hashes: set[str] = set()
@@ -79,29 +82,18 @@ def _build_input_bundle(source: str, nodes: list[ConceptRef], edges: list[Transl
     )
 
 
-# ── 토큰 중요도 ───────────────────────────────────────────────────────────────
-
 def _assign_importances(
     sentence_pairs: list[tuple[str, ConceptRef]],
     token_embs: dict[str, list[float]],
 ) -> None:
-    """각 ConceptRef에 centroid 기반 중요도 점수를 in-place로 할당한다.
-
-    방법: 문장 내 모든 토큰 임베딩의 centroid와 각 토큰의 cosine 유사도.
-    - 모든 토큰: token_embs에서 실시간 임베딩 조회 (ConceptPointer의 WorldGraph
-      저장 임베딩은 사용하지 않음 — 그래프 상태가 centroid를 오염시키지 않도록).
-    - 임베딩 없는 토큰: 길이 기반 폴백 (0.5 + 0.3 × 정규화 길이).
-
-    중요도 필터링(near/far 20%)은 ThoughtEngine에서 수행한다.
-    LangToGraph는 모든 토큰을 넘기고 점수만 부여한다.
-    """
+    """각 ConceptRef에 centroid 기반 중요도 점수를 in-place로 할당한다."""
     if not sentence_pairs:
         return
 
     tokens = [t for t, _ in sentence_pairs]
     embs: list[list[float] | None] = [token_embs.get(t) for t in tokens]
-
     valid_embs = [e for e in embs if e is not None]
+
     if not valid_embs:
         max_len = max(len(t) for t in tokens) if tokens else 1
         for token, (_, ref) in zip(tokens, sentence_pairs):
@@ -120,7 +112,13 @@ def _assign_importances(
             ref.importance = 0.5 + 0.3 * (len(token) / max_len)
 
 
-# ── LangToGraph 메인 ──────────────────────────────────────────────────────────
+async def _embed_tokens(tokens: list[str], embed_fn: EmbedFn) -> dict[str, list[float]]:
+    unique_tokens = list(dict.fromkeys(tokens))
+    if not unique_tokens:
+        return {}
+    embeddings = await asyncio.gather(*[embed_fn(normalize_text(token)) for token in unique_tokens])
+    return dict(zip(unique_tokens, embeddings))
+
 
 async def translate(
     text: str,
@@ -181,18 +179,7 @@ async def translate(
                         candidate_nodes.append(n)
                         seen.add(n.address_hash)
 
-    token_embs: dict[str, list[float]] = {}
-    if all_tokens:
-        unique_tokens = list(dict.fromkeys(all_tokens))
-        emb_results = await asyncio.gather(
-            *[embed_fn(normalize_text(t)) for t in unique_tokens],
-            return_exceptions=True,
-        )
-        token_embs = {
-            tok: emb
-            for tok, emb in zip(unique_tokens, emb_results)
-            if isinstance(emb, list)
-        }
+    token_embs = await _embed_tokens(all_tokens, embed_fn)
 
     for sentence_tokens in sentences:
         sentence_groups: list[tuple[str, list[ConceptRef]]] = []
