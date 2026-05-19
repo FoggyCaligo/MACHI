@@ -6,7 +6,7 @@
     → Think 루프 (수렴까지)
         ├── ConceptDifferentiation
         ├── 필요 시 검색 (EmptySlot 존재 | 근거 부족)
-        └── 수렴 판단 (구조적 변화 감지)
+        └── 수렴 판단 (patch overlap + goal alignment score)
     → ConclusionView 반환
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ from ..storage.world_graph import (
 from ..utils.hash_resolver import compute_hash, normalize_text
 from ..utils.local_graph_extractor import extract as extract_subgraph
 from ... import config
-from . import concept_differentiation, concept_merge, surface_variant_evidence
+from . import concept_differentiation, concept_merge, goal_alignment, surface_variant_evidence
 from .activation import build_activation_conclusion_graphs
 from .claim_graph import AssertionState, apply_claim_conflict_pressure, build_claim_conflict_graph
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
@@ -153,19 +153,35 @@ def _has_converged(
     prev_node_count: int,
     prev_edge_count: int,
     previous_patches: list[GraphPatch],
+    *,
+    previous_goal_score: float | None,
+    current_goal_score: float,
 ) -> bool:
     delta = tg.current_delta()
     if delta.is_empty():
         return True
 
+    goal_delta = current_goal_score if previous_goal_score is None else current_goal_score - previous_goal_score
+    goal_is_improving = goal_delta >= config.THINK_GOAL_SCORE_MIN_DELTA
+
     current_patches = tg.current_patches()
     if current_patches and previous_patches:
         overlap = patch_overlap_ratio(previous_patches, current_patches)
-        if overlap >= PATCH_CONVERGENCE_OVERLAP_RATIO:
-            print(f"[think] patch_converged overlap={overlap:.2f}")
+        if overlap >= PATCH_CONVERGENCE_OVERLAP_RATIO and not goal_is_improving:
+            print(
+                f"[think] patch_converged overlap={overlap:.2f} "
+                f"goal_delta={goal_delta:.4f} goal_score={current_goal_score:.4f}"
+            )
             return True
 
-    return len(tg.all_nodes()) == prev_node_count and len(tg.all_edges()) == prev_edge_count
+    unchanged_size = len(tg.all_nodes()) == prev_node_count and len(tg.all_edges()) == prev_edge_count
+    if unchanged_size and not goal_is_improving:
+        print(
+            f"[think] size_converged goal_delta={goal_delta:.4f} "
+            f"goal_score={current_goal_score:.4f}"
+        )
+        return True
+    return False
 
 
 def _load_subgraph_into_tg(tg: TempThoughtGraph, subgraph) -> None:
@@ -313,6 +329,7 @@ class ThoughtEngine:
         prev_node_count = len(tg.all_nodes())
         prev_edge_count = len(tg.all_edges())
         prev_loop_patches: list[GraphPatch] = []
+        previous_goal_score: float | None = None
         search_node_hashes: set[str] = set()
 
         while loop_count < config.THINK_MAX_LOOPS:
@@ -352,9 +369,29 @@ class ThoughtEngine:
                 for edge in result.edges_added:
                     _commit_edge(self._conn, edge, strong=False)
 
+            goal_snapshot = goal_alignment.score_goal_alignment(
+                tg,
+                translated,
+                conn=self._conn,
+                previous_key_hashes=previous_key_hashes,
+            )
+            print(
+                f"[think] goal_score={goal_snapshot.score:.4f} "
+                f"aligned={goal_snapshot.aligned_count} "
+                f"inputs={goal_snapshot.input_count} goals={goal_snapshot.goal_count}"
+            )
+
             current_loop_patches = tg.current_patches()
-            if _has_converged(tg, prev_node_count, prev_edge_count, prev_loop_patches):
+            if _has_converged(
+                tg,
+                prev_node_count,
+                prev_edge_count,
+                prev_loop_patches,
+                previous_goal_score=previous_goal_score,
+                current_goal_score=goal_snapshot.score,
+            ):
                 break
+            previous_goal_score = goal_snapshot.score
             prev_loop_patches = current_loop_patches
             prev_node_count = len(tg.all_nodes())
             prev_edge_count = len(tg.all_edges())
