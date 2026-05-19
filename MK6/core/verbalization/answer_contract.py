@@ -5,11 +5,13 @@ from typing import TYPE_CHECKING
 
 from ..goal import GOAL_ROOT_HASH, GLOBAL_GOAL_AXIS_SEEDS
 from ..profile import is_profile_reference_edge, is_user_profile_node, profile_context_labels
+from ..thinking import relation_quality
 from ..utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
 
 if TYPE_CHECKING:
     from ..entities.edge import Edge
     from ..entities.node import Node
+    from ..thinking.conclusion_graph import ConclusionGraph
     from ..thinking.thought_engine import ConclusionView
 
 
@@ -80,7 +82,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     def display_degree(address_hash: str) -> int:
         degree = 0
         for edge in conclusion.edges:
-            if edge.is_temporary and not (edge.edge_family == "relation" and edge.source_hash in identity_names):
+            if edge.is_temporary:
                 continue
             if is_profile_reference_edge(edge):
                 continue
@@ -142,8 +144,8 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
         for h in graph.node_hashes
         if is_verbalizable_hash(h)
     }
-    selected_graph_edge_ids = {
-        edge_id
+    graph_by_edge_id = {
+        edge_id: graph
         for graph in conclusion.selected_graphs
         for edge_id in graph.edge_ids
     }
@@ -151,7 +153,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     evidence_lines = _select_evidence_lines(
         conclusion,
         edge_by_id=edge_by_id,
-        selected_graph_edge_ids=selected_graph_edge_ids,
+        graph_by_edge_id=graph_by_edge_id,
         node_label=node_label,
         is_verbalizable_hash=is_verbalizable_hash,
         evidence_ratio=EVIDENCE_EDGE_RATIO,
@@ -286,9 +288,9 @@ def _render_conclusion_graph_lines(
         bridge = _labels_from_hashes(graph.bridge_hashes, node_label, is_verbalizable_hash, limit=3)
         exceptions = _labels_from_hashes(graph.exception_hashes, node_label, is_verbalizable_hash, limit=2)
         edges = []
-        for edge_id in sorted(graph.edge_ids):
-            edge = edge_by_id.get(edge_id)
-            if edge is None or edge.is_temporary or is_profile_reference_edge(edge):
+        ranked_edges = _rank_graph_edges(graph, edge_by_id)
+        for _, edge in ranked_edges:
+            if edge.is_temporary or is_profile_reference_edge(edge):
                 continue
             if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
                 continue
@@ -368,21 +370,21 @@ def _select_evidence_lines(
     conclusion: "ConclusionView",
     *,
     edge_by_id: dict[str, "Edge"],
-    selected_graph_edge_ids: set[str],
+    graph_by_edge_id: dict[str, "ConclusionGraph"],
     node_label,
     is_verbalizable_hash,
     evidence_ratio: float,
 ) -> list[str]:
-    """GraphToLang에 넘길 근거 edge를 후보 풀의 상위 evidence_ratio 비율로 제한한다."""
+    """GraphToLang에 넘길 근거 edge를 relation quality 기준으로 제한한다."""
 
-    evidence: list[tuple[int, float, str]] = []
+    candidates: list["Edge"] = []
     used_keys: set[tuple[str, str, str]] = set()
     key_or_ref_hashes = set(conclusion.key_hashes) | set(conclusion.ref_hashes)
 
-    def add_edge(edge: "Edge", *, priority: int) -> None:
+    def add_edge(edge: "Edge") -> None:
         if is_profile_reference_edge(edge):
             return
-        if edge.is_temporary and not (edge.edge_family == "relation" and edge.source_hash == ANCHOR_USER):
+        if edge.is_temporary:
             return
         if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
             return
@@ -390,36 +392,81 @@ def _select_evidence_lines(
         if key in used_keys:
             return
         used_keys.add(key)
-        evidence.append((
-            priority,
-            -edge.edge_weight,
-            f"{node_label(edge.source_hash)} -[{edge.connect_type}, {edge.edge_weight:.2f}]-> {node_label(edge.target_hash)}",
-        ))
+        candidates.append(edge)
 
-    for edge_id in selected_graph_edge_ids:
+    for edge_id in graph_by_edge_id:
         edge = edge_by_id.get(edge_id)
         if edge is not None:
-            add_edge(edge, priority=0)
-
-    for edge in conclusion.edges:
-        if edge.source_hash == ANCHOR_USER and edge.target_hash in key_or_ref_hashes:
-            add_edge(edge, priority=1)
+            add_edge(edge)
 
     for edge in conclusion.edges:
         if edge.source_hash not in key_or_ref_hashes and edge.target_hash not in key_or_ref_hashes:
             continue
         if edge.connect_type == "neutral" and edge.edge_weight < 1.0:
             continue
-        add_edge(edge, priority=2)
+        add_edge(edge)
 
-    if not evidence:
+    if not candidates:
+        return []
+
+    ranked = _rank_evidence_edges(candidates, graph_by_edge_id)
+    ranked = [(score, edge) for score, edge in ranked if score > 0.0]
+    if not ranked:
         return []
 
     ratio = max(0.0, min(1.0, evidence_ratio))
     if ratio <= 0.0:
         return []
-    keep_count = max(1, int(len(evidence) * ratio + 0.999999))
-    return [line for _, _, line in sorted(evidence)[:keep_count]]
+    keep_count = max(1, int(len(ranked) * ratio + 0.999999))
+    return [
+        f"{node_label(edge.source_hash)} -[{edge.connect_type}, {edge.edge_weight:.2f}]-> {node_label(edge.target_hash)}"
+        for _, edge in ranked[:keep_count]
+    ]
+
+
+def _rank_graph_edges(graph: "ConclusionGraph", edge_by_id: dict[str, "Edge"]) -> list[tuple[float, "Edge"]]:
+    ranked: list[tuple[float, "Edge"]] = []
+    for edge_id in graph.edge_ids:
+        edge = edge_by_id.get(edge_id)
+        if edge is None:
+            continue
+        quality = relation_quality.score_edge_relation(edge, graph)
+        ranked.append((quality.score, edge))
+    return sorted(ranked, key=lambda item: (-item[0], -item[1].edge_weight, item[1].edge_id))
+
+
+def _rank_evidence_edges(
+    edges: list["Edge"],
+    graph_by_edge_id: dict[str, "ConclusionGraph"],
+) -> list[tuple[float, "Edge"]]:
+    ranked: list[tuple[float, "Edge"]] = []
+    for edge in edges:
+        graph = graph_by_edge_id.get(edge.edge_id)
+        if graph is None:
+            score = _fallback_edge_score(edge)
+        else:
+            score = relation_quality.score_edge_relation(edge, graph).score
+        ranked.append((score, edge))
+    return sorted(ranked, key=lambda item: (-item[0], -item[1].edge_weight, item[1].edge_id))
+
+
+def _fallback_edge_score(edge: "Edge") -> float:
+    if edge.is_temporary:
+        return 0.0
+    base = max(0.0, edge.edge_weight) * max(0.0, edge.trust_score)
+    if edge.connect_type == "flow":
+        base *= 1.0
+    elif edge.connect_type == "neutral":
+        base *= 0.55
+    elif edge.connect_type == "opposite":
+        base *= 0.70
+    elif edge.connect_type == "conflict":
+        base *= 0.30
+    else:
+        base *= 0.45
+    base += min(0.15, max(0, edge.support_count) * 0.03)
+    base -= max(0.0, edge.contradiction_pressure) * 0.20
+    return max(0.0, base)
 
 
 def _select_search_context(

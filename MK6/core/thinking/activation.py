@@ -9,6 +9,7 @@ from ..entities.edge import Edge
 from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedGraph
 from ..goal import load_goal_view
 from ..utils.hash_resolver import compute_hash
+from . import relation_quality
 from .conclusion_graph import (
     ActivationState,
     ConclusionGraph,
@@ -248,7 +249,11 @@ def _build_conclusion_graphs(
             goal_path=goal_paths[h],
             activation=activation,
         )
-        rejection_reason = _rejection_reason(graph, tg)
+        quality = relation_quality.score_graph_relations(tg, graph)
+        graph.score += quality.score
+        graph.uncertainty = min(1.0, graph.uncertainty + quality.restatement_risk * 0.20)
+
+        rejection_reason = _rejection_reason(graph, tg, quality=quality)
         if rejection_reason is not None:
             rejected.append(RejectedConclusionGraph(
                 graph=graph,
@@ -259,10 +264,12 @@ def _build_conclusion_graphs(
         selected.append(graph)
         if len(selected) >= graph_limit:
             break
+
+    selected.sort(key=lambda graph: graph.score, reverse=True)
     return selected, rejected
 
 
-def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph) -> str | None:
+def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) -> str | None:
     if graph.is_likely_restatement:
         return "input_restatement"
     if not graph.edge_ids:
@@ -275,6 +282,14 @@ def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph) -> str | Non
         return "insufficient_support"
     if not graph.has_non_input_structure and not graph.exception_hashes and not graph.bridge_hashes:
         return "input_restatement"
+    if quality.average_edge_score <= 0.0 or quality.support_strength <= 0.0:
+        return "insufficient_support"
+    if quality.restatement_risk >= 0.60 and quality.bridge_value < 0.10 and quality.goal_relevance < 0.20:
+        return "input_restatement"
+    if quality.goal_relevance <= 0.0 and quality.bridge_value <= 0.0 and not graph.has_conflict_structure:
+        return "insufficient_goal_alignment"
+    if graph.has_conflict_structure and quality.conflict_pressure > quality.support_strength:
+        return "conflict_dominant"
     return None
 
 
