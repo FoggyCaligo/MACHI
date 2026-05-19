@@ -46,22 +46,39 @@ def _generation_payload(base: dict) -> dict:
 
 
 async def get_embedding(text: str) -> list[float]:
-    """nomic-embed-text (또는 설정된 모델)로 임베딩 벡터를 반환한다.
+    """설정된 Ollama 임베딩 모델로 단일 텍스트 임베딩 벡터를 반환한다.
 
-    공유 클라이언트를 사용해 연결 풀을 재사용한다.
+    현재 Ollama 임베딩 API는 /api/embed 엔드포인트와 input 필드를 사용한다.
+    구버전 /api/embeddings 경로로 폴백하지 않는다. 엔드포인트 불일치나 모델
+    문제는 숨기지 않고 호출자에게 드러낸다.
 
     Raises:
+        RuntimeError: Ollama 응답에 단일 임베딩 벡터가 없는 경우
         httpx.HTTPError: 네트워크 오류 또는 Ollama 오류 응답
     """
-    url = f"{config.OLLAMA_HOST}/api/embeddings"
+    url = f"{config.OLLAMA_HOST}/api/embed"
     client = _get_client()
     r = await client.post(
         url,
-        json={"model": config.EMBEDDING_MODEL_NAME, "prompt": text},
+        json={"model": config.EMBEDDING_MODEL_NAME, "input": text},
         # 클라이언트 레벨 timeout 사용 (pool=None 포함). per-request 오버라이드 없음.
     )
     r.raise_for_status()
-    return r.json()["embedding"]
+
+    data = r.json()
+    embeddings = data.get("embeddings")
+    if not isinstance(embeddings, list) or not embeddings:
+        raise RuntimeError(
+            "Ollama embed 응답에 embeddings 배열이 없습니다. "
+            f"model='{config.EMBEDDING_MODEL_NAME}', http_status={r.status_code}"
+        )
+    embedding = embeddings[0]
+    if not isinstance(embedding, list) or not embedding:
+        raise RuntimeError(
+            "Ollama embed 응답의 첫 번째 embedding이 비어 있습니다. "
+            f"model='{config.EMBEDDING_MODEL_NAME}', http_status={r.status_code}"
+        )
+    return embedding
 
 
 async def generate(prompt: str, model: str | None = None) -> str:
@@ -143,7 +160,7 @@ async def chat(
                     "model": model_name,
                     "messages": [
                         {"role": "system", "content": system},
-                        {"role": "user",   "content": user},
+                        {"role": "user", "content": user},
                     ],
                 }),
             )
