@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from ..goal import GOAL_ROOT_HASH, GLOBAL_GOAL_AXIS_SEEDS
 from ..profile import is_profile_reference_edge, is_user_profile_node
 from ..thinking import relation_quality
+from ..thinking.response_action import RESPONSE_ACTION_VIEW_SCOPE
 from ..utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
 
 if TYPE_CHECKING:
@@ -52,6 +53,15 @@ class SurfaceNodeFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class SurfaceActionFrame:
+    action: str
+    actor: str
+    target: str
+    target_display: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class SurfaceConflictFrame:
     current: list[str] = field(default_factory=list)
     previous: list[str] = field(default_factory=list)
@@ -73,6 +83,7 @@ class AnswerContract:
     response: SurfaceResponse
     focus: SurfaceFocus
     frames: list[SurfaceNodeFrame] = field(default_factory=list)
+    actions: list[SurfaceActionFrame] = field(default_factory=list)
     conflicts: list[SurfaceConflictFrame] = field(default_factory=list)
 
 
@@ -102,7 +113,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     def display_degree(address_hash: str) -> int:
         degree = 0
         for edge in conclusion.edges:
-            if edge.is_temporary and edge.payload.get("view_scope") != "input_sentence":
+            if edge.is_temporary and edge.payload.get("view_scope") not in {"input_sentence", RESPONSE_ACTION_VIEW_SCOPE}:
                 continue
             if is_profile_reference_edge(edge):
                 continue
@@ -115,6 +126,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     answer_graphs = [graph for graph in conclusion.selected_graphs if not graph.has_conflict_structure]
     conflict_graphs = [graph for graph in conclusion.selected_graphs if graph.has_conflict_structure]
     selected_graphs = answer_graphs or conflict_graphs
+    action_graphs = [graph for graph in selected_graphs if _is_response_action_graph(graph, node_map)]
 
     if selected_graphs:
         primary_hashes = _rank_selected_hashes(
@@ -142,6 +154,13 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
             is_verbalizable_hash,
             limit_per_node=4,
         )
+        actions = _build_action_frames(
+            action_graphs,
+            node_map,
+            node_label,
+        )
+        if actions:
+            primary_hashes = _action_focus_hashes(action_graphs, node_map) or primary_hashes
         source = "conclusion_graph"
     else:
         primary_hashes = _rank_fallback_hashes(
@@ -169,6 +188,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
             is_verbalizable_hash,
             limit_per_node=4,
         )
+        actions = []
         source = "input_delta"
 
     conflicts = _build_conflict_frames(
@@ -179,6 +199,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     )
     mode = _select_mode(
         has_conflict=bool(conflicts),
+        has_response_action=bool(actions),
         has_conclusion=bool(answer_graphs),
         has_frame=bool(frames or primary_hashes or supporting_hashes),
     )
@@ -189,13 +210,14 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
         response=SurfaceResponse(
             mode=mode,
             continuity=conclusion.topic_continuity,
-            max_sentences=5 if mode == "conflict_resolution" else 2 if mode == "acknowledge_context_update" else 4,
+            max_sentences=5 if mode == "conflict_resolution" else 2 if mode in {"acknowledge_context_update", "perform_response_action"} else 4,
         ),
         focus=SurfaceFocus(
             primary=[node_label(h) for h in primary_hashes],
             supporting=[node_label(h) for h in supporting_hashes],
         ),
         frames=frames,
+        actions=actions,
         conflicts=conflicts,
     )
 
@@ -206,9 +228,11 @@ def render_answer_contract(contract: AnswerContract) -> str:
     return json.dumps(asdict(contract), ensure_ascii=False, indent=2)
 
 
-def _select_mode(*, has_conflict: bool, has_conclusion: bool, has_frame: bool) -> str:
+def _select_mode(*, has_conflict: bool, has_response_action: bool, has_conclusion: bool, has_frame: bool) -> str:
     if has_conflict:
         return "conflict_resolution"
+    if has_response_action:
+        return "perform_response_action"
     if has_conclusion:
         return "answer_from_conclusion"
     if has_frame:
@@ -357,13 +381,15 @@ def _surface_edges_from_graph(
     ranked: list[tuple[float, "Edge"]] = []
     for edge_id in graph.edge_ids:
         edge = edge_by_id.get(edge_id)
-        if edge is None or edge.is_temporary or is_profile_reference_edge(edge):
+        if edge is None or is_profile_reference_edge(edge):
+            continue
+        if edge.is_temporary and edge.payload.get("view_scope") != RESPONSE_ACTION_VIEW_SCOPE:
             continue
         if source_hash not in {edge.source_hash, edge.target_hash}:
             continue
         if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
             continue
-        score = relation_quality.score_edge_relation(edge, graph).score
+        score = edge.edge_weight * edge.trust_score if edge.payload.get("view_scope") == RESPONSE_ACTION_VIEW_SCOPE else relation_quality.score_edge_relation(edge, graph).score
         if score <= 0.0:
             continue
         ranked.append((score, edge))
@@ -430,10 +456,10 @@ def _fallback_edge_score(edge: "Edge") -> float:
 
 
 def _node_role_in_graph(address_hash: str, graph: "ConclusionGraph") -> str:
-    if address_hash in graph.core_hashes:
-        return "core"
     if address_hash in graph.action_hashes:
         return "action"
+    if address_hash in graph.core_hashes:
+        return "core"
     if address_hash in graph.bridge_hashes:
         return "bridge"
     if address_hash in graph.condition_hashes:
@@ -443,6 +469,54 @@ def _node_role_in_graph(address_hash: str, graph: "ConclusionGraph") -> str:
     if address_hash in graph.input_hashes:
         return "input"
     return "supporting"
+
+
+def _is_response_action_graph(graph: "ConclusionGraph", node_map: dict[str, "Node"]) -> bool:
+    for h in graph.action_hashes | graph.core_hashes:
+        node = node_map.get(h)
+        if node and node.payload.get("response_action"):
+            return True
+    return False
+
+
+def _build_action_frames(
+    graphs: list["ConclusionGraph"],
+    node_map: dict[str, "Node"],
+    node_label,
+) -> list[SurfaceActionFrame]:
+    frames: list[SurfaceActionFrame] = []
+    for graph in graphs:
+        for action_hash in sorted(graph.action_hashes | graph.core_hashes):
+            node = node_map.get(action_hash)
+            if node is None or not node.payload.get("response_action"):
+                continue
+            actor_hash = node.payload.get("actor_hash") or ANCHOR_ASSISTANT
+            target_hash = node.payload.get("target_hash") or ANCHOR_USER
+            display_hashes = [h for h in node.payload.get("target_display_hashes", []) if isinstance(h, str)]
+            frames.append(SurfaceActionFrame(
+                action=node_label(action_hash),
+                actor=node_label(actor_hash),
+                target=node_label(target_hash),
+                target_display=[node_label(h) for h in display_hashes],
+                confidence=round(float(node.payload.get("confidence", graph.score)), 3),
+            ))
+    return frames
+
+
+def _action_focus_hashes(graphs: list["ConclusionGraph"], node_map: dict[str, "Node"]) -> list[str]:
+    focus: list[str] = []
+    for graph in graphs:
+        for action_hash in sorted(graph.action_hashes | graph.core_hashes):
+            node = node_map.get(action_hash)
+            if node is None or not node.payload.get("response_action"):
+                continue
+            for h in node.payload.get("target_display_hashes", []):
+                if isinstance(h, str) and h not in focus:
+                    focus.append(h)
+            target_hash = node.payload.get("target_hash")
+            if isinstance(target_hash, str) and target_hash not in focus:
+                focus.append(target_hash)
+    return focus
 
 
 def _build_conflict_frames(
