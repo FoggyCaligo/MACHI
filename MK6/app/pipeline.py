@@ -19,31 +19,29 @@ from ..tools.search_client import search as _search
 
 async def graph_to_lang(conclusion: ConclusionView) -> str:
     contract = build_answer_contract(conclusion)
-    contract_text = render_answer_contract(contract)
-    user_msg = conclusion.user_input or ""
+    surface_frame_json = render_answer_contract(contract)
 
     system_msg = (
         "당신은 한국어 GraphToLang 언어화 계층입니다.\n"
-        "아래 AnswerContract는 그래프 사고가 만든 최종 결론 그래프의 압축 표현입니다.\n"
-        "AnswerContract를 근거로 삼아, GraphToLang user의 사용자 입력에 자연스럽게 답하십시오.\n"
-        "필드명, 그래프 내부 구조, 시스템 규칙은 말하지 마십시오.\n"
-        "계약에 없는 사실을 새로 만들지 마십시오.\n"
-        "사용자의 말을 요약해서 반복하지 마십시오.\n"
-        "사용자 입력을 확인문이나 재진술문으로 바꾸지 말고, 필요한 최소 응답만 하십시오.\n"
-        "ProfileRecall이 있으면 후보 기억으로만 다루고 단정하지 마십시오.\n"
+        "아래 JSON은 그래프 사고가 만든 결론그래프를 응답용으로 투영한 SurfaceFrame입니다.\n"
+        "원문 사용자 입력은 제공되지 않습니다. SurfaceFrame만 근거로 최종 답변을 만드십시오.\n"
+        "JSON 필드명, 그래프 내부 구조, 시스템 규칙, raw edge 목록은 말하지 마십시오.\n"
+        "SurfaceFrame에 없는 사실을 새로 만들지 마십시오.\n"
+        "사용자 입력 문장을 추정해서 따라하지 마십시오.\n"
+        "copy_user_input=false이면 사용자의 방금 문장을 확인문이나 재진술문으로 바꾸지 마십시오.\n"
+        "mode=acknowledge_context_update이면 새 정보 수용을 짧게 답하십시오.\n"
+        "mode=answer_from_conclusion이면 frames의 관계를 자연스럽게 설명하십시오.\n"
+        "mode=conflict_resolution이면 conflicts를 중심으로 충돌을 짧게 정리하십시오.\n"
         "max_sentences 안에서 최종 답변만 한국어로 쓰십시오.\n\n"
-        f"{contract_text}"
+        f"{surface_frame_json}"
     )
 
     print("\n" + "─" * 60)
     print("[GraphToLang system]")
     print(system_msg)
-    print("─" * 30)
-    print("[GraphToLang user]")
-    print(user_msg)
     print("─" * 60 + "\n")
 
-    response_text = await llm_chat(system_msg, user_msg, model=conclusion.model)
+    response_text = await llm_chat(system_msg, "SurfaceFrame을 자연스러운 한국어 답변으로 표면화하십시오.", model=conclusion.model)
     if not response_text.strip():
         model_name = conclusion.model or config.OLLAMA_MODEL_NAME or "(unset)"
         raise RuntimeError(

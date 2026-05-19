@@ -1,40 +1,79 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
 
 from ..goal import GOAL_ROOT_HASH, GLOBAL_GOAL_AXIS_SEEDS
-from ..profile import is_user_profile_node, profile_context_labels
+from ..profile import is_profile_reference_edge, is_user_profile_node
+from ..thinking import relation_quality
 from ..utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
-from .answer_contract import (
-    EVIDENCE_EDGE_RATIO,
-    _render_conclusion_graph_lines,
-    _render_conflict_graph_lines,
-    _select_evidence_lines,
-    _select_search_context,
-)
 
 if TYPE_CHECKING:
+    from ..entities.edge import Edge
+    from ..entities.node import Node
+    from ..thinking.conclusion_graph import ConclusionGraph
     from ..thinking.thought_engine import ConclusionView
 
 
 @dataclass(frozen=True, slots=True)
-class KeywordSignal:
-    label: str
+class SurfaceResponse:
+    mode: str
+    continuity: str
+    max_sentences: int
+    copy_user_input: bool = False
+    list_raw_edges: bool = False
+    expose_internal_fields: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SurfaceFocus:
+    primary: list[str] = field(default_factory=list)
+    supporting: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class SurfaceEdge:
+    target: str
+    edge_family: str
+    connect_type: str
+    direction: str
+    weight: float
+    trust: float
+    support: int
     score: float
 
 
 @dataclass(frozen=True, slots=True)
+class SurfaceNodeFrame:
+    source: str
+    role: str
+    edges: list[SurfaceEdge] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class SurfaceConflictFrame:
+    current: list[str] = field(default_factory=list)
+    previous: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
+    uncertainty: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class AnswerContract:
-    continuity: str
-    max_sentences: int
-    keywords: list[KeywordSignal] = field(default_factory=list)
-    profile_labels: list[str] = field(default_factory=list)
-    profile_recall_confidence: float | None = None
-    conclusion_lines: list[str] = field(default_factory=list)
-    conflict_lines: list[str] = field(default_factory=list)
-    evidence_lines: list[str] = field(default_factory=list)
-    search_context_parts: list[str] = field(default_factory=list)
+    """GraphToLang에 넘길 결론그래프의 표면화 전용 프레임.
+
+    LLM은 WorldGraph/TempThoughtGraph/raw ConclusionGraph를 직접 보지 않는다.
+    이 계약은 selected ConclusionGraph 또는 입력 변화량을 JSON형 SurfaceFrame으로
+    투영한 결과이며, 자연어 요약문이나 키워드 나열을 별도 본체로 두지 않는다.
+    """
+
+    contract_type: str
+    source: str
+    response: SurfaceResponse
+    focus: SurfaceFocus
+    frames: list[SurfaceNodeFrame] = field(default_factory=list)
+    conflicts: list[SurfaceConflictFrame] = field(default_factory=list)
 
 
 def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
@@ -63,87 +102,414 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     def display_degree(address_hash: str) -> int:
         degree = 0
         for edge in conclusion.edges:
+            if edge.is_temporary and edge.payload.get("view_scope") != "input_sentence":
+                continue
+            if is_profile_reference_edge(edge):
+                continue
+            if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
+                continue
             if address_hash in {edge.source_hash, edge.target_hash}:
                 degree += 1
         return degree
 
-    def ranked_keywords(scores: dict[str, float], *, limit: int) -> list[KeywordSignal]:
-        signals: list[KeywordSignal] = []
-        ranked = sorted(
-            (h for h in scores if is_verbalizable_hash(h)),
-            key=lambda h: (-scores[h], -display_degree(h), node_label(h), h),
-        )
-        seen_labels: set[str] = set()
-        for h in ranked:
-            node = node_map.get(h)
-            if node and (node.is_abstract or not node.labels):
-                continue
-            label = node_label(h)
-            if label in seen_labels:
-                continue
-            seen_labels.add(label)
-            signals.append(KeywordSignal(label=label, score=scores[h]))
-            if len(signals) >= limit:
-                break
-        return signals
-
-    profile_labels: list[str] = []
-    profile_conf: float | None = None
-    if conclusion.profile_activation_view and conclusion.profile_activation_view.is_active:
-        profile_labels = profile_context_labels(conclusion.profile_activation_view, node_map, limit=4)
-        if profile_labels:
-            profile_conf = conclusion.profile_activation_view.confidence
-
     answer_graphs = [graph for graph in conclusion.selected_graphs if not graph.has_conflict_structure]
     conflict_graphs = [graph for graph in conclusion.selected_graphs if graph.has_conflict_structure]
-    conclusion_lines = _render_conclusion_graph_lines(answer_graphs, edge_by_id=edge_by_id, node_label=node_label, is_verbalizable_hash=is_verbalizable_hash, limit=2)
-    conflict_lines = _render_conflict_graph_lines(conflict_graphs, node_label=node_label, is_verbalizable_hash=is_verbalizable_hash, limit=2)
-    selected_node_hashes = {h for graph in conclusion.selected_graphs for h in graph.node_hashes if is_verbalizable_hash(h)}
-    graph_by_edge_id = {
-        edge_id: graph
-        for graph in conclusion.selected_graphs
-        for edge_id in graph.edge_ids
-    }
+    selected_graphs = answer_graphs or conflict_graphs
 
-    keyword_scores = dict(conclusion.keyword_scores)
-    if not keyword_scores:
-        keyword_scores = {h: 1.0 for h in conclusion.key_hashes}
-        keyword_scores.update({h: 0.5 for h in conclusion.ref_hashes if h not in keyword_scores})
+    if selected_graphs:
+        primary_hashes = _rank_selected_hashes(
+            selected_graphs,
+            node_map,
+            node_label,
+            is_verbalizable_hash,
+            display_degree,
+            limit=5,
+        )
+        supporting_hashes = _rank_supporting_hashes(
+            selected_graphs,
+            primary_hashes,
+            node_map,
+            node_label,
+            is_verbalizable_hash,
+            display_degree,
+            limit=7,
+        )
+        frames = _build_conclusion_frames(
+            selected_graphs,
+            primary_hashes,
+            edge_by_id,
+            node_label,
+            is_verbalizable_hash,
+            limit_per_node=4,
+        )
+        source = "conclusion_graph"
+    else:
+        primary_hashes = _rank_fallback_hashes(
+            set(conclusion.key_hashes),
+            conclusion.keyword_scores,
+            node_map,
+            node_label,
+            is_verbalizable_hash,
+            display_degree,
+            limit=5,
+        )
+        supporting_hashes = _rank_fallback_hashes(
+            set(conclusion.ref_hashes) - set(primary_hashes),
+            conclusion.keyword_scores,
+            node_map,
+            node_label,
+            is_verbalizable_hash,
+            display_degree,
+            limit=7,
+        )
+        frames = _build_input_delta_frames(
+            primary_hashes,
+            conclusion.edges,
+            node_label,
+            is_verbalizable_hash,
+            limit_per_node=4,
+        )
+        source = "input_delta"
+
+    conflicts = _build_conflict_frames(
+        conflict_graphs,
+        node_label,
+        is_verbalizable_hash,
+        limit=2,
+    )
+    mode = _select_mode(
+        has_conflict=bool(conflicts),
+        has_conclusion=bool(answer_graphs),
+        has_frame=bool(frames or primary_hashes or supporting_hashes),
+    )
 
     return AnswerContract(
-        continuity=conclusion.topic_continuity,
-        max_sentences=5 if conflict_lines else 4,
-        keywords=ranked_keywords(keyword_scores, limit=12),
-        profile_labels=profile_labels,
-        profile_recall_confidence=profile_conf,
-        conclusion_lines=conclusion_lines,
-        conflict_lines=conflict_lines,
-        evidence_lines=_select_evidence_lines(conclusion, edge_by_id=edge_by_id, graph_by_edge_id=graph_by_edge_id, node_label=node_label, is_verbalizable_hash=is_verbalizable_hash, evidence_ratio=EVIDENCE_EDGE_RATIO),
-        search_context_parts=_select_search_context(conclusion, node_map=node_map, selected_graph_node_hashes=selected_node_hashes, is_verbalizable_hash=is_verbalizable_hash, limit=2),
+        contract_type="surface_frame",
+        source=source,
+        response=SurfaceResponse(
+            mode=mode,
+            continuity=conclusion.topic_continuity,
+            max_sentences=5 if mode == "conflict_resolution" else 2 if mode == "acknowledge_context_update" else 4,
+        ),
+        focus=SurfaceFocus(
+            primary=[node_label(h) for h in primary_hashes],
+            supporting=[node_label(h) for h in supporting_hashes],
+        ),
+        frames=frames,
+        conflicts=conflicts,
     )
 
 
 def render_answer_contract(contract: AnswerContract) -> str:
-    lines = ["[AnswerContract]", f"continuity={contract.continuity}", f"max_sentences={contract.max_sentences}"]
-    if contract.keywords:
-        rendered_keywords = ", ".join(
-            f"{keyword.label}({keyword.score:.2f})"
-            for keyword in contract.keywords
+    """SurfaceFrame을 JSON형 텍스트로 직렬화한다."""
+
+    return json.dumps(asdict(contract), ensure_ascii=False, indent=2)
+
+
+def _select_mode(*, has_conflict: bool, has_conclusion: bool, has_frame: bool) -> str:
+    if has_conflict:
+        return "conflict_resolution"
+    if has_conclusion:
+        return "answer_from_conclusion"
+    if has_frame:
+        return "acknowledge_context_update"
+    return "minimal_response"
+
+
+def _rank_selected_hashes(
+    graphs: list["ConclusionGraph"],
+    node_map: dict[str, "Node"],
+    node_label,
+    is_verbalizable_hash,
+    display_degree,
+    *,
+    limit: int,
+) -> list[str]:
+    candidates: set[str] = set()
+    for graph in graphs:
+        candidates.update(graph.core_hashes)
+        candidates.update(graph.action_hashes)
+        if not candidates:
+            candidates.update(graph.input_hashes)
+        if not candidates:
+            candidates.update(graph.node_hashes)
+    return _rank_hashes(candidates, node_map, node_label, is_verbalizable_hash, display_degree, limit=limit)
+
+
+def _rank_supporting_hashes(
+    graphs: list["ConclusionGraph"],
+    primary_hashes: list[str],
+    node_map: dict[str, "Node"],
+    node_label,
+    is_verbalizable_hash,
+    display_degree,
+    *,
+    limit: int,
+) -> list[str]:
+    primary = set(primary_hashes)
+    candidates: set[str] = set()
+    for graph in graphs:
+        candidates.update(graph.bridge_hashes)
+        candidates.update(graph.condition_hashes)
+        candidates.update(graph.exception_hashes)
+        candidates.update(graph.node_hashes - primary)
+    return _rank_hashes(candidates - primary, node_map, node_label, is_verbalizable_hash, display_degree, limit=limit)
+
+
+def _rank_fallback_hashes(
+    hashes: set[str],
+    keyword_scores: dict[str, float],
+    node_map: dict[str, "Node"],
+    node_label,
+    is_verbalizable_hash,
+    display_degree,
+    *,
+    limit: int,
+) -> list[str]:
+    ranked = _rank_hashes(hashes, node_map, node_label, is_verbalizable_hash, display_degree, limit=limit * 2)
+    return sorted(
+        ranked,
+        key=lambda h: (-keyword_scores.get(h, 0.0), -display_degree(h), node_label(h), h),
+    )[:limit]
+
+
+def _rank_hashes(
+    hashes: set[str],
+    node_map: dict[str, "Node"],
+    node_label,
+    is_verbalizable_hash,
+    display_degree,
+    *,
+    limit: int,
+) -> list[str]:
+    ranked: list[str] = []
+    seen_labels: set[str] = set()
+    for h in sorted(
+        (value for value in hashes if is_verbalizable_hash(value)),
+        key=lambda value: (-display_degree(value), node_label(value), value),
+    ):
+        node = node_map.get(h)
+        if node and (node.is_abstract or not node.labels):
+            continue
+        label = node_label(h)
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
+        ranked.append(h)
+        if len(ranked) >= limit:
+            break
+    return ranked
+
+
+def _build_conclusion_frames(
+    graphs: list["ConclusionGraph"],
+    primary_hashes: list[str],
+    edge_by_id: dict[str, "Edge"],
+    node_label,
+    is_verbalizable_hash,
+    *,
+    limit_per_node: int,
+) -> list[SurfaceNodeFrame]:
+    frames: list[SurfaceNodeFrame] = []
+    for graph in graphs:
+        source_hashes = primary_hashes or _rank_hashes(
+            set(graph.node_hashes),
+            {},
+            node_label,
+            is_verbalizable_hash,
+            lambda _h: 0,
+            limit=4,
         )
-        lines.append("keywords=" + rendered_keywords)
-    if contract.profile_labels:
-        confidence = f"{contract.profile_recall_confidence:.2f}" if contract.profile_recall_confidence is not None else "unknown"
-        lines.extend(["[ProfileRecall]", "active=true", f"confidence={confidence}", "context=" + ", ".join(contract.profile_labels)])
-    if contract.conclusion_lines:
-        lines.append("[ConclusionGraph]")
-        lines.extend(f"- {line}" for line in contract.conclusion_lines)
-    if contract.conflict_lines:
-        lines.append("[ClaimConflict]")
-        lines.extend(f"- {line}" for line in contract.conflict_lines)
-    if contract.evidence_lines:
-        lines.append("[EvidenceEdges]")
-        lines.extend(f"- {line}" for line in contract.evidence_lines)
-    if contract.search_context_parts:
-        lines.append("[SearchContext]")
-        lines.extend(f"- {part}" for part in contract.search_context_parts)
-    return "\n".join(lines)
+        for source_hash in source_hashes:
+            if source_hash not in graph.node_hashes:
+                continue
+            edges = _surface_edges_from_graph(source_hash, graph, edge_by_id, node_label, is_verbalizable_hash, limit=limit_per_node)
+            role = _node_role_in_graph(source_hash, graph)
+            if edges or role in {"core", "action", "bridge"}:
+                frames.append(SurfaceNodeFrame(source=node_label(source_hash), role=role, edges=edges))
+    return _dedupe_frames(frames)
+
+
+def _build_input_delta_frames(
+    primary_hashes: list[str],
+    edges: list["Edge"],
+    node_label,
+    is_verbalizable_hash,
+    *,
+    limit_per_node: int,
+) -> list[SurfaceNodeFrame]:
+    frames: list[SurfaceNodeFrame] = []
+    for source_hash in primary_hashes:
+        frame_edges = _surface_edges_from_edge_list(source_hash, edges, node_label, is_verbalizable_hash, limit=limit_per_node)
+        frames.append(SurfaceNodeFrame(source=node_label(source_hash), role="input", edges=frame_edges))
+    return _dedupe_frames(frames)
+
+
+def _surface_edges_from_graph(
+    source_hash: str,
+    graph: "ConclusionGraph",
+    edge_by_id: dict[str, "Edge"],
+    node_label,
+    is_verbalizable_hash,
+    *,
+    limit: int,
+) -> list[SurfaceEdge]:
+    ranked: list[tuple[float, "Edge"]] = []
+    for edge_id in graph.edge_ids:
+        edge = edge_by_id.get(edge_id)
+        if edge is None or edge.is_temporary or is_profile_reference_edge(edge):
+            continue
+        if source_hash not in {edge.source_hash, edge.target_hash}:
+            continue
+        if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
+            continue
+        score = relation_quality.score_edge_relation(edge, graph).score
+        if score <= 0.0:
+            continue
+        ranked.append((score, edge))
+    ranked.sort(key=lambda item: (-item[0], -item[1].edge_weight, item[1].edge_id))
+    return [_to_surface_edge(source_hash, edge, node_label, score) for score, edge in ranked[:limit]]
+
+
+def _surface_edges_from_edge_list(
+    source_hash: str,
+    edges: list["Edge"],
+    node_label,
+    is_verbalizable_hash,
+    *,
+    limit: int,
+) -> list[SurfaceEdge]:
+    ranked: list[tuple[float, "Edge"]] = []
+    for edge in edges:
+        if edge.is_temporary and edge.payload.get("view_scope") != "input_sentence":
+            continue
+        if is_profile_reference_edge(edge):
+            continue
+        if source_hash not in {edge.source_hash, edge.target_hash}:
+            continue
+        if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
+            continue
+        score = _fallback_edge_score(edge)
+        if score <= 0.0:
+            continue
+        ranked.append((score, edge))
+    ranked.sort(key=lambda item: (-item[0], -item[1].edge_weight, item[1].edge_id))
+    return [_to_surface_edge(source_hash, edge, node_label, score) for score, edge in ranked[:limit]]
+
+
+def _to_surface_edge(source_hash: str, edge: "Edge", node_label, score: float) -> SurfaceEdge:
+    if edge.source_hash == source_hash:
+        target_hash = edge.target_hash
+        direction = "out"
+    else:
+        target_hash = edge.source_hash
+        direction = "in"
+    return SurfaceEdge(
+        target=node_label(target_hash),
+        edge_family=edge.edge_family,
+        connect_type=edge.connect_type,
+        direction=direction,
+        weight=round(edge.edge_weight, 3),
+        trust=round(edge.trust_score, 3),
+        support=edge.support_count,
+        score=round(score, 3),
+    )
+
+
+def _fallback_edge_score(edge: "Edge") -> float:
+    base = max(0.0, edge.edge_weight) * max(0.0, edge.trust_score)
+    if edge.connect_type == "neutral":
+        base *= 0.55
+    elif edge.connect_type == "opposite":
+        base *= 0.70
+    elif edge.connect_type == "conflict":
+        base *= 0.30
+    base += min(0.15, max(0, edge.support_count) * 0.03)
+    base -= max(0.0, edge.contradiction_pressure) * 0.20
+    return max(0.0, base)
+
+
+def _node_role_in_graph(address_hash: str, graph: "ConclusionGraph") -> str:
+    if address_hash in graph.core_hashes:
+        return "core"
+    if address_hash in graph.action_hashes:
+        return "action"
+    if address_hash in graph.bridge_hashes:
+        return "bridge"
+    if address_hash in graph.condition_hashes:
+        return "condition"
+    if address_hash in graph.exception_hashes:
+        return "exception"
+    if address_hash in graph.input_hashes:
+        return "input"
+    return "supporting"
+
+
+def _build_conflict_frames(
+    graphs: list["ConclusionGraph"],
+    node_label,
+    is_verbalizable_hash,
+    *,
+    limit: int,
+) -> list[SurfaceConflictFrame]:
+    frames: list[SurfaceConflictFrame] = []
+    for graph in graphs[:limit]:
+        current = _labels_from_hashes(graph.core_hashes, node_label, is_verbalizable_hash, limit=4)
+        previous = _labels_from_hashes(
+            graph.exception_hashes | graph.condition_hashes,
+            node_label,
+            is_verbalizable_hash,
+            limit=4,
+        )
+        conflicts: list[str] = []
+        for path in graph.conflict_paths[:3]:
+            for step in path.steps:
+                if not is_verbalizable_hash(step.source_hash) or not is_verbalizable_hash(step.target_hash):
+                    continue
+                conflicts.append(f"{node_label(step.source_hash)} -> {node_label(step.target_hash)}")
+                if len(conflicts) >= 3:
+                    break
+            if len(conflicts) >= 3:
+                break
+        frames.append(
+            SurfaceConflictFrame(
+                current=current,
+                previous=previous,
+                conflicts=conflicts,
+                uncertainty=round(graph.uncertainty, 3),
+            )
+        )
+    return frames
+
+
+def _labels_from_hashes(hashes, node_label, is_verbalizable_hash, *, limit: int) -> list[str]:
+    labels: list[str] = []
+    for h in sorted(hashes, key=lambda value: node_label(value)):
+        if not is_verbalizable_hash(h):
+            continue
+        label = node_label(h)
+        if label not in labels:
+            labels.append(label)
+        if len(labels) >= limit:
+            break
+    return labels
+
+
+def _dedupe_frames(frames: list[SurfaceNodeFrame]) -> list[SurfaceNodeFrame]:
+    deduped: list[SurfaceNodeFrame] = []
+    seen_sources: set[tuple[str, str]] = set()
+    seen_edges: set[tuple[str, str, str, str]] = set()
+    for frame in frames:
+        source_key = (frame.source, frame.role)
+        unique_edges: list[SurfaceEdge] = []
+        for edge in frame.edges:
+            edge_key = (frame.source, edge.target, edge.connect_type, edge.direction)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            unique_edges.append(edge)
+        if source_key in seen_sources and not unique_edges:
+            continue
+        seen_sources.add(source_key)
+        deduped.append(SurfaceNodeFrame(source=frame.source, role=frame.role, edges=unique_edges))
+    return deduped
