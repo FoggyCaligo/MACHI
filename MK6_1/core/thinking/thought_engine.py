@@ -804,20 +804,63 @@ class ThoughtEngine:
         if not user_input or not user_input.strip():
             return None
 
+        focus_labels_from_input = self._focus_labels_by_importance(translated, tg, limit=2)
+        if focus_labels_from_input:
+            # Prefer the most central focus label to avoid noisy phrase queries.
+            return focus_labels_from_input[0]
+
         weak_input = self._is_weak_input_bundle(translated)
         if weak_input:
-            context_labels = self._labels_from_hashes(tg, previous_key_hashes or set(), limit=4)
+            context_labels = self._labels_from_hashes(tg, previous_key_hashes or set(), limit=2)
             if context_labels:
                 return " ".join(context_labels)
 
         focus_labels = self._labels_from_hashes(
             tg,
             self._focus_hashes_from_translated(tg, translated),
-            limit=4,
+            limit=2,
         )
         if focus_labels:
-            return " ".join(focus_labels)
+            return focus_labels[0]
         return user_input.strip()
+
+    def _focus_labels_by_importance(
+        self,
+        translated: TranslatedGraph,
+        tg: TempThoughtGraph,
+        *,
+        limit: int,
+    ) -> list[str]:
+        scored: list[tuple[float, str]] = []
+        for ref in translated.nodes:
+            if isinstance(ref, ConceptPointer):
+                node = tg.get_node(ref.address_hash)
+                if node is None:
+                    continue
+                label = node.primary_label().strip()
+                if not label:
+                    continue
+                scored.append((ref.importance, label))
+            elif isinstance(ref, EmptySlot):
+                hint = ref.concept_hint.strip()
+                if not hint:
+                    continue
+                h = compute_hash(hint)
+                if tg.get_node(h) is None:
+                    continue
+                scored.append((ref.importance, hint))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        labels: list[str] = []
+        seen: set[str] = set()
+        for _, label in scored:
+            if label in seen:
+                continue
+            seen.add(label)
+            labels.append(label)
+            if len(labels) >= limit:
+                break
+        return labels
 
     def _labels_from_hashes(self, tg: TempThoughtGraph, hashes: set[str], *, limit: int) -> list[str]:
         labels: list[str] = []

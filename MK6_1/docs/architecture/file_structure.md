@@ -96,7 +96,7 @@ MK6/
 | `COMMIT_STABILITY_WEAK` | `0.1` | 약한 커밋 stability_score |
 | `SEARCH_TIMEOUT` | `20.0` | `search_fn` asyncio 레벨 타임아웃. 초과 시 검색 없이 진행 |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama 서버 주소 |
-| `OLLAMA_TIMEOUT_SECONDS` | `600.0` | Ollama 생성 요청 타임아웃 |
+| `OLLAMA_TIMEOUT_SECONDS` | `900.0` | Ollama 생성 요청 타임아웃 |
 | `OLLAMA_MODEL_NAME` | `gemma3:4b` | 텍스트 생성 기본 모델. 환경변수로 override 가능 |
 | `OLLAMA_NUM_PREDICT` | `512` | GraphToLang 최대 생성 토큰 수 |
 | `OLLAMA_EXCLUDED_MODELS` | `embeddinggemma:latest` | 생성 모델 선택지에서 제외할 모델. 패밀리 메타데이터로 구분 불가한 임베딩 전용 모델용. 쉼표 구분 추가 가능 |

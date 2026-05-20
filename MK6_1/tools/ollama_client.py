@@ -31,17 +31,22 @@ def _get_client() -> httpx.AsyncClient:
 _EMBEDDING_ONLY_FAMILIES: frozenset[str] = frozenset({"nomic-bert", "bert", "clip"})
 
 
-def _generation_options() -> dict:
-    return {"num_predict": config.OLLAMA_NUM_PREDICT}
+def _generation_options(*, num_predict: int | None = None) -> dict:
+    return {"num_predict": num_predict if num_predict is not None else config.OLLAMA_NUM_PREDICT}
 
 
-def _generation_payload(base: dict) -> dict:
+def _generation_payload(
+    base: dict,
+    *,
+    num_predict: int | None = None,
+    think: bool | None = None,
+) -> dict:
     payload = {
         **base,
         "stream": False,
-        "options": _generation_options(),
+        "options": _generation_options(num_predict=num_predict),
     }
-    payload["think"] = config.OLLAMA_THINK
+    payload["think"] = config.OLLAMA_THINK if think is None else think
     return payload
 
 
@@ -112,6 +117,9 @@ async def chat(
     system: str,
     user: str,
     model: str | None = None,
+    *,
+    num_predict: int | None = None,
+    think: bool | None = None,
 ) -> str:
     """Ollama chat 엔드포인트로 텍스트를 생성한다 (non-streaming).
 
@@ -145,7 +153,7 @@ async def chat(
                         {"role": "system", "content": system},
                         {"role": "user",   "content": user},
                     ],
-                }),
+                }, num_predict=num_predict, think=think),
             )
     except httpx.ReadTimeout:
         raise TimeoutError(

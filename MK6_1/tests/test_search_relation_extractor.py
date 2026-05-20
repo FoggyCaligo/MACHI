@@ -68,7 +68,34 @@ class SearchRelationExtractorTest(unittest.IsolatedAsyncioTestCase):
                 llm_chat_fn=fake_llm_chat,
             )
 
+    async def test_extract_relation_candidates_nested_relations(self) -> None:
+        async def fake_llm_chat(_system: str, _user: str, _model: str | None) -> str:
+            return (
+                '{"data":{"relations":['
+                '{"subject":"글록","predicate":"has_part","object":"슬라이드","connect_type":"flow",'
+                '"confidence":0.88,"evidence":"It has a slide.","source_title":"Glock","source_url":null}'
+                ']}}'
+            )
+
+        candidates = await extract_relation_candidates(
+            user_input="글록에 대해 설명해줘",
+            query="글록",
+            search_results=[
+                SearchResult(
+                    query="글록",
+                    source="ddg",
+                    title="Glock",
+                    url="https://example.org/glock",
+                    snippet="It has a slide.",
+                    rank=1,
+                )
+            ],
+            seed_concepts=["글록"],
+            llm_chat_fn=fake_llm_chat,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].predicate, "has_part")
+
 
 if __name__ == "__main__":
     unittest.main()
-

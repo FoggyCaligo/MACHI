@@ -73,6 +73,12 @@ THINK_GOAL_SCORE_MIN_DELTA = _env_float("THINK_GOAL_SCORE_MIN_DELTA", 0.01)
 # 검색 전체(DDG + Wikipedia)에 대한 asyncio 레벨 타임아웃 (초).
 # 이 시간 안에 search_fn이 완료되지 않으면 검색 결과 없이 계속 진행한다.
 SEARCH_TIMEOUT = _env_float("SEARCH_TIMEOUT", 20.0)
+# relation extractor LLM 호출 전용 timeout (초).
+# 검색/사고 전체 timeout과 분리해 장시간 멈춤을 줄인다.
+SEARCH_RELATION_EXTRACTOR_TIMEOUT = _env_float("SEARCH_RELATION_EXTRACTOR_TIMEOUT", 120.0)
+SEARCH_RELATION_EXTRACTOR_MAX_ITEMS = _env_int("SEARCH_RELATION_EXTRACTOR_MAX_ITEMS", 4)
+SEARCH_RELATION_EXTRACTOR_MAX_SNIPPET_CHARS = _env_int("SEARCH_RELATION_EXTRACTOR_MAX_SNIPPET_CHARS", 180)
+SEARCH_RELATION_EXTRACTOR_NUM_PREDICT = _env_int("SEARCH_RELATION_EXTRACTOR_NUM_PREDICT", 320)
 
 # ── 세계그래프 커밋 강도 ─────────────────────────────────────────────────────
 COMMIT_TRUST_STRONG = _env_float("COMMIT_TRUST_STRONG", 0.7)
@@ -100,7 +106,7 @@ _excluded_from_env: list[str] = [
     if m.strip()
 ]
 OLLAMA_EXCLUDED_MODELS: frozenset[str] = frozenset(["embeddinggemma:latest"] + _excluded_from_env)
-OLLAMA_TIMEOUT_SECONDS = _env_float("OLLAMA_TIMEOUT_SECONDS", 600.0)
+OLLAMA_TIMEOUT_SECONDS = _env_float("OLLAMA_TIMEOUT_SECONDS", 900.0)
 OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "gemma3:4b").strip()
 # thinking 계열 모델은 응답 전 내부 사고 토큰으로 예산을 소진할 수 있으므로
 # GraphToLang 기본 생성 예산을 512보다 넉넉하게 둔다.

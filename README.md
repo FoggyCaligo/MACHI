@@ -180,6 +180,37 @@ MK4는 MACHI의 상위 목표 중 특히 아래를 구현하려고 합니다.
 
 즉, MK4는 **MACHI 전체 비전 중 "기억(memory) 계층"을 실제로 구현하는 현재 작업 축**에 가깝습니다.
 
+### `MK5`
+
+MK4에서 만든 기억 중심 구조를 실제 대화 루프에서 더 안정적으로 돌리기 위한 단계입니다.
+
+- evidence/correction 흐름을 실제 운영 시나리오에 맞춰 정리
+- 검색/검증/응답 간 책임 분리를 강화
+- 로컬 실행 환경에서 재현 가능한 테스트/스모크 흐름 확장
+
+즉, MK5는 **기억 구조를 운영 가능한 시스템으로 다듬는 안정화 축**에 가깝습니다.
+
+### `MK6`
+
+MACHI의 중심을 "메모리 저장"에서 "그래프 사고(Thinking Loop)"로 이동시키는 단계입니다.
+
+- LangToGraph → TempThoughtGraph → Think Loop → ConclusionGraph → SurfaceFrame
+- activation/conclusion selection 기반의 응답 근거 선택
+- GraphToLang 계층에서 conclusion graph 우선 언어화
+
+즉, MK6는 **그래프 자체가 사고에 참여하는 본체 아키텍처 전환**에 해당합니다.
+
+### `MK6_1` (현재 진행 축)
+
+MK6의 핵심 로직만 남기고, 과거 fallback/비핵심 경로를 걷어내며 실동작 경로를 정제하는 단계입니다.
+
+- 검색 경로를 구조화(`SearchBundle/SearchResult`)하고 relation 추출 파이프라인 연결
+- 검색 결과를 문자열 보조가 아니라 `relation edge`로 그래프에 주입하는 흐름 강화
+- EmptySlot 기반 검색 + no-slot 검색(근거 부족 시) 트리거를 함께 운용
+- relation 추출 계약(JSON schema) 안정화 및 실패 가시화 유지
+
+현재는 **검색 relation 품질/추출 계약 안정화와 conclusion graph 반영률 개선**을 중점으로 계속 다듬고 있습니다.
+
 ---
 
 ## 5. 현재 레포를 어떻게 보면 좋은가
@@ -196,7 +227,7 @@ MK4는 MACHI의 상위 목표 중 특히 아래를 구현하려고 합니다.
 
 1. 루트 `README.md`로 MACHI의 상위 목표를 먼저 이해하고
 2. 각 MK 폴더를 버전/실험 단계로 보고
-3. 현재 구현이 가장 많이 진전된 축은 `MK4`라고 이해하는 것이 가장 자연스럽습니다.
+3. 현재 구현/실험의 중심 축은 `MK6_1`(그래프 사고 + 검색 relation 통합 안정화)이라고 이해하는 것이 가장 자연스럽습니다.
 
 ---
 
@@ -221,15 +252,13 @@ MK4는 MACHI의 상위 목표 중 특히 아래를 구현하려고 합니다.
 
 1. 루트 `README.md`
    - MACHI 전체 목표와 상위 방향
-2. `MK4/README.md`
-   - 현재 구현 중인 memory 계층의 목적과 구조
-3. `MK4/docs/프로젝트_요구사항/MK4_프로젝트_핵심원칙.md`
-   - MK4의 장기 원칙
-4. `MK4/docs/프로젝트_진행상황/진행상황.txt`
-   - 현재 코드 기준 완료 / 미완 정리
-5. `MK4/docs/프로젝트_진행상황/troubleshooting_updated_MK4.md`
-   - 왜 설계 방향이 바뀌었는지
-6. `MK1/machi/memory/identity.md`, `patterns.md`, `wake_up_prompt.txt`
+2. `MK6/README.md`
+   - 그래프 사고 본체 아키텍처의 기본 흐름
+3. `MK6_1/` 코드
+   - MK6 핵심만 남긴 실행 경로와 검색 relation 통합 실험의 현재 상태
+4. `MK4/README.md`
+   - memory 계층의 배경 목적과 누적 맥락
+5. `MK1/machi/memory/identity.md`, `patterns.md`, `wake_up_prompt.txt`
    - MACHI의 Cognitive Partner 개념적 출발점
 
 ---

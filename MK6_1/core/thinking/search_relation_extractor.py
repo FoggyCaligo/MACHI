@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
+from ... import config
 from ...tools.ollama_client import chat as llm_chat
 from ...tools.search_client import SearchResult
 
@@ -11,8 +13,9 @@ from ...tools.search_client import SearchResult
 ConnectType = Literal["flow", "neutral", "opposite", "conflict"]
 _ALLOWED_CONNECT_TYPES: set[str] = {"flow", "neutral", "opposite", "conflict"}
 _MAX_EVIDENCE_LEN = 280
-_MAX_SNIPPET_LEN = 420
-_MAX_SEARCH_ITEMS = 12
+_MAX_SNIPPET_LEN = max(80, config.SEARCH_RELATION_EXTRACTOR_MAX_SNIPPET_CHARS)
+_MAX_SEARCH_ITEMS = max(1, config.SEARCH_RELATION_EXTRACTOR_MAX_ITEMS)
+_MAX_RELATIONS_OUT = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +37,7 @@ async def extract_relation_candidates(
     search_results: list[SearchResult],
     seed_concepts: list[str],
     model: str | None = None,
-    llm_chat_fn: Callable[[str, str, str | None], Awaitable[str]] = llm_chat,
+    llm_chat_fn: Callable[..., Awaitable[str]] = llm_chat,
 ) -> list[RelationCandidate]:
     if not search_results:
         return []
@@ -46,7 +49,6 @@ async def extract_relation_candidates(
             "title": item.title,
             "url": item.url,
             "snippet": item.snippet[:_MAX_SNIPPET_LEN],
-            "rank": item.rank,
         })
 
     payload = {
@@ -82,13 +84,95 @@ async def extract_relation_candidates(
         "4. Do not perform response policy decisions.\n"
         "5. connect_type must be one of flow, neutral, opposite, conflict.\n"
         "6. confidence must be in [0,1].\n"
-        "7. evidence must be a short citation-like summary.\n\n"
+        "7. evidence must be a short citation-like summary.\n"
+        f"8. return at most {_MAX_RELATIONS_OUT} relations.\n\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
 
-    raw = await llm_chat_fn(system_prompt, user_prompt, model)
-    parsed = _parse_json(raw)
-    return _validate_relations(parsed)
+    raw = await _call_chat_with_timeout(
+        llm_chat_fn,
+        system_prompt,
+        user_prompt,
+        model,
+    )
+    try:
+        parsed = _parse_json(raw)
+        return _validate_relations(parsed)
+    except RuntimeError as first_exc:
+        print(f"[search_relation_extractor] first_pass_failed: {first_exc}")
+        repaired_raw = await _call_chat_with_timeout(
+            llm_chat_fn,
+            _repair_system_prompt(),
+            _repair_user_prompt(raw),
+            model,
+        )
+        try:
+            repaired_parsed = _parse_json(repaired_raw)
+            return _validate_relations(repaired_parsed)
+        except RuntimeError as second_exc:
+            raise RuntimeError(
+                "search relation extractor contract failed after one retry: "
+                f"first={first_exc}; second={second_exc}"
+            ) from second_exc
+
+
+async def _call_chat_with_timeout(
+    llm_chat_fn: Callable[..., Awaitable[str]],
+    system_prompt: str,
+    user_prompt: str,
+    model: str | None,
+) -> str:
+    try:
+        return await asyncio.wait_for(
+            _call_llm_chat(llm_chat_fn, system_prompt, user_prompt, model),
+            timeout=config.SEARCH_RELATION_EXTRACTOR_TIMEOUT,
+        )
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(
+            "search relation extractor timed out: "
+            f"{config.SEARCH_RELATION_EXTRACTOR_TIMEOUT}s"
+        ) from exc
+
+
+async def _call_llm_chat(
+    llm_chat_fn: Callable[..., Awaitable[str]],
+    system_prompt: str,
+    user_prompt: str,
+    model: str | None,
+) -> str:
+    try:
+        return await llm_chat_fn(
+            system_prompt,
+            user_prompt,
+            model,
+            num_predict=config.SEARCH_RELATION_EXTRACTOR_NUM_PREDICT,
+            think=False,
+        )
+    except TypeError:
+        # Backward-compatible path for test doubles or legacy signatures.
+        return await llm_chat_fn(system_prompt, user_prompt, model)
+
+
+def _repair_system_prompt() -> str:
+    return (
+        "You are a strict JSON normalizer. "
+        "Return only one JSON object with top-level key 'relations'. "
+        "Do not add explanation."
+    )
+
+
+def _repair_user_prompt(previous_output: str) -> str:
+    return (
+        "Transform the following model output into this exact JSON schema:\n"
+        "{ \"relations\": ["
+        "{ \"subject\": string, \"predicate\": string, \"object\": string, "
+        "\"connect_type\": \"flow|neutral|opposite|conflict\", "
+        "\"confidence\": number_0_to_1, \"evidence\": string, "
+        "\"source_title\": string_or_null, \"source_url\": string_or_null }"
+        "] }\n"
+        "Keep only grounded relations. Return JSON only.\n\n"
+        f"{previous_output}"
+    )
 
 
 def _parse_json(raw: str) -> dict:
@@ -178,7 +262,7 @@ def _extract_balanced_object(text: str) -> str | None:
 
 
 def _validate_relations(payload: dict) -> list[RelationCandidate]:
-    relations = payload.get("relations")
+    relations = _extract_relations(payload)
     if relations is None:
         raise RuntimeError("search relation extractor output missing 'relations'")
     if not isinstance(relations, list):
@@ -218,6 +302,26 @@ def _validate_relations(payload: dict) -> list[RelationCandidate]:
             source_url=source_url,
         ))
     return candidates
+
+
+def _extract_relations(payload: dict) -> object | None:
+    direct = payload.get("relations")
+    if direct is not None:
+        return direct
+
+    nested = payload.get("data")
+    if isinstance(nested, dict) and "relations" in nested:
+        return nested.get("relations")
+
+    nested = payload.get("result")
+    if isinstance(nested, dict) and "relations" in nested:
+        return nested.get("relations")
+
+    nested = payload.get("output")
+    if isinstance(nested, dict) and "relations" in nested:
+        return nested.get("relations")
+
+    return None
 
 
 def _required_text(item: dict, field: str, idx: int) -> str:
