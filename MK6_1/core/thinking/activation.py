@@ -333,9 +333,10 @@ def _support_eligible_edges(edges: list[Edge]) -> list[Edge]:
 def _candidate_score(core_hash: str, state: ActivationState, input_sources: set[str]) -> float:
     score = state.input_energy * state.goal_energy
     score += state.context_energy * 0.2
-    score += state.novelty_score * 0.15
     if core_hash in input_sources:
-        score *= 0.55
+        score += 0.35
+    else:
+        score += state.novelty_score * 0.05
     score -= state.conflict_pressure * 0.3
     return score
 
@@ -354,6 +355,7 @@ def _make_conclusion_graph(
     node_hashes = {h for h in raw_node_hashes if not _is_runtime_node(tg, h)} | {core_hash}
     edge_ids = _materialized_body_edge_ids(tg, input_path, goal_path)
     edge_ids |= _core_body_edge_ids(tg, core_hash, input_sources=input_sources, limit=4)
+    topic_core_hashes = _topic_core_hashes(tg, edge_ids, input_sources=input_sources) or {core_hash}
     conflict_paths: list[ReasoningPath] = []
     contrast_paths: list[ReasoningPath] = []
     exception_hashes: set[str] = set()
@@ -375,7 +377,7 @@ def _make_conclusion_graph(
             node_hashes.add(other_hash)
             edge_ids.add(edge.edge_id)
 
-    bridge_hashes = node_hashes - {core_hash} - input_sources - goal_sources - exception_hashes
+    bridge_hashes = node_hashes - topic_core_hashes - input_sources - goal_sources - exception_hashes
     support_paths = [input_path]
     goal_paths = [goal_path]
 
@@ -384,7 +386,7 @@ def _make_conclusion_graph(
     ).hexdigest()[:32]
 
     score = _candidate_score(core_hash, activation.get(core_hash, ActivationState()), input_sources)
-    if core_hash in input_sources:
+    if topic_core_hashes & input_sources:
         uncertainty = 0.35
     else:
         uncertainty = 0.15 + min(0.5, len(conflict_paths) * 0.1)
@@ -395,7 +397,7 @@ def _make_conclusion_graph(
         goal_hashes=set(goal_sources),
         node_hashes=node_hashes,
         edge_ids=edge_ids,
-        core_hashes={core_hash},
+        core_hashes=topic_core_hashes,
         condition_hashes=set(),
         exception_hashes=exception_hashes,
         action_hashes=set(),
@@ -408,6 +410,25 @@ def _make_conclusion_graph(
         uncertainty=uncertainty,
         activation={h: activation[h] for h in node_hashes if h in activation},
     )
+
+
+def _topic_core_hashes(
+    tg: TempThoughtGraph,
+    edge_ids: set[str],
+    *,
+    input_sources: set[str],
+) -> set[str]:
+    cores: set[str] = set()
+    for edge_id in edge_ids:
+        edge = tg.get_edge(edge_id)
+        if edge is None or edge.is_temporary:
+            continue
+        if edge.edge_family != "relation" or edge.connect_type == "neutral":
+            continue
+        for h in {edge.source_hash, edge.target_hash} & input_sources:
+            if not _is_runtime_node(tg, h):
+                cores.add(h)
+    return cores
 
 
 def _materialized_body_edge_ids(tg: TempThoughtGraph, *paths: ReasoningPath) -> set[str]:
