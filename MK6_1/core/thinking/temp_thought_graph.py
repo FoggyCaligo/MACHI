@@ -404,7 +404,7 @@ class TempThoughtGraph:
         병합 기준은 edge_family + connect_type + 방향(source_hash → target_hash)이다.
         임시 edge는 별도 뷰 관계이므로 영구 edge와 섞지 않는다.
         """
-        grouped: dict[tuple[str, str, str, str, bool], Edge] = {}
+        grouped: dict[tuple[str, str, str, str, str | None, bool], Edge] = {}
         duplicate_ids: list[str] = []
 
         for edge in list(self._edges.values()):
@@ -413,6 +413,7 @@ class TempThoughtGraph:
                 edge.target_hash,
                 edge.edge_family,
                 edge.connect_type,
+                edge.proposed_connect_type,
                 edge.is_temporary,
             )
             existing = grouped.get(key)

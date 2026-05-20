@@ -79,6 +79,40 @@ def _build_input_bundle(source: str, nodes: list[ConceptRef], edges: list[Transl
     )
 
 
+def _relation_from_existing_graph(
+    ref_a: ConceptRef,
+    ref_b: ConceptRef,
+) -> tuple[str, str, float, str | None]:
+    if not isinstance(ref_a, ConceptPointer) or not isinstance(ref_b, ConceptPointer):
+        return "concept", "neutral", 0.5, None
+
+    src = ref_a.address_hash
+    tgt = ref_b.address_hash
+    candidates = []
+    for edge in ref_a.local_subgraph.edges + ref_b.local_subgraph.edges:
+        endpoints = {edge.source_hash, edge.target_hash}
+        if endpoints != {src, tgt}:
+            continue
+        if not edge.is_active:
+            continue
+        candidates.append(edge)
+
+    if not candidates:
+        return "concept", "neutral", 0.5, None
+
+    priority = {"conflict": 4, "opposite": 3, "flow": 3, "neutral": 1}
+    chosen = max(
+        candidates,
+        key=lambda edge: (
+            priority.get(edge.connect_type, 0),
+            edge.edge_weight * edge.trust_score,
+            edge.support_count,
+        ),
+    )
+    confidence = max(0.5, min(1.0, chosen.edge_weight * chosen.trust_score))
+    return chosen.edge_family, chosen.connect_type, confidence, chosen.proposed_connect_type
+
+
 # ── 토큰 중요도 ───────────────────────────────────────────────────────────────
 
 def _assign_importances(
@@ -243,14 +277,15 @@ async def translate(
             if len(tok_a) >= 2 and len(tok_b) >= 2:
                 for ref_a in refs_a:
                     for ref_b in refs_b:
+                        edge_family, connect_type, confidence, proposed = _relation_from_existing_graph(ref_a, ref_b)
                         edges.append(
                             TranslatedEdge(
                                 source_ref=ref_a,
                                 target_ref=ref_b,
-                                edge_family="concept",
-                                connect_type="neutral",
-                                confidence=0.5,
-                                proposed_connect_type=None,
+                                edge_family=edge_family,
+                                connect_type=connect_type,
+                                confidence=confidence,
+                                proposed_connect_type=proposed,
                             )
                         )
 

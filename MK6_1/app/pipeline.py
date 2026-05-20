@@ -15,7 +15,7 @@ from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
 from ..core.verbalization import build_answer_contract, render_answer_contract
 from ..tools.ollama_client import chat as llm_chat, get_embedding
-from ..tools.search_client import search as _search
+from ..tools.search_client import search_structured as _search
 
 
 async def graph_to_lang(conclusion: ConclusionView) -> str:

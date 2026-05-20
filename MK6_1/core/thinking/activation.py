@@ -48,8 +48,7 @@ def build_activation_conclusion_graphs(
     - input_sentence runtime edge는 같은 endpoint의 persistent edge가 있으면 그 edge를
       ConclusionGraph body edge로 materialize한다.
     - goal_anchor/turn_goal_anchor edge는 목적 압력용 path로만 사용하고 evidence/body에서는 제외한다.
-    - 현재 턴의 input-origin edge는 그 턴 안에서 conclusion support로 계산하지 않는다.
-    - neutral concept edge만으로 이루어진 graph는 selected ConclusionGraph가 될 수 없다.
+    - 현재 턴의 input-origin edge도 conclusion support로 계산될 수 있다.
     - restatement graph는 폐기하지 않고 rejected_graphs로 강등한다.
     """
     max_hops = config.THINK_ACTIVATION_HOPS if max_hops is None else max_hops
@@ -62,6 +61,7 @@ def build_activation_conclusion_graphs(
     input_paths = _spread(tg, input_sources, max_hops=max_hops)
     goal_paths = _spread(tg, goal_sources, max_hops=max_hops)
     context_paths = _spread(tg, context_sources, max_hops=max_hops)
+    weak_input = _is_weak_input_signal(translated)
 
     activation = _combine_activation(input_paths, goal_paths, context_paths, input_sources)
     selected, rejected = _build_conclusion_graphs(
@@ -70,7 +70,9 @@ def build_activation_conclusion_graphs(
         goal_sources=goal_sources,
         input_paths=input_paths,
         goal_paths=goal_paths,
+        context_paths=context_paths,
         activation=activation,
+        weak_input=weak_input,
         graph_limit=graph_limit,
     )
 
@@ -243,13 +245,21 @@ def _build_conclusion_graphs(
     goal_sources: set[str],
     input_paths: dict[str, ReasoningPath],
     goal_paths: dict[str, ReasoningPath],
+    context_paths: dict[str, ReasoningPath],
     activation: dict[str, ActivationState],
+    weak_input: bool,
     graph_limit: int,
 ) -> tuple[list[ConclusionGraph], list[RejectedConclusionGraph]]:
     meeting_hashes = [
         h for h, state in activation.items()
         if state.input_energy > 0 and state.goal_energy > 0 and h not in goal_sources
     ]
+    if weak_input:
+        context_meeting = [
+            h for h, state in activation.items()
+            if state.context_energy > 0 and state.goal_energy > 0 and h not in goal_sources
+        ]
+        meeting_hashes = list(dict.fromkeys(meeting_hashes + context_meeting))
 
     scored = sorted(
         meeting_hashes,
@@ -260,13 +270,17 @@ def _build_conclusion_graphs(
     selected: list[ConclusionGraph] = []
     rejected: list[RejectedConclusionGraph] = []
     for h in scored:
+        support_path = input_paths.get(h) or context_paths.get(h)
+        goal_path = goal_paths.get(h)
+        if support_path is None or goal_path is None:
+            continue
         graph = _make_conclusion_graph(
             tg,
             core_hash=h,
             input_sources=input_sources,
             goal_sources=goal_sources,
-            input_path=input_paths[h],
-            goal_path=goal_paths[h],
+            input_path=support_path,
+            goal_path=goal_path,
             activation=activation,
         )
         quality = relation_quality.score_graph_relations(tg, graph)
@@ -295,13 +309,9 @@ def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) 
     if not graph.edge_ids:
         return "insufficient_support"
     body_edges = [edge for edge_id in graph.edge_ids if (edge := tg.get_edge(edge_id)) is not None]
-    support_edges = _support_eligible_edges(tg, body_edges)
+    support_edges = _support_eligible_edges(body_edges)
     if not support_edges:
         return "insufficient_support"
-    if not _has_body_structure_beyond_single_turn_input(graph, support_edges):
-        return "input_restatement"
-    if not _has_non_neutral_relation_structure(support_edges):
-        return "neutral_concept_only"
     if quality.average_edge_score <= 0.0 or quality.support_strength <= 0.0:
         return "insufficient_support"
     if quality.restatement_risk >= 0.60 and quality.bridge_value < 0.10 and quality.goal_relevance < 0.20:
@@ -313,28 +323,11 @@ def _rejection_reason(graph: ConclusionGraph, tg: TempThoughtGraph, *, quality) 
     return None
 
 
-def _support_eligible_edges(tg: TempThoughtGraph, edges: list[Edge]) -> list[Edge]:
+def _support_eligible_edges(edges: list[Edge]) -> list[Edge]:
     return [
         edge for edge in edges
-        if not edge.is_temporary and not tg.is_current_turn_input_edge(edge.edge_id)
+        if not edge.is_temporary
     ]
-
-
-def _has_body_structure_beyond_single_turn_input(graph: ConclusionGraph, edges: list[Edge]) -> bool:
-    if graph.bridge_hashes or graph.exception_hashes or graph.condition_hashes or graph.action_hashes:
-        return True
-    for edge in edges:
-        endpoints = {edge.source_hash, edge.target_hash}
-        if not endpoints <= graph.input_hashes:
-            return True
-    return False
-
-
-def _has_non_neutral_relation_structure(edges: list[Edge]) -> bool:
-    return any(
-        edge.edge_family == "relation" and edge.connect_type != "neutral"
-        for edge in edges
-    )
 
 
 def _candidate_score(core_hash: str, state: ActivationState, input_sources: set[str]) -> float:
@@ -474,3 +467,21 @@ def _single_edge_path(start_hash: str, end_hash: str, edge: Edge, direction: str
         steps=(ReasoningStep(edge.source_hash, edge.edge_id, edge.target_hash, direction=direction, weight=edge.edge_weight),),
         path_weight=edge.edge_weight * edge.trust_score,
     )
+
+
+def _is_weak_input_signal(translated: TranslatedGraph) -> bool:
+    bundle = translated.input_bundle
+    if bundle is not None:
+        if bundle.direct_hashes:
+            return False
+        if bundle.sentence_edges:
+            return False
+        return True
+
+    has_direct_pointer = any(
+        isinstance(ref, ConceptPointer) and ref.is_direct_input_match
+        for ref in translated.nodes
+    )
+    if has_direct_pointer:
+        return False
+    return len(translated.edges) == 0

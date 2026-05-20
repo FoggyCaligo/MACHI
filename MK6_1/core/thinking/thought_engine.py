@@ -27,7 +27,7 @@ from ..profile import ProfileActivationView, attach_identity_surface_candidates,
 from ..storage.world_graph import (
     deactivate_node,
     get_edge as db_get_edge,
-    get_edge_by_endpoints as db_get_edge_by_endpoints,
+    get_edges_for_node as db_get_edges_for_node,
     get_node as db_get_node,
     get_words_for_surface,
     insert_edge,
@@ -40,16 +40,19 @@ from ..storage.world_graph import (
 )
 from ..utils.hash_resolver import compute_hash, normalize_text
 from ..utils.local_graph_extractor import extract as extract_subgraph
+from ...tools.search_client import SearchBundle, SearchResult
 from ... import config
 from . import concept_differentiation, concept_merge, goal_alignment, surface_variant_evidence
 from .activation import build_activation_conclusion_graphs
 from .claim_graph import AssertionState, apply_claim_conflict_pressure, build_claim_conflict_graph
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
 from .graph_patch import GraphPatch, patch_overlap_ratio
+from .search_relation_extractor import RelationCandidate, extract_relation_candidates
 from .temp_thought_graph import TempThoughtGraph
 
 
 EmbedFn = Callable[[str], Awaitable[list[float]]]
+SearchFn = Callable[[str], Awaitable[SearchBundle]]
 PATCH_CONVERGENCE_OVERLAP_RATIO = 0.5
 
 
@@ -133,7 +136,7 @@ def _commit_edge(conn: sqlite3.Connection, edge: Edge, strong: bool) -> Edge:
         return edge
 
     if strong:
-        existing = db_get_edge_by_endpoints(conn, edge.source_hash, edge.target_hash)
+        existing = _find_matching_committed_edge(conn, edge)
         if existing is not None:
             diff = edge.edge_weight - existing.edge_weight
             if diff > 0:
@@ -146,6 +149,21 @@ def _commit_edge(conn: sqlite3.Connection, edge: Edge, strong: bool) -> Edge:
 
     insert_edge(conn, edge)
     return edge
+
+
+def _find_matching_committed_edge(conn: sqlite3.Connection, edge: Edge) -> Edge | None:
+    # Keep multi-relations between same endpoints distinct by semantic predicate.
+    for existing in db_get_edges_for_node(conn, edge.source_hash, active_only=True):
+        if existing.source_hash != edge.source_hash or existing.target_hash != edge.target_hash:
+            continue
+        if existing.edge_family != edge.edge_family:
+            continue
+        if existing.connect_type != edge.connect_type:
+            continue
+        if existing.proposed_connect_type != edge.proposed_connect_type:
+            continue
+        return existing
+    return None
 
 
 def _has_converged(
@@ -237,7 +255,10 @@ def _add_translated_edges(
         ))
 
 
-def _search_query_from_slots(slots: list[EmptySlot], user_input: str | None) -> str | None:
+def _search_query_from_slots(
+    slots: list[EmptySlot],
+    user_input: str | None,
+) -> tuple[str | None, list[EmptySlot]]:
     """EmptySlot 중요도 구조에서 검색 쿼리 후보를 만든다.
 
     안정화 단계에서는 모든 EmptySlot을 검색하지 않는다. 낮은 근거의 단일 토큰 검색은
@@ -246,16 +267,23 @@ def _search_query_from_slots(slots: list[EmptySlot], user_input: str | None) -> 
     """
     ordered_slots = [slot for slot in slots if slot.concept_hint.strip()]
     if not ordered_slots:
-        return None
+        return None, []
 
     ranked = sorted(ordered_slots, key=lambda slot: slot.importance, reverse=True)
-    keep_count = min(3, max(1, int(len(ranked) * 0.25 + 0.9999)))
-    selected = [slot for slot in ranked[:keep_count] if slot.importance >= 0.05]
+    keep_count = min(4, max(1, int(len(ranked) * 0.50 + 0.9999)))
+    selected = [slot for slot in ranked[:keep_count] if slot.importance >= 0.10]
     if not selected:
-        return None
+        return None, []
 
-    combined = " ".join(slot.concept_hint.strip() for slot in selected)
-    return combined.strip() or None
+    if user_input and user_input.strip():
+        return user_input.strip(), selected
+
+    combined = " ".join(
+        normalize_text(slot.concept_hint.strip())
+        for slot in selected
+        if normalize_text(slot.concept_hint.strip())
+    )
+    return (combined.strip() or None), selected
 
 
 class ThoughtEngine:
@@ -263,7 +291,7 @@ class ThoughtEngine:
         self,
         conn: sqlite3.Connection,
         embed_fn: EmbedFn,
-        search_fn: Callable[[str], Awaitable[str | None]],
+        search_fn: SearchFn,
         goal_node: Node,
     ) -> None:
         self._conn = conn
@@ -342,7 +370,7 @@ class ThoughtEngine:
                     if isinstance(ref, ConceptPointer) and ref.is_direct_input_match
                 }
                 newly_searched = await self._fill_empty_slots(
-                    tg, user_input=user_input, concept_hashes=existing_cp_hashes
+                    tg, user_input=user_input, concept_hashes=existing_cp_hashes, model=model
                 )
                 search_node_hashes |= newly_searched
                 _t0 = _t(f"fill_empty_slots (loop {loop_count})", _ts)
@@ -533,39 +561,216 @@ class ThoughtEngine:
                     updated_at=now,
                 ))
 
+    def _search_results_text(self, results: list[SearchResult]) -> str | None:
+        if not results:
+            return None
+        parts: list[str] = []
+        for item in results:
+            if item.title:
+                parts.append(f"{item.title}. {item.snippet}")
+            else:
+                parts.append(item.snippet)
+        text = " ".join(parts).strip()
+        return text or None
+
+    def _seed_concept_labels(self, tg: TempThoughtGraph, concept_hashes: set[str] | None) -> list[str]:
+        if not concept_hashes:
+            return []
+        labels: list[str] = []
+        seen: set[str] = set()
+        for address_hash in sorted(concept_hashes):
+            node = tg.get_node(address_hash) or db_get_node(self._conn, address_hash)
+            if node is None:
+                continue
+            label = node.primary_label().strip()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            labels.append(label)
+        return labels
+
+    async def _apply_search_relations(
+        self,
+        tg: TempThoughtGraph,
+        *,
+        query: str,
+        relation_candidates: list[RelationCandidate],
+    ) -> set[str]:
+        touched_hashes: set[str] = set()
+        for candidate in relation_candidates:
+            subject_node = await self._resolve_or_create_concept_node(tg, candidate.subject)
+            object_node = await self._resolve_or_create_concept_node(tg, candidate.object)
+
+            touched_hashes.add(subject_node.address_hash)
+            touched_hashes.add(object_node.address_hash)
+            if subject_node.address_hash == object_node.address_hash:
+                continue
+
+            self._upsert_search_relation_edge(
+                tg,
+                query=query,
+                candidate=candidate,
+                source_hash=subject_node.address_hash,
+                target_hash=object_node.address_hash,
+            )
+        return touched_hashes
+
+    async def _resolve_or_create_concept_node(self, tg: TempThoughtGraph, label: str) -> Node:
+        normalized = normalize_text(label.strip())
+        if not normalized:
+            raise RuntimeError("relation candidate label must not be empty")
+
+        for word_entry in get_words_for_surface(self._conn, normalized):
+            existing = db_get_node(self._conn, word_entry.address_hash)
+            if existing is None or not existing.is_active:
+                continue
+            if tg.get_node(existing.address_hash) is None:
+                tg.add_node(existing)
+            return existing
+
+        address_hash = compute_hash(label)
+        existing_by_hash = db_get_node(self._conn, address_hash)
+        if existing_by_hash is not None and existing_by_hash.is_active:
+            if tg.get_node(existing_by_hash.address_hash) is None:
+                tg.add_node(existing_by_hash)
+            return existing_by_hash
+
+        embedding = await self._embed_fn(label)
+        now = datetime.now(timezone.utc)
+        node = Node(
+            address_hash=address_hash,
+            node_kind="concept",
+            formation_source="search",
+            labels=[label.strip()],
+            is_abstract=False,
+            trust_score=0.35,
+            stability_score=0.2,
+            is_active=True,
+            embedding=embedding,
+            payload={},
+            created_at=now,
+            updated_at=now,
+        )
+        insert_node(self._conn, node)
+        if not word_link_exists(self._conn, normalized, address_hash):
+            insert_word(self._conn, WordEntry(
+                word_id=str(uuid.uuid4()),
+                surface_form=normalized,
+                address_hash=address_hash,
+                language=None,
+                created_at=now,
+            ))
+        self._conn.commit()
+        tg.add_node(node)
+        return node
+
+    def _upsert_search_relation_edge(
+        self,
+        tg: TempThoughtGraph,
+        *,
+        query: str,
+        candidate: RelationCandidate,
+        source_hash: str,
+        target_hash: str,
+    ) -> None:
+        for edge in tg.get_edges_for_node(source_hash):
+            if edge.source_hash != source_hash or edge.target_hash != target_hash:
+                continue
+            if edge.edge_family != "relation":
+                continue
+            if edge.connect_type != candidate.connect_type:
+                continue
+            if edge.proposed_connect_type != candidate.predicate:
+                continue
+            edge.support_count += 1
+            edge.edge_weight = min(1.0, edge.edge_weight + (candidate.confidence - edge.edge_weight) * 0.5)
+            edge.trust_score = min(1.0, max(edge.trust_score, 0.35 + candidate.confidence * 0.25))
+            edge.proposal_reason = candidate.evidence
+            edge.payload = self._merge_search_relation_payload(edge.payload, query, candidate)
+            edge.touch()
+            tg.update_edge(edge)
+            return
+
+        confidence = max(0.0, min(1.0, candidate.confidence))
+        now = datetime.now(timezone.utc)
+        tg.add_edge(Edge(
+            edge_id=str(uuid.uuid4()),
+            source_hash=source_hash,
+            target_hash=target_hash,
+            edge_family="relation",
+            connect_type=candidate.connect_type,
+            edge_weight=max(0.2, confidence),
+            support_count=1,
+            provenance_source="search",
+            proposed_connect_type=candidate.predicate,
+            proposal_reason=candidate.evidence,
+            trust_score=0.35 + confidence * 0.25,
+            payload=self._merge_search_relation_payload({}, query, candidate),
+            is_temporary=False,
+            created_at=now,
+            updated_at=now,
+        ))
+
+    def _merge_search_relation_payload(
+        self,
+        payload: dict,
+        query: str,
+        candidate: RelationCandidate,
+    ) -> dict:
+        merged = dict(payload)
+        merged["query"] = query
+        merged["extractor"] = "search_relation_extractor_v1"
+        evidences = list(merged.get("evidences") or [])
+        if candidate.evidence not in evidences:
+            evidences.append(candidate.evidence)
+        merged["evidences"] = evidences[-5:]
+
+        source_entry = {
+            "title": candidate.source_title,
+            "url": candidate.source_url,
+        }
+        sources = list(merged.get("sources") or [])
+        if source_entry not in sources:
+            sources.append(source_entry)
+        merged["sources"] = sources[-8:]
+        return merged
+
     async def _fill_empty_slots(
         self,
         tg: TempThoughtGraph,
         user_input: str | None = None,
         concept_hashes: set[str] | None = None,
+        model: str | None = None,
     ) -> set[str]:
         slots = list(tg.empty_slots)
         if not slots:
             return set()
 
-        query = _search_query_from_slots(slots, user_input)
-        print(f"[think] search start  query={query!r}  slots={len(slots)}")
-        if not query:
+        query, target_slots = _search_query_from_slots(slots, user_input)
+        print(
+            f"[think] search start  query={query!r}  slots={len(slots)} "
+            f"target_slots={len(target_slots)}"
+        )
+        if not query or not target_slots:
             return set()
 
-        async def _run_query(query_text: str) -> str | None:
-            return await asyncio.wait_for(self._search_fn(query_text), timeout=config.SEARCH_TIMEOUT)
+        async def _run_query(query_text: str) -> SearchBundle | None:
+            try:
+                return await asyncio.wait_for(self._search_fn(query_text), timeout=config.SEARCH_TIMEOUT)
+            except asyncio.TimeoutError:
+                print(f"[think] search_fn timeout ({config.SEARCH_TIMEOUT}s) query={query_text!r}")
+                return None
 
         _ts = time.perf_counter()
-        search_text = await _run_query(query)
+        search_bundle = await _run_query(query)
         _t("search_fn", _ts)
-
-        search_by_query: dict[str, str] = {query: search_text} if search_text else {}
-
-        combined_search_text = " ".join(
-            f"[검색어: {query}] {text}"
-            for query, text in search_by_query.items()
-        ) or None
+        search_results = search_bundle.results if search_bundle is not None else []
+        search_text = self._search_results_text(search_results)
 
         ingested_nodes: list[Node] = []
         session_search_hashes: set[str] = set()
         _ti = time.perf_counter()
-        for slot in slots:
+        for slot in target_slots:
             node, got_search = await self._ingest_slot(slot, search_text=search_text)
             if node is not None:
                 tg.fill_slot(slot, node)
@@ -573,7 +778,25 @@ class ThoughtEngine:
                 ingested_nodes.append(node)
                 if got_search:
                     session_search_hashes.add(node.address_hash)
-        _t(f"ingest_slots x{len(slots)}", _ti)
+        _t(f"ingest_slots x{len(target_slots)}", _ti)
+
+        if search_results:
+            seed_concepts = self._seed_concept_labels(tg, concept_hashes)
+            relation_candidates = await extract_relation_candidates(
+                user_input=user_input,
+                query=query,
+                search_results=search_results,
+                seed_concepts=seed_concepts,
+                model=model,
+            )
+            _tr = time.perf_counter()
+            touched_hashes = await self._apply_search_relations(
+                tg,
+                query=query,
+                relation_candidates=relation_candidates,
+            )
+            session_search_hashes |= touched_hashes
+            _t(f"search_relation_edges x{len(relation_candidates)}", _tr)
 
         if ingested_nodes:
             now = datetime.now(timezone.utc)
@@ -614,8 +837,8 @@ class ThoughtEngine:
                             updated_at=now,
                         ))
 
-        if combined_search_text:
-            self._add_search_result_edges(tg, combined_search_text)
+        if search_text:
+            self._add_search_result_edges(tg, search_text)
         return session_search_hashes
 
     async def _ingest_slot(self, slot: EmptySlot, search_text: str | None = None) -> tuple[Node | None, bool]:
