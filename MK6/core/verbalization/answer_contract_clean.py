@@ -17,11 +17,15 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
+class SurfaceInput:
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class SurfaceResponse:
-    mode: str
     continuity: str
     max_sentences: int
-    copy_user_input: bool = False
+    may_use_user_input: bool = True
     list_raw_edges: bool = False
     expose_internal_fields: bool = False
 
@@ -64,12 +68,14 @@ class AnswerContract:
     """GraphToLang에 넘길 결론그래프의 표면화 전용 프레임.
 
     LLM은 WorldGraph/TempThoughtGraph/raw ConclusionGraph를 직접 보지 않는다.
-    이 계약은 selected ConclusionGraph 또는 입력 변화량을 JSON형 SurfaceFrame으로
-    투영한 결과이며, 자연어 요약문이나 키워드 나열을 별도 본체로 두지 않는다.
+    이 계약은 selected ConclusionGraph를 JSON형 SurfaceFrame으로 투영한 결과다.
+    결론 그래프가 비어 있을 때는 raw 입력 edge를 관계 본문으로 투영하지 않고,
+    사용자 원문을 보조 맥락으로 함께 제공한다.
     """
 
     contract_type: str
     source: str
+    input: SurfaceInput
     response: SurfaceResponse
     focus: SurfaceFocus
     frames: list[SurfaceNodeFrame] = field(default_factory=list)
@@ -102,9 +108,11 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     def display_degree(address_hash: str) -> int:
         degree = 0
         for edge in conclusion.edges:
-            if edge.is_temporary and edge.payload.get("view_scope") != "input_sentence":
+            if edge.is_temporary:
                 continue
             if is_profile_reference_edge(edge):
+                continue
+            if not _is_surface_body_edge(edge):
                 continue
             if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
                 continue
@@ -162,14 +170,8 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
             display_degree,
             limit=7,
         )
-        frames = _build_input_delta_frames(
-            primary_hashes,
-            conclusion.edges,
-            node_label,
-            is_verbalizable_hash,
-            limit_per_node=4,
-        )
-        source = "input_delta"
+        frames = []
+        source = "input_context"
 
     conflicts = _build_conflict_frames(
         conflict_graphs,
@@ -177,19 +179,14 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
         is_verbalizable_hash,
         limit=2,
     )
-    mode = _select_mode(
-        has_conflict=bool(conflicts),
-        has_conclusion=bool(answer_graphs),
-        has_frame=bool(frames or primary_hashes or supporting_hashes),
-    )
 
     return AnswerContract(
         contract_type="surface_frame",
         source=source,
+        input=SurfaceInput(text=conclusion.user_input or ""),
         response=SurfaceResponse(
-            mode=mode,
             continuity=conclusion.topic_continuity,
-            max_sentences=5 if mode == "conflict_resolution" else 2 if mode == "acknowledge_context_update" else 4,
+            max_sentences=5 if conflicts else 4,
         ),
         focus=SurfaceFocus(
             primary=[node_label(h) for h in primary_hashes],
@@ -204,16 +201,6 @@ def render_answer_contract(contract: AnswerContract) -> str:
     """SurfaceFrame을 JSON형 텍스트로 직렬화한다."""
 
     return json.dumps(asdict(contract), ensure_ascii=False, indent=2)
-
-
-def _select_mode(*, has_conflict: bool, has_conclusion: bool, has_frame: bool) -> str:
-    if has_conflict:
-        return "conflict_resolution"
-    if has_conclusion:
-        return "answer_from_conclusion"
-    if has_frame:
-        return "acknowledge_context_update"
-    return "minimal_response"
 
 
 def _rank_selected_hashes(
@@ -330,21 +317,6 @@ def _build_conclusion_frames(
     return _dedupe_frames(frames)
 
 
-def _build_input_delta_frames(
-    primary_hashes: list[str],
-    edges: list["Edge"],
-    node_label,
-    is_verbalizable_hash,
-    *,
-    limit_per_node: int,
-) -> list[SurfaceNodeFrame]:
-    frames: list[SurfaceNodeFrame] = []
-    for source_hash in primary_hashes:
-        frame_edges = _surface_edges_from_edge_list(source_hash, edges, node_label, is_verbalizable_hash, limit=limit_per_node)
-        frames.append(SurfaceNodeFrame(source=node_label(source_hash), role="input", edges=frame_edges))
-    return _dedupe_frames(frames)
-
-
 def _surface_edges_from_graph(
     source_hash: str,
     graph: "ConclusionGraph",
@@ -359,6 +331,8 @@ def _surface_edges_from_graph(
         edge = edge_by_id.get(edge_id)
         if edge is None or edge.is_temporary or is_profile_reference_edge(edge):
             continue
+        if not _is_surface_body_edge(edge):
+            continue
         if source_hash not in {edge.source_hash, edge.target_hash}:
             continue
         if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
@@ -371,30 +345,8 @@ def _surface_edges_from_graph(
     return [_to_surface_edge(source_hash, edge, node_label, score) for score, edge in ranked[:limit]]
 
 
-def _surface_edges_from_edge_list(
-    source_hash: str,
-    edges: list["Edge"],
-    node_label,
-    is_verbalizable_hash,
-    *,
-    limit: int,
-) -> list[SurfaceEdge]:
-    ranked: list[tuple[float, "Edge"]] = []
-    for edge in edges:
-        if edge.is_temporary and edge.payload.get("view_scope") != "input_sentence":
-            continue
-        if is_profile_reference_edge(edge):
-            continue
-        if source_hash not in {edge.source_hash, edge.target_hash}:
-            continue
-        if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
-            continue
-        score = _fallback_edge_score(edge)
-        if score <= 0.0:
-            continue
-        ranked.append((score, edge))
-    ranked.sort(key=lambda item: (-item[0], -item[1].edge_weight, item[1].edge_id))
-    return [_to_surface_edge(source_hash, edge, node_label, score) for score, edge in ranked[:limit]]
+def _is_surface_body_edge(edge: "Edge") -> bool:
+    return edge.edge_family == "relation" and edge.connect_type != "neutral"
 
 
 def _to_surface_edge(source_hash: str, edge: "Edge", node_label, score: float) -> SurfaceEdge:
@@ -414,19 +366,6 @@ def _to_surface_edge(source_hash: str, edge: "Edge", node_label, score: float) -
         support=edge.support_count,
         score=round(score, 3),
     )
-
-
-def _fallback_edge_score(edge: "Edge") -> float:
-    base = max(0.0, edge.edge_weight) * max(0.0, edge.trust_score)
-    if edge.connect_type == "neutral":
-        base *= 0.55
-    elif edge.connect_type == "opposite":
-        base *= 0.70
-    elif edge.connect_type == "conflict":
-        base *= 0.30
-    base += min(0.15, max(0, edge.support_count) * 0.03)
-    base -= max(0.0, edge.contradiction_pressure) * 0.20
-    return max(0.0, base)
 
 
 def _node_role_in_graph(address_hash: str, graph: "ConclusionGraph") -> str:
