@@ -357,6 +357,8 @@ class ThoughtEngine:
         prev_loop_patches: list[GraphPatch] = []
         previous_goal_score: float | None = None
         search_node_hashes: set[str] = set()
+        searched_queries: set[str] = set()
+        no_slot_search_used = False
 
         while loop_count < config.THINK_MAX_LOOPS:
             loop_count += 1
@@ -370,11 +372,31 @@ class ThoughtEngine:
                     if isinstance(ref, ConceptPointer) and ref.is_direct_input_match
                 }
                 newly_searched = await self._fill_empty_slots(
-                    tg, user_input=user_input, concept_hashes=existing_cp_hashes, model=model
+                    tg,
+                    user_input=user_input,
+                    concept_hashes=existing_cp_hashes,
+                    model=model,
+                    searched_queries=searched_queries,
                 )
                 search_node_hashes |= newly_searched
                 _t0 = _t(f"fill_empty_slots (loop {loop_count})", _ts)
                 _add_translated_edges(tg, translated.edges, _te_added_keys)
+            elif (
+                not no_slot_search_used
+                and self._should_search_without_slots(tg, translated)
+            ):
+                _ts = time.perf_counter()
+                newly_searched = await self._search_without_slots(
+                    tg,
+                    translated=translated,
+                    user_input=user_input,
+                    previous_key_hashes=previous_key_hashes,
+                    model=model,
+                    searched_queries=searched_queries,
+                )
+                no_slot_search_used = True
+                search_node_hashes |= newly_searched
+                _t0 = _t(f"search_without_slots (loop {loop_count})", _ts)
 
             _td = time.perf_counter()
             diff_results = concept_differentiation.run(tg)
@@ -735,23 +757,121 @@ class ThoughtEngine:
         merged["sources"] = sources[-8:]
         return merged
 
-    async def _fill_empty_slots(
+    def _should_search_without_slots(self, tg: TempThoughtGraph, translated: TranslatedGraph) -> bool:
+        if tg.has_empty_slots():
+            return False
+        if len(translated.edges) < 2:
+            return False
+        focus_hashes = self._focus_hashes_from_translated(tg, translated)
+        if not focus_hashes:
+            return False
+        return not self._has_non_neutral_relation_support(tg, focus_hashes)
+
+    def _focus_hashes_from_translated(self, tg: TempThoughtGraph, translated: TranslatedGraph) -> set[str]:
+        hashes: set[str] = set()
+        if translated.input_bundle is not None:
+            hashes |= set(translated.input_bundle.direct_hashes)
+            hashes |= set(translated.input_bundle.center_hashes)
+        for ref in translated.nodes:
+            if isinstance(ref, ConceptPointer):
+                hashes.add(ref.address_hash)
+            elif isinstance(ref, EmptySlot):
+                h = compute_hash(ref.concept_hint.strip())
+                if tg.get_node(h) is not None:
+                    hashes.add(h)
+        return {h for h in hashes if tg.get_node(h) is not None}
+
+    def _has_non_neutral_relation_support(self, tg: TempThoughtGraph, focus_hashes: set[str]) -> bool:
+        for address_hash in focus_hashes:
+            for edge in tg.get_edges_for_node(address_hash):
+                if edge.is_temporary:
+                    continue
+                if edge.edge_family != "relation":
+                    continue
+                if edge.connect_type == "neutral":
+                    continue
+                return True
+        return False
+
+    def _plan_search_query_without_slots(
         self,
         tg: TempThoughtGraph,
-        user_input: str | None = None,
-        concept_hashes: set[str] | None = None,
-        model: str | None = None,
-    ) -> set[str]:
-        slots = list(tg.empty_slots)
-        if not slots:
-            return set()
+        translated: TranslatedGraph,
+        *,
+        user_input: str | None,
+        previous_key_hashes: set[str] | None,
+    ) -> str | None:
+        if not user_input or not user_input.strip():
+            return None
 
-        query, target_slots = _search_query_from_slots(slots, user_input)
-        print(
-            f"[think] search start  query={query!r}  slots={len(slots)} "
-            f"target_slots={len(target_slots)}"
+        weak_input = self._is_weak_input_bundle(translated)
+        if weak_input:
+            context_labels = self._labels_from_hashes(tg, previous_key_hashes or set(), limit=4)
+            if context_labels:
+                return " ".join(context_labels)
+
+        focus_labels = self._labels_from_hashes(
+            tg,
+            self._focus_hashes_from_translated(tg, translated),
+            limit=4,
         )
-        if not query or not target_slots:
+        if focus_labels:
+            return " ".join(focus_labels)
+        return user_input.strip()
+
+    def _labels_from_hashes(self, tg: TempThoughtGraph, hashes: set[str], *, limit: int) -> list[str]:
+        labels: list[str] = []
+        seen: set[str] = set()
+        for address_hash in sorted(hashes):
+            node = tg.get_node(address_hash) or db_get_node(self._conn, address_hash)
+            if node is None:
+                continue
+            label = node.primary_label().strip()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            labels.append(label)
+            if len(labels) >= limit:
+                break
+        return labels
+
+    def _is_weak_input_bundle(self, translated: TranslatedGraph) -> bool:
+        bundle = translated.input_bundle
+        if bundle is not None:
+            if bundle.direct_hashes:
+                return False
+            if bundle.sentence_edges:
+                return False
+            return True
+        has_direct_pointer = any(
+            isinstance(ref, ConceptPointer) and ref.is_direct_input_match
+            for ref in translated.nodes
+        )
+        if has_direct_pointer:
+            return False
+        return len(translated.edges) == 0
+
+    async def _search_without_slots(
+        self,
+        tg: TempThoughtGraph,
+        *,
+        translated: TranslatedGraph,
+        user_input: str | None,
+        previous_key_hashes: set[str] | None,
+        model: str | None,
+        searched_queries: set[str] | None,
+    ) -> set[str]:
+        query = self._plan_search_query_without_slots(
+            tg,
+            translated,
+            user_input=user_input,
+            previous_key_hashes=previous_key_hashes,
+        )
+        print(f"[think] no-slot search start  query={query!r}")
+        if not query:
+            return set()
+        if searched_queries is not None and query in searched_queries:
+            print(f"[think] no-slot search skip duplicate query={query!r}")
             return set()
 
         async def _run_query(query_text: str) -> SearchBundle | None:
@@ -764,6 +884,73 @@ class ThoughtEngine:
         _ts = time.perf_counter()
         search_bundle = await _run_query(query)
         _t("search_fn", _ts)
+        if searched_queries is not None:
+            searched_queries.add(query)
+
+        search_results = search_bundle.results if search_bundle is not None else []
+        if not search_results:
+            return set()
+
+        seed_concepts = self._labels_from_hashes(
+            tg,
+            self._focus_hashes_from_translated(tg, translated),
+            limit=6,
+        )
+        relation_candidates = await extract_relation_candidates(
+            user_input=user_input,
+            query=query,
+            search_results=search_results,
+            seed_concepts=seed_concepts,
+            model=model,
+        )
+        _tr = time.perf_counter()
+        touched_hashes = await self._apply_search_relations(
+            tg,
+            query=query,
+            relation_candidates=relation_candidates,
+        )
+        _t(f"search_relation_edges x{len(relation_candidates)}", _tr)
+
+        search_text = self._search_results_text(search_results)
+        if search_text:
+            self._add_search_result_edges(tg, search_text)
+        return touched_hashes
+
+    async def _fill_empty_slots(
+        self,
+        tg: TempThoughtGraph,
+        user_input: str | None = None,
+        concept_hashes: set[str] | None = None,
+        model: str | None = None,
+        searched_queries: set[str] | None = None,
+    ) -> set[str]:
+        slots = list(tg.empty_slots)
+        if not slots:
+            return set()
+
+        query, target_slots = _search_query_from_slots(slots, user_input)
+        print(
+            f"[think] search start  query={query!r}  slots={len(slots)} "
+            f"target_slots={len(target_slots)}"
+        )
+        if not query or not target_slots:
+            return set()
+        if searched_queries is not None and query in searched_queries:
+            print(f"[think] search skip duplicate query={query!r}")
+            return set()
+
+        async def _run_query(query_text: str) -> SearchBundle | None:
+            try:
+                return await asyncio.wait_for(self._search_fn(query_text), timeout=config.SEARCH_TIMEOUT)
+            except asyncio.TimeoutError:
+                print(f"[think] search_fn timeout ({config.SEARCH_TIMEOUT}s) query={query_text!r}")
+                return None
+
+        _ts = time.perf_counter()
+        search_bundle = await _run_query(query)
+        _t("search_fn", _ts)
+        if searched_queries is not None:
+            searched_queries.add(query)
         search_results = search_bundle.results if search_bundle is not None else []
         search_text = self._search_results_text(search_results)
 
