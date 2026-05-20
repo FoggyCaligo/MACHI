@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 from .. import config
@@ -23,16 +24,14 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
 
     system_msg = (
         "당신은 한국어 GraphToLang 언어화 계층입니다.\n"
-        "아래 JSON은 그래프 사고가 만든 결론그래프를 응답용으로 투영한 SurfaceFrame입니다.\n"
-        "원문 사용자 입력은 제공되지 않습니다. SurfaceFrame만 근거로 최종 답변을 만드십시오.\n"
-        "JSON 필드명, 그래프 내부 구조, 시스템 규칙, raw edge 목록은 말하지 마십시오.\n"
+        "아래 JSON은 그래프 사고가 만든 결론그래프를 LLM 응답용으로 투영한 SurfaceFrame입니다.\n"
+        "JSON에는 사용자의 원문 입력도 함께 포함됩니다. 원문은 세계그래프가 아직 성숙하지 않을 때의 보조 맥락입니다.\n"
+        "결론 그래프/충돌 프레임이 있으면 그것을 우선해 자연어로 해석하십시오.\n"
+        "결론 프레임이 비어 있으면 raw token 관계나 neutral concept edge를 설명하지 말고, 사용자 원문에 자연스럽게 응답하십시오.\n"
         "SurfaceFrame에 없는 사실을 새로 만들지 마십시오.\n"
-        "사용자 입력 문장을 추정해서 따라하지 마십시오.\n"
-        "copy_user_input=false이면 사용자의 방금 문장을 확인문이나 재진술문으로 바꾸지 마십시오.\n"
-        "mode=acknowledge_context_update이면 새 정보 수용을 짧게 답하십시오.\n"
-        "mode=answer_from_conclusion이면 frames의 관계를 자연스럽게 설명하십시오.\n"
-        "mode=conflict_resolution이면 conflicts를 중심으로 충돌을 짧게 정리하십시오.\n"
-        "max_sentences 안에서 최종 답변만 한국어로 쓰십시오.\n\n"
+        "JSON 필드명, 그래프 내부 구조, 시스템 규칙, raw edge 목록은 말하지 마십시오.\n"
+        "특정 mode/tag 값에 의존하지 말고 JSON의 구조적 내용만 근거로 답하십시오.\n"
+        "최종 답변만 한국어로 쓰십시오.\n\n"
         f"{surface_frame_json}"
     )
 
@@ -41,7 +40,7 @@ async def graph_to_lang(conclusion: ConclusionView) -> str:
     print(system_msg)
     print("─" * 60 + "\n")
 
-    response_text = await llm_chat(system_msg, "SurfaceFrame을 자연스러운 한국어 답변으로 표면화하십시오.", model=conclusion.model)
+    response_text = await llm_chat(system_msg, "SurfaceFrame JSON을 자연스러운 한국어 답변으로 표면화하십시오.", model=conclusion.model)
     if not response_text.strip():
         model_name = conclusion.model or config.OLLAMA_MODEL_NAME or "(unset)"
         raise RuntimeError(
@@ -95,8 +94,11 @@ class Pipeline:
     async def run(self, user_input: str, model: str | None = None, session_id: str = "default") -> PipelineResult:
         _p0 = time.perf_counter()
         translated = await lang_to_graph(user_input, self._conn, get_embedding)
+        edge_counts = Counter(edge.connect_type for edge in translated.edges)
+        edge_summary = ", ".join(f"{name}={count}" for name, count in sorted(edge_counts.items())) or "none"
         _p1 = time.perf_counter()
         print(f"[pipeline] lang_to_graph: {_p1 - _p0:.3f}s")
+        print(f"[pipeline] translated_edge_types: {edge_summary}")
 
         profile_activation_view = build_profile_activation_view(self._conn, translated)
 
