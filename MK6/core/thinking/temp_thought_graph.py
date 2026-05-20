@@ -71,6 +71,7 @@ class TempThoughtGraph:
         self._goal_connections: set[str] = set()
         self._input_sentence_edge_keys: set[tuple[str, str, str, str]] = set()
         self._pending_sentence_edges: list[TranslatedEdge] = []
+        self._current_turn_input_edge_ids: set[str] = set()
         self._loop_index: int = 0
         self._current_patches: list[GraphPatch] = []
         self._all_patches: list[GraphPatch] = []
@@ -136,7 +137,7 @@ class TempThoughtGraph:
                 continue
             self._input_sentence_edge_keys.add(key)
 
-            self.add_edge(Edge(
+            edge = Edge(
                 edge_id=str(uuid.uuid4()),
                 source_hash=src_hash,
                 target_hash=tgt_hash,
@@ -154,7 +155,9 @@ class TempThoughtGraph:
                 },
                 created_at=now,
                 updated_at=now,
-            ))
+            )
+            self.add_edge(edge)
+            self.mark_current_turn_input_edge(edge.edge_id)
 
     def _resolve_input_ref(self, ref: ConceptPointer | EmptySlot) -> str | None:
         if isinstance(ref, ConceptPointer):
@@ -174,7 +177,7 @@ class TempThoughtGraph:
             self._nodes[turn_goal_hash] = Node(
                 address_hash=turn_goal_hash,
                 node_kind="goal",
-                formation_source="runtime",
+                formation_source="system_policy",
                 labels=["TurnGoal", "이번 턴 목적"],
                 is_abstract=False,
                 trust_score=1.0,
@@ -193,7 +196,7 @@ class TempThoughtGraph:
                 op="add",
                 target_kind="node",
                 target_id=turn_goal_hash,
-                after={"node_kind": "goal", "formation_source": "runtime"},
+                after={"node_kind": "goal", "formation_source": "system_policy"},
                 reason="turn_goal_from_input_bundle",
                 loop_index=self._loop_index,
             ))
@@ -321,6 +324,14 @@ class TempThoughtGraph:
             loop_index=self._loop_index,
         ))
 
+    def mark_current_turn_input_edge(self, edge_id: str) -> None:
+        """현재 턴 입력에서 생성된 edge를 런타임 상태로 표시한다."""
+        if edge_id in self._edges:
+            self._current_turn_input_edge_ids.add(edge_id)
+
+    def is_current_turn_input_edge(self, edge_id: str) -> bool:
+        return edge_id in self._current_turn_input_edge_ids
+
     def _should_ignore_persistent_duplicate_of_input_view(self, edge: Edge) -> bool:
         """입력 runtime edge와 영구 후보 edge는 서로 다른 계약이므로 공존시킨다."""
         return False
@@ -352,6 +363,7 @@ class TempThoughtGraph:
         edge = self._edges.pop(edge_id, None)
         if edge is None:
             return
+        self._current_turn_input_edge_ids.discard(edge_id)
         self._delta.removed_edges.append(edge_id)
         def _still_connected(src: str, tgt: str) -> bool:
             return any(
@@ -422,6 +434,9 @@ class TempThoughtGraph:
                     edge.translation_confidence,
                 )
             existing.touch()
+            if edge.edge_id in self._current_turn_input_edge_ids:
+                self._current_turn_input_edge_ids.discard(edge.edge_id)
+                self._current_turn_input_edge_ids.add(existing.edge_id)
             duplicate_ids.append(edge.edge_id)
             if edge.edge_id in self._all_added_edges:
                 self._all_added_edges.remove(edge.edge_id)
@@ -441,6 +456,7 @@ class TempThoughtGraph:
 
         for edge_id in duplicate_ids:
             self._edges.pop(edge_id, None)
+            self._current_turn_input_edge_ids.discard(edge_id)
             if edge_id not in self._delta.removed_edges:
                 self._delta.removed_edges.append(edge_id)
 
@@ -593,11 +609,11 @@ class TempThoughtGraph:
 
     @property
     def all_added_node_hashes(self) -> list[str]:
-        return self._all_added_nodes
+        return list(self._all_added_nodes)
 
     @property
     def all_added_edge_ids(self) -> list[str]:
-        return self._all_added_edges
+        return list(self._all_added_edges)
 
     @property
     def merged_mappings(self) -> dict[str, str]:
