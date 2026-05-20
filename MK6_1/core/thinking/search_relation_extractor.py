@@ -16,6 +16,7 @@ _MAX_EVIDENCE_LEN = 280
 _MAX_SNIPPET_LEN = max(80, config.SEARCH_RELATION_EXTRACTOR_MAX_SNIPPET_CHARS)
 _MAX_SEARCH_ITEMS = max(1, config.SEARCH_RELATION_EXTRACTOR_MAX_ITEMS)
 _MAX_RELATIONS_OUT = 8
+_JSON_RESPONSE_FORMAT = "json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +148,7 @@ async def _call_llm_chat(
             model,
             num_predict=config.SEARCH_RELATION_EXTRACTOR_NUM_PREDICT,
             think=False,
+            response_format=_JSON_RESPONSE_FORMAT,
         )
     except TypeError:
         # Backward-compatible path for test doubles or legacy signatures.
