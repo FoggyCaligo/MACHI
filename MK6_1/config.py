@@ -79,6 +79,12 @@ SEARCH_RELATION_EXTRACTOR_TIMEOUT = _env_float("SEARCH_RELATION_EXTRACTOR_TIMEOU
 SEARCH_RELATION_EXTRACTOR_MAX_ITEMS = _env_int("SEARCH_RELATION_EXTRACTOR_MAX_ITEMS", 4)
 SEARCH_RELATION_EXTRACTOR_MAX_SNIPPET_CHARS = _env_int("SEARCH_RELATION_EXTRACTOR_MAX_SNIPPET_CHARS", 180)
 SEARCH_RELATION_EXTRACTOR_NUM_PREDICT = _env_int("SEARCH_RELATION_EXTRACTOR_NUM_PREDICT", 1024)
+# none: 일반 생성 + parser/validator, json: provider JSON mode, schema: provider JSON schema.
+# 일부 로컬 Ollama 모델은 JSON mode에서 지연/빈 wrapper를 만들 수 있으므로 기본값은 none이다.
+SEARCH_RELATION_EXTRACTOR_RESPONSE_FORMAT = os.getenv(
+    "SEARCH_RELATION_EXTRACTOR_RESPONSE_FORMAT",
+    "none",
+).strip().lower()
 
 # ── 세계그래프 커밋 강도 ─────────────────────────────────────────────────────
 COMMIT_TRUST_STRONG = _env_float("COMMIT_TRUST_STRONG", 0.7)
