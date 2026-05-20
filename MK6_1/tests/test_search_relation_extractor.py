@@ -97,7 +97,7 @@ class SearchRelationExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].predicate, "has_part")
 
-    async def test_extract_relation_candidates_requests_json_response_format(self) -> None:
+    async def test_extract_relation_candidates_keeps_structured_output_opt_in(self) -> None:
         captured_kwargs: dict[str, Any] = {}
 
         async def fake_llm_chat(
@@ -127,7 +127,7 @@ class SearchRelationExtractorTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(candidates, [])
-        self.assertEqual(captured_kwargs["response_format"], "json")
+        self.assertIsNone(captured_kwargs["response_format"])
         self.assertEqual(captured_kwargs["think"], False)
 
 
