@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 from ... import config
 from ...tools.ollama_client import chat as llm_chat
@@ -16,7 +16,43 @@ _MAX_EVIDENCE_LEN = 280
 _MAX_SNIPPET_LEN = max(80, config.SEARCH_RELATION_EXTRACTOR_MAX_SNIPPET_CHARS)
 _MAX_SEARCH_ITEMS = max(1, config.SEARCH_RELATION_EXTRACTOR_MAX_ITEMS)
 _MAX_RELATIONS_OUT = 8
-_JSON_RESPONSE_FORMAT = "json"
+_RELATION_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "relations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "subject": {"type": "string"},
+                    "predicate": {"type": "string"},
+                    "object": {"type": "string"},
+                    "connect_type": {
+                        "type": "string",
+                        "enum": ["flow", "neutral", "opposite", "conflict"],
+                    },
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "evidence": {"type": "string"},
+                    "source_title": {"type": ["string", "null"]},
+                    "source_url": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "subject",
+                    "predicate",
+                    "object",
+                    "connect_type",
+                    "confidence",
+                    "evidence",
+                    "source_title",
+                    "source_url",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["relations"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +111,8 @@ async def extract_relation_candidates(
 
     system_prompt = (
         "You extract graph relation candidates from search evidence. "
-        "Return JSON only. Do not output any text outside JSON."
+        "Return one JSON object only. The top-level key must be 'relations'. "
+        "Do not output Markdown fences. Do not output text outside JSON."
     )
     user_prompt = (
         "Task:\n"
@@ -86,7 +123,8 @@ async def extract_relation_candidates(
         "5. connect_type must be one of flow, neutral, opposite, conflict.\n"
         "6. confidence must be in [0,1].\n"
         "7. evidence must be a short citation-like summary.\n"
-        f"8. return at most {_MAX_RELATIONS_OUT} relations.\n\n"
+        f"8. return at most {_MAX_RELATIONS_OUT} relations.\n"
+        "9. If no grounded relation exists, return {\"relations\": []}.\n\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
 
@@ -141,6 +179,7 @@ async def _call_llm_chat(
     user_prompt: str,
     model: str | None,
 ) -> str:
+    response_format = _provider_response_format()
     try:
         return await llm_chat_fn(
             system_prompt,
@@ -148,18 +187,27 @@ async def _call_llm_chat(
             model,
             num_predict=config.SEARCH_RELATION_EXTRACTOR_NUM_PREDICT,
             think=False,
-            response_format=_JSON_RESPONSE_FORMAT,
+            response_format=response_format,
         )
     except TypeError:
         # Backward-compatible path for test doubles or legacy signatures.
         return await llm_chat_fn(system_prompt, user_prompt, model)
 
 
+def _provider_response_format() -> str | dict[str, Any] | None:
+    mode = config.SEARCH_RELATION_EXTRACTOR_RESPONSE_FORMAT
+    if mode == "json":
+        return "json"
+    if mode == "schema":
+        return _RELATION_RESPONSE_SCHEMA
+    return None
+
+
 def _repair_system_prompt() -> str:
     return (
         "You are a strict JSON normalizer. "
         "Return only one JSON object with top-level key 'relations'. "
-        "Do not add explanation."
+        "Do not add explanation. Do not use Markdown fences."
     )
 
 
@@ -172,6 +220,7 @@ def _repair_user_prompt(previous_output: str) -> str:
         "\"confidence\": number_0_to_1, \"evidence\": string, "
         "\"source_title\": string_or_null, \"source_url\": string_or_null }"
         "] }\n"
+        "If the previous output has no recoverable relation, return {\"relations\": []}.\n"
         "Keep only grounded relations. Return JSON only.\n\n"
         f"{previous_output}"
     )

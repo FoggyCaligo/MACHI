@@ -152,8 +152,9 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
         )
         source = "conclusion_graph"
     else:
+        search_hashes = set(conclusion.search_node_hashes)
         primary_hashes = _rank_fallback_hashes(
-            set(conclusion.key_hashes),
+            set(conclusion.key_hashes) | search_hashes,
             conclusion.keyword_scores,
             node_map,
             node_label,
@@ -162,7 +163,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
             limit=5,
         )
         supporting_hashes = _rank_fallback_hashes(
-            set(conclusion.ref_hashes) - set(primary_hashes),
+            (set(conclusion.ref_hashes) | search_hashes) - set(primary_hashes),
             conclusion.keyword_scores,
             node_map,
             node_label,
