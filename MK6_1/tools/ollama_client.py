@@ -1,6 +1,8 @@
 """Ollama HTTP 클라이언트 — 임베딩 + 텍스트 생성 + 모델 목록."""
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from .. import config
@@ -40,6 +42,7 @@ def _generation_payload(
     *,
     num_predict: int | None = None,
     think: bool | None = None,
+    response_format: str | dict[str, Any] | None = None,
 ) -> dict:
     payload = {
         **base,
@@ -47,6 +50,8 @@ def _generation_payload(
         "options": _generation_options(num_predict=num_predict),
     }
     payload["think"] = config.OLLAMA_THINK if think is None else think
+    if response_format is not None:
+        payload["format"] = response_format
     return payload
 
 
@@ -120,6 +125,7 @@ async def chat(
     *,
     num_predict: int | None = None,
     think: bool | None = None,
+    response_format: str | dict[str, Any] | None = None,
 ) -> str:
     """Ollama chat 엔드포인트로 텍스트를 생성한다 (non-streaming).
 
@@ -129,6 +135,7 @@ async def chat(
         system: 시스템 메시지 (AI의 역할/인식 상태 정의)
         user:   사용자 메시지
         model:  사용할 모델 이름. None이면 config.OLLAMA_MODEL_NAME 사용.
+        response_format: Ollama format 값. None이면 일반 생성, "json" 또는 JSON Schema면 구조화 출력.
 
     Raises:
         ValueError: 모델명 미설정 또는 Ollama 거부 (400)
@@ -153,7 +160,7 @@ async def chat(
                         {"role": "system", "content": system},
                         {"role": "user",   "content": user},
                     ],
-                }, num_predict=num_predict, think=think),
+                }, num_predict=num_predict, think=think, response_format=response_format),
             )
     except httpx.ReadTimeout:
         raise TimeoutError(
