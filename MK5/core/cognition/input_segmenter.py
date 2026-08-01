@@ -46,23 +46,6 @@ class InputSegmenter:
             if not normalized_sentence:
                 continue
 
-            sentence_kind = "statement_phrase"
-            key = (sentence_index, sentence_kind, normalized_sentence)
-            if key not in seen:
-                blocks.append(
-                    MeaningBlock(
-                        text=sentence,
-                        normalized_text=normalized_sentence,
-                        block_kind=sentence_kind,
-                        sentence_index=sentence_index,
-                        block_index=block_index,
-                        source_sentence=sentence,
-                        metadata={"source": "sentence_structure"},
-                    )
-                )
-                seen.add(key)
-                block_index += 1
-
             token_count = 0
             for token in self._extract_token_candidates(sentence):
                 if token_count >= self.max_token_blocks_per_sentence:

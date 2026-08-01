@@ -41,28 +41,28 @@ class MeaningPreserver:
                 severity='fail',
                 recommended_action='block',
                 violations=['empty_response'],
-                safe_response=self._build_safe_response(search_context=search_context),
+                safe_response='',
                 reason='user response is empty after verbalization',
             )
 
         if need_search and attempted and search_error:
             return MeaningPreservationResult(
                 preserved=False,
-                severity='fail',
-                recommended_action='replace',
+                severity='warn',
+                recommended_action='accept',
                 violations=['search_error_unresolved'],
-                safe_response=self._build_safe_response(search_context=search_context),
-                reason='search encountered an error so grounded free-form response should not pass through',
+                safe_response='',
+                reason='search encountered an error and replacement fallback is disabled',
             )
 
         if need_search and attempted and no_evidence_found:
             return MeaningPreservationResult(
                 preserved=False,
-                severity='fail',
-                recommended_action='replace',
+                severity='warn',
+                recommended_action='accept',
                 violations=['no_evidence_found'],
-                safe_response=self._build_safe_response(search_context=search_context),
-                reason='no external evidence was found for a response that required grounding',
+                safe_response='',
+                reason='no external evidence was found and replacement fallback is disabled',
             )
 
         if need_search and attempted and (missing_terms or missing_aspects):
@@ -74,10 +74,10 @@ class MeaningPreserver:
             return MeaningPreservationResult(
                 preserved=False,
                 severity='warn',
-                recommended_action='replace',
+                recommended_action='accept',
                 violations=violations,
-                safe_response=self._build_safe_response(search_context=search_context),
-                reason='grounding remains incomplete for required search slots',
+                safe_response='',
+                reason='grounding remains incomplete and replacement fallback is disabled',
             )
 
         if violation_set and not need_search:

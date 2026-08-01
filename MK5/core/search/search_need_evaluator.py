@@ -82,11 +82,21 @@ class SearchNeedEvaluator:
         requested_slots = [self._slot_dict(slot) for slot in slot_plan.requested_slots]
         covered: list[RequestedSlot] = []
         missing: list[RequestedSlot] = []
+        local_grounded_node_ids = self._local_grounded_node_ids(thought_view)
         grounded_entities: dict[str, bool] = {}
         for entity in slot_plan.entities:
-            grounded_entities[entity] = self._has_entity_grounding(scope_nodes, entity)
+            grounded_entities[entity] = self._has_entity_grounding(
+                scope_nodes,
+                entity,
+                local_grounded_node_ids=local_grounded_node_ids,
+            )
         for slot in slot_plan.requested_slots:
-            if self._slot_is_covered(scope_nodes, slot, grounded_entities):
+            if self._slot_is_covered(
+                scope_nodes,
+                slot,
+                grounded_entities,
+                local_grounded_node_ids=local_grounded_node_ids,
+            ):
                 covered.append(slot)
             else:
                 missing.append(slot)
@@ -124,6 +134,7 @@ class SearchNeedEvaluator:
                 'grounding_scope_node_ids': target_node_ids,
                 'slot_plan_reason': slot_plan.reason,
                 'grounded_entities': grounded_entities,
+                'local_grounded_node_ids': sorted(local_grounded_node_ids),
             },
         )
 
@@ -148,17 +159,24 @@ class SearchNeedEvaluator:
                 break
         return scope
 
-    def _has_entity_grounding(self, nodes: list[Node], entity: str) -> bool:
+    def _has_entity_grounding(self, nodes: list[Node], entity: str, *, local_grounded_node_ids: set[int]) -> bool:
         term = self._norm(entity)
         for node in nodes:
-            if not self._node_has_grounding(node):
+            if not self._node_has_grounding(node, local_grounded_node_ids=local_grounded_node_ids):
                 continue
             text = self._node_text(node)
             if term and term in text:
                 return True
         return False
 
-    def _slot_is_covered(self, nodes: list[Node], slot: RequestedSlot, grounded_entities: dict[str, bool]) -> bool:
+    def _slot_is_covered(
+        self,
+        nodes: list[Node],
+        slot: RequestedSlot,
+        grounded_entities: dict[str, bool],
+        *,
+        local_grounded_node_ids: set[int],
+    ) -> bool:
         if not grounded_entities.get(slot.entity, False):
             return False
         if slot.kind == 'entity' or not slot.aspect:
@@ -166,14 +184,16 @@ class SearchNeedEvaluator:
         entity = self._norm(slot.entity)
         aspect = self._norm(slot.aspect)
         for node in nodes:
-            if not self._node_has_grounding(node):
+            if not self._node_has_grounding(node, local_grounded_node_ids=local_grounded_node_ids):
                 continue
             text = self._node_text(node)
             if entity in text and aspect in text:
                 return True
         return False
 
-    def _node_has_grounding(self, node: Node) -> bool:
+    def _node_has_grounding(self, node: Node, *, local_grounded_node_ids: set[int]) -> bool:
+        if node.id is not None and node.id in local_grounded_node_ids:
+            return True
         payload = node.payload if isinstance(node.payload, dict) else {}
         source_type = str(payload.get('source_type') or '').strip()
         claim_domain = str(payload.get('claim_domain') or '').strip()
@@ -184,6 +204,29 @@ class SearchNeedEvaluator:
             and node.trust_score >= 0.8
             and node.stability_score >= 0.7
         )
+
+    def _local_grounded_node_ids(self, thought_view: ThoughtView) -> set[int]:
+        metadata = thought_view.metadata if isinstance(thought_view.metadata, dict) else {}
+        identity_node_ids = {
+            int(node_id)
+            for node_id in (metadata.get('identity_node_ids') or [])
+            if isinstance(node_id, int)
+        }
+        if not identity_node_ids:
+            return set()
+
+        grounded: set[int] = set(identity_node_ids)
+        for edge in thought_view.edges:
+            if not edge.is_active or edge.edge_family != 'relation' or edge.connect_type != 'flow':
+                continue
+            detail = edge.relation_detail if isinstance(edge.relation_detail, dict) else {}
+            if str(detail.get('temporary_kind') or '').strip() != 'identity_anchor_binding':
+                continue
+            if edge.source_node_id in identity_node_ids and edge.target_node_id is not None:
+                grounded.add(edge.target_node_id)
+            if edge.target_node_id in identity_node_ids and edge.source_node_id is not None:
+                grounded.add(edge.source_node_id)
+        return grounded
 
     def _node_text(self, node: Node) -> str:
         payload = node.payload if isinstance(node.payload, dict) else {}
