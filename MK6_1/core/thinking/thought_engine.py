@@ -255,10 +255,7 @@ def _add_translated_edges(
         ))
 
 
-def _search_query_from_slots(
-    slots: list[EmptySlot],
-    user_input: str | None,
-) -> tuple[str | None, list[EmptySlot]]:
+def _select_search_slots(slots: list[EmptySlot]) -> list[EmptySlot]:
     """EmptySlot 중요도 구조에서 검색 쿼리 후보를 만든다.
 
     안정화 단계에서는 모든 EmptySlot을 검색하지 않는다. 낮은 근거의 단일 토큰 검색은
@@ -267,11 +264,19 @@ def _search_query_from_slots(
     """
     ordered_slots = [slot for slot in slots if slot.concept_hint.strip()]
     if not ordered_slots:
-        return None, []
+        return []
 
     ranked = sorted(ordered_slots, key=lambda slot: slot.importance, reverse=True)
     keep_count = min(4, max(1, int(len(ranked) * 0.50 + 0.9999)))
     selected = [slot for slot in ranked[:keep_count] if slot.importance >= 0.10]
+    return selected
+
+
+def _search_query_from_slots(
+    slots: list[EmptySlot],
+    user_input: str | None,
+) -> tuple[str | None, list[EmptySlot]]:
+    selected = _select_search_slots(slots)
     if not selected:
         return None, []
 
@@ -375,6 +380,7 @@ class ThoughtEngine:
                     tg,
                     user_input=user_input,
                     concept_hashes=existing_cp_hashes,
+                    active_local_hashes=self._active_local_graph_hashes(translated),
                     model=model,
                     searched_queries=searched_queries,
                 )
@@ -595,6 +601,23 @@ class ThoughtEngine:
         text = " ".join(parts).strip()
         return text or None
 
+    def _search_result_text(self, result: SearchResult) -> str:
+        if result.title:
+            return f"{result.title}. {result.snippet}".strip()
+        return result.snippet.strip()
+
+    def _active_local_graph_hashes(self, translated: TranslatedGraph) -> set[str]:
+        bundle = translated.input_bundle
+        if bundle is None:
+            return set()
+
+        hashes: set[str] = set()
+        for subgraph in bundle.local_subgraphs:
+            for node in subgraph.nodes:
+                if node.is_active:
+                    hashes.add(node.address_hash)
+        return hashes
+
     def _seed_concept_labels(self, tg: TempThoughtGraph, concept_hashes: set[str] | None) -> list[str]:
         if not concept_hashes:
             return []
@@ -610,6 +633,222 @@ class ThoughtEngine:
             seen.add(label)
             labels.append(label)
         return labels
+
+    async def _enrich_search_node_payload(
+        self,
+        tg: TempThoughtGraph,
+        node: Node,
+        *,
+        query: str,
+        search_text: str | None,
+        source_title: str | None,
+        source_url: str | None,
+    ) -> Node:
+        payload = dict(node.payload)
+        changed = False
+
+        if search_text and not payload.get("search_summary"):
+            payload["search_summary"] = search_text[:800]
+            changed = True
+
+        queries = list(payload.get("search_queries") or [])
+        if query not in queries:
+            queries.append(query)
+            payload["search_queries"] = queries[-8:]
+            changed = True
+
+        if source_title or source_url:
+            sources = list(payload.get("search_sources") or [])
+            source_entry = {"title": source_title, "url": source_url}
+            if source_entry not in sources:
+                sources.append(source_entry)
+                payload["search_sources"] = sources[-8:]
+                changed = True
+
+        if not changed:
+            return node
+
+        node.payload = payload
+        node.touch()
+        update_node(self._conn, node)
+        self._conn.commit()
+        if tg.get_node(node.address_hash) is not None:
+            tg.update_node(node)
+        else:
+            tg.add_node(node)
+        return node
+
+    def _upsert_search_graph_edge(
+        self,
+        tg: TempThoughtGraph,
+        *,
+        source_hash: str,
+        target_hash: str,
+        edge_family: str,
+        connect_type: str,
+        edge_weight: float,
+        proposed_connect_type: str | None,
+        proposal_reason: str,
+        payload: dict | None = None,
+        translation_confidence: float | None = None,
+    ) -> None:
+        if source_hash == target_hash:
+            return
+
+        for edge in tg.get_edges_for_node(source_hash):
+            if edge.source_hash != source_hash or edge.target_hash != target_hash:
+                continue
+            if edge.edge_family != edge_family:
+                continue
+            if edge.connect_type != connect_type:
+                continue
+            if edge.proposed_connect_type != proposed_connect_type:
+                continue
+            edge.edge_weight = max(edge.edge_weight, edge_weight)
+            edge.trust_score = max(edge.trust_score, 0.35)
+            edge.proposal_reason = proposal_reason
+            if translation_confidence is not None:
+                edge.translation_confidence = max(edge.translation_confidence or 0.0, translation_confidence)
+            if payload:
+                merged = dict(edge.payload)
+                for key, value in payload.items():
+                    if key not in merged:
+                        merged[key] = value
+                edge.payload = merged
+            edge.touch()
+            tg.update_edge(edge)
+            return
+
+        now = datetime.now(timezone.utc)
+        tg.add_edge(Edge(
+            edge_id=str(uuid.uuid4()),
+            source_hash=source_hash,
+            target_hash=target_hash,
+            edge_family=edge_family,
+            connect_type=connect_type,
+            edge_weight=edge_weight,
+            provenance_source="search",
+            proposed_connect_type=proposed_connect_type,
+            proposal_reason=proposal_reason,
+            translation_confidence=translation_confidence,
+            trust_score=0.35,
+            payload=payload or {},
+            is_temporary=False,
+            created_at=now,
+            updated_at=now,
+        ))
+
+    async def _graphize_search_results(
+        self,
+        tg: TempThoughtGraph,
+        *,
+        query: str,
+        search_results: list[SearchResult],
+    ) -> set[str]:
+        from ..translation.lang_to_graph import translate as lang_to_graph
+
+        graph_hashes: set[str] = set()
+        for result in search_results:
+            result_text = self._search_result_text(result)
+            if not result_text:
+                continue
+
+            translated_result = await lang_to_graph(result_text, self._conn, self._embed_fn)
+            resolved_hashes: dict[int, str] = {}
+            result_hashes: list[str] = []
+
+            for ref in translated_result.nodes:
+                if isinstance(ref, ConceptPointer):
+                    resolved_hashes[id(ref)] = ref.address_hash
+                    graph_hashes.add(ref.address_hash)
+                    result_hashes.append(ref.address_hash)
+                    _load_subgraph_into_tg(tg, ref.local_subgraph)
+                    continue
+
+                hint = ref.concept_hint.strip()
+                if not hint:
+                    continue
+                node = await self._resolve_or_create_concept_node(tg, hint)
+                node = await self._enrich_search_node_payload(
+                    tg,
+                    node,
+                    query=query,
+                    search_text=result_text,
+                    source_title=result.title,
+                    source_url=result.url,
+                )
+                resolved_hashes[id(ref)] = node.address_hash
+                graph_hashes.add(node.address_hash)
+                result_hashes.append(node.address_hash)
+
+            for edge in translated_result.edges:
+                src_hash = resolved_hashes.get(id(edge.source_ref))
+                tgt_hash = resolved_hashes.get(id(edge.target_ref))
+                if src_hash is None or tgt_hash is None:
+                    continue
+                self._upsert_search_graph_edge(
+                    tg,
+                    source_hash=src_hash,
+                    target_hash=tgt_hash,
+                    edge_family=edge.edge_family,
+                    connect_type=edge.connect_type,
+                    edge_weight=max(0.2, edge.confidence),
+                    proposed_connect_type=edge.proposed_connect_type,
+                    proposal_reason="search_result_graph",
+                    payload={
+                        "query": query,
+                        "source_title": result.title,
+                        "source_url": result.url,
+                    },
+                    translation_confidence=edge.confidence,
+                )
+
+            unique_hashes = list(dict.fromkeys(result_hashes))
+            for i, src_hash in enumerate(unique_hashes):
+                for tgt_hash in unique_hashes[i + 1:]:
+                    self._upsert_search_graph_edge(
+                        tg,
+                        source_hash=src_hash,
+                        target_hash=tgt_hash,
+                        edge_family="concept",
+                        connect_type="neutral",
+                        edge_weight=0.45,
+                        proposed_connect_type="search_result_co_occurrence",
+                        proposal_reason="search_result_graph",
+                        payload={
+                            "query": query,
+                            "source_title": result.title,
+                            "source_url": result.url,
+                        },
+                    )
+
+        return graph_hashes
+
+    def _bridge_search_group_to_local_graph(
+        self,
+        tg: TempThoughtGraph,
+        *,
+        search_hashes: set[str],
+        local_hashes: set[str],
+        query: str,
+    ) -> None:
+        for src_hash in sorted(search_hashes):
+            if tg.get_node(src_hash) is None:
+                continue
+            for tgt_hash in sorted(local_hashes):
+                if src_hash == tgt_hash or tg.get_node(tgt_hash) is None:
+                    continue
+                self._upsert_search_graph_edge(
+                    tg,
+                    source_hash=tgt_hash,
+                    target_hash=src_hash,
+                    edge_family="concept",
+                    connect_type="neutral",
+                    edge_weight=0.55,
+                    proposed_connect_type="search_graph_bridge",
+                    proposal_reason="search_graph_bridge",
+                    payload={"query": query},
+                )
 
     async def _apply_search_relations(
         self,
@@ -934,6 +1173,19 @@ class ThoughtEngine:
         if not search_results:
             return set()
 
+        active_local_hashes = self._focus_hashes_from_translated(tg, translated)
+        graph_hashes = await self._graphize_search_results(
+            tg,
+            query=query,
+            search_results=search_results,
+        )
+        self._bridge_search_group_to_local_graph(
+            tg,
+            search_hashes=graph_hashes,
+            local_hashes=active_local_hashes,
+            query=query,
+        )
+
         seed_concepts = self._labels_from_hashes(
             tg,
             self._focus_hashes_from_translated(tg, translated),
@@ -952,11 +1204,8 @@ class ThoughtEngine:
             query=query,
             relation_candidates=relation_candidates,
         )
+        touched_hashes |= graph_hashes
         _t(f"search_relation_edges x{len(relation_candidates)}", _tr)
-
-        search_text = self._search_results_text(search_results)
-        if search_text:
-            self._add_search_result_edges(tg, search_text)
         return touched_hashes
 
     async def _fill_empty_slots(
@@ -964,6 +1213,7 @@ class ThoughtEngine:
         tg: TempThoughtGraph,
         user_input: str | None = None,
         concept_hashes: set[str] | None = None,
+        active_local_hashes: set[str] | None = None,
         model: str | None = None,
         searched_queries: set[str] | None = None,
     ) -> set[str]:
@@ -996,6 +1246,11 @@ class ThoughtEngine:
             searched_queries.add(query)
         search_results = search_bundle.results if search_bundle is not None else []
         search_text = self._search_results_text(search_results)
+        graph_hashes = await self._graphize_search_results(
+            tg,
+            query=query,
+            search_results=search_results,
+        ) if search_results else set()
 
         ingested_nodes: list[Node] = []
         session_search_hashes: set[str] = set()
@@ -1006,6 +1261,7 @@ class ThoughtEngine:
                 tg.fill_slot(slot, node)
                 tg.connect_to_goal(node.address_hash)
                 ingested_nodes.append(node)
+                graph_hashes.add(node.address_hash)
                 if got_search:
                     session_search_hashes.add(node.address_hash)
         _t(f"ingest_slots x{len(target_slots)}", _ti)
@@ -1067,8 +1323,16 @@ class ThoughtEngine:
                             updated_at=now,
                         ))
 
-        if search_text:
-            self._add_search_result_edges(tg, search_text)
+        bridge_targets = set(active_local_hashes or set())
+        if concept_hashes:
+            bridge_targets |= set(concept_hashes)
+        self._bridge_search_group_to_local_graph(
+            tg,
+            search_hashes=graph_hashes,
+            local_hashes=bridge_targets,
+            query=query,
+        )
+        session_search_hashes |= graph_hashes
         return session_search_hashes
 
     async def _ingest_slot(self, slot: EmptySlot, search_text: str | None = None) -> tuple[Node | None, bool]:
