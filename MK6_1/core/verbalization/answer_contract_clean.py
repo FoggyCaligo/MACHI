@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedGraph
 from ..goal import GLOBAL_GOAL_AXIS_SEEDS, GOAL_ROOT_HASH
@@ -87,7 +87,19 @@ class AnswerContract:
 def build_answer_contract(conclusion: "ConclusionView", translated: TranslatedGraph) -> AnswerContract:
     node_map = {node.address_hash: node for node in conclusion.nodes}
     edge_by_id = {edge.edge_id: edge for edge in conclusion.edges}
-    identity_names = {ANCHOR_USER: "사용자", ANCHOR_ASSISTANT: "AI"}
+    participant_anchor_hashes = dict(conclusion.participant_anchor_hashes or {})
+
+    identity_names = {
+        ANCHOR_USER: "사용자",
+        ANCHOR_ASSISTANT: "AI",
+    }
+    if participant_anchor_hashes.get("user"):
+        identity_names[participant_anchor_hashes["user"]] = "사용자"
+    if participant_anchor_hashes.get("assistant"):
+        identity_names[participant_anchor_hashes["assistant"]] = "AI"
+    if participant_anchor_hashes.get("search"):
+        identity_names[participant_anchor_hashes["search"]] = "외부정보"
+
     internal_goal_hashes = {GOAL_ROOT_HASH, *(seed.node_hash for seed in GLOBAL_GOAL_AXIS_SEEDS)}
     if conclusion.goal_hash:
         internal_goal_hashes.add(conclusion.goal_hash)
@@ -97,6 +109,8 @@ def build_answer_contract(conclusion: "ConclusionView", translated: TranslatedGr
         return bool(node and is_user_profile_node(node))
 
     def is_verbalizable_hash(address_hash: str) -> bool:
+        if address_hash in participant_anchor_hashes.values():
+            return False
         return address_hash not in internal_goal_hashes and not is_internal_profile_hash(address_hash)
 
     def node_label(address_hash: str) -> str:
@@ -124,20 +138,20 @@ def build_answer_contract(conclusion: "ConclusionView", translated: TranslatedGr
 
     input_graph = _build_input_graph_section(
         translated,
-        conclusion,
         node_map,
         node_label,
         is_verbalizable_hash,
         display_degree,
+        participant_anchor_hashes.get("user"),
     )
     conclusion_graph = _build_conclusion_graph_section(
         selected_graphs,
-        conclusion,
         node_map,
         edge_by_id,
         node_label,
         is_verbalizable_hash,
         display_degree,
+        participant_anchor_hashes.get("assistant"),
     )
     search_graph = _build_search_graph_section(
         conclusion,
@@ -145,6 +159,7 @@ def build_answer_contract(conclusion: "ConclusionView", translated: TranslatedGr
         node_label,
         is_verbalizable_hash,
         display_degree,
+        participant_anchor_hashes.get("search"),
     )
     conflicts = _build_conflict_frames(
         conflict_graphs,
@@ -174,11 +189,11 @@ def render_answer_contract(contract: AnswerContract) -> str:
 
 def _build_input_graph_section(
     translated: TranslatedGraph,
-    conclusion: "ConclusionView",
     node_map: dict[str, "Node"],
-    node_label,
-    is_verbalizable_hash,
-    display_degree,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
+    display_degree: Callable[[str], int],
+    anchor_hash: str | None,
 ) -> SurfaceGraphSection:
     scored_hashes: dict[str, float] = {}
     for ref in translated.nodes:
@@ -192,42 +207,51 @@ def _build_input_graph_section(
         if address_hash in node_map:
             scored_hashes[address_hash] = max(scored_hashes.get(address_hash, 0.0), ref.importance)
 
-    input_hashes = {h for h in scored_hashes if is_verbalizable_hash(h)}
+    input_hashes = {address_hash for address_hash in scored_hashes if is_verbalizable_hash(address_hash)}
     primary_hashes = sorted(
         input_hashes,
-        key=lambda h: (-scored_hashes.get(h, 0.0), -display_degree(h), node_label(h), h),
+        key=lambda address_hash: (-scored_hashes.get(address_hash, 0.0), -display_degree(address_hash), node_label(address_hash), address_hash),
     )[:5]
     supporting_hashes = sorted(
         input_hashes - set(primary_hashes),
-        key=lambda h: (-scored_hashes.get(h, 0.0), -display_degree(h), node_label(h), h),
+        key=lambda address_hash: (-scored_hashes.get(address_hash, 0.0), -display_degree(address_hash), node_label(address_hash), address_hash),
     )[:7]
 
-    frames = _build_input_frames(
-        translated,
-        node_map,
-        node_label,
-        is_verbalizable_hash,
+    frames = _build_anchor_frames(
+        anchor_hash,
         primary_hashes,
+        scored_hashes,
+        node_label,
+        role="speaker_anchor",
     )
+    if not frames:
+        frames = _build_input_frames(
+            translated,
+            node_map,
+            node_label,
+            is_verbalizable_hash,
+            primary_hashes,
+        )
+
     return SurfaceGraphSection(
         speaker="user",
-        usage="User-attributed input graph. Treat its content as what the user said or implied, never as the assistant's self-description.",
+        usage="User-attributed input graph. Treat it as what the user said or implied, never as the assistant's self-description.",
         focus=SurfaceFocus(
-            primary=[node_label(h) for h in primary_hashes],
-            supporting=[node_label(h) for h in supporting_hashes],
+            primary=[node_label(address_hash) for address_hash in primary_hashes],
+            supporting=[node_label(address_hash) for address_hash in supporting_hashes],
         ),
-        frames=frames,
+        frames=_dedupe_frames(frames),
     )
 
 
 def _build_conclusion_graph_section(
     graphs: list["ConclusionGraph"],
-    conclusion: "ConclusionView",
     node_map: dict[str, "Node"],
     edge_by_id: dict[str, "Edge"],
-    node_label,
-    is_verbalizable_hash,
-    display_degree,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
+    display_degree: Callable[[str], int],
+    anchor_hash: str | None,
 ) -> SurfaceGraphSection:
     if not graphs:
         return SurfaceGraphSection()
@@ -252,10 +276,7 @@ def _build_conclusion_graph_section(
         return SurfaceGraphSection()
 
     frame_hashes = _frame_scoped_hashes(frames, node_map)
-    primary_hashes = [
-        address_hash for address_hash in ranked_primary_hashes
-        if address_hash in frame_hashes
-    ]
+    primary_hashes = [address_hash for address_hash in ranked_primary_hashes if address_hash in frame_hashes]
     supporting_hashes = _rank_supporting_hashes(
         graphs,
         primary_hashes,
@@ -266,12 +287,22 @@ def _build_conclusion_graph_section(
         limit=7,
     )
     supporting_hashes = [address_hash for address_hash in supporting_hashes if address_hash in frame_hashes]
+
+    anchor_frames = _build_anchor_frames(
+        anchor_hash,
+        primary_hashes,
+        {address_hash: 1.0 for address_hash in primary_hashes},
+        node_label,
+        role="speaker_anchor",
+    )
+    frames = _dedupe_frames(anchor_frames + frames)
+
     return SurfaceGraphSection(
         speaker="system",
         usage="Reasoned conclusion graph selected by the thinking loop. Prefer this over raw input or search when forming the answer.",
         focus=SurfaceFocus(
-            primary=[node_label(h) for h in primary_hashes],
-            supporting=[node_label(h) for h in supporting_hashes],
+            primary=[node_label(address_hash) for address_hash in primary_hashes],
+            supporting=[node_label(address_hash) for address_hash in supporting_hashes],
         ),
         frames=frames,
     )
@@ -280,11 +311,12 @@ def _build_conclusion_graph_section(
 def _build_search_graph_section(
     conclusion: "ConclusionView",
     node_map: dict[str, "Node"],
-    node_label,
-    is_verbalizable_hash,
-    display_degree,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
+    display_degree: Callable[[str], int],
+    anchor_hash: str | None,
 ) -> SurfaceGraphSection:
-    search_hashes = {h for h in conclusion.search_node_hashes if is_verbalizable_hash(h)}
+    search_hashes = {address_hash for address_hash in conclusion.search_node_hashes if is_verbalizable_hash(address_hash)}
     if not search_hashes:
         return SurfaceGraphSection()
 
@@ -320,29 +352,63 @@ def _build_search_graph_section(
         display_degree,
         limit=7,
     )
-    frames = _build_edge_scoped_frames(
+
+    frames = _build_anchor_frames(
+        anchor_hash,
+        primary_hashes,
+        conclusion.keyword_scores,
+        node_label,
+        role="speaker_anchor",
+    ) + _build_edge_scoped_frames(
         primary_hashes,
         search_edges,
         node_label,
         role="search",
         limit_per_node=5,
     )
+
     return SurfaceGraphSection(
         speaker="external",
         usage="Search-derived support graph. Use only as supporting evidence and never as the assistant's own identity or direct first-person claim.",
         focus=SurfaceFocus(
-            primary=[node_label(h) for h in primary_hashes],
-            supporting=[node_label(h) for h in supporting_hashes],
+            primary=[node_label(address_hash) for address_hash in primary_hashes],
+            supporting=[node_label(address_hash) for address_hash in supporting_hashes],
         ),
-        frames=frames,
+        frames=_dedupe_frames(frames),
     )
+
+
+def _build_anchor_frames(
+    anchor_hash: str | None,
+    target_hashes: list[str],
+    scores: dict[str, float],
+    node_label: Callable[[str], str],
+    *,
+    role: str,
+) -> list[SurfaceNodeFrame]:
+    if not anchor_hash or not target_hashes:
+        return []
+    edges = [
+        SurfaceEdge(
+            target=node_label(address_hash),
+            edge_family="relation",
+            connect_type="flow",
+            direction="out",
+            weight=1.0,
+            trust=1.0,
+            support=1,
+            score=round(float(scores.get(address_hash, 1.0)), 3),
+        )
+        for address_hash in target_hashes
+    ]
+    return [SurfaceNodeFrame(source=node_label(anchor_hash), role=role, edges=edges)]
 
 
 def _build_input_frames(
     translated: TranslatedGraph,
     node_map: dict[str, "Node"],
-    node_label,
-    is_verbalizable_hash,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
     primary_hashes: list[str],
 ) -> list[SurfaceNodeFrame]:
     edge_map: dict[str, list[SurfaceEdge]] = {}
@@ -369,12 +435,11 @@ def _build_input_frames(
     frames: list[SurfaceNodeFrame] = []
     source_hashes = primary_hashes or sorted(edge_map.keys(), key=node_label)[:5]
     for source_hash in source_hashes:
-        edges = edge_map.get(source_hash, [])
-        frames.append(SurfaceNodeFrame(source=node_label(source_hash), role="input", edges=edges[:4]))
+        frames.append(SurfaceNodeFrame(source=node_label(source_hash), role="input", edges=edge_map.get(source_hash, [])[:4]))
     return _dedupe_frames(frames)
 
 
-def _resolve_translated_ref_hash(ref: "ConceptRef", node_map: dict[str, "Node"]) -> str | None:
+def _resolve_translated_ref_hash(ref, node_map: dict[str, "Node"]) -> str | None:
     if isinstance(ref, ConceptPointer):
         return ref.address_hash
     if isinstance(ref, EmptySlot):
@@ -387,9 +452,9 @@ def _resolve_translated_ref_hash(ref: "ConceptRef", node_map: dict[str, "Node"])
 def _rank_selected_hashes(
     graphs: list["ConclusionGraph"],
     node_map: dict[str, "Node"],
-    node_label,
-    is_verbalizable_hash,
-    display_degree,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
+    display_degree: Callable[[str], int],
     *,
     limit: int,
 ) -> list[str]:
@@ -408,9 +473,9 @@ def _rank_supporting_hashes(
     graphs: list["ConclusionGraph"],
     primary_hashes: list[str],
     node_map: dict[str, "Node"],
-    node_label,
-    is_verbalizable_hash,
-    display_degree,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
+    display_degree: Callable[[str], int],
     *,
     limit: int,
 ) -> list[str]:
@@ -428,25 +493,25 @@ def _rank_fallback_hashes(
     hashes: set[str],
     keyword_scores: dict[str, float],
     node_map: dict[str, "Node"],
-    node_label,
-    is_verbalizable_hash,
-    display_degree,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
+    display_degree: Callable[[str], int],
     *,
     limit: int,
 ) -> list[str]:
     ranked = _rank_hashes(hashes, node_map, node_label, is_verbalizable_hash, display_degree, limit=limit * 2)
     return sorted(
         ranked,
-        key=lambda h: (-keyword_scores.get(h, 0.0), -display_degree(h), node_label(h), h),
+        key=lambda address_hash: (-keyword_scores.get(address_hash, 0.0), -display_degree(address_hash), node_label(address_hash), address_hash),
     )[:limit]
 
 
 def _rank_hashes(
     hashes: set[str],
     node_map: dict[str, "Node"],
-    node_label,
-    is_verbalizable_hash,
-    display_degree,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
+    display_degree: Callable[[str], int],
     *,
     limit: int,
 ) -> list[str]:
@@ -473,8 +538,8 @@ def _build_conclusion_frames(
     graphs: list["ConclusionGraph"],
     primary_hashes: list[str],
     edge_by_id: dict[str, "Edge"],
-    node_label,
-    is_verbalizable_hash,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
     *,
     limit_per_node: int,
 ) -> list[SurfaceNodeFrame]:
@@ -485,7 +550,7 @@ def _build_conclusion_frames(
             {},
             node_label,
             is_verbalizable_hash,
-            lambda _h: 0,
+            lambda _address_hash: 0,
             limit=4,
         )
         for source_hash in source_hashes:
@@ -509,8 +574,8 @@ def _surface_edges_from_graph(
     source_hash: str,
     graph: "ConclusionGraph",
     edge_by_id: dict[str, "Edge"],
-    node_label,
-    is_verbalizable_hash,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
     *,
     limit: int,
 ) -> list[SurfaceEdge]:
@@ -536,7 +601,7 @@ def _surface_edges_from_graph(
 def _build_edge_scoped_frames(
     primary_hashes: list[str],
     edges: list["Edge"],
-    node_label,
+    node_label: Callable[[str], str],
     *,
     role: str,
     limit_per_node: int,
@@ -557,7 +622,7 @@ def _is_surface_body_edge(edge: "Edge") -> bool:
     return edge.edge_family == "relation" and edge.connect_type != "neutral"
 
 
-def _to_surface_edge(source_hash: str, edge: "Edge", node_label, score: float) -> SurfaceEdge:
+def _to_surface_edge(source_hash: str, edge: "Edge", node_label: Callable[[str], str], score: float) -> SurfaceEdge:
     if edge.source_hash == source_hash:
         target_hash = edge.target_hash
         direction = "out"
@@ -594,20 +659,15 @@ def _node_role_in_graph(address_hash: str, graph: "ConclusionGraph") -> str:
 
 def _build_conflict_frames(
     graphs: list["ConclusionGraph"],
-    node_label,
-    is_verbalizable_hash,
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
     *,
     limit: int,
 ) -> list[SurfaceConflictFrame]:
     frames: list[SurfaceConflictFrame] = []
     for graph in graphs[:limit]:
         current = _labels_from_hashes(graph.core_hashes, node_label, is_verbalizable_hash, limit=4)
-        previous = _labels_from_hashes(
-            graph.exception_hashes | graph.condition_hashes,
-            node_label,
-            is_verbalizable_hash,
-            limit=4,
-        )
+        previous = _labels_from_hashes(graph.exception_hashes | graph.condition_hashes, node_label, is_verbalizable_hash, limit=4)
         conflicts: list[str] = []
         for path in graph.conflict_paths[:3]:
             for step in path.steps:
@@ -629,7 +689,13 @@ def _build_conflict_frames(
     return frames
 
 
-def _labels_from_hashes(hashes, node_label, is_verbalizable_hash, *, limit: int) -> list[str]:
+def _labels_from_hashes(
+    hashes: set[str],
+    node_label: Callable[[str], str],
+    is_verbalizable_hash: Callable[[str], bool],
+    *,
+    limit: int,
+) -> list[str]:
     labels: list[str] = []
     for address_hash in sorted(hashes, key=lambda value: node_label(value)):
         if not is_verbalizable_hash(address_hash):
@@ -663,15 +729,16 @@ def _dedupe_frames(frames: list[SurfaceNodeFrame]) -> list[SurfaceNodeFrame]:
 
 
 def _has_informative_conclusion_frames(frames: list[SurfaceNodeFrame]) -> bool:
-    return any(frame.edges for frame in frames)
+    return any(frame.edges for frame in frames if frame.role != "speaker_anchor")
 
 
-def _frame_scoped_hashes(
-    frames: list[SurfaceNodeFrame],
-    node_map: dict[str, "Node"],
-) -> set[str]:
-    labels = {frame.source for frame in frames}
+def _frame_scoped_hashes(frames: list[SurfaceNodeFrame], node_map: dict[str, "Node"]) -> set[str]:
+    labels = set()
     for frame in frames:
+        if frame.role == "speaker_anchor":
+            labels.update(edge.target for edge in frame.edges)
+            continue
+        labels.add(frame.source)
         labels.update(edge.target for edge in frame.edges)
 
     hashes: set[str] = set()

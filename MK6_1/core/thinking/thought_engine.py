@@ -38,7 +38,12 @@ from ..storage.world_graph import (
     update_node,
     word_link_exists,
 )
-from ..utils.hash_resolver import compute_hash, normalize_text
+from ..utils.hash_resolver import (
+    ANCHOR_ASSISTANT,
+    ANCHOR_USER,
+    compute_hash,
+    normalize_text,
+)
 from ..utils.local_graph_extractor import extract as extract_subgraph
 from ...tools.search_client import SearchBundle, SearchResult
 from ... import config
@@ -108,6 +113,7 @@ class ConclusionView:
     selected_graphs: list[ConclusionGraph] = field(default_factory=list)
     rejected_graphs: list[RejectedConclusionGraph] = field(default_factory=list)
     profile_activation_view: ProfileActivationView | None = None
+    participant_anchor_hashes: dict[str, str] = field(default_factory=dict)
 
 
 def _commit_strong(conn: sqlite3.Connection, node: Node) -> None:
@@ -344,10 +350,13 @@ class ThoughtEngine:
         translated: TranslatedGraph,
         model: str | None = None,
         user_input: str | None = None,
+        session_id: str | None = None,
+        participant_anchor_hashes: dict[str, str] | None = None,
         previous_key_hashes: set[str] | None = None,
         previous_assertion_state: AssertionState | None = None,
         profile_activation_view: ProfileActivationView | None = None,
     ) -> ConclusionView:
+        participant_anchor_hashes = dict(participant_anchor_hashes or {})
         _t0 = time.perf_counter()
         tg = TempThoughtGraph()
         tg.set_goal_node(self._goal_node)
@@ -379,14 +388,18 @@ class ThoughtEngine:
         _te_added_keys: set[tuple[str, str]] = set()
         _add_translated_edges(tg, translated.edges, _te_added_keys)
 
-        from ..utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
         for ref in translated.nodes:
             if isinstance(ref, ConceptPointer):
                 tg.connect_to_goal(ref.address_hash)
                 if ref.is_direct_input_match:
                     tg.connect_to_identity(ref.address_hash, ANCHOR_USER)
+                    user_anchor_hash = participant_anchor_hashes.get("user")
+                    if user_anchor_hash:
+                        tg.connect_to_identity(ref.address_hash, user_anchor_hash)
 
         for anchor_h in [ANCHOR_USER, ANCHOR_ASSISTANT]:
+            _load_subgraph_into_tg(tg, extract_subgraph(self._conn, anchor_h))
+        for anchor_h in participant_anchor_hashes.values():
             _load_subgraph_into_tg(tg, extract_subgraph(self._conn, anchor_h))
 
         _t0 = _t("graph init", _t0)
@@ -418,6 +431,7 @@ class ThoughtEngine:
                     active_local_hashes=self._active_local_graph_hashes(translated),
                     model=model,
                     searched_queries=searched_queries,
+                    search_anchor_hash=participant_anchor_hashes.get("search"),
                 )
                 search_node_hashes |= newly_searched
                 _t0 = _t(f"fill_empty_slots (loop {loop_count})", _ts)
@@ -434,6 +448,7 @@ class ThoughtEngine:
                     previous_key_hashes=previous_key_hashes,
                     model=model,
                     searched_queries=searched_queries,
+                    search_anchor_hash=participant_anchor_hashes.get("search"),
                 )
                 no_slot_search_used = True
                 search_node_hashes |= newly_searched
@@ -518,6 +533,12 @@ class ThoughtEngine:
             for h in previous_key_hashes:
                 keyword_scores.setdefault(h, 0.25)
 
+        self._bind_hashes_to_participant_anchor(
+            tg,
+            key_hashes | ref_hashes,
+            participant_anchor_hashes.get("assistant"),
+        )
+
         if not previous_key_hashes:
             topic_continuity = "new_topic"
         else:
@@ -586,6 +607,7 @@ class ThoughtEngine:
             selected_graphs=selected_graphs,
             rejected_graphs=activation_result.rejected_graphs,
             profile_activation_view=profile_activation_view,
+            participant_anchor_hashes=participant_anchor_hashes,
         )
 
     def _add_search_result_edges(self, tg: TempThoughtGraph, search_text: str) -> None:
@@ -660,6 +682,19 @@ class ThoughtEngine:
                 if node.is_active:
                     hashes.add(node.address_hash)
         return hashes
+
+    def _bind_hashes_to_participant_anchor(
+        self,
+        tg: TempThoughtGraph,
+        hashes: set[str],
+        anchor_hash: str | None,
+    ) -> None:
+        if not anchor_hash:
+            return
+        for address_hash in sorted(hashes):
+            if tg.get_node(address_hash) is None:
+                continue
+            tg.connect_to_identity(address_hash, anchor_hash)
 
     def _seed_concept_labels(self, tg: TempThoughtGraph, concept_hashes: set[str] | None) -> list[str]:
         if not concept_hashes:
@@ -1185,6 +1220,7 @@ class ThoughtEngine:
         previous_key_hashes: set[str] | None,
         model: str | None,
         searched_queries: set[str] | None,
+        search_anchor_hash: str | None = None,
     ) -> set[str]:
         query = self._plan_search_query_without_slots(
             tg,
@@ -1222,6 +1258,7 @@ class ThoughtEngine:
             query=query,
             search_results=search_results,
         )
+        self._bind_hashes_to_participant_anchor(tg, graph_hashes, search_anchor_hash)
         self._bridge_search_group_to_local_graph(
             tg,
             search_hashes=graph_hashes,
@@ -1248,6 +1285,7 @@ class ThoughtEngine:
             relation_candidates=relation_candidates,
         )
         touched_hashes |= graph_hashes
+        self._bind_hashes_to_participant_anchor(tg, touched_hashes, search_anchor_hash)
         _t(f"search_relation_edges x{len(relation_candidates)}", _tr)
         return touched_hashes
 
@@ -1259,6 +1297,7 @@ class ThoughtEngine:
         active_local_hashes: set[str] | None = None,
         model: str | None = None,
         searched_queries: set[str] | None = None,
+        search_anchor_hash: str | None = None,
     ) -> set[str]:
         slots = list(tg.empty_slots)
         if not slots:
@@ -1307,6 +1346,7 @@ class ThoughtEngine:
                     query=query,
                     search_results=search_results,
                 )
+                self._bind_hashes_to_participant_anchor(tg, graph_hashes, search_anchor_hash)
 
             _ti = time.perf_counter()
             node, got_search = await self._ingest_slot(slot, search_text=search_text)
@@ -1335,6 +1375,7 @@ class ThoughtEngine:
                     relation_candidates=relation_candidates,
                 )
                 session_search_hashes |= touched_hashes
+                self._bind_hashes_to_participant_anchor(tg, touched_hashes, search_anchor_hash)
                 _t(f"search_relation_edges x{len(relation_candidates)}", _tr)
 
         print(f"[think] ingest_slots x{len(ingested_nodes)}")
@@ -1390,6 +1431,7 @@ class ThoughtEngine:
             query=query,
         )
         session_search_hashes |= graph_hashes
+        self._bind_hashes_to_participant_anchor(tg, session_search_hashes, search_anchor_hash)
         return session_search_hashes
 
     async def _ingest_slot(self, slot: EmptySlot, search_text: str | None = None) -> tuple[Node | None, bool]:

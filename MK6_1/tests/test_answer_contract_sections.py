@@ -17,6 +17,7 @@ from MK6_1.core.entities.translated_graph import (
 )
 from MK6_1.core.thinking.conclusion_graph import ConclusionGraph
 from MK6_1.core.thinking.thought_engine import ConclusionView
+from MK6_1.core.utils.hash_resolver import PARTICIPANT_ASSISTANT, PARTICIPANT_SEARCH, PARTICIPANT_USER, participant_anchor_hash
 from MK6_1.core.verbalization import build_answer_contract
 
 
@@ -76,7 +77,7 @@ class AnswerContractSectionsTest(unittest.TestCase):
                     confidence=0.7,
                 )
             ],
-            source="안녕? 난 신재용 이야.",
+            source="안녕? 난 신재용이야.",
         )
 
         conclusion_edge = Edge(
@@ -117,10 +118,15 @@ class AnswerContractSectionsTest(unittest.TestCase):
             goal_hash="goal",
             had_empty_slots=False,
             loop_count=1,
-            user_input="안녕? 난 신재용 이야.",
+            user_input="안녕? 난 신재용이야.",
             key_hashes={input_node.address_hash},
             search_node_hashes={search_node.address_hash},
             selected_graphs=[conclusion_graph],
+            participant_anchor_hashes={
+                "user": participant_anchor_hash("session-1", PARTICIPANT_USER),
+                "assistant": participant_anchor_hash("session-1", PARTICIPANT_ASSISTANT),
+                "search": participant_anchor_hash("session-1", PARTICIPANT_SEARCH),
+            },
         )
 
         contract = build_answer_contract(conclusion, translated)
@@ -131,6 +137,10 @@ class AnswerContractSectionsTest(unittest.TestCase):
         self.assertEqual(contract.input_graph.focus.primary, ["신재용"])
         self.assertEqual(contract.conclusion_graph.focus.primary, ["소개"])
         self.assertEqual(contract.search_graph.focus.primary, ["스물여섯이야"])
+        self.assertEqual(contract.input_graph.frames[0].source, "사용자")
+        self.assertEqual(contract.input_graph.frames[0].edges[0].target, "신재용")
+        self.assertEqual(contract.conclusion_graph.frames[0].source, "AI")
+        self.assertEqual(contract.search_graph.frames[0].source, "외부정보")
 
     def test_build_answer_contract_hides_empty_conclusion_graph(self) -> None:
         now = datetime.now(timezone.utc)

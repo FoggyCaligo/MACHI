@@ -13,7 +13,14 @@ from ..core.thinking.claim_graph import AssertionState, build_assertion_state_fr
 from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.entities.translated_graph import TranslatedGraph
-from ..core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
+from ..core.utils.hash_resolver import (
+    ANCHOR_ASSISTANT,
+    ANCHOR_USER,
+    PARTICIPANT_ASSISTANT,
+    PARTICIPANT_SEARCH,
+    PARTICIPANT_USER,
+    participant_anchor_hash,
+)
 from ..core.verbalization import build_answer_contract, render_answer_contract
 from ..tools.ollama_client import chat as llm_chat, get_embedding
 from ..tools.search_client import search_structured as _search
@@ -83,6 +90,39 @@ def _initialize_identity_anchors(conn) -> None:
     conn.commit()
 
 
+def _ensure_session_participant_anchors(conn, session_id: str) -> dict[str, str]:
+    from datetime import datetime, timezone
+    from ..core.entities.node import Node
+
+    anchors = {
+        "user": (participant_anchor_hash(session_id, PARTICIPANT_USER), "사용자", "User"),
+        "assistant": (participant_anchor_hash(session_id, PARTICIPANT_ASSISTANT), "AI", "Assistant"),
+        "search": (participant_anchor_hash(session_id, PARTICIPANT_SEARCH), "외부정보", "Search"),
+    }
+    now = datetime.now(timezone.utc)
+    for address_hash, label_ko, label_en in anchors.values():
+        if db_get_node(conn, address_hash) is not None:
+            continue
+        insert_node(conn, Node(
+            address_hash=address_hash,
+            node_kind="concept",
+            formation_source="system_policy",
+            labels=[label_ko, label_en],
+            trust_score=1.0,
+            stability_score=1.0,
+            is_active=True,
+            payload={
+                "participant_anchor": True,
+                "session_scoped": True,
+                "session_id": session_id,
+            },
+            created_at=now,
+            updated_at=now,
+        ))
+    conn.commit()
+    return {role: address_hash for role, (address_hash, _ko, _en) in anchors.items()}
+
+
 @dataclass
 class PipelineResult:
     response_text: str
@@ -100,6 +140,7 @@ class Pipeline:
 
     async def run(self, user_input: str, model: str | None = None, session_id: str = "default") -> PipelineResult:
         _p0 = time.perf_counter()
+        participant_anchor_hashes = _ensure_session_participant_anchors(self._conn, session_id)
         translated = await lang_to_graph(user_input, self._conn, get_embedding)
         edge_counts = Counter(edge.connect_type for edge in translated.edges)
         edge_summary = ", ".join(f"{name}={count}" for name, count in sorted(edge_counts.items())) or "none"
@@ -116,6 +157,8 @@ class Pipeline:
             translated,
             model=model,
             user_input=user_input,
+            session_id=session_id,
+            participant_anchor_hashes=participant_anchor_hashes,
             previous_key_hashes=prev_hashes,
             previous_assertion_state=previous_assertion_state,
             profile_activation_view=profile_activation_view,
