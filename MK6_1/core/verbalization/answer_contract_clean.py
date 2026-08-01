@@ -4,10 +4,11 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
 
-from ..goal import GOAL_ROOT_HASH, GLOBAL_GOAL_AXIS_SEEDS
+from ..entities.translated_graph import ConceptPointer, EmptySlot, TranslatedGraph
+from ..goal import GLOBAL_GOAL_AXIS_SEEDS, GOAL_ROOT_HASH
 from ..profile import is_profile_reference_edge, is_user_profile_node
 from ..thinking import relation_quality
-from ..utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
+from ..utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER, compute_hash
 
 if TYPE_CHECKING:
     from ..entities.edge import Edge
@@ -56,6 +57,14 @@ class SurfaceNodeFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class SurfaceGraphSection:
+    speaker: str = "system"
+    usage: str = ""
+    focus: SurfaceFocus = field(default_factory=SurfaceFocus)
+    frames: list[SurfaceNodeFrame] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
 class SurfaceConflictFrame:
     current: list[str] = field(default_factory=list)
     previous: list[str] = field(default_factory=list)
@@ -65,24 +74,17 @@ class SurfaceConflictFrame:
 
 @dataclass(frozen=True, slots=True)
 class AnswerContract:
-    """GraphToLang에 넘길 결론그래프의 표면화 전용 프레임.
-
-    LLM은 WorldGraph/TempThoughtGraph/raw ConclusionGraph를 직접 보지 않는다.
-    이 계약은 selected ConclusionGraph를 JSON형 SurfaceFrame으로 투영한 결과다.
-    결론 그래프가 비어 있을 때는 raw 입력 edge를 관계 본문으로 투영하지 않고,
-    사용자 원문을 보조 맥락으로 함께 제공한다.
-    """
-
     contract_type: str
     source: str
     input: SurfaceInput
     response: SurfaceResponse
-    focus: SurfaceFocus
-    frames: list[SurfaceNodeFrame] = field(default_factory=list)
+    input_graph: SurfaceGraphSection = field(default_factory=SurfaceGraphSection)
+    conclusion_graph: SurfaceGraphSection = field(default_factory=SurfaceGraphSection)
+    search_graph: SurfaceGraphSection = field(default_factory=SurfaceGraphSection)
     conflicts: list[SurfaceConflictFrame] = field(default_factory=list)
 
 
-def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
+def build_answer_contract(conclusion: "ConclusionView", translated: TranslatedGraph) -> AnswerContract:
     node_map = {node.address_hash: node for node in conclusion.nodes}
     edge_by_id = {edge.edge_id: edge for edge in conclusion.edges}
     identity_names = {ANCHOR_USER: "사용자", ANCHOR_ASSISTANT: "AI"}
@@ -108,11 +110,7 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     def display_degree(address_hash: str) -> int:
         degree = 0
         for edge in conclusion.edges:
-            if edge.is_temporary:
-                continue
-            if is_profile_reference_edge(edge):
-                continue
-            if not _is_surface_body_edge(edge):
+            if edge.is_temporary or is_profile_reference_edge(edge):
                 continue
             if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
                 continue
@@ -124,56 +122,30 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
     conflict_graphs = [graph for graph in conclusion.selected_graphs if graph.has_conflict_structure]
     selected_graphs = answer_graphs or conflict_graphs
 
-    if selected_graphs:
-        primary_hashes = _rank_selected_hashes(
-            selected_graphs,
-            node_map,
-            node_label,
-            is_verbalizable_hash,
-            display_degree,
-            limit=5,
-        )
-        supporting_hashes = _rank_supporting_hashes(
-            selected_graphs,
-            primary_hashes,
-            node_map,
-            node_label,
-            is_verbalizable_hash,
-            display_degree,
-            limit=7,
-        )
-        frames = _build_conclusion_frames(
-            selected_graphs,
-            primary_hashes,
-            edge_by_id,
-            node_label,
-            is_verbalizable_hash,
-            limit_per_node=4,
-        )
-        source = "conclusion_graph"
-    else:
-        search_hashes = set(conclusion.search_node_hashes)
-        primary_hashes = _rank_fallback_hashes(
-            set(conclusion.key_hashes) | search_hashes,
-            conclusion.keyword_scores,
-            node_map,
-            node_label,
-            is_verbalizable_hash,
-            display_degree,
-            limit=5,
-        )
-        supporting_hashes = _rank_fallback_hashes(
-            (set(conclusion.ref_hashes) | search_hashes) - set(primary_hashes),
-            conclusion.keyword_scores,
-            node_map,
-            node_label,
-            is_verbalizable_hash,
-            display_degree,
-            limit=7,
-        )
-        frames = []
-        source = "input_context"
-
+    input_graph = _build_input_graph_section(
+        translated,
+        conclusion,
+        node_map,
+        node_label,
+        is_verbalizable_hash,
+        display_degree,
+    )
+    conclusion_graph = _build_conclusion_graph_section(
+        selected_graphs,
+        conclusion,
+        node_map,
+        edge_by_id,
+        node_label,
+        is_verbalizable_hash,
+        display_degree,
+    )
+    search_graph = _build_search_graph_section(
+        conclusion,
+        node_map,
+        node_label,
+        is_verbalizable_hash,
+        display_degree,
+    )
     conflicts = _build_conflict_frames(
         conflict_graphs,
         node_label,
@@ -183,25 +155,224 @@ def build_answer_contract(conclusion: "ConclusionView") -> AnswerContract:
 
     return AnswerContract(
         contract_type="surface_frame",
-        source=source,
+        source="multi_graph_surface_frame",
         input=SurfaceInput(text=conclusion.user_input or ""),
         response=SurfaceResponse(
             continuity=conclusion.topic_continuity,
             max_sentences=5 if conflicts else 4,
         ),
-        focus=SurfaceFocus(
-            primary=[node_label(h) for h in primary_hashes],
-            supporting=[node_label(h) for h in supporting_hashes],
-        ),
-        frames=frames,
+        input_graph=input_graph,
+        conclusion_graph=conclusion_graph,
+        search_graph=search_graph,
         conflicts=conflicts,
     )
 
 
 def render_answer_contract(contract: AnswerContract) -> str:
-    """SurfaceFrame을 JSON형 텍스트로 직렬화한다."""
-
     return json.dumps(asdict(contract), ensure_ascii=False, indent=2)
+
+
+def _build_input_graph_section(
+    translated: TranslatedGraph,
+    conclusion: "ConclusionView",
+    node_map: dict[str, "Node"],
+    node_label,
+    is_verbalizable_hash,
+    display_degree,
+) -> SurfaceGraphSection:
+    scored_hashes: dict[str, float] = {}
+    for ref in translated.nodes:
+        if isinstance(ref, ConceptPointer):
+            scored_hashes[ref.address_hash] = max(scored_hashes.get(ref.address_hash, 0.0), ref.importance)
+            continue
+        hint = ref.concept_hint.strip()
+        if not hint:
+            continue
+        address_hash = compute_hash(hint)
+        if address_hash in node_map:
+            scored_hashes[address_hash] = max(scored_hashes.get(address_hash, 0.0), ref.importance)
+
+    input_hashes = {h for h in scored_hashes if is_verbalizable_hash(h)}
+    primary_hashes = sorted(
+        input_hashes,
+        key=lambda h: (-scored_hashes.get(h, 0.0), -display_degree(h), node_label(h), h),
+    )[:5]
+    supporting_hashes = sorted(
+        input_hashes - set(primary_hashes),
+        key=lambda h: (-scored_hashes.get(h, 0.0), -display_degree(h), node_label(h), h),
+    )[:7]
+
+    frames = _build_input_frames(
+        translated,
+        node_map,
+        node_label,
+        is_verbalizable_hash,
+        primary_hashes,
+    )
+    return SurfaceGraphSection(
+        speaker="user",
+        usage="User-attributed input graph. Treat its content as what the user said or implied, never as the assistant's self-description.",
+        focus=SurfaceFocus(
+            primary=[node_label(h) for h in primary_hashes],
+            supporting=[node_label(h) for h in supporting_hashes],
+        ),
+        frames=frames,
+    )
+
+
+def _build_conclusion_graph_section(
+    graphs: list["ConclusionGraph"],
+    conclusion: "ConclusionView",
+    node_map: dict[str, "Node"],
+    edge_by_id: dict[str, "Edge"],
+    node_label,
+    is_verbalizable_hash,
+    display_degree,
+) -> SurfaceGraphSection:
+    if not graphs:
+        return SurfaceGraphSection()
+
+    primary_hashes = _rank_selected_hashes(
+        graphs,
+        node_map,
+        node_label,
+        is_verbalizable_hash,
+        display_degree,
+        limit=5,
+    )
+    supporting_hashes = _rank_supporting_hashes(
+        graphs,
+        primary_hashes,
+        node_map,
+        node_label,
+        is_verbalizable_hash,
+        display_degree,
+        limit=7,
+    )
+    frames = _build_conclusion_frames(
+        graphs,
+        primary_hashes,
+        edge_by_id,
+        node_label,
+        is_verbalizable_hash,
+        limit_per_node=4,
+    )
+    return SurfaceGraphSection(
+        speaker="system",
+        usage="Reasoned conclusion graph selected by the thinking loop. Prefer this over raw input or search when forming the answer.",
+        focus=SurfaceFocus(
+            primary=[node_label(h) for h in primary_hashes],
+            supporting=[node_label(h) for h in supporting_hashes],
+        ),
+        frames=frames,
+    )
+
+
+def _build_search_graph_section(
+    conclusion: "ConclusionView",
+    node_map: dict[str, "Node"],
+    node_label,
+    is_verbalizable_hash,
+    display_degree,
+) -> SurfaceGraphSection:
+    search_hashes = {h for h in conclusion.search_node_hashes if is_verbalizable_hash(h)}
+    if not search_hashes:
+        return SurfaceGraphSection()
+
+    primary_hashes = _rank_fallback_hashes(
+        search_hashes,
+        conclusion.keyword_scores,
+        node_map,
+        node_label,
+        is_verbalizable_hash,
+        display_degree,
+        limit=5,
+    )
+
+    supporting_candidates: set[str] = set()
+    search_edges: list["Edge"] = []
+    for edge in conclusion.edges:
+        if edge.is_temporary or edge.provenance_source != "search":
+            continue
+        if edge.source_hash not in search_hashes and edge.target_hash not in search_hashes:
+            continue
+        if not is_verbalizable_hash(edge.source_hash) or not is_verbalizable_hash(edge.target_hash):
+            continue
+        search_edges.append(edge)
+        supporting_candidates.add(edge.source_hash)
+        supporting_candidates.add(edge.target_hash)
+
+    supporting_hashes = _rank_fallback_hashes(
+        supporting_candidates - set(primary_hashes),
+        conclusion.keyword_scores,
+        node_map,
+        node_label,
+        is_verbalizable_hash,
+        display_degree,
+        limit=7,
+    )
+    frames = _build_edge_scoped_frames(
+        primary_hashes,
+        search_edges,
+        node_label,
+        role="search",
+        limit_per_node=5,
+    )
+    return SurfaceGraphSection(
+        speaker="external",
+        usage="Search-derived support graph. Use only as supporting evidence and never as the assistant's own identity or direct first-person claim.",
+        focus=SurfaceFocus(
+            primary=[node_label(h) for h in primary_hashes],
+            supporting=[node_label(h) for h in supporting_hashes],
+        ),
+        frames=frames,
+    )
+
+
+def _build_input_frames(
+    translated: TranslatedGraph,
+    node_map: dict[str, "Node"],
+    node_label,
+    is_verbalizable_hash,
+    primary_hashes: list[str],
+) -> list[SurfaceNodeFrame]:
+    edge_map: dict[str, list[SurfaceEdge]] = {}
+    for edge in translated.edges:
+        src_hash = _resolve_translated_ref_hash(edge.source_ref, node_map)
+        tgt_hash = _resolve_translated_ref_hash(edge.target_ref, node_map)
+        if src_hash is None or tgt_hash is None:
+            continue
+        if not is_verbalizable_hash(src_hash) or not is_verbalizable_hash(tgt_hash):
+            continue
+        edge_map.setdefault(src_hash, []).append(
+            SurfaceEdge(
+                target=node_label(tgt_hash),
+                edge_family=edge.edge_family,
+                connect_type=edge.connect_type,
+                direction="out",
+                weight=round(edge.confidence, 3),
+                trust=round(edge.confidence, 3),
+                support=0,
+                score=round(edge.confidence, 3),
+            )
+        )
+
+    frames: list[SurfaceNodeFrame] = []
+    source_hashes = primary_hashes or sorted(edge_map.keys(), key=node_label)[:5]
+    for source_hash in source_hashes:
+        edges = edge_map.get(source_hash, [])
+        frames.append(SurfaceNodeFrame(source=node_label(source_hash), role="input", edges=edges[:4]))
+    return _dedupe_frames(frames)
+
+
+def _resolve_translated_ref_hash(ref: "ConceptRef", node_map: dict[str, "Node"]) -> str | None:
+    if isinstance(ref, ConceptPointer):
+        return ref.address_hash
+    if isinstance(ref, EmptySlot):
+        address_hash = compute_hash(ref.concept_hint.strip())
+        if address_hash in node_map:
+            return address_hash
+    return None
 
 
 def _rank_selected_hashes(
@@ -272,18 +443,18 @@ def _rank_hashes(
 ) -> list[str]:
     ranked: list[str] = []
     seen_labels: set[str] = set()
-    for h in sorted(
+    for address_hash in sorted(
         (value for value in hashes if is_verbalizable_hash(value)),
         key=lambda value: (-display_degree(value), node_label(value), value),
     ):
-        node = node_map.get(h)
+        node = node_map.get(address_hash)
         if node and (node.is_abstract or not node.labels):
             continue
-        label = node_label(h)
+        label = node_label(address_hash)
         if label in seen_labels:
             continue
         seen_labels.add(label)
-        ranked.append(h)
+        ranked.append(address_hash)
         if len(ranked) >= limit:
             break
     return ranked
@@ -311,7 +482,14 @@ def _build_conclusion_frames(
         for source_hash in source_hashes:
             if source_hash not in graph.node_hashes:
                 continue
-            edges = _surface_edges_from_graph(source_hash, graph, edge_by_id, node_label, is_verbalizable_hash, limit=limit_per_node)
+            edges = _surface_edges_from_graph(
+                source_hash,
+                graph,
+                edge_by_id,
+                node_label,
+                is_verbalizable_hash,
+                limit=limit_per_node,
+            )
             role = _node_role_in_graph(source_hash, graph)
             if edges or role in {"core", "action", "bridge"}:
                 frames.append(SurfaceNodeFrame(source=node_label(source_hash), role=role, edges=edges))
@@ -344,6 +522,26 @@ def _surface_edges_from_graph(
         ranked.append((score, edge))
     ranked.sort(key=lambda item: (-item[0], -item[1].edge_weight, item[1].edge_id))
     return [_to_surface_edge(source_hash, edge, node_label, score) for score, edge in ranked[:limit]]
+
+
+def _build_edge_scoped_frames(
+    primary_hashes: list[str],
+    edges: list["Edge"],
+    node_label,
+    *,
+    role: str,
+    limit_per_node: int,
+) -> list[SurfaceNodeFrame]:
+    frames: list[SurfaceNodeFrame] = []
+    for source_hash in primary_hashes:
+        scoped: list[SurfaceEdge] = []
+        for edge in edges:
+            if source_hash not in {edge.source_hash, edge.target_hash}:
+                continue
+            scoped.append(_to_surface_edge(source_hash, edge, node_label, edge.edge_weight))
+        scoped.sort(key=lambda item: (-item.score, -item.weight, item.target))
+        frames.append(SurfaceNodeFrame(source=node_label(source_hash), role=role, edges=scoped[:limit_per_node]))
+    return _dedupe_frames(frames)
 
 
 def _is_surface_body_edge(edge: "Edge") -> bool:
@@ -424,10 +622,10 @@ def _build_conflict_frames(
 
 def _labels_from_hashes(hashes, node_label, is_verbalizable_hash, *, limit: int) -> list[str]:
     labels: list[str] = []
-    for h in sorted(hashes, key=lambda value: node_label(value)):
-        if not is_verbalizable_hash(h):
+    for address_hash in sorted(hashes, key=lambda value: node_label(value)):
+        if not is_verbalizable_hash(address_hash):
             continue
-        label = node_label(h)
+        label = node_label(address_hash)
         if label not in labels:
             labels.append(label)
         if len(labels) >= limit:

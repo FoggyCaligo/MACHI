@@ -112,7 +112,7 @@ class SearchResultGraphizationTest(unittest.IsolatedAsyncioTestCase):
                     )
                 engine._commit_new_content(tg)
 
-                self.assertEqual(queries, ["tell me about seoul in korea"])
+                self.assertEqual(queries, ["seoul"])
                 self.assertIn(compute_hash("seoul"), searched_hashes)
                 self.assertIsNotNone(get_node(conn, compute_hash("seoul")))
                 self.assertIsNotNone(get_node(conn, compute_hash("capital")))

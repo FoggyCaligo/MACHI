@@ -257,6 +257,55 @@ def build_claim_conflict_graph(
     return graph, conflict
 
 
+def apply_user_correction_policy(
+    tg: TempThoughtGraph,
+    translated: TranslatedGraph,
+    previous_state: AssertionState | None,
+    *,
+    subject_binding_hashes: set[str] | None = None,
+) -> ClaimAssertion | None:
+    """현재 사용자 assertion이 이전 assertion을 대체하는 구조를 world edge로 반영한다."""
+    assertion = build_user_assertion_from_translated(
+        tg,
+        translated,
+        subject_binding_hashes=subject_binding_hashes,
+    )
+    if assertion is None:
+        return None
+
+    replaced_hashes = _replaced_previous_object_hashes(
+        tg,
+        previous_state,
+        assertion=assertion,
+    )
+    affirmed_hashes = set(assertion.object_hashes) - replaced_hashes
+
+    if affirmed_hashes:
+        _strengthen_user_assertion_edges(
+            tg,
+            assertion=assertion,
+            target_hashes=affirmed_hashes,
+        )
+
+    if replaced_hashes:
+        _upsert_user_conflict_edges(
+            tg,
+            assertion=assertion,
+            target_hashes=replaced_hashes,
+            previous_state=previous_state,
+        )
+
+    if previous_state is not None and replaced_hashes:
+        _apply_previous_assertion_correction_pressure(
+            tg,
+            assertion=assertion,
+            previous_state=previous_state,
+            replaced_hashes=replaced_hashes,
+        )
+
+    return assertion
+
+
 def apply_claim_conflict_pressure(tg: TempThoughtGraph, previous_state: AssertionState | None) -> None:
     """직전 assertion state의 edge에 conflict pressure를 약하게 반영한다.
 
@@ -313,6 +362,191 @@ def _current_previous_explicit_conflict_adjacency(
             if other in previous_hashes:
                 pairs.add((current_hash, other))
     return pairs
+
+
+def _strengthen_user_assertion_edges(
+    tg: TempThoughtGraph,
+    *,
+    assertion: ClaimAssertion,
+    target_hashes: set[str],
+) -> None:
+    now = datetime.now(timezone.utc)
+    for subject_hash in sorted(assertion.subject_hashes):
+        if tg.get_node(subject_hash) is None:
+            continue
+        for target_hash in sorted(target_hashes):
+            if target_hash == subject_hash or tg.get_node(target_hash) is None:
+                continue
+            existing = _find_matching_edge(
+                tg,
+                source_hash=subject_hash,
+                target_hash=target_hash,
+                connect_type="flow",
+                proposed_connect_type="user_assertion",
+            )
+            if existing is not None:
+                existing.support_count += 1
+                existing.edge_weight = min(1.5, max(existing.edge_weight, 0.7) + 0.1)
+                existing.trust_score = max(existing.trust_score, 0.8)
+                existing.payload["last_assertion_id"] = assertion.assertion_id
+                existing.payload["user_assertion"] = True
+                existing.touch()
+                tg.update_edge(existing)
+                continue
+
+            tg.add_edge(Edge(
+                edge_id=str(uuid.uuid4()),
+                source_hash=subject_hash,
+                target_hash=target_hash,
+                edge_family="relation",
+                connect_type="flow",
+                provenance_source="user_policy",
+                proposed_connect_type="user_assertion",
+                proposal_reason="현재 사용자 자기서술에서 함께 확인된 관계",
+                support_count=1,
+                trust_score=0.8,
+                edge_weight=0.75,
+                is_temporary=False,
+                payload={
+                    "user_assertion": True,
+                    "assertion_id": assertion.assertion_id,
+                },
+                created_at=now,
+                updated_at=now,
+            ))
+
+
+def _upsert_user_conflict_edges(
+    tg: TempThoughtGraph,
+    *,
+    assertion: ClaimAssertion,
+    target_hashes: set[str],
+    previous_state: AssertionState | None,
+) -> None:
+    now = datetime.now(timezone.utc)
+    previous_edge_ids = sorted(previous_state.edge_ids) if previous_state is not None else []
+    for subject_hash in sorted(assertion.subject_hashes):
+        if tg.get_node(subject_hash) is None:
+            continue
+        for target_hash in sorted(target_hashes):
+            if target_hash == subject_hash or tg.get_node(target_hash) is None:
+                continue
+            existing = _find_matching_edge(
+                tg,
+                source_hash=subject_hash,
+                target_hash=target_hash,
+                connect_type="conflict",
+                proposed_connect_type="user_correction_conflict",
+            )
+            if existing is not None:
+                existing.support_count += 1
+                existing.conflict_count += 1
+                existing.edge_weight = min(1.5, max(existing.edge_weight, 0.8) + 0.1)
+                existing.trust_score = max(existing.trust_score, 0.85)
+                existing.payload["last_assertion_id"] = assertion.assertion_id
+                existing.payload["user_correction"] = True
+                existing.touch()
+                tg.update_edge(existing)
+                continue
+
+            tg.add_edge(Edge(
+                edge_id=str(uuid.uuid4()),
+                source_hash=subject_hash,
+                target_hash=target_hash,
+                edge_family="relation",
+                connect_type="conflict",
+                provenance_source="user_policy",
+                proposed_connect_type="user_correction_conflict",
+                proposal_reason="현재 사용자 정정 입력과 충돌하는 이전 주장 후보",
+                support_count=1,
+                conflict_count=1,
+                contradiction_pressure=0.8,
+                trust_score=0.85,
+                edge_weight=0.85,
+                is_temporary=False,
+                payload={
+                    "user_correction": True,
+                    "assertion_id": assertion.assertion_id,
+                    "previous_assertion_edge_ids": previous_edge_ids,
+                },
+                created_at=now,
+                updated_at=now,
+            ))
+
+
+def _apply_previous_assertion_correction_pressure(
+    tg: TempThoughtGraph,
+    *,
+    assertion: ClaimAssertion,
+    previous_state: AssertionState,
+    replaced_hashes: set[str],
+) -> None:
+    for edge_id in previous_state.edge_ids:
+        edge = tg.get_edge(edge_id)
+        if edge is None or edge.is_temporary:
+            continue
+
+        edge_hashes = {edge.source_hash, edge.target_hash}
+        if not (edge_hashes & replaced_hashes):
+            continue
+
+        edge.conflict_count += 1
+        edge.contradiction_pressure += 0.65
+        edge.trust_score = max(0.05, edge.trust_score * 0.55)
+        edge.payload["corrected_by_user"] = True
+        edge.payload["last_correction_assertion_id"] = assertion.assertion_id
+        edge.touch()
+        tg.update_edge(edge)
+
+def _replaced_previous_object_hashes(
+    tg: TempThoughtGraph,
+    previous_state: AssertionState | None,
+    *,
+    assertion: ClaimAssertion,
+) -> set[str]:
+    if previous_state is None or not assertion.subject_hashes or not assertion.object_hashes:
+        return set()
+
+    replaced: set[str] = set()
+    current_subjects = set(assertion.subject_hashes)
+    current_objects = set(assertion.object_hashes)
+    for previous_assertion in previous_state.assertions:
+        if not (previous_assertion.subject_hashes & current_subjects):
+            continue
+
+        previous_objects = {
+            address_hash
+            for address_hash in previous_assertion.object_hashes
+            if address_hash not in current_subjects and tg.get_node(address_hash) is not None
+        }
+        if not previous_objects:
+            continue
+
+        introduced_objects = current_objects - previous_objects
+        if not introduced_objects:
+            continue
+
+        replaced |= previous_objects - introduced_objects
+    return replaced
+
+
+def _find_matching_edge(
+    tg: TempThoughtGraph,
+    *,
+    source_hash: str,
+    target_hash: str,
+    connect_type: str,
+    proposed_connect_type: str,
+) -> Edge | None:
+    for edge in tg.get_edges_for_node(source_hash):
+        if edge.source_hash != source_hash or edge.target_hash != target_hash:
+            continue
+        if edge.connect_type != connect_type:
+            continue
+        if edge.proposed_connect_type != proposed_connect_type:
+            continue
+        return edge
+    return None
 
 
 def _stable_hash(value: str) -> str:

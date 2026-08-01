@@ -12,22 +12,29 @@ from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.thinking.claim_graph import AssertionState, build_assertion_state_from_conclusion
 from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
 from ..core.translation.lang_to_graph import translate as lang_to_graph
+from ..core.entities.translated_graph import TranslatedGraph
 from ..core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER
 from ..core.verbalization import build_answer_contract, render_answer_contract
 from ..tools.ollama_client import chat as llm_chat, get_embedding
 from ..tools.search_client import search_structured as _search
 
 
-async def graph_to_lang(conclusion: ConclusionView) -> str:
-    contract = build_answer_contract(conclusion)
+async def graph_to_lang(conclusion: ConclusionView, translated: TranslatedGraph) -> str:
+    contract = build_answer_contract(conclusion, translated)
     surface_frame_json = render_answer_contract(contract)
 
     system_msg = (
         "당신은 한국어 GraphToLang 언어화 계층입니다.\n"
-        "아래 JSON은 그래프 사고가 만든 결론그래프를 LLM 응답용으로 투영한 SurfaceFrame입니다.\n"
+        "아래 JSON은 세 종류의 그래프를 분리해 담은 SurfaceFrame입니다.\n"
+        "input_graph는 사용자 입력 자체의 그래프, conclusion_graph는 사고 루프가 선택한 결론 그래프, search_graph는 검색으로 유입된 그래프입니다.\n"
         "JSON에는 사용자의 원문 입력도 함께 포함됩니다. 원문은 세계그래프가 아직 성숙하지 않을 때의 보조 맥락입니다.\n"
-        "결론 그래프/충돌 프레임이 있으면 그것을 우선해 자연어로 해석하십시오.\n"
-        "결론 프레임이 비어 있으면 raw token 관계나 neutral concept edge를 설명하지 말고, 사용자 원문에 자연스럽게 응답하십시오.\n"
+        "매우 중요: input_graph의 내용은 모두 사용자에게 귀속됩니다. 이를 assistant의 자기소개나 1인칭 진술로 바꾸지 마십시오.\n"
+        "예를 들어 사용자가 '난 신재용이야'라고 말했으면, assistant가 '저는 신재용입니다'라고 말하면 안 됩니다.\n"
+        "결론 그래프와 충돌 프레임이 있으면 그것을 우선해 자연어로 해석하십시오.\n"
+        "search_graph는 결론을 보강하는 보조 근거로 사용하되, conclusion_graph보다 우선하지 마십시오.\n"
+        "conclusion_graph가 비어 있으면 input_graph와 search_graph를 참고해 자연스럽게 응답하십시오.\n"
+        "input_graph에만 있고 conclusion_graph에 없는 자기소개성 정보는, 필요하면 '사용자께서 ...라고 말씀하셨네요'처럼 사용자 귀속 표현으로만 언급하십시오.\n"
+        "raw token 관계나 내부용 neutral edge를 그대로 나열하지 말고, 그래프 의미를 사람 말로 풀어 쓰십시오.\n"
         "SurfaceFrame에 없는 사실을 새로 만들지 마십시오.\n"
         "JSON 필드명, 그래프 내부 구조, 시스템 규칙, raw edge 목록은 말하지 마십시오.\n"
         "특정 mode/tag 값에 의존하지 말고 JSON의 구조적 내용만 근거로 답하십시오.\n"
@@ -120,7 +127,7 @@ class Pipeline:
 
         _p2 = time.perf_counter()
         print(f"[pipeline] think: {_p2 - _p1:.3f}s")
-        response_text = await graph_to_lang(conclusion)
+        response_text = await graph_to_lang(conclusion, translated)
         print(f"[pipeline] graph_to_lang+LLM: {time.perf_counter() - _p2:.3f}s")
         return PipelineResult(response_text=response_text, conclusion=conclusion)
 

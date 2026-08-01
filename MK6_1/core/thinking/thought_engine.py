@@ -44,7 +44,12 @@ from ...tools.search_client import SearchBundle, SearchResult
 from ... import config
 from . import concept_differentiation, concept_merge, goal_alignment, surface_variant_evidence
 from .activation import build_activation_conclusion_graphs
-from .claim_graph import AssertionState, apply_claim_conflict_pressure, build_claim_conflict_graph
+from .claim_graph import (
+    AssertionState,
+    apply_claim_conflict_pressure,
+    apply_user_correction_policy,
+    build_claim_conflict_graph,
+)
 from .conclusion_graph import ConclusionGraph, RejectedConclusionGraph
 from .graph_patch import GraphPatch, patch_overlap_ratio
 from .search_relation_extractor import RelationCandidate, extract_relation_candidates
@@ -279,16 +284,16 @@ def _search_query_from_slots(
     selected = _select_search_slots(slots)
     if not selected:
         return None, []
-
-    if user_input and user_input.strip():
-        return user_input.strip(), selected
-
-    combined = " ".join(
-        normalize_text(slot.concept_hint.strip())
-        for slot in selected
-        if normalize_text(slot.concept_hint.strip())
-    )
-    return (combined.strip() or None), selected
+    combined_parts: list[str] = []
+    seen: set[str] = set()
+    for slot in selected:
+        normalized = normalize_text(slot.concept_hint.strip())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        combined_parts.append(normalized)
+    combined = " ".join(combined_parts).strip()
+    return (combined or None), selected
 
 
 class ThoughtEngine:
@@ -489,19 +494,15 @@ class ThoughtEngine:
             overlap = len(key_hashes.intersection(previous_key_hashes))
             topic_continuity = "continued_topic" if overlap >= 2 else "related_topic" if overlap == 1 else "shifted_topic"
 
-        _tc = time.perf_counter()
-        tg.merge_duplicate_edges()
-        self._commit_new_content(tg)
-        _t("commit_new_content", _tc)
-
-        profile_hashes = set(key_hashes) | set(ref_hashes)
-        profile_hashes |= {ref.address_hash for ref in translated.nodes if isinstance(ref, ConceptPointer) and ref.is_direct_input_match}
-        profile_hashes |= {compute_hash(ref.concept_hint.strip()) for ref in translated.nodes if isinstance(ref, EmptySlot)}
-        attach_profile_references(self._conn, profile_hashes)
-
         subject_binding_hashes = _profile_subject_binding_hashes(profile_activation_view)
-        if subject_binding_hashes:
-            attach_identity_surface_candidates(self._conn, subject_binding_hashes)
+        apply_user_correction_policy(
+            tg,
+            translated,
+            previous_assertion_state,
+            subject_binding_hashes=subject_binding_hashes,
+        )
+
+        tg.merge_duplicate_edges()
 
         claim_conflict_graph, _claim_conflict = build_claim_conflict_graph(
             tg,
@@ -512,6 +513,18 @@ class ThoughtEngine:
         if claim_conflict_graph is not None:
             apply_claim_conflict_pressure(tg, previous_assertion_state)
             topic_continuity = "continued_topic"
+
+        _tc = time.perf_counter()
+        self._commit_new_content(tg)
+        _t("commit_new_content", _tc)
+
+        profile_hashes = set(key_hashes) | set(ref_hashes)
+        profile_hashes |= {ref.address_hash for ref in translated.nodes if isinstance(ref, ConceptPointer) and ref.is_direct_input_match}
+        profile_hashes |= {compute_hash(ref.concept_hint.strip()) for ref in translated.nodes if isinstance(ref, EmptySlot)}
+        attach_profile_references(self._conn, profile_hashes)
+
+        if subject_binding_hashes:
+            attach_identity_surface_candidates(self._conn, subject_binding_hashes)
 
         _ta = time.perf_counter()
         profile_context_hashes = profile_activation_view.seed_hashes if profile_activation_view else set()
