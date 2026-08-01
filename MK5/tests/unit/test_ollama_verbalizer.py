@@ -92,11 +92,10 @@ def test_ollama_verbalizer_compacts_search_context_in_prompt() -> None:
     assert '- recent_memory_count: 0' in prompt
     assert '- grounded_terms: plate armor | mail armor | lamellar' in prompt
     assert 'scale armor' not in prompt
-    assert '- missing_terms: brigandine | gambeson | leather armor' in prompt
-    assert 'mirror armor' not in prompt
-    assert '- missing_aspects: mobility | protection | weight' in prompt
-    assert 'cost' not in prompt
-    assert prompt.count('- provider_error:') == 2
+    assert '- missing_terms:' not in prompt
+    assert '- missing_aspects:' not in prompt
+    assert '- provider_error:' not in prompt
+    assert '- no_evidence_found:' not in prompt
     assert prompt.count('- evidence:') == 2
 
 

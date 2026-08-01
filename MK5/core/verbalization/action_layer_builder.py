@@ -29,8 +29,8 @@ class ActionLayerBuilder:
         recent_memory_messages = list(metadata.get('recent_memory_messages') or [])
         recent_memory_count = int(metadata.get('recent_memory_count') or len(recent_memory_messages))
 
-        response_mode = 'direct_answer_with_uncertainty'
-        answer_goal = 'Answer only within the currently grounded range and do not fill gaps with unsupported guesses.'
+        response_mode = 'direct_answer'
+        answer_goal = 'Answer the user directly and concisely from the currently available context.'
         suggested_actions: list[str] = []
         do_not_claim = [
             'Do not present unverified details as confirmed facts.',
@@ -41,10 +41,10 @@ class ActionLayerBuilder:
 
         if intent == 'structure_review' or conflict_count > 0 or revision_count > 0:
             response_mode = 'structured_explanation'
-            answer_goal = 'Explain the structure carefully, and keep uncertain parts clearly bounded.'
+            answer_goal = 'Explain the structure directly and compactly.'
             suggested_actions = [
                 'State the main comparison axis first.',
-                'Separate confirmed parts from uncertain parts.',
+                'Keep the answer compact and concrete.',
             ]
         elif intent == 'relation_synthesis_request' or relation_count >= 2 or activated_count >= 3:
             response_mode = 'structured_explanation'
@@ -56,24 +56,22 @@ class ActionLayerBuilder:
         elif intent == 'memory_probe':
             response_mode = 'structured_explanation'
             if recent_memory_count > 0:
-                answer_goal = 'State what is remembered from recent conversation history, and separate remembered details from anything still unknown.'
+                answer_goal = 'Answer from recent conversation memory directly.'
                 suggested_actions = [
                     'Summarize the most recent user turns first.',
                     'Reuse remembered names, roles, and ongoing topics only when they appear in recent session memory.',
-                    'Say clearly when a requested detail is not present in current session memory.',
                 ]
             else:
-                answer_goal = 'State memory limits plainly and do not pretend to remember missing details.'
+                answer_goal = 'Answer directly from the currently available memory context.'
                 suggested_actions = [
                     'Say only what is currently remembered.',
-                    'Say clearly when memory is insufficient.',
                 ]
         elif intent == 'open_information_request':
-            response_mode = 'direct_answer_with_uncertainty'
-            answer_goal = 'If information is insufficient, state the boundary first and answer only within confirmed scope.'
+            response_mode = 'direct_answer'
+            answer_goal = 'Answer the user directly from the currently available context.'
             suggested_actions = [
-                'Answer only within the available evidence.',
-                'Prefer boundaries over speculation when details are missing.',
+                'Answer the main request first.',
+                'Keep the response concrete and readable.',
             ]
 
         if conclusion.detected_conflicts:
@@ -82,22 +80,14 @@ class ActionLayerBuilder:
             do_not_claim.append('Do not imply the system remembers specific content when no activated concepts support it.')
         if search_error:
             do_not_claim.append('Do not state facts that were not confirmed after a search failure.')
-            suggested_actions.append('Say clearly that some details remain unknown because search confirmation failed.')
         if search_required and search_attempted and search_result_count == 0 and not search_error:
-            response_mode = 'structured_explanation'
-            answer_goal = 'State first that search was needed but no confirmable evidence was found, and do not replace missing evidence with guesses.'
             do_not_claim.append('Do not present structural differences or performance differences as confirmed when no supporting evidence was found.')
-            suggested_actions.append('Say clearly that confirmable external evidence was not found.')
         if missing_terms:
             joined = ', '.join(missing_terms)
             do_not_claim.append(f'Do not present these entities as confirmed without evidence: {joined}')
-            suggested_actions.append('Separate grounded entities from still-unconfirmed entities.')
         if missing_aspects:
             joined = ', '.join(missing_aspects)
             do_not_claim.append(f'Do not present these aspects as confirmed without evidence: {joined}')
-            suggested_actions.append('Do not infer unconfirmed aspects; mark them as unresolved.')
-        if grounded_terms and missing_terms:
-            answer_goal = 'Summarize grounded entities first, then mark the unresolved entities without turning them into facts.'
         if no_evidence_found and not search_error:
             do_not_claim.append('Do not imply that missing evidence was actually confirmed.')
         if topic_continuity == 'continued_topic':
