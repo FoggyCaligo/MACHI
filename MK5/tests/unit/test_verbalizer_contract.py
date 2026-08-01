@@ -2,13 +2,25 @@ from __future__ import annotations
 
 from core.entities.conclusion import CoreConclusion
 from core.verbalization.action_layer_builder import ActionLayerBuilder
-from core.verbalization.meaning_preserver import MeaningPreserver
+from core.verbalization.meaning_preserver import MeaningPreserver, MeaningPreservationResult
 from core.verbalization.ollama_verbalizer import OllamaVerbalizer
 from core.verbalization.template_verbalizer import (
     TemplateVerbalizer,
     TemplateVerbalizerDisabledError,
 )
 from core.verbalization.verbalizer import Verbalizer
+
+
+class StubMeaningPreserver(MeaningPreserver):
+    def evaluate(self, *, conclusion, action_layer, user_response: str) -> MeaningPreservationResult:
+        return MeaningPreservationResult(
+            preserved=False,
+            severity='warn',
+            recommended_action='replace',
+            violations=['internal_fallback_candidate'],
+            safe_response='INTERNAL SAFE RESPONSE',
+            reason='stubbed replacement request',
+        )
 
 
 def _sample_conclusion() -> CoreConclusion:
@@ -51,6 +63,28 @@ def test_meaning_preserver_accepts_non_search_response() -> None:
     )
     assert result.preserved is True
     assert result.recommended_action == 'accept'
+
+
+def test_verbalizer_blocks_replacement_fallback_from_becoming_user_response() -> None:
+    verbalizer = Verbalizer(
+        ollama_verbalizer=type(
+            'StubOllama',
+            (),
+            {
+                'verbalize': lambda self, *, model_name, conclusion, action_layer: 'USER VISIBLE ANSWER',
+            },
+        )(),
+        meaning_preserver=StubMeaningPreserver(),
+    )
+
+    result = verbalizer.verbalize(_sample_conclusion(), model_name='gemma3:4b')
+
+    assert result.user_response == ''
+    assert result.used_llm is False
+    assert result.llm_error == 'meaning_preserver_blocked:replace_disabled'
+    assert result.llm_error_code == 'preservation_replace_blocked'
+    assert result.preservation_action == 'block'
+    assert 'internal_fallback_candidate' in (result.preservation_violations or [])
 
 
 def test_action_layer_builder_marks_search_as_already_attempted() -> None:

@@ -74,9 +74,20 @@ class Verbalizer:
                 action_layer=derived_action,
                 user_response=user_response,
             )
-            final_response = preservation.safe_response if preservation.recommended_action == 'replace' else user_response
+            if preservation.recommended_action == 'replace':
+                return VerbalizationResult(
+                    user_response='',
+                    internal_explanation=internal_explanation,
+                    derived_action=derived_action,
+                    used_llm=False,
+                    llm_error='meaning_preserver_blocked:replace_disabled',
+                    llm_error_code='preservation_replace_blocked',
+                    preservation_reason='meaning preserver requested replacement but internal fallback responses are disabled',
+                    preservation_action='block',
+                    preservation_violations=list(preservation.violations),
+                )
             return VerbalizationResult(
-                user_response=final_response,
+                user_response=user_response,
                 internal_explanation=internal_explanation,
                 derived_action=derived_action,
                 used_llm=True,

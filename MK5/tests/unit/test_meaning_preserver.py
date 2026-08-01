@@ -23,7 +23,7 @@ def _conclusion() -> CoreConclusion:
     )
 
 
-def test_meaning_preserver_replaces_response_when_no_evidence_found() -> None:
+def test_meaning_preserver_accepts_response_when_no_evidence_found_and_replace_is_disabled() -> None:
     conclusion = _conclusion()
     conclusion.metadata['search_context'] = {
         'need_search': True,
@@ -42,8 +42,10 @@ def test_meaning_preserver_replaces_response_when_no_evidence_found() -> None:
     )
 
     assert result.preserved is False
-    assert result.recommended_action == 'replace'
+    assert result.recommended_action == 'accept'
     assert 'no_evidence_found' in result.violations
+    assert result.safe_response == ''
+    return
     assert '외부 검색을 시도했지만' in result.safe_response
 
 
@@ -63,6 +65,8 @@ def test_verbalizer_routes_llm_response_through_meaning_preserver() -> None:
 
     assert result.used_llm is True
     assert result.llm_error is None
-    assert result.preservation_action == 'replace'
+    assert result.preservation_action == 'accept'
     assert 'no_evidence_found' in (result.preservation_violations or [])
+    assert result.user_response == 'Confident unsupported answer.'
+    return
     assert '외부 검색을 시도했지만' in result.user_response
