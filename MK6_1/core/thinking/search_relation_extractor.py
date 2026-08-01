@@ -12,6 +12,27 @@ from ...tools.search_client import SearchResult
 
 ConnectType = Literal["flow", "neutral", "opposite", "conflict"]
 _ALLOWED_CONNECT_TYPES: set[str] = {"flow", "neutral", "opposite", "conflict"}
+_CONNECT_TYPE_ALIASES: dict[str, ConnectType] = {
+    "flow": "flow",
+    "neutral": "neutral",
+    "opposite": "opposite",
+    "conflict": "conflict",
+    "mechanism": "flow",
+    "causal": "flow",
+    "cause": "flow",
+    "effect": "flow",
+    "taxonomy": "flow",
+    "part-whole": "flow",
+    "part_whole": "flow",
+    "part_of": "flow",
+    "has_part": "flow",
+    "operational": "flow",
+    "descriptive": "neutral",
+    "association": "neutral",
+    "related": "neutral",
+    "contrast": "opposite",
+    "contradiction": "conflict",
+}
 _MAX_EVIDENCE_LEN = 280
 _MAX_SNIPPET_LEN = max(80, config.SEARCH_RELATION_EXTRACTOR_MAX_SNIPPET_CHARS)
 _MAX_SEARCH_ITEMS = max(1, config.SEARCH_RELATION_EXTRACTOR_MAX_ITEMS)
@@ -327,9 +348,9 @@ def _validate_relations(payload: dict) -> list[RelationCandidate]:
         subject = _required_text(item, "subject", idx)
         predicate = _required_text(item, "predicate", idx)
         obj = _required_text(item, "object", idx)
-        connect_type = _required_text(item, "connect_type", idx)
-        if connect_type not in _ALLOWED_CONNECT_TYPES:
-            raise RuntimeError(f"relation[{idx}].connect_type invalid: {connect_type!r}")
+        connect_type = _normalize_connect_type(_required_text(item, "connect_type", idx))
+        if connect_type is None:
+            raise RuntimeError(f"relation[{idx}].connect_type invalid: {item.get('connect_type')!r}")
 
         confidence_raw = item.get("confidence")
         if not isinstance(confidence_raw, (int, float)):
@@ -392,3 +413,8 @@ def _optional_text(value: object) -> str | None:
         raise RuntimeError("optional source field must be string or null")
     text = value.strip()
     return text or None
+
+
+def _normalize_connect_type(value: str) -> ConnectType | None:
+    normalized = value.strip().lower().replace(" ", "_")
+    return _CONNECT_TYPE_ALIASES.get(normalized)

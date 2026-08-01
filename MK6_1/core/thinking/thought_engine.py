@@ -1271,13 +1271,17 @@ class ThoughtEngine:
             self._focus_hashes_from_translated(tg, translated),
             limit=6,
         )
-        relation_candidates = await extract_relation_candidates(
-            user_input=user_input,
-            query=query,
-            search_results=search_results,
-            seed_concepts=seed_concepts,
-            model=model,
-        )
+        try:
+            relation_candidates = await extract_relation_candidates(
+                user_input=user_input,
+                query=query,
+                search_results=search_results,
+                seed_concepts=seed_concepts,
+                model=model,
+            )
+        except RuntimeError as exc:
+            print(f"[search_relation_extractor] degraded_to_empty query={query!r} reason={exc}")
+            relation_candidates = []
         _tr = time.perf_counter()
         touched_hashes = await self._apply_search_relations(
             tg,
@@ -1360,13 +1364,17 @@ class ThoughtEngine:
             _t("ingest_slot", _ti)
 
             if search_results:
-                relation_candidates = await extract_relation_candidates(
-                    user_input=user_input,
-                    query=query,
-                    search_results=search_results,
-                    seed_concepts=seed_concepts,
-                    model=model,
-                )
+                try:
+                    relation_candidates = await extract_relation_candidates(
+                        user_input=user_input,
+                        query=query,
+                        search_results=search_results,
+                        seed_concepts=seed_concepts,
+                        model=model,
+                    )
+                except RuntimeError as exc:
+                    print(f"[search_relation_extractor] degraded_to_empty query={query!r} reason={exc}")
+                    relation_candidates = []
                 relation_candidate_count += len(relation_candidates)
                 _tr = time.perf_counter()
                 touched_hashes = await self._apply_search_relations(

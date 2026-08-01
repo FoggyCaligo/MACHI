@@ -130,6 +130,36 @@ class SearchRelationExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(captured_kwargs["response_format"])
         self.assertEqual(captured_kwargs["think"], False)
 
+    async def test_extract_relation_candidates_normalizes_mechanism_to_flow(self) -> None:
+        async def fake_llm_chat(_system: str, _user: str, _model: str | None, **_kwargs: Any) -> str:
+            return (
+                '{"relations": ['
+                '{"subject":"그래프구조","predicate":"supports","object":"장기기억","connect_type":"mechanism",'
+                '"confidence":0.81,"evidence":"Graph structure supports long-term memory.",'
+                '"source_title":"Example","source_url":"https://example.org"}'
+                "]}"
+            )
+
+        candidates = await extract_relation_candidates(
+            user_input="그래프구조로 장기기억을 만드는 프로젝트야",
+            query="그래프구조",
+            search_results=[
+                SearchResult(
+                    query="그래프구조",
+                    source="ddg",
+                    title="Example",
+                    url="https://example.org",
+                    snippet="Graph structure supports long-term memory.",
+                    rank=1,
+                )
+            ],
+            seed_concepts=["그래프구조", "장기기억"],
+            llm_chat_fn=fake_llm_chat,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].connect_type, "flow")
+
 
 if __name__ == "__main__":
     unittest.main()

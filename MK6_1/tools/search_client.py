@@ -18,7 +18,7 @@ _WIKI_SEARCH_URL = "https://{lang}.wikipedia.org/w/api.php"
 _WIKI_SUMMARY_URL = "https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}"
 _WIKI_PAGE_URL = "https://{lang}.wikipedia.org/wiki/{title}"
 _HTTP_HEADERS = {
-    "User-Agent": "MK6_1/0.1 (local-dev)",
+    "User-Agent": "MK6_1/0.1 SearchClient (Windows; local development; +https://wikipedia.org)",
     "Accept": "application/json",
     "Accept-Language": "ko,en;q=0.8",
 }
@@ -191,12 +191,13 @@ async def search_structured(query: str) -> SearchBundle:
             ))
 
     if errors:
-        details = "; ".join(f"{name}:{type(err).__name__}" for name, err in errors)
+        details = "; ".join(f"{name}:{_error_summary(err)}" for name, err in errors)
         print(f"[search] partial_source_failure query={query!r} details={details}")
 
     if not combined_results and errors:
-        detail_text = "; ".join(f"{name}:{err}" for name, err in errors)
-        raise RuntimeError(f"search failed for query={query!r}: {detail_text}") from errors[0][1]
+        detail_text = "; ".join(f"{name}:{_error_summary(err)}" for name, err in errors)
+        print(f"[search] all_sources_failed query={query!r} details={detail_text}")
+        return SearchBundle(query=query, results=[])
 
     return SearchBundle(query=query, results=combined_results)
 
@@ -204,3 +205,10 @@ async def search_structured(query: str) -> SearchBundle:
 async def search(query: str) -> str | None:
     bundle = await search_structured(query)
     return _combine(bundle.results)
+
+
+def _error_summary(err: Exception) -> str:
+    message = str(err).strip()
+    if not message:
+        return type(err).__name__
+    return f"{type(err).__name__}: {message}"
