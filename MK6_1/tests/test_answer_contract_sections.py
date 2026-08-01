@@ -132,6 +132,55 @@ class AnswerContractSectionsTest(unittest.TestCase):
         self.assertEqual(contract.conclusion_graph.focus.primary, ["소개"])
         self.assertEqual(contract.search_graph.focus.primary, ["스물여섯이야"])
 
+    def test_build_answer_contract_hides_empty_conclusion_graph(self) -> None:
+        now = datetime.now(timezone.utc)
+        input_node = Node(
+            address_hash="input-hash",
+            node_kind="concept",
+            formation_source="ingest",
+            labels=["input"],
+            created_at=now,
+            updated_at=now,
+        )
+
+        translated = TranslatedGraph(
+            nodes=[
+                ConceptPointer(
+                    address_hash=input_node.address_hash,
+                    local_subgraph=LocalSubgraph(center_hash=input_node.address_hash, nodes=[input_node], edges=[]),
+                    importance=1.0,
+                    resolution_source="exact_match",
+                )
+            ],
+            edges=[],
+            source="input",
+        )
+
+        empty_conclusion_graph = ConclusionGraph(
+            graph_id="g-empty",
+            input_hashes={input_node.address_hash},
+            goal_hashes={"goal"},
+            node_hashes={input_node.address_hash},
+            edge_ids=set(),
+            core_hashes={input_node.address_hash},
+        )
+        conclusion = ConclusionView(
+            nodes=[input_node],
+            edges=[],
+            goal_hash="goal",
+            had_empty_slots=False,
+            loop_count=1,
+            user_input="input",
+            key_hashes={input_node.address_hash},
+            selected_graphs=[empty_conclusion_graph],
+        )
+
+        contract = build_answer_contract(conclusion, translated)
+
+        self.assertEqual(contract.conclusion_graph.focus.primary, [])
+        self.assertEqual(contract.conclusion_graph.focus.supporting, [])
+        self.assertEqual(contract.conclusion_graph.frames, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,4 @@
-"""SurfaceVariantEvidence — 표면형 차이를 병합 근거 edge로 축적한다.
-
-이 모듈은 문자열 포함/접미사/이름 규칙으로 surface를 분해하지 않는다.
-현재 활성화된 그래프 안에서 embedding 유사도와 공유 이웃이 충분한 노드 쌍만
-보수적인 병합 후보 근거로 연결한다.
-"""
+"""SurfaceVariantEvidence - accumulate language-neutral alias evidence edges."""
 from __future__ import annotations
 
 import uuid
@@ -11,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import combinations
 
-from ... import config
 from ..entities.edge import Edge
 from ..entities.node import Node
 from .concept_differentiation import composite_score
@@ -33,17 +27,7 @@ class SurfaceVariantEvidence:
 
 
 def run(tg: TempThoughtGraph) -> list[SurfaceVariantEvidence]:
-    """현재 사고 그래프에서 surface variant 후보 근거 edge를 누적한다.
-
-    후보 조건은 문자열 형태가 아니라 구조 신호다.
-    - 두 노드 모두 embedding을 가진 활성 concept이어야 한다.
-    - 추상 노드와 goal node는 제외한다.
-    - composite score가 충분히 높아야 한다.
-    - 공유 이웃이 최소 1개 이상 있어야 한다.
-
-    이 단계는 merge를 직접 수행하지 않는다. 중립 concept edge/support를 누적해
-    ConceptMerge가 이후 안정성, 직접 지지, 공유 이웃 조건으로 병합 여부를 판단한다.
-    """
+    """Accumulate alias evidence from embedding similarity and shared structure."""
     nodes = [
         n for n in tg.all_nodes()
         if n.embedding is not None
@@ -75,16 +59,23 @@ def run(tg: TempThoughtGraph) -> list[SurfaceVariantEvidence]:
         if score < SURFACE_VARIANT_SCORE_THRESHOLD:
             continue
 
-        if _has_existing_support_edge(tg, hash_a, hash_b):
-            continue
+        edge = _existing_support_edge(tg, hash_a, hash_b)
+        if edge is None:
+            edge = _make_support_edge(
+                node_a,
+                node_b,
+                score=score,
+                shared_neighbor_count=len(shared_neighbors),
+            )
+            tg.add_edge(edge)
+        else:
+            _accumulate_support_edge(
+                tg,
+                edge,
+                score=score,
+                shared_neighbor_count=len(shared_neighbors),
+            )
 
-        edge = _make_support_edge(
-            node_a,
-            node_b,
-            score=score,
-            shared_neighbor_count=len(shared_neighbors),
-        )
-        tg.add_edge(edge)
         results.append(SurfaceVariantEvidence(
             source_hash=hash_a,
             target_hash=hash_b,
@@ -95,7 +86,7 @@ def run(tg: TempThoughtGraph) -> list[SurfaceVariantEvidence]:
     return results
 
 
-def _has_existing_support_edge(tg: TempThoughtGraph, hash_a: str, hash_b: str) -> bool:
+def _existing_support_edge(tg: TempThoughtGraph, hash_a: str, hash_b: str) -> Edge | None:
     for edge in tg.get_edges_for_node(hash_a):
         if {edge.source_hash, edge.target_hash} != {hash_a, hash_b}:
             continue
@@ -104,8 +95,35 @@ def _has_existing_support_edge(tg: TempThoughtGraph, hash_a: str, hash_b: str) -
         if edge.connect_type == "conflict":
             continue
         if edge.proposed_connect_type == "surface_variant_evidence":
-            return True
-    return False
+            return edge
+    return None
+
+
+def _accumulate_support_edge(
+    tg: TempThoughtGraph,
+    edge: Edge,
+    *,
+    score: float,
+    shared_neighbor_count: int,
+) -> None:
+    payload = dict(edge.payload)
+    evidence_types = set(payload.get("evidence_types") or [])
+    evidence_types.update({"embedding_similarity", "shared_structure"})
+    payload["alias_evidence"] = True
+    payload["evidence_types"] = sorted(evidence_types)
+    payload["composite_score"] = max(float(payload.get("composite_score") or 0.0), score)
+    payload["shared_neighbor_count"] = max(int(payload.get("shared_neighbor_count") or 0), shared_neighbor_count)
+    payload["observation_count"] = int(payload.get("observation_count") or max(1, edge.support_count)) + 1
+    payload["alias_confidence"] = min(
+        1.0,
+        max(float(payload.get("alias_confidence") or 0.0), score * 0.75) + 0.08,
+    )
+    edge.payload = payload
+    edge.support_count += 1
+    edge.edge_weight = min(0.9, max(edge.edge_weight, SURFACE_VARIANT_EDGE_WEIGHT) + 0.08)
+    edge.trust_score = min(0.95, max(edge.trust_score, SURFACE_VARIANT_TRUST_SCORE, score * 0.5))
+    edge.touch()
+    tg.update_edge(edge)
 
 
 def _make_support_edge(
@@ -127,10 +145,14 @@ def _make_support_edge(
         support_count=1,
         provenance_source="differentiation",
         proposed_connect_type="surface_variant_evidence",
-        proposal_reason="embedding/shared-neighbor evidence for possible surface variant merge",
+        proposal_reason="language-neutral alias evidence from embedding/shared-neighbor overlap",
         payload={
+            "alias_evidence": True,
+            "evidence_types": ["embedding_similarity", "shared_structure"],
             "composite_score": score,
             "shared_neighbor_count": shared_neighbor_count,
+            "observation_count": 1,
+            "alias_confidence": score * 0.75,
         },
         is_temporary=False,
         created_at=now,

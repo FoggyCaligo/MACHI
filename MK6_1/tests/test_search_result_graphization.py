@@ -124,6 +124,56 @@ class SearchResultGraphizationTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 close_db(conn)
 
+    async def test_fill_empty_slots_uses_per_slot_queries_instead_of_combined_sentence_query(self) -> None:
+        queries: list[str] = []
+
+        async def fake_embed(text: str) -> list[float]:
+            return [1.0, 0.0, 0.0]
+
+        async def fake_search(query: str) -> SearchBundle:
+            queries.append(query)
+            return SearchBundle(query=query, results=[])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = open_db(str(Path(tmpdir) / "test.db"))
+            try:
+                goal = Node(
+                    address_hash="goal-test-node",
+                    node_kind="goal",
+                    formation_source="system_policy",
+                    labels=["Goal"],
+                )
+                insert_node(conn, goal)
+
+                tg = TempThoughtGraph()
+                tg.set_goal_node(goal)
+                tg._empty_slots = [
+                    EmptySlot(concept_hint="프로젝트야", importance=0.9),
+                    EmptySlot(concept_hint="개인적", importance=0.8),
+                    EmptySlot(concept_hint="아니", importance=0.7),
+                ]
+
+                engine = ThoughtEngine(
+                    conn=conn,
+                    embed_fn=fake_embed,
+                    search_fn=fake_search,
+                    goal_node=goal,
+                )
+
+                with patch(
+                    "MK6_1.core.thinking.thought_engine.extract_relation_candidates",
+                    return_value=[],
+                ):
+                    await engine._fill_empty_slots(
+                        tg,
+                        user_input="개인적 프로젝트야 아니",
+                        searched_queries=set(),
+                    )
+
+                self.assertEqual(queries, ["프로젝트", "개인적"])
+            finally:
+                close_db(conn)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,14 +1,12 @@
-"""ConceptMerge — 충분히 안정적인 근거가 있는 노드만 보수적으로 통합."""
+"""Conservatively merge concept nodes only when evidence has accumulated."""
 from __future__ import annotations
 
 from itertools import combinations
 
-from ... import config
 from .concept_differentiation import composite_score
 from .temp_thought_graph import TempThoughtGraph
 
 
-# 병합은 irreversible에 가까우므로 분화보다 훨씬 보수적이어야 한다.
 MERGE_THRESHOLD = 0.985
 MIN_STABILITY_FOR_MERGE = 0.65
 MIN_SHARED_NEIGHBORS_FOR_MERGE = 2
@@ -16,11 +14,7 @@ MIN_SUPPORT_FOR_MERGE = 2
 
 
 def run(tg: TempThoughtGraph) -> int:
-    """임시 사고 그래프 내 노드 쌍을 검사해 병합을 수행한다.
-
-    Returns:
-        병합된 노드 쌍의 수
-    """
+    """Inspect node pairs inside the temporary graph and merge only strong matches."""
     merge_count = 0
 
     nodes = [
@@ -37,7 +31,11 @@ def run(tg: TempThoughtGraph) -> int:
     }
 
     delta = tg.current_delta()
-    modified_hashes = set(delta.added_nodes) | set(delta.modified_nodes)
+    modified_hashes = (
+        set(delta.added_nodes)
+        | set(delta.modified_nodes)
+        | _edge_touched_hashes(tg)
+    )
     new_hashes = set(delta.added_nodes)
 
     for node_a, node_b in combinations(nodes, 2):
@@ -52,8 +50,8 @@ def run(tg: TempThoughtGraph) -> int:
 
         tg.mark_pair_checked(hash_a, hash_b)
 
-        neighbors_a = neighbor_cache[hash_a]
-        neighbors_b = neighbor_cache[hash_b]
+        neighbors_a = neighbor_cache[hash_a] - {hash_b}
+        neighbors_b = neighbor_cache[hash_b] - {hash_a}
         if not _is_merge_allowed(tg, node_a, node_b, neighbors_a, neighbors_b, new_hashes):
             continue
 
@@ -74,12 +72,15 @@ def run(tg: TempThoughtGraph) -> int:
     return merge_count
 
 
-def _is_merge_allowed(tg, node_a, node_b, neighbors_a: set[str], neighbors_b: set[str], new_hashes: set[str]) -> bool:
-    """병합 전 구조적 안전장치.
-
-    같은 턴에서 새로 생긴 약한 노드끼리는 embedding/주변 구조가 우연히 비슷해도 바로
-    병합하지 않는다. merge는 되돌리기 어렵기 때문에 안정성, 반복 지지, 공유 이웃을 요구한다.
-    """
+def _is_merge_allowed(
+    tg: TempThoughtGraph,
+    node_a,
+    node_b,
+    neighbors_a: set[str],
+    neighbors_b: set[str],
+    new_hashes: set[str],
+) -> bool:
+    """Require stability, shared structure, and repeated support before merge."""
     if node_a.address_hash in new_hashes and node_b.address_hash in new_hashes:
         return False
 
@@ -106,5 +107,37 @@ def _direct_support_count(tg: TempThoughtGraph, hash_a: str, hash_b: str) -> int
             continue
         if edge.connect_type == "conflict":
             continue
+        if edge.proposed_connect_type == "surface_variant_evidence":
+            count += _alias_evidence_support(edge)
+            continue
         count += max(1, edge.support_count)
     return count
+
+
+def _edge_touched_hashes(tg: TempThoughtGraph) -> set[str]:
+    delta = tg.current_delta()
+    edge_ids = set(delta.added_edges) | set(delta.modified_edges)
+    touched: set[str] = set()
+    for edge_id in edge_ids:
+        edge = tg.get_edge(edge_id)
+        if edge is None:
+            continue
+        touched.add(edge.source_hash)
+        touched.add(edge.target_hash)
+    return touched
+
+
+def _alias_evidence_support(edge) -> int:
+    payload = edge.payload or {}
+    observation_count = int(payload.get("observation_count") or max(1, edge.support_count))
+    shared_neighbor_count = int(payload.get("shared_neighbor_count") or 0)
+    alias_confidence = float(payload.get("alias_confidence") or 0.0)
+
+    support = 1
+    if shared_neighbor_count >= 2 and alias_confidence >= 0.7:
+        support += 1
+    if observation_count >= 2:
+        support += 1
+    if observation_count >= 3:
+        support += 1
+    return support

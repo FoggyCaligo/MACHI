@@ -232,7 +232,7 @@ def _build_conclusion_graph_section(
     if not graphs:
         return SurfaceGraphSection()
 
-    primary_hashes = _rank_selected_hashes(
+    ranked_primary_hashes = _rank_selected_hashes(
         graphs,
         node_map,
         node_label,
@@ -240,6 +240,22 @@ def _build_conclusion_graph_section(
         display_degree,
         limit=5,
     )
+    frames = _build_conclusion_frames(
+        graphs,
+        ranked_primary_hashes,
+        edge_by_id,
+        node_label,
+        is_verbalizable_hash,
+        limit_per_node=4,
+    )
+    if not _has_informative_conclusion_frames(frames):
+        return SurfaceGraphSection()
+
+    frame_hashes = _frame_scoped_hashes(frames, node_map)
+    primary_hashes = [
+        address_hash for address_hash in ranked_primary_hashes
+        if address_hash in frame_hashes
+    ]
     supporting_hashes = _rank_supporting_hashes(
         graphs,
         primary_hashes,
@@ -249,14 +265,7 @@ def _build_conclusion_graph_section(
         display_degree,
         limit=7,
     )
-    frames = _build_conclusion_frames(
-        graphs,
-        primary_hashes,
-        edge_by_id,
-        node_label,
-        is_verbalizable_hash,
-        limit_per_node=4,
-    )
+    supporting_hashes = [address_hash for address_hash in supporting_hashes if address_hash in frame_hashes]
     return SurfaceGraphSection(
         speaker="system",
         usage="Reasoned conclusion graph selected by the thinking loop. Prefer this over raw input or search when forming the answer.",
@@ -651,3 +660,22 @@ def _dedupe_frames(frames: list[SurfaceNodeFrame]) -> list[SurfaceNodeFrame]:
         seen_sources.add(source_key)
         deduped.append(SurfaceNodeFrame(source=frame.source, role=frame.role, edges=unique_edges))
     return deduped
+
+
+def _has_informative_conclusion_frames(frames: list[SurfaceNodeFrame]) -> bool:
+    return any(frame.edges for frame in frames)
+
+
+def _frame_scoped_hashes(
+    frames: list[SurfaceNodeFrame],
+    node_map: dict[str, "Node"],
+) -> set[str]:
+    labels = {frame.source for frame in frames}
+    for frame in frames:
+        labels.update(edge.target for edge in frame.edges)
+
+    hashes: set[str] = set()
+    for address_hash, node in node_map.items():
+        if node.labels and node.labels[0] in labels:
+            hashes.add(address_hash)
+    return hashes

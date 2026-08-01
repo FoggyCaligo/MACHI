@@ -59,6 +59,23 @@ from .temp_thought_graph import TempThoughtGraph
 EmbedFn = Callable[[str], Awaitable[list[float]]]
 SearchFn = Callable[[str], Awaitable[SearchBundle]]
 PATCH_CONVERGENCE_OVERLAP_RATIO = 0.5
+_SEARCH_QUERY_STOPWORDS: frozenset[str] = frozenset({
+    "아니",
+    "아니다",
+    "있",
+    "있다",
+    "있고",
+    "있는",
+    "있다고",
+})
+_SEARCH_QUERY_SUFFIXES: tuple[str, ...] = (
+    "입니다",
+    "이었다",
+    "이야",
+    "이다",
+    "라고",
+    "야",
+)
 
 
 def _t(label: str, start: float) -> float:
@@ -277,23 +294,36 @@ def _select_search_slots(slots: list[EmptySlot]) -> list[EmptySlot]:
     return selected
 
 
-def _search_query_from_slots(
+def _slot_query_text(slot: EmptySlot) -> str | None:
+    normalized = normalize_text(slot.concept_hint.strip())
+    if not normalized:
+        return None
+    refined = normalized
+    for suffix in _SEARCH_QUERY_SUFFIXES:
+        if refined.endswith(suffix) and len(refined) > len(suffix) + 1:
+            refined = refined[: -len(suffix)].strip()
+            break
+    if not refined or refined in _SEARCH_QUERY_STOPWORDS:
+        return None
+    return refined
+
+
+def _search_queries_from_slots(
     slots: list[EmptySlot],
     user_input: str | None,
-) -> tuple[str | None, list[EmptySlot]]:
+) -> list[tuple[str, EmptySlot]]:
     selected = _select_search_slots(slots)
     if not selected:
-        return None, []
-    combined_parts: list[str] = []
+        return []
+    queries: list[tuple[str, EmptySlot]] = []
     seen: set[str] = set()
     for slot in selected:
-        normalized = normalize_text(slot.concept_hint.strip())
-        if not normalized or normalized in seen:
+        query = _slot_query_text(slot)
+        if not query or query in seen:
             continue
-        seen.add(normalized)
-        combined_parts.append(normalized)
-    combined = " ".join(combined_parts).strip()
-    return (combined or None), selected
+        seen.add(query)
+        queries.append((query, slot))
+    return queries
 
 
 class ThoughtEngine:
@@ -1234,15 +1264,13 @@ class ThoughtEngine:
         if not slots:
             return set()
 
-        query, target_slots = _search_query_from_slots(slots, user_input)
+        slot_queries = _search_queries_from_slots(slots, user_input)
+        query_labels = [query for query, _ in slot_queries]
         print(
-            f"[think] search start  query={query!r}  slots={len(slots)} "
-            f"target_slots={len(target_slots)}"
+            f"[think] search start  queries={query_labels!r}  slots={len(slots)} "
+            f"target_slots={len(slot_queries)}"
         )
-        if not query or not target_slots:
-            return set()
-        if searched_queries is not None and query in searched_queries:
-            print(f"[think] search skip duplicate query={query!r}")
+        if not slot_queries:
             return set()
 
         async def _run_query(query_text: str) -> SearchBundle | None:
@@ -1252,23 +1280,35 @@ class ThoughtEngine:
                 print(f"[think] search_fn timeout ({config.SEARCH_TIMEOUT}s) query={query_text!r}")
                 return None
 
-        _ts = time.perf_counter()
-        search_bundle = await _run_query(query)
-        _t("search_fn", _ts)
-        if searched_queries is not None:
-            searched_queries.add(query)
-        search_results = search_bundle.results if search_bundle is not None else []
-        search_text = self._search_results_text(search_results)
-        graph_hashes = await self._graphize_search_results(
-            tg,
-            query=query,
-            search_results=search_results,
-        ) if search_results else set()
-
         ingested_nodes: list[Node] = []
         session_search_hashes: set[str] = set()
-        _ti = time.perf_counter()
-        for slot in target_slots:
+        graph_hashes: set[str] = set()
+        seed_concepts = self._seed_concept_labels(tg, concept_hashes)
+        relation_candidate_count = 0
+        search_started = 0
+
+        for query, slot in slot_queries:
+            if searched_queries is not None and query in searched_queries:
+                print(f"[think] search skip duplicate query={query!r}")
+                continue
+
+            _ts = time.perf_counter()
+            search_bundle = await _run_query(query)
+            search_started += 1
+            _t("search_fn", _ts)
+            if searched_queries is not None:
+                searched_queries.add(query)
+
+            search_results = search_bundle.results if search_bundle is not None else []
+            search_text = self._search_results_text(search_results)
+            if search_results:
+                graph_hashes |= await self._graphize_search_results(
+                    tg,
+                    query=query,
+                    search_results=search_results,
+                )
+
+            _ti = time.perf_counter()
             node, got_search = await self._ingest_slot(slot, search_text=search_text)
             if node is not None:
                 tg.fill_slot(slot, node)
@@ -1277,25 +1317,29 @@ class ThoughtEngine:
                 graph_hashes.add(node.address_hash)
                 if got_search:
                     session_search_hashes.add(node.address_hash)
-        _t(f"ingest_slots x{len(target_slots)}", _ti)
+            _t("ingest_slot", _ti)
 
-        if search_results:
-            seed_concepts = self._seed_concept_labels(tg, concept_hashes)
-            relation_candidates = await extract_relation_candidates(
-                user_input=user_input,
-                query=query,
-                search_results=search_results,
-                seed_concepts=seed_concepts,
-                model=model,
-            )
-            _tr = time.perf_counter()
-            touched_hashes = await self._apply_search_relations(
-                tg,
-                query=query,
-                relation_candidates=relation_candidates,
-            )
-            session_search_hashes |= touched_hashes
-            _t(f"search_relation_edges x{len(relation_candidates)}", _tr)
+            if search_results:
+                relation_candidates = await extract_relation_candidates(
+                    user_input=user_input,
+                    query=query,
+                    search_results=search_results,
+                    seed_concepts=seed_concepts,
+                    model=model,
+                )
+                relation_candidate_count += len(relation_candidates)
+                _tr = time.perf_counter()
+                touched_hashes = await self._apply_search_relations(
+                    tg,
+                    query=query,
+                    relation_candidates=relation_candidates,
+                )
+                session_search_hashes |= touched_hashes
+                _t(f"search_relation_edges x{len(relation_candidates)}", _tr)
+
+        print(f"[think] ingest_slots x{len(ingested_nodes)}")
+        if search_started > 0 and relation_candidate_count == 0:
+            print("[think] search_relation_edges x0")
 
         if ingested_nodes:
             now = datetime.now(timezone.utc)

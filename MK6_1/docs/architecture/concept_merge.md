@@ -1,63 +1,121 @@
-
 # ConceptMerge
 
-작성: 2026-04-23  
-상태: 구현 완료 → `core/thinking/concept_merge.py`
+Created: 2026-04-23  
+Updated: 2026-08-01  
+Status: implemented in `core/thinking/concept_merge.py`
 
----
+## Role
 
-## 역할
+`ConceptMerge` prevents long-term graph fragmentation by merging only concept pairs that
+have become strong enough to be treated as the same concept.
 
-임시 사고 그래프 내에서 유사도가 극도로 높은 개념 노드 쌍을 탐지하고, 하나로 압축하여 지식의 파편화(Fragmentation)를 방지한다.  
-분화(Differentiation)와 대칭을 이루는 지식 최적화 컴포넌트다.
+It is intentionally more conservative than `ConceptDifferentiation`.
 
----
+## Current policy
 
-## 실행 시점
+Merge is allowed only when all of the following hold:
 
-Update 루프 내에서 `ConceptDifferentiation` 직후 실행된다.
+- similarity score is at least `0.985`
+- both nodes are stable enough
+- both nodes share enough structural neighbors
+- direct support between the pair has accumulated enough evidence
+- two brand-new nodes are not merged immediately in the same fresh state
 
----
+## Similarity
 
-## 병합 판정 방식
+The merge score uses the same composite scoring family as differentiation:
 
-**유사도 임계값 (MERGE_THRESHOLD): 0.94**
+- embedding cosine similarity
+- neighborhood overlap
 
-분화 임계값(0.80)보다 훨씬 엄격한 기준을 적용하여, 실제 같은 개념의 표현 변형(동의어, 오타, 대소문자 차이 등)만 병합되도록 한다.
+During merge scoring, the candidate pair itself is excluded from each other's neighbor set.
+This avoids a support edge or alias-evidence edge artificially lowering the structural score.
 
-1.  **복합 스코어 계산:** 임베딩 유사도와 구조적 중첩도(Overlap)를 합산하여 계산한다.
-2.  **생존 노드 결정:** 두 노드 중 `stability_score`가 더 높은 노드를 본체(Survivor)로 삼고, 나머지는 비활성화 대상으로 정한다.
+## Delayed alias-merge flow
 
----
+`MK6_1` now uses a delayed merge path instead of immediate same-node attachment.
 
-## 처리 흐름
+1. separate surface forms can exist as separate nodes first
+2. `surface_variant_evidence` adds or strengthens a persistent edge between likely aliases
+3. `concept_merge` reads that accumulated evidence later
+4. only then can the two nodes merge
 
-```
-임시 사고 그래프 내 노드 쌍에 대해:
-  │
-  ▼
-① 유사도 판정
-   score >= 0.94 이면 병합 대상 확정
+This keeps early interpretation flexible and avoids over-eager collapse.
 
-  ▼
-② 엣지 재연결 (Edge Re-routing)
-   비활성화될 노드에 연결된 모든 엣지를 생존 노드로 옮김
+## `surface_variant_evidence`
 
-  ▼
-③ 임시 그래프 반영
-   비활성 노드를 TempThoughtGraph에서 제거하고 병합 매핑 기록 추가
+Alias evidence is language-neutral. It does not depend on hard-coded string heuristics.
 
-  ▼
-④ 세계그래프 커밋 (Post-Process)
-   - words 테이블 재매핑: 비활성 노드를 가리키던 단어들을 생존 노드로 이전
-   - 노드 비활성화: DB에서 해당 노드의 is_active를 0으로 변경
-```
+Current evidence sources:
 
----
+- embedding similarity
+- shared structural neighborhood
 
-## 최적화 (Incremental Checking)
+The evidence edge stores payload such as:
 
-매 루프마다 모든 쌍을 다시 계산하지 않기 위해 다음 최적화를 적용한다.
+- `alias_evidence`
+- `evidence_types`
+- `composite_score`
+- `shared_neighbor_count`
+- `observation_count`
+- `alias_confidence`
 
-- **증분 비교:** 이번 회차에서 변경된 노드가 포함된 쌍만 다시 검사한다.
-- **체크 이력 관리:** `TempThoughtGraph`에 `checked_pairs`를 유지하여 중복 연산을 방지한다.
+When the same pair is re-observed, the edge is updated instead of duplicated:
+
+- `support_count` increases
+- `observation_count` increases
+- confidence and weight can grow conservatively
+
+## Incremental re-checking
+
+Merge checking is incremental.
+
+- previously checked pairs are usually skipped
+- but if a related edge is newly added or updated, the touched pair is reconsidered
+
+This matters for alias evidence:
+
+- a pair may have been checked before
+- later, `surface_variant_evidence` can add or strengthen support
+- `concept_merge` should then re-evaluate that pair without needing a full reset
+
+## Support accounting
+
+Support is not just "any edge count".
+
+- normal persistent pair edges contribute by `support_count`
+- `surface_variant_evidence` contributes through a conservative support interpretation based on:
+  - observation count
+  - shared-neighbor count
+  - alias confidence
+
+This lets repeated language-neutral evidence matter without relying on any name-specific rule.
+
+## Execution point
+
+`ConceptMerge` runs in the update loop after structural evidence has been added.
+
+In practice it complements:
+
+- `ConceptDifferentiation`
+- search-result ingestion
+- alias-evidence accumulation
+
+## Outcome
+
+When a merge happens:
+
+1. a survivor node is chosen by stability
+2. the deprecated node's edges are rewired to the survivor
+3. the deprecated node is removed from the temporary graph
+4. merge mappings are recorded for later commit handling
+
+## Design intent
+
+The intended behavior is:
+
+- do not force two forms into one node immediately
+- allow separate concepts to stay separate early
+- merge only after the graph itself has accumulated enough evidence
+
+That matches the "separate first, merge later" direction for synonym / alias handling.
