@@ -30,7 +30,7 @@ class ActionLayerBuilder:
         recent_memory_count = int(metadata.get('recent_memory_count') or len(recent_memory_messages))
 
         response_mode = 'direct_answer'
-        answer_goal = 'Answer the user directly and concisely from the currently available context.'
+        answer_goal = 'Answer the user directly from the currently available context.'
         suggested_actions: list[str] = []
         do_not_claim = [
             'Do not present unverified details as confirmed facts.',
@@ -41,17 +41,17 @@ class ActionLayerBuilder:
 
         if intent == 'structure_review' or conflict_count > 0 or revision_count > 0:
             response_mode = 'structured_explanation'
-            answer_goal = 'Explain the structure directly and compactly.'
+            answer_goal = 'Explain the structure directly and clearly.'
             suggested_actions = [
                 'State the main comparison axis first.',
-                'Keep the answer compact and concrete.',
+                'Keep the answer concrete and readable.',
             ]
         elif intent == 'relation_synthesis_request' or relation_count >= 2 or activated_count >= 3:
             response_mode = 'structured_explanation'
-            answer_goal = 'Summarize the directly relevant relations and reasons in a compact way.'
+            answer_goal = 'Summarize the directly relevant relations and reasons clearly.'
             suggested_actions = [
                 'Lead with the main relation.',
-                'Use one or two short sentences for the rationale when needed.',
+                'Add the rationale when it helps the user understand the answer.',
             ]
         elif intent == 'memory_probe':
             response_mode = 'structured_explanation'
