@@ -191,6 +191,20 @@ def test_intent_manager_shifts_to_structure_review_when_previous_path_breaks() -
     assert snapshot.topic_continuity == 'shifted_topic'
 
 
+def test_intent_manager_does_not_default_to_memory_probe_without_previous_snapshot() -> None:
+    manager = IntentManager()
+    uow = FakeUOW(chat_messages=FakeChatMessages(), graph_events=FakeGraphEvents())
+    snapshot = manager.resolve(
+        uow,
+        request=Request(session_id='s1', message_id=30, message_text='msg'),
+        thought_view=_view(pointers=1, edges=0, seed_ids=(1,), node_ids=(1,)),
+        contradiction_signals=[],
+        trust_updates=[],
+        revision_actions=[],
+    )
+    assert snapshot.snapshot_intent != 'memory_probe'
+
+
 def test_conflict_connect_type_triggers_contradiction_without_contradicts_semantics() -> None:
     from core.entities.edge import Edge
     from core.entities.thought_view import ThoughtView

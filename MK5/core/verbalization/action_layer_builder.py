@@ -30,7 +30,7 @@ class ActionLayerBuilder:
         recent_memory_count = int(metadata.get('recent_memory_count') or len(recent_memory_messages))
 
         response_mode = 'direct_answer'
-        answer_goal = 'Answer the user directly from the currently available context.'
+        answer_goal = 'Answer the user directly from the currently available context with enough detail to be useful.'
         suggested_actions: list[str] = []
         do_not_claim = [
             'Do not present unverified details as confirmed facts.',
@@ -41,14 +41,14 @@ class ActionLayerBuilder:
 
         if intent == 'structure_review' or conflict_count > 0 or revision_count > 0:
             response_mode = 'structured_explanation'
-            answer_goal = 'Explain the structure directly and clearly.'
+            answer_goal = 'Explain the structure directly and clearly with enough detail to be useful.'
             suggested_actions = [
                 'State the main comparison axis first.',
                 'Keep the answer concrete and readable.',
             ]
         elif intent == 'relation_synthesis_request' or relation_count >= 2 or activated_count >= 3:
             response_mode = 'structured_explanation'
-            answer_goal = 'Summarize the directly relevant relations and reasons clearly.'
+            answer_goal = 'Summarize the directly relevant relations and reasons clearly with enough detail to be useful.'
             suggested_actions = [
                 'Lead with the main relation.',
                 'Add the rationale when it helps the user understand the answer.',
@@ -56,19 +56,19 @@ class ActionLayerBuilder:
         elif intent == 'memory_probe':
             response_mode = 'structured_explanation'
             if recent_memory_count > 0:
-                answer_goal = 'Answer from recent conversation memory directly.'
+                answer_goal = 'Answer naturally using recent conversation memory when it helps the user.'
                 suggested_actions = [
-                    'Summarize the most recent user turns first.',
                     'Reuse remembered names, roles, and ongoing topics only when they appear in recent session memory.',
+                    'Answer in a natural way instead of mirroring the memory lines too literally.',
                 ]
             else:
-                answer_goal = 'Answer directly from the currently available memory context.'
+                answer_goal = 'Answer directly from the currently available memory context with enough detail to be useful.'
                 suggested_actions = [
                     'Say only what is currently remembered.',
                 ]
         elif intent == 'open_information_request':
             response_mode = 'direct_answer'
-            answer_goal = 'Answer the user directly from the currently available context.'
+            answer_goal = 'Answer the user directly from the currently available context with enough detail to be useful.'
             suggested_actions = [
                 'Answer the main request first.',
                 'Keep the response concrete and readable.',

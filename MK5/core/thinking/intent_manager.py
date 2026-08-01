@@ -205,7 +205,8 @@ class IntentManager:
         if features['graph_sparse'] and not features['pattern_rich']:
             scores['open_information_request'] += 0.06
 
-        if features['pointer_backed'] and features['graph_sparse']:
+        previous_name = self._previous_intent_name(features['previous_snapshot_meta'])
+        if previous_name and features['pointer_backed'] and features['graph_sparse']:
             scores['memory_probe'] += 0.42
         if features['overlap_count'] > 0:
             scores['memory_probe'] += min(features['overlap_count'] * 0.08, 0.16)
@@ -224,7 +225,6 @@ class IntentManager:
         if not features['contradiction_count']:
             scores['graph_grounded_reasoning'] += 0.06
 
-        previous_name = self._previous_intent_name(features['previous_snapshot_meta'])
         if previous_name in scores and features['overlap_count'] > 0 and not features['contradiction_count']:
             scores[previous_name] += 0.12
         if previous_name in scores and features['topic_overlap'] > 0 and not features['contradiction_count']:
@@ -251,7 +251,7 @@ class IntentManager:
         if topic_continuity in ('new_topic', 'shifted_topic'):
             if features['graph_sparse']:
                 return 'open_information_request', True, f'topic_shift_intent_reset:new_info_needed'
-            if features['pointer_backed']:
+            if previous_name is not None and features['pointer_backed']:
                 return 'memory_probe', True, f'topic_shift_intent_reset:memory_probe'
             return best_name, True, f'topic_shift_intent_reset'
 

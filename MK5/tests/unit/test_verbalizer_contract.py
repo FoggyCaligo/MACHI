@@ -140,5 +140,5 @@ def test_action_layer_builder_prefers_recent_memory_for_memory_probe() -> None:
     )
     action = ActionLayerBuilder().build(conclusion)
     assert action.response_mode == 'structured_explanation'
-    assert action.answer_goal == 'Answer from recent conversation memory directly.'
+    assert action.answer_goal == 'Answer naturally using recent conversation memory when it helps the user.'
     assert action.metadata['recent_memory_count'] == 3
