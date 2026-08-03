@@ -81,10 +81,31 @@ def test_verbalizer_blocks_replacement_fallback_from_becoming_user_response() ->
 
     assert result.user_response == ''
     assert result.used_llm is False
-    assert result.llm_error == 'meaning_preserver_blocked:replace_disabled'
+    assert result.llm_error == 'meaning_preserver_blocked:replace'
     assert result.llm_error_code == 'preservation_replace_blocked'
     assert result.preservation_action == 'block'
     assert 'internal_fallback_candidate' in (result.preservation_violations or [])
+
+
+def test_meaning_preserver_blocks_ungrounded_search_error_response() -> None:
+    conclusion = _sample_conclusion()
+    conclusion.metadata['search_context'] = {
+        'need_search': True,
+        'attempted': True,
+        'result_count': 0,
+        'error': 'question slot planner returned no usable entities',
+    }
+    action = ActionLayerBuilder().build(conclusion)
+
+    result = MeaningPreserver().evaluate(
+        conclusion=conclusion,
+        action_layer=action,
+        user_response='글록은 1960년대 독일에서 개발되었습니다.',
+    )
+
+    assert result.preserved is False
+    assert result.recommended_action == 'block'
+    assert result.violations == ['search_error_unresolved']
 
 
 def test_action_layer_builder_marks_search_as_already_attempted() -> None:

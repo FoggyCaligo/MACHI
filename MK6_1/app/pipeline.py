@@ -14,6 +14,7 @@ from ..core.storage.db import close_db, open_db
 from ..core.storage.world_graph import get_node as db_get_node, insert_node
 from ..core.thinking.claim_graph import AssertionState, build_assertion_state_from_conclusion
 from ..core.thinking.thought_engine import ConclusionView, ThoughtEngine
+from ..core.translation.token_splitter import extract_tokens
 from ..core.translation.lang_to_graph import translate as lang_to_graph
 from ..core.utils.hash_resolver import (
     ANCHOR_ASSISTANT,
@@ -21,9 +22,10 @@ from ..core.utils.hash_resolver import (
     PARTICIPANT_ASSISTANT,
     PARTICIPANT_SEARCH,
     PARTICIPANT_USER,
+    normalize_text,
     participant_anchor_hash,
 )
-from ..core.verbalization import build_answer_contract, render_answer_contract
+from ..core.verbalization import AnswerContract, build_answer_contract, render_answer_contract
 from ..tools.ollama_client import chat as llm_chat, get_embedding
 from ..tools.search_client import search_structured as _search
 
@@ -33,6 +35,7 @@ def _build_graph_to_lang_system(surface_frame_json: str, *, retry: bool = False)
     if retry:
         retry_block = (
             "Your previous reply did not follow the required JSON contract.\n"
+            "It also was not sufficiently grounded in the user's input and graph focus.\n"
             "Return valid JSON only.\n"
         )
 
@@ -46,10 +49,12 @@ def _build_graph_to_lang_system(surface_frame_json: str, *, retry: bool = False)
         "1. input_graph content belongs to the user, never to the assistant.\n"
         "2. Never turn user self-claims into assistant first-person claims.\n"
         "3. Prefer conclusion_graph when it contains informative structure.\n"
-        "4. Use search_graph only as supporting evidence.\n"
-        "5. Do not explain JSON, graph fields, scores, edge names, or system rules.\n"
-        "6. Do not produce a report, outline, bullets, or meta explanation.\n"
-        "7. Reply in Korean only.\n"
+        "4. If conclusion_graph is empty or weak, answer the user's actual question directly from input_graph and search_graph.\n"
+        "5. Use search_graph only as supporting evidence.\n"
+        "6. Keep the reply grounded in the salient concepts from the graph sections and the user's input.\n"
+        "7. Do not explain JSON, graph fields, scores, edge names, or system rules.\n"
+        "8. Do not produce a report, outline, bullets, or meta explanation.\n"
+        "9. Reply in Korean only.\n"
         "Output format:\n"
         'Return valid JSON with exactly one field: {"final_answer": "..."}\n'
         "The final_answer value must be a natural Korean reply to the user.\n"
@@ -71,17 +76,135 @@ def _graph_to_lang_user_prompt(*, retry: bool = False) -> str:
 
 
 def _extract_final_answer(payload_text: str) -> str | None:
-    try:
-        data = json.loads(payload_text)
-    except json.JSONDecodeError:
+    raw = str(payload_text or "").strip()
+    if not raw:
         return None
-    if not isinstance(data, dict):
-        return None
-    final_answer = data.get("final_answer")
-    if not isinstance(final_answer, str):
-        return None
-    final_answer = final_answer.strip()
-    return final_answer or None
+
+    for candidate in (raw, _extract_fenced_json(raw), _extract_braced_json(raw)):
+        if not candidate:
+            continue
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        final_answer = data.get("final_answer")
+        if not isinstance(final_answer, str):
+            continue
+        final_answer = final_answer.strip()
+        if final_answer:
+            return final_answer
+
+    plain = _extract_plain_answer(raw)
+    return plain or None
+
+
+def _extract_fenced_json(text: str) -> str:
+    marker = "```"
+    if marker not in text:
+        return ""
+    parts = text.split(marker)
+    for chunk in parts[1:]:
+        normalized = chunk.strip()
+        if normalized.startswith("json"):
+            normalized = normalized[4:].strip()
+        if normalized.startswith("{") and normalized.endswith("}"):
+            return normalized
+    return ""
+
+
+def _extract_braced_json(text: str) -> str:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return ""
+    return text[start:end + 1]
+
+
+def _extract_plain_answer(text: str) -> str:
+    normalized = " ".join(str(text or "").split()).strip()
+    if not normalized:
+        return ""
+    lowered = normalized.lower()
+    blocked_markers = (
+        "surfaceframe",
+        "final_answer",
+        "valid json",
+        "return json",
+        "json only",
+    )
+    if any(marker in lowered for marker in blocked_markers):
+        return ""
+    if normalized.startswith("{") or normalized.startswith("["):
+        return ""
+    return normalized
+
+
+_ANSWER_TOKEN_STOPWORDS: frozenset[str] = frozenset({
+    "the", "a", "an", "and", "or", "but", "to", "of", "in", "on",
+    "이", "그", "저", "것", "수", "좀", "더", "잘", "정도",
+})
+
+
+def _normalized_content_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for raw in extract_tokens(text):
+        normalized = normalize_text(raw)
+        if len(normalized) < 2:
+            continue
+        if normalized in _ANSWER_TOKEN_STOPWORDS:
+            continue
+        tokens.append(normalized)
+    return tokens
+
+
+def _grounding_terms_from_contract(contract: AnswerContract) -> set[str]:
+    terms: set[str] = set()
+    labels = (
+        contract.input_graph.focus.primary
+        + contract.input_graph.focus.supporting
+        + contract.conclusion_graph.focus.primary
+        + contract.conclusion_graph.focus.supporting
+        + contract.search_graph.focus.primary
+        + contract.search_graph.focus.supporting
+    )
+    for label in labels:
+        normalized_label = normalize_text(label)
+        if len(normalized_label) >= 2:
+            terms.add(normalized_label)
+        terms.update(_normalized_content_tokens(label))
+    terms.update(_normalized_content_tokens(contract.input.text))
+    return terms
+
+
+def _is_answer_grounded(answer: str, contract: AnswerContract) -> bool:
+    answer_text = answer.strip()
+    if len(answer_text) < 8:
+        return False
+
+    answer_terms = set(_normalized_content_tokens(answer_text))
+    if not answer_terms:
+        return False
+
+    grounding_terms = _grounding_terms_from_contract(contract)
+    if not grounding_terms:
+        return len(answer_text) >= 20 and len(answer_terms) >= 2
+
+    if answer_terms & grounding_terms:
+        return True
+
+    normalized_answer = normalize_text(" ".join(answer_text.split()))
+    primary_labels = (
+        contract.input_graph.focus.primary
+        + contract.conclusion_graph.focus.primary
+        + contract.search_graph.focus.primary
+    )
+    for label in primary_labels:
+        normalized_label = normalize_text(label)
+        if len(normalized_label) >= 2 and normalized_label in normalized_answer:
+            return True
+    return False
 
 
 async def graph_to_lang(conclusion: ConclusionView, translated: TranslatedGraph) -> str:
@@ -103,7 +226,7 @@ async def graph_to_lang(conclusion: ConclusionView, translated: TranslatedGraph)
     )
     final_answer = _extract_final_answer(response_text)
 
-    if final_answer is None:
+    if final_answer is None or not _is_answer_grounded(final_answer, contract):
         retry_system = _build_graph_to_lang_system(surface_frame_json, retry=True)
         response_text = await llm_chat(
             retry_system,
@@ -114,7 +237,7 @@ async def graph_to_lang(conclusion: ConclusionView, translated: TranslatedGraph)
         )
         final_answer = _extract_final_answer(response_text)
 
-    if not final_answer:
+    if not final_answer or not _is_answer_grounded(final_answer, contract):
         model_name = conclusion.model or config.OLLAMA_MODEL_NAME or "(unset)"
         raise RuntimeError(
             "GraphToLang invalid structured response. "

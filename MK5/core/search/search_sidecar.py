@@ -338,6 +338,21 @@ class SearchSidecar:
         except QuestionSlotPlannerError as exc:
             failed_decision = self._decision_after_slot_planner_failure(coarse_decision, conclusion=conclusion)
             failed_decision.metadata = {**failed_decision.metadata, **scope_gate_metadata}
+            if failed_decision.need_search:
+                fallback_plan = self._fallback_plan_after_slot_planner_failure(
+                    message=message,
+                    coarse_decision=failed_decision,
+                )
+                results, provider_errors = self._execute_plan(fallback_plan)
+                return SearchRunResult(
+                    attempted=True,
+                    decision=failed_decision,
+                    plan=fallback_plan,
+                    results=results,
+                    error=str(exc),
+                    planning_attempted=True,
+                    provider_errors=provider_errors,
+                )
             return SearchRunResult(
                 attempted=False,
                 decision=failed_decision,
@@ -485,6 +500,30 @@ class SearchSidecar:
                 if len(aggregated) >= self.max_results:
                     return aggregated, provider_errors
         return aggregated, provider_errors
+
+    def _fallback_plan_after_slot_planner_failure(
+        self,
+        *,
+        message: str,
+        coarse_decision: SearchNeedDecision,
+    ) -> SearchPlan:
+        query = ' '.join(str(message or '').split()).strip()
+        if not query:
+            focus_terms = list(coarse_decision.target_terms[:4])
+            query = ' '.join(focus_terms).strip()
+        if not query:
+            raise SearchQueryPlannerError('slot planner fallback produced no usable query')
+        focus_terms = list(coarse_decision.target_terms[:6])
+        return SearchPlan(
+            queries=[query],
+            reason='slot planner failed, so run a direct search using the user question as-is.',
+            focus_terms=focus_terms,
+            metadata={
+                'fallback_mode': 'raw_user_query',
+                'slot_planner_failed': True,
+                'target_terms': list(coarse_decision.target_terms),
+            },
+        )
 
     def _ensure_evidence_passages(self, item: SearchEvidence, *, query: str) -> None:
         passages = self._dedupe_passages(list(item.passages or []))

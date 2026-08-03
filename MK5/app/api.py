@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, session
 
 from app.chat_pipeline import ChatPipeline, ChatPipelineRequest, UserFacingChatError
 from app.model_discovery import DEFAULT_MODEL_NAME, discover_model_catalog
@@ -11,11 +12,16 @@ from config import REQUEST_TIMEOUT_MS
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _new_session_id() -> str:
+    return f'mk5-{uuid4().hex}'
+
+
 def register_routes(app: Flask) -> None:
     pipeline = ChatPipeline()
 
     @app.get('/')
     def index():
+        session['mk5_session_id'] = _new_session_id()
         return send_from_directory(app.static_folder, 'chat.html')
 
     @app.get('/ui-config')
@@ -44,7 +50,15 @@ def register_routes(app: Flask) -> None:
         if not message:
             return jsonify({'detail': 'message is required'}), 400
 
-        session_id = (request.form.get('session_id') or 'default').strip() or 'default'
+        requested_session_id = (request.form.get('session_id') or 'default').strip() or 'default'
+        if requested_session_id == 'default':
+            session_id = str(session.get('mk5_session_id') or '').strip()
+            if not session_id:
+                session_id = _new_session_id()
+                session['mk5_session_id'] = session_id
+        else:
+            session_id = requested_session_id
+            session['mk5_session_id'] = session_id
         selected_model = (request.form.get('model') or '').strip() or DEFAULT_MODEL_NAME
         file = request.files.get('file')
         attached_files: list[dict[str, object]] = []
@@ -72,6 +86,12 @@ def register_routes(app: Flask) -> None:
             return jsonify({'detail': str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({'detail': str(exc)}), 500
+
+    @app.post('/session/reset')
+    def reset_session():
+        session_id = _new_session_id()
+        session['mk5_session_id'] = session_id
+        return jsonify({'session_id': session_id})
 
     @app.post('/internal/revision-review')
     def internal_revision_review():

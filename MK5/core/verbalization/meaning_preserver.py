@@ -49,20 +49,20 @@ class MeaningPreserver:
             return MeaningPreservationResult(
                 preserved=False,
                 severity='warn',
-                recommended_action='accept',
+                recommended_action='block',
                 violations=['search_error_unresolved'],
                 safe_response='',
-                reason='search encountered an error and replacement fallback is disabled',
+                reason='search encountered an error so the ungrounded response must be blocked',
             )
 
         if need_search and attempted and no_evidence_found:
             return MeaningPreservationResult(
                 preserved=False,
                 severity='warn',
-                recommended_action='accept',
+                recommended_action='block',
                 violations=['no_evidence_found'],
                 safe_response='',
-                reason='no external evidence was found and replacement fallback is disabled',
+                reason='no external evidence was found so the ungrounded response must be blocked',
             )
 
         if need_search and attempted and (missing_terms or missing_aspects):
@@ -74,10 +74,10 @@ class MeaningPreserver:
             return MeaningPreservationResult(
                 preserved=False,
                 severity='warn',
-                recommended_action='accept',
+                recommended_action='block',
                 violations=violations,
                 safe_response='',
-                reason='grounding remains incomplete and replacement fallback is disabled',
+                reason='grounding remains incomplete so the ungrounded response must be blocked',
             )
 
         if violation_set and not need_search:

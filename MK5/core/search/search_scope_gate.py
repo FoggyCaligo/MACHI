@@ -103,9 +103,15 @@ class SearchScopeGate:
         )
 
     def _collect_node_texts(self, thought_view: ThoughtView) -> list[str]:
+        locally_grounded_node_ids = self._local_grounded_node_ids(thought_view)
         texts: list[str] = []
         for node in thought_view.nodes:
             if not node.is_active:
+                continue
+            if not self._node_can_block_external_search(
+                node,
+                locally_grounded_node_ids=locally_grounded_node_ids,
+            ):
                 continue
             text = (
                 getattr(node, 'normalized_value', '') or getattr(node, 'raw_value', '') or ''
@@ -113,6 +119,49 @@ class SearchScopeGate:
             if text and text not in texts:
                 texts.append(text)
         return texts
+
+    def _node_can_block_external_search(
+        self,
+        node,
+        *,
+        locally_grounded_node_ids: set[int],
+    ) -> bool:
+        if node.id is not None and node.id in locally_grounded_node_ids:
+            return True
+        payload = node.payload if isinstance(node.payload, dict) else {}
+        source_type = str(payload.get('source_type') or '').strip()
+        claim_domain = str(payload.get('claim_domain') or '').strip()
+        if source_type == 'search' or claim_domain == 'world_fact':
+            return True
+        return bool(
+            source_type
+            and source_type not in {'user', 'assistant'}
+            and node.trust_score >= 0.8
+            and node.stability_score >= 0.7
+        )
+
+    def _local_grounded_node_ids(self, thought_view: ThoughtView) -> set[int]:
+        metadata = thought_view.metadata if isinstance(thought_view.metadata, dict) else {}
+        identity_node_ids = {
+            int(node_id)
+            for node_id in (metadata.get('identity_node_ids') or [])
+            if isinstance(node_id, int)
+        }
+        if not identity_node_ids:
+            return set()
+
+        grounded: set[int] = set(identity_node_ids)
+        for edge in thought_view.edges:
+            if not edge.is_active or edge.edge_family != 'relation' or edge.connect_type != 'flow':
+                continue
+            detail = edge.relation_detail if isinstance(edge.relation_detail, dict) else {}
+            if str(detail.get('temporary_kind') or '').strip() != 'identity_anchor_binding':
+                continue
+            if edge.source_node_id in identity_node_ids and edge.target_node_id is not None:
+                grounded.add(edge.target_node_id)
+            if edge.target_node_id in identity_node_ids and edge.source_node_id is not None:
+                grounded.add(edge.source_node_id)
+        return grounded
 
     @staticmethod
     def _cosine(a: list[float], b: list[float]) -> float:

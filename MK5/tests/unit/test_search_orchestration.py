@@ -183,11 +183,43 @@ def test_search_sidecar_fails_open_when_slot_planner_returns_invalid_json() -> N
         conclusion=_conclusion(),
         model_name='gemma3:4b',
     )
-    assert result.attempted is False
+    assert result.attempted is True
     assert result.planning_attempted is True
     assert result.decision.need_search is True
     assert result.decision.reason == 'slot_planner_failed_needs_grounding'
     assert result.error == 'question slot planner returned invalid JSON'
+    assert result.plan is not None
+    assert result.plan.queries == [_conclusion().user_input_summary]
+    assert result.plan.metadata.get('fallback_mode') == 'raw_user_query'
+    assert result.results
+
+
+def test_search_sidecar_runs_raw_query_when_slot_planner_returns_no_entities() -> None:
+    slot_client = FakeClient(json.dumps({
+        'entities': [],
+        'aspects': ['역사'],
+        'reason': 'entity extraction failed',
+    }))
+    sidecar = SearchSidecar(
+        scope_gate=FakeScopeGate(needs_external_search=True),
+        slot_planner=QuestionSlotPlanner(client=slot_client),
+        query_planner=SearchQueryPlanner(),
+        backend=FakeBackend(),
+    )
+    result = sidecar.run(
+        message='글록의 역사에 대해 말해볼래?',
+        thought_view=_thought_view(),
+        conclusion=_conclusion(),
+        model_name='gemma3:4b',
+    )
+    assert result.attempted is True
+    assert result.planning_attempted is True
+    assert result.decision.need_search is True
+    assert result.error == 'question slot planner returned no usable entities'
+    assert result.plan is not None
+    assert result.plan.queries == ['글록의 역사에 대해 말해볼래?']
+    assert result.plan.metadata.get('fallback_mode') == 'raw_user_query'
+    assert result.results
 
 
 def test_search_sidecar_blocks_local_graph_only_requests_before_slot_planner() -> None:

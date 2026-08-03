@@ -13,6 +13,7 @@ const newChatBtn = document.getElementById("newChatBtn");
 const DEFAULT_REQUEST_TIMEOUT_MS = 360000;
 const MODEL_STORAGE_KEY = "mk5_selected_model";
 const DEBUG_STORAGE_KEY = "mk5_show_debug";
+const SESSION_STORAGE_KEY = "mk5_session_id";
 
 let uiState = {
   requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
@@ -25,6 +26,29 @@ let modelsState = {
   ollamaAvailable: false,
   error: null,
 };
+
+function generateSessionId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `mk5-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getOrCreateSessionId() {
+  const saved = sessionStorage.getItem(SESSION_STORAGE_KEY);
+  if (saved) return saved;
+  const created = generateSessionId();
+  sessionStorage.setItem(SESSION_STORAGE_KEY, created);
+  return created;
+}
+
+function resetSessionId() {
+  const created = generateSessionId();
+  sessionStorage.setItem(SESSION_STORAGE_KEY, created);
+  return created;
+}
+
+let currentSessionId = getOrCreateSessionId();
 
 function shouldShowDebugPanels() {
   const params = new URLSearchParams(window.location.search);
@@ -272,7 +296,7 @@ async function sendMessage() {
 
   const formData = new FormData();
   formData.append("message", message);
-  formData.append("session_id", "default");
+  formData.append("session_id", currentSessionId);
   if (getSelectedModel()) {
     formData.append("model", getSelectedModel());
   }
@@ -342,6 +366,7 @@ fileInputEl.addEventListener("change", () => {
 clearFileBtn.addEventListener("click", clearFile);
 modelSelectEl.addEventListener("change", () => setModelSelection(getSelectedModel()));
 newChatBtn.addEventListener("click", () => {
+  currentSessionId = resetSessionId();
   messagesEl.querySelectorAll(".msg-row").forEach((node) => node.remove());
   setEmptyStateVisible(true);
   clearFile();

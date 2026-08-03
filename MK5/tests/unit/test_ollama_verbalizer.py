@@ -99,6 +99,37 @@ def test_ollama_verbalizer_compacts_search_context_in_prompt() -> None:
     assert prompt.count('- evidence:') == 2
 
 
+def test_ollama_verbalizer_uses_passage_when_snippet_is_empty() -> None:
+    verbalizer = OllamaVerbalizer()
+    prompt = verbalizer._build_user_prompt(
+        CoreConclusion(
+            session_id='s1',
+            message_id=1,
+            user_input_summary='Explain Glock history.',
+            inferred_intent='open_information_request',
+            explanation_summary='Stay grounded.',
+            metadata={
+                'search_context': {
+                    'need_search': True,
+                    'attempted': True,
+                    'result_count': 1,
+                    'summaries': [
+                        {
+                            'title': '글록',
+                            'provider': 'wikipedia-ko',
+                            'snippet': '',
+                            'passages': ['글록은 가스통 글록이 1963년에 설립한 회사다.'],
+                        }
+                    ],
+                }
+            },
+        ),
+        DerivedActionLayer(response_mode='direct_answer', answer_goal='Answer with grounded facts.'),
+    )
+
+    assert '- evidence: 글록 (wikipedia-ko): 글록은 가스통 글록이 1963년에 설립한 회사다.' in prompt
+
+
 def test_ollama_verbalizer_includes_recent_memory_context() -> None:
     verbalizer = OllamaVerbalizer()
     prompt = verbalizer._build_user_prompt(

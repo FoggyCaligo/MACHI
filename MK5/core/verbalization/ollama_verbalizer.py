@@ -140,11 +140,24 @@ class OllamaVerbalizer:
 
         summaries = search_context.get('summaries') or []
         for item in summaries[:2]:
+            evidence_text = self._evidence_text(item)
             lines.append(
-                f"- evidence: {self._truncate(item.get('title', '-'), 60)} ({self._truncate(item.get('provider', '-'), 24)}): {self._truncate(item.get('snippet', ''), 140)}"
+                f"- evidence: {self._truncate(item.get('title', '-'), 60)} ({self._truncate(item.get('provider', '-'), 24)}): {self._truncate(evidence_text, 140)}"
             )
 
         return '\n'.join(lines) if lines else '- search_context: none'
+
+    def _evidence_text(self, item: dict[str, Any]) -> str:
+        snippet = ' '.join(str(item.get('snippet') or '').split()).strip()
+        if snippet:
+            return snippet
+        passages = item.get('passages') or []
+        if isinstance(passages, list):
+            for passage in passages:
+                text = ' '.join(str(passage or '').split()).strip()
+                if text:
+                    return text
+        return ''
 
     def _truncate(self, value: Any, limit: int) -> str:
         text = ' '.join(str(value or '').split()).strip()

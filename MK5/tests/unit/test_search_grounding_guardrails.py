@@ -11,6 +11,9 @@ if str(ROOT) not in sys.path:
 from config import EMBEDDING_TIMEOUT_SECONDS, QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS, SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS
 from app.chat_pipeline import ChatPipeline
 from core.entities.conclusion import CoreConclusion
+from core.entities.edge import Edge
+from core.entities.node import Node
+from core.entities.thought_view import ThoughtView
 from core.search.question_slot_planner import QuestionSlotPlanner
 from core.search.search_coverage_refiner import SearchCoverageRefiner
 from core.search.search_need_evaluator import SearchNeedDecision
@@ -36,6 +39,21 @@ class FakeClient:
 
     def chat(self, *, model_name, messages, stream=False, options=None, response_format=None):
         return FakeChatResult(self.content)
+
+
+class FakeEmbedResult:
+    def __init__(self, embeddings: list[list[float]]) -> None:
+        self.embeddings = embeddings
+
+
+class FakeEmbeddingClient:
+    def __init__(self, embeddings: list[list[float]]) -> None:
+        self.embeddings = embeddings
+        self.last_input_texts = None
+
+    def embed(self, *, model_name, input_texts):
+        self.last_input_texts = list(input_texts)
+        return FakeEmbedResult(self.embeddings)
 
 
 class StaticBackend:
@@ -99,6 +117,70 @@ def test_search_llm_helpers_use_bounded_default_timeouts() -> None:
     assert planner.client.timeout_seconds == QUESTION_SLOT_PLANNER_TIMEOUT_SECONDS
     assert refiner.client.timeout_seconds == SEARCH_COVERAGE_REFINER_TIMEOUT_SECONDS
     assert scope_gate.client.timeout_seconds == EMBEDDING_TIMEOUT_SECONDS
+
+
+def test_scope_gate_ignores_user_only_nodes_when_deciding_search() -> None:
+    client = FakeEmbeddingClient([[1.0, 0.0], [1.0, 0.0]])
+    scope_gate = SearchScopeGate(client=client)
+    thought_view = ThoughtView(
+        session_id='s1',
+        message_text='글록의 역사와 의의',
+        nodes=[
+            Node(
+                id=1,
+                raw_value='글록',
+                normalized_value='글록',
+                payload={'source_type': 'user'},
+            )
+        ],
+    )
+
+    decision = scope_gate.decide(message='글록의 역사와 의의', thought_view=thought_view)
+
+    assert decision.needs_external_search is True
+    assert decision.metadata['node_count'] == 0
+    assert client.last_input_texts is None
+
+
+def test_scope_gate_uses_identity_grounded_nodes_for_local_memory_questions() -> None:
+    client = FakeEmbeddingClient([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
+    scope_gate = SearchScopeGate(client=client, similarity_threshold=0.65)
+    thought_view = ThoughtView(
+        session_id='s1',
+        message_text='내 이름 기억해?',
+        nodes=[
+            Node(
+                id=1,
+                raw_value='신재용',
+                normalized_value='신재용',
+                payload={'source_type': 'user'},
+            ),
+            Node(
+                id=2,
+                raw_value='사용자 이름',
+                normalized_value='사용자 이름',
+                payload={'source_type': 'user'},
+            ),
+        ],
+        edges=[
+            Edge(
+                id=10,
+                source_node_id=1,
+                target_node_id=2,
+                edge_family='relation',
+                connect_type='flow',
+                relation_detail={'temporary_kind': 'identity_anchor_binding'},
+                is_active=True,
+            )
+        ],
+        metadata={'identity_node_ids': [1]},
+    )
+
+    decision = scope_gate.decide(message='내 이름 기억해?', thought_view=thought_view)
+
+    assert decision.needs_external_search is False
+    assert decision.metadata['node_count'] == 2
+    assert client.last_input_texts == ['내 이름 기억해?', '신재용', '사용자 이름']
 
 
 def test_search_coverage_refiner_marks_aspects_from_evidence_passages() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -11,5 +12,6 @@ def create_app() -> 'Flask':
     from app.api import register_routes
 
     app = Flask(__name__, static_folder='static', static_url_path='/static')
+    app.secret_key = os.getenv('MK5_FLASK_SECRET_KEY', 'mk5-dev-secret-key')
     register_routes(app)
     return app
