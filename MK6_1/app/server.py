@@ -18,7 +18,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .pipeline import Pipeline
 from ..core.storage.world_graph import get_node, get_edges_for_node, get_words_for_node
@@ -78,6 +78,7 @@ def _get_pipeline() -> Pipeline:
 # ── 요청/응답 스키마 ──────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
+    user_id: str = Field(default="default_user", min_length=1)
     message: str
     model: str | None = None   # None이면 config.OLLAMA_MODEL_NAME 사용
     session_id: str = "default"
@@ -137,7 +138,12 @@ async def get_models() -> dict:
 async def chat(req: ChatRequest) -> ChatResponse:
     try:
         pipeline = _get_pipeline()
-        result = await pipeline.run(req.message, model=req.model, session_id=req.session_id)
+        result = await pipeline.run(
+            req.message,
+            model=req.model,
+            session_id=req.session_id,
+            user_id=req.user_id,
+        )
         c = result.conclusion
         return ChatResponse(
             response=result.response_text,

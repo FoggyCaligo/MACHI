@@ -23,7 +23,8 @@ from ..core.utils.hash_resolver import (
     PARTICIPANT_SEARCH,
     PARTICIPANT_USER,
     normalize_text,
-    participant_anchor_hash,
+    session_participant_anchor_hash,
+    user_participant_anchor_hash,
 )
 from ..core.verbalization import AnswerContract, build_answer_contract, render_answer_contract
 from ..tools.ollama_client import chat as llm_chat, get_embedding
@@ -274,7 +275,12 @@ def _initialize_identity_anchors(conn) -> None:
     conn.commit()
 
 
-def _ensure_session_participant_anchors(conn, session_id: str) -> dict[str, str]:
+def _normalize_user_id(user_id: str | None) -> str:
+    normalized = str(user_id or "").strip()
+    return normalized or "local-user"
+
+
+def _ensure_participant_anchors(conn, session_id: str, user_id: str) -> dict[str, str]:
     from datetime import datetime, timezone
 
     anchors = {
@@ -306,6 +312,58 @@ def _ensure_session_participant_anchors(conn, session_id: str) -> dict[str, str]
     return {role: address_hash for role, (address_hash, _ko, _en) in anchors.items()}
 
 
+def _ensure_participant_anchors(conn, session_id: str, user_id: str) -> dict[str, str]:
+    from datetime import datetime, timezone
+
+    anchors = {
+        "user": (
+            user_participant_anchor_hash(user_id, PARTICIPANT_USER),
+            ["사용자", "User"],
+            {
+                "participant_anchor": True,
+                "memory_scope": "user_id",
+                "user_id": user_id,
+            },
+        ),
+        "assistant": (
+            session_participant_anchor_hash(session_id, PARTICIPANT_ASSISTANT),
+            ["AI", "Assistant"],
+            {
+                "participant_anchor": True,
+                "session_scoped": True,
+                "session_id": session_id,
+            },
+        ),
+        "search": (
+            session_participant_anchor_hash(session_id, PARTICIPANT_SEARCH),
+            ["외부정보", "Search"],
+            {
+                "participant_anchor": True,
+                "session_scoped": True,
+                "session_id": session_id,
+            },
+        ),
+    }
+    now = datetime.now(timezone.utc)
+    for address_hash, labels, payload in anchors.values():
+        if db_get_node(conn, address_hash) is not None:
+            continue
+        insert_node(conn, Node(
+            address_hash=address_hash,
+            node_kind="concept",
+            formation_source="system_policy",
+            labels=labels,
+            trust_score=1.0,
+            stability_score=1.0,
+            is_active=True,
+            payload=payload,
+            created_at=now,
+            updated_at=now,
+        ))
+    conn.commit()
+    return {role: address_hash for role, (address_hash, _labels, _payload) in anchors.items()}
+
+
 @dataclass
 class PipelineResult:
     response_text: str
@@ -321,9 +379,20 @@ class Pipeline:
         self._session_memory: dict[str, set[str]] = {}
         self._previous_assertion_state: dict[str, AssertionState] = {}
 
-    async def run(self, user_input: str, model: str | None = None, session_id: str = "default") -> PipelineResult:
+    async def run(
+        self,
+        user_input: str,
+        model: str | None = None,
+        session_id: str = "default",
+        user_id: str = "local-user",
+    ) -> PipelineResult:
         started = time.perf_counter()
-        participant_anchor_hashes = _ensure_session_participant_anchors(self._conn, session_id)
+        normalized_user_id = _normalize_user_id(user_id)
+        participant_anchor_hashes = _ensure_participant_anchors(
+            self._conn,
+            session_id,
+            normalized_user_id,
+        )
         translated = await lang_to_graph(user_input, self._conn, get_embedding)
         edge_counts = Counter(edge.connect_type for edge in translated.edges)
         edge_summary = ", ".join(f"{name}={count}" for name, count in sorted(edge_counts.items())) or "none"
@@ -331,7 +400,11 @@ class Pipeline:
         print(f"[pipeline] lang_to_graph: {after_translate - started:.3f}s")
         print(f"[pipeline] translated_edge_types: {edge_summary}")
 
-        profile_activation_view = build_profile_activation_view(self._conn, translated)
+        profile_activation_view = build_profile_activation_view(
+            self._conn,
+            translated,
+            user_anchor_hash=participant_anchor_hashes["user"],
+        )
         engine = ThoughtEngine(
             conn=self._conn,
             embed_fn=get_embedding,
@@ -354,6 +427,7 @@ class Pipeline:
         self._session_memory[session_id] = conclusion.key_hashes
         self._previous_assertion_state[session_id] = build_assertion_state_from_conclusion(conclusion)
         print(
+            f"[pipeline] user_id: {normalized_user_id} session_id: {session_id}\n"
             f"[pipeline] topic_continuity: {conclusion.topic_continuity} "
             f"(overlap with {len(prev_hashes or set())} prev keys)"
         )

@@ -42,7 +42,19 @@ def compute_hash(token: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
-def participant_anchor_hash(session_id: str, participant_key: str) -> str:
-    """Return a session-scoped participant anchor hash."""
-    payload = f"{_PARTICIPANT_SCOPE_PREFIX}{session_id}::{participant_key}"
+def participant_anchor_hash(scope_id: str, participant_key: str) -> str:
+    """Return a stable participant anchor hash for the given scope id."""
+    payload = f"{_PARTICIPANT_SCOPE_PREFIX}{scope_id}::{participant_key}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def session_participant_anchor_hash(session_id: str, participant_key: str) -> str:
+    """Return a session-scoped participant anchor hash."""
+    payload = f"session::{session_id}"
+    return participant_anchor_hash(payload, participant_key)
+
+
+def user_participant_anchor_hash(user_id: str, participant_key: str = PARTICIPANT_USER) -> str:
+    """Return a user-id-scoped participant anchor hash."""
+    payload = f"user::{user_id.strip()}"
+    return participant_anchor_hash(payload, participant_key)

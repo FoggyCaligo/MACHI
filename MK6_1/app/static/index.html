@@ -67,6 +67,31 @@
 
     /* 모델 셀렉터 */
     .header-right { display: flex; align-items: center; gap: 10px; }
+    .user-id-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--surface);
+      min-width: 0;
+    }
+    .user-id-wrap label {
+      font-size: 11px;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    #user-id-input {
+      width: 170px;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--text);
+      font-size: 12px;
+      font-family: var(--font);
+    }
+    #user-id-input::placeholder { color: var(--text-dim); }
     #model-select {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -290,6 +315,10 @@
   <header>
     <div class="logo">MK6 <span>cognitive graph AI</span></div>
     <div class="header-right">
+      <div class="user-id-wrap">
+        <label for="user-id-input">user_id</label>
+        <input id="user-id-input" type="text" placeholder="사용할 사용자 ID를 입력하세요" />
+      </div>
       <select id="model-select" title="생성 모델 선택">
         <option value="">모델 로딩 중…</option>
       </select>
@@ -325,7 +354,29 @@
     fileContent: null,
     fileName: null,
     loading: false,
+    userId: window.localStorage.getItem('mk6_1:user-id') || 'default_user',
+    sessionId: getOrCreateStoredId('mk6_1:session-id', 'session'),
   };
+
+  function createStableId(prefix) {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return `${prefix}-${window.crypto.randomUUID()}`;
+    }
+    return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function getOrCreateStoredId(storageKey, prefix) {
+    const existing = window.localStorage.getItem(storageKey);
+    if (existing) return existing;
+    const created = createStableId(prefix);
+    window.localStorage.setItem(storageKey, created);
+    return created;
+  }
+
+  function rotateSessionId() {
+    state.sessionId = createStableId('session');
+    window.localStorage.setItem('mk6_1:session-id', state.sessionId);
+  }
 
   // ── 모델 셀렉터 초기화 ────────────────────────────────────────────────────
   const $modelSelect = document.getElementById('model-select');
@@ -377,6 +428,15 @@
   const $msgInput   = document.getElementById('msg-input');
   const $sendBtn    = document.getElementById('send-btn');
   const $newChatBtn = document.getElementById('new-chat-btn');
+  const $userIdInput = document.getElementById('user-id-input');
+
+  $userIdInput.value = state.userId;
+  $userIdInput.addEventListener('change', () => {
+    const normalized = $userIdInput.value.trim() || 'default_user';
+    state.userId = normalized;
+    $userIdInput.value = normalized;
+    window.localStorage.setItem('mk6_1:user-id', normalized);
+  });
 
   // ── 자동 높이 조절 ────────────────────────────────────────────────────────
   $msgInput.addEventListener('input', () => {
@@ -422,6 +482,7 @@
     clearFile();
     $msgInput.value = '';
     $msgInput.style.height = 'auto';
+    rotateSessionId();
   });
 
   // ── 전송 ──────────────────────────────────────────────────────────────────
@@ -432,6 +493,10 @@
 
   async function sendMessage() {
     if (state.loading) return;
+
+    state.userId = $userIdInput.value.trim() || 'default_user';
+    $userIdInput.value = state.userId;
+    window.localStorage.setItem('mk6_1:user-id', state.userId);
 
     const typed = $msgInput.value.trim();
     if (!typed && !state.fileContent) return;
@@ -464,7 +529,12 @@
       const res = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: payload, model: selectedModel }),
+        body: JSON.stringify({
+          user_id: state.userId,
+          session_id: state.sessionId,
+          message: payload,
+          model: selectedModel,
+        }),
       });
 
       if (!res.ok) {
