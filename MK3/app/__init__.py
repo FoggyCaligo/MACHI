@@ -1,0 +1,17 @@
+from __future__ import annotations
+
+import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from flask import Flask
+
+
+def create_app() -> 'Flask':
+    from flask import Flask
+    from app.api import register_routes
+
+    app = Flask(__name__, static_folder='static', static_url_path='/static')
+    app.secret_key = os.getenv('MK3_FLASK_SECRET_KEY', 'MK3-dev-secret-key')
+    register_routes(app)
+    return app

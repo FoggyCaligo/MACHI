@@ -7,3 +7,7 @@ __pycache__/
 .venv/
 .tmp/
 .zip
+MK4/data/*.db
+MK4/data/*.db-*
+MK5/data/*.db
+MK5/data/*.db-*

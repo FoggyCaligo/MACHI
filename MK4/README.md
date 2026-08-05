@@ -1,542 +1,215 @@
-# MK4
+﻿# MK4
 
-MK4는 "답변을 잘하는 챗봇"보다, 시간이 지날수록 더 일관되게 사용자를 이해하는 **로컬 개인화 인지 시스템**을 목표로 하는 프로젝트입니다.
+`MK4`는 `MK3`의 그래프 사고를 유지하되, **단어와 의미를 같은 층에서 다루던 문제를 분리하려는 단계**다.
 
-핵심은 단순한 대화 로그 누적이 아닙니다. 일반 채팅, 첨부 텍스트, ZIP artifact, correction을 바탕으로 **사용자 모델을 형성하고**, 틀리면 **다시 깨고 재구성할 수 있는 memory 구조**를 만드는 것이 목표입니다.
+`MK3`에서는 그래프의 노드를 단어 중심으로 세웠기 때문에, 이름만 다른 같은 개념도 서로 다른 노드로 시작하게 되는 문제가 있었다. 말이 다르면 노드도 달라지고, 그 뒤에야 관계로 맞춰야 했기 때문에, 같은 개념이 표면형 차이 때문에 쪼개지는 일이 자주 생긴다.
 
-상위 프로젝트인 `MACHI` 전체 관점에서 보면, MK4는 그 장기 목표 중 특히 **"기억(memory) 계층"** 을 실제 구조와 코드로 구현하는 현재 작업 축입니다.  
-즉, MACHI가 장기적으로 개인 전용 인지 시스템 전체를 지향한다면, MK4는 그중 **evidence-first memory / correction / topic / promotion / reuse** 를 담당하는 실험이자 구현 단계라고 볼 수 있습니다.
+`MK4`는 이 문제를 해결하기 위해, 언어를 그래프 본체가 아니라 **그래프에 접근하기 위한 주소 계층**으로 내린다.
 
-## 1. 이 프로젝트가 지향하는 것
+## 목표
 
-MK4는 다음을 우선합니다.
+`MK4`의 목표는 다음과 같다.
 
-- fact 몇 개를 저장하는 것보다 **user model**을 더 잘 형성하기
-- 지금 한 번 그럴듯하게 답하는 것보다 **시간이 지날수록 더 일관되게 이해하기**
-- append-only 로그보다 **update / correction / rebuild 가능한 memory**
-- prompt에 사용자를 박아 넣는 것보다 **memory-driven personalization**
-- 첨부 텍스트, ZIP, project artifact도 모두 **evidence-first**로 처리하기
+> 단어는 의미 그 자체가 아니라 노드에 접근하는 표면 주소로 쓰고, 실제 사고와 기억은 그 뒤의 의미 그래프에서 수행한다.
 
-한 줄로 요약하면:
+즉 이 단계가 고치려는 문제는 아래와 같다.
 
-> MK4는 "정답을 빨리 말하는 모델"보다, "나를 더 일관되게 이해하고 틀리면 다시 고칠 수 있는 로컬 시스템"을 만들려는 프로젝트입니다.
+- 같은 개념이 다른 단어라는 이유만으로 다른 노드가 되는 문제
+- 언어 표면형이 그래프 본체를 과하게 지배하는 문제
 
----
+## 기능
 
-## 2. 핵심 철학
+### 1. 언어와 그래프의 분리
 
-### 2-1. Memory is not append-only
+- 단어는 직접 의미 노드가 아니다.
+- 단어는 먼저 정규화되고, 해시 주소를 통해 그래프 노드에 접근한다.
 
-MK4에서 기억은 단순 누적 로그가 아닙니다.
+### 2. 표면형 주소 테이블
 
-- 새 evidence로 업데이트될 수 있음
-- correction으로 재구성될 수 있음
-- 오래되거나 신뢰도가 낮은 내용은 정리될 수 있음
+- `words` 테이블이 `surface_form`과 `address_hash`를 연결한다.
+- 하나의 표면형이 여러 후보 노드에 연결될 수 있다.
 
-즉, 저장된 memory도 절대 진실이 아니라 **재검증 대상**입니다.
+즉 단어는 "정답 노드"가 아니라, **의미 그래프에 진입하기 위한 주소 인덱스**다.
 
-### 2-2. Fact보다 user model이 우선
+### 3. 주소 기반 노드 접근
 
-MK4는 "사용자가 무슨 말을 했는가" 자체보다 아래를 더 중요하게 봅니다.
+코드 기준으로 `MK4`는 아래 순서로 주소를 만든다.
 
-- 어떤 설명 방식을 선호하는지
-- 어떤 사고 패턴을 보이는지
-- 어디에서 correction이 반복되는지
-- 무엇을 중요하게 여기는지
+- `normalize_text(token)`
+  - Unicode NFC 정규화
+  - 소문자화
+  - 앞뒤 공백/구두점 제거
+  - 한국어 조사 제거를 한 번 수행
+- `compute_hash(token)`
+  - `sha256("word::" + normalized_text)`의 앞 32 hex를 사용
 
-### 2-3. Evidence-first
+즉 각 단어는 표면형 그대로 저장되는 것이 아니라, **정규화된 문자열에서 계산된 `address_hash`를 타고 노드에 접근**한다.
 
-원문이나 artifact를 곧바로 profile로 확정하지 않습니다.
+### 4. 의미 그래프 본체
 
-기본 흐름은 다음과 같습니다.
+- 실제 노드는 `nodes.address_hash`를 기본 키로 가진다.
+- 단어 링크는 `words`에서 관리하고, 의미 관계는 `edges`에서 관리한다.
+
+그래프 본체는 단어 목록이 아니라, 노드와 엣지의 구조다.
+
+### 5. 임시 사고 그래프와 영구 그래프 분리
+
+- 입력을 받은 뒤 바로 영구 그래프를 흔들지 않는다.
+- 먼저 `TempThoughtGraph`에서 사고와 조정을 수행한 뒤, 필요한 내용만 `WorldGraph`에 반영한다.
+
+## 작동방식
+
+`MK4`의 흐름은 아래처럼 이해하면 된다.
 
 ```text
-conversation / attachment / project artifact
--> evidence
--> general / candidate / confirmed
--> sync / promotion / rebuild
--> next-turn reuse
+사용자 입력
+-> 단어 정규화
+-> address_hash 계산
+-> words 테이블을 통해 후보 노드 접근
+-> 관련 LocalSubgraph 구성
+-> TempThoughtGraph에서 사고/조정
+-> 필요한 경우만 WorldGraph 반영
+-> ConclusionGraph 생성
+-> GraphToLang으로 언어화
 ```
 
-### 2-4. Correction is core
+이 단계에서 중요한 점은, 단어가 그래프의 본체가 아니라 **그래프를 여는 키**라는 점이다.
 
-MK4에서 correction은 부가기능이 아닙니다.
+## 사고과정
 
-- 잘못 형성된 profile을 깨고
-- 현재 사용자상을 다시 구성하고
-- memory 오염을 나중에라도 되돌릴 수 있게 만드는
+`MK4`의 사고는 기억하신 것처럼 **목적(goal)과 현재 입력 사이의 전파**를 중심에 둔다. 다만 코드 기준으로 보면, "가장 먼저 닿은 노드 하나"만 뽑는 단순 구조는 아니다.
 
-핵심 메커니즘입니다.
+실제 흐름은 아래에 더 가깝다.
 
-### 2-5. Prompt-driven persona보다 memory-driven personalization
+### 1. 목표 노드를 먼저 세운다
 
-system prompt는 운영 원칙만 얇게 유지하고, 실제 개인화는 아래가 담당합니다.
+- `Pipeline`이 전역 goal graph를 초기화하고
+- `ThoughtEngine`이 `TempThoughtGraph`에 goal node를 먼저 심는다
 
-- memory
-- evidence
-- correction
-- topic
+즉 사고의 기준점은 항상 현재 턴의 입력이 아니라, **먼저 존재하는 목적 노드**다.
 
-### 2-6. 외부 라이브러리 최소화
+### 2. 현재 입력을 그래프로 번역해 goal에 연결한다
 
-MK4는 기능을 빨리 붙이기 위해 외부 라이브러리를 계속 늘리는 방향을 지향하지 않습니다.
+- `lang_to_graph()`가 입력을 `TranslatedGraph`로 바꾼다
+- direct input으로 잡힌 `ConceptPointer`들은 `tg.connect_to_goal(...)`로 goal에 연결된다
+- direct input match는 user anchor에도 연결된다
 
-- 장기 유지보수와 Python 버전 호환성을 더 우선합니다.
-- 특정 버전 상한에 프로젝트 전체가 묶이는 의존성은 가능한 한 줄입니다.
-- 구조적으로 단순한 기능은 자체 구현으로 대체하는 편을 선호합니다.
-- 외부 라이브러리는 "편해서"가 아니라, 장기적으로도 유지 가치가 분명할 때만 남깁니다.
+즉 현재 입력은 독립적으로 떠 있는 것이 아니라, **처음부터 목적과 사용자 축에 묶인 채로 사고 그래프에 들어간다**.
 
-즉, MK4는 기능 확장보다도 `오래 살아남는 로컬 시스템`이라는 기준으로 기술 선택을 합니다.
+### 3. 관련 기억을 더 실어 온다
 
----
+`ThoughtEngine.think()`는 입력만 넣고 끝나지 않는다. 아래 subgraph도 함께 불러온다.
 
-## 3. 현재 구조의 큰 그림
+- goal node 주변 subgraph
+- profile activation seed hashes
+- 이전 턴 `previous_key_hashes`
+- 이전 assertion state의 node hashes
+- user / assistant anchor 주변 subgraph
 
-MK4는 크게 세 계층으로 볼 수 있습니다.
+그래서 실제 `TempThoughtGraph`는 "지금 입력" 하나가 아니라, **목적 + 현재 입력 + 이전 맥락 + 프로필 + identity anchor**가 같이 들어 있는 작업 공간이다.
 
-### 3-1. 입력 채널
+### 4. 루프 안에서 slot 채우기와 구조 조정을 반복한다
 
-- 일반 채팅
-- 첨부 텍스트
-- ZIP artifact
-- project 질문
-- correction 입력
+루프 안에서는 아래가 반복된다.
 
-이 채널들은 서로 다르지만, 장기적으로는 같은 memory 의미론으로 수렴해야 합니다.
+- empty slot이 있으면 검색으로 채운다
+- `concept_differentiation`으로 구분이 필요한 개념을 분화한다
+- `surface_variant_evidence`를 쌓는다
+- 필요하면 `concept_merge`를 수행한다
+- `goal_alignment.score_goal_alignment(...)`로 현재 그래프가 목적과 얼마나 맞는지 본다
 
-### 3-2. 공통 memory 의미론
+즉 사고는 "전파 후 바로 답변"이 아니라, **goal alignment가 좋아지는 방향으로 그래프를 반복 조정하는 과정**이다.
 
-- `general`: 저장 가치는 있지만 기본 응답에는 주입하지 않는 정보
-- `candidate`: 승격 후보
-- `confirmed`: 현재 모델이 보고 있는 사용자상
+### 5. 결론은 activation 기반으로 추린다
 
-### 3-3. Correction 분류 체계 (2026-04-13 강화)
+마지막에는 `build_activation_conclusion_graphs(...)`가 호출되어, 현재 `TempThoughtGraph` 안에서 활성화와 정렬이 높은 구조를 결론 그래프로 뽑는다.
 
-**Correction은 대상에 따라 3가지로 분류**:
+따라서 `MK4`의 사고를 한 줄로 정리하면 이렇다.
 
-```
-profile: 사용자 모델 자체 재정정
-  예) "내가 말한 취향이 틀렸다", "나는 그런 사람이 아니다"
-  영향: profile rebuild에 반영, profile 정정으로 이전 정보 무효화
+> 목적 노드를 기준점으로 두고, 현재 입력과 관련 기억들을 그 주변에 연결한 뒤, goal alignment가 높은 방향으로 임시 그래프를 반복 조정하고, 그중 활성화된 결론 구조만 추려 언어화한다.
 
-topic_fact: 설명/정보 정정
-  예) "그건 틀렸어", "그건 이렇게 작동해", "이건 다르다"
-  영향: correction store에 보관되지만 profile rebuild에는 미포함
-         다음 회상 시 conflict 판단에 사용
+## 기억구조
 
-response_behavior: 답변 방식/태도 정정
-  예) "이렇게 답하지 말아줄래?", "더 짧게 답해줄 수 있어?", "이 방식은 싫어"
-  영향: memory에만 보관, response_behavior 후보로 저장되지 않음
-        향후 응답 스타일 추출용 자료로만 유지
-```
+`MK4`의 기억 구조는 크게 세 층이다.
 
-각 correction은 reason 필드에 `"target_kind:reason_text"` 형식으로 저장되어,
-나중에 policy를 적용할 때 구분됨.
+### 1. 언어 주소층
 
-### 3-4. Evidence 흐름
+- 저장소: `words`
+- 역할: 표면형 단어를 `address_hash`에 연결
 
-```
-입력 (채팅 / 첨부 / artifact / 정정)
-  ↓
-Evidence 추출 (model 기반, 규칙 제외)
-  ↓
-Tier 배정 (general / candidate / confirmed)
-  ↓
-Store 저장 (profile / correction / episode / state)
-  ↓
-Conflict 판단 (기존 correction 확인)
-  ↓
-다음 턴 반영 (retrieval / response building / profile reconstruction)
+### 2. 의미 그래프층
+
+- 저장소: `nodes`, `edges`
+- 역할: 실제 개념과 관계를 저장
+
+### 3. 사고 작업층
+
+- 구조: `TempThoughtGraph`
+- 역할: 현재 턴에서만 쓰는 임시 조정 공간
+
+즉 `MK4`의 핵심은 **언어는 lookup 계층, 의미 그래프는 본체, 사고는 임시 그래프에서**라는 분리다.
+
+## 실행방법
+
+아래는 Windows PowerShell 기준으로, 빈 PC에서 새로 내려받아 실행하는 순서다.
+
+### 1. 저장소 받기
+
+```powershell
+git clone https://github.com/FoggyCaligo/MACHI.git
+cd MACHI\MK4
 ```
 
-`confirmed`도 절대 진실이 아니라, **현재 시점의 가설적 사용자상**입니다.
-
-### 3-3. 두 개의 축
-
-- `topic`: 의미 축
-- `project_id`: 출처 축
-
-둘은 대체 관계가 아닙니다.
-
-- `topic`은 어떤 의미 맥락에 속하는지
-- `project_id`는 어떤 artifact / file 묶음에서 왔는지
-
-를 나타냅니다.
-
-다만 사용자 UI에서는 raw `project_id`를 직접 기억하게 두지 않고,
-프로젝트를 **이름(project name)으로 선택**하고 내부적으로만 `project_id`를 유지하는 방향으로 정리하고 있습니다.
-
----
-
-## 4. 주요 동작 방식
-
-### 4-1. Topic routing
-
-현재 대화나 evidence는 `TopicRouter`를 통해 다음 중 하나를 탑니다.
-
-1. 현재 active topic 유지
-2. 기존 topic에 attach
-3. 새 topic 생성
-
-이 판단은 문자열 일치보다 **임베딩 기반 의미 유사도**를 우선합니다.
-
-### 4-2. Chat memory update
-
-일반 채팅은 다음 흐름으로 처리됩니다.
-
-1. user message 저장
-2. response retrieval
-3. agent 응답 생성
-4. chat evidence 추출
-5. evidence normalization
-6. topic resolution
-7. memory apply / promotion / rebuild
-
-### 4-3. Attachment update-first
-
-첨부 텍스트는 preview-only가 아니라 **update-first** 방향입니다.
-
-1. source 저장
-2. passage selection
-3. evidence extract
-4. evidence store
-5. memory sync
-6. 그 결과를 바탕으로 자연어 답변 생성
-
-### 4-4. Project artifact flow
-
-ZIP 업로드 시:
-
-1. project 생성
-2. 파일 추출
-3. file / chunk 저장
-4. project evidence 추출
-5. profile evidence sync
-6. 이후 project 기반 질문 응답 가능
-
-즉, project는 단순 검색 자료가 아니라 **장기 evidence source**이기도 합니다.
-
-여기서 역할은 둘로 나뉩니다.
-
-- `ProjectAskService`: 프로젝트 자체에 대한 질문을 조정하는 상위 서비스
-- `ProjectProfileEvidenceService`: 프로젝트에서 사용자 프로필 관련 evidence를 증분 추출/저장/sync하는 서비스
-
-즉, 둘은 같은 일을 중복하는 관계라기보다,
-**project 질문 orchestration**과 **project 기반 profile evidence 처리**를 나누는 관계에 가깝습니다.
-
-### 4-5. Recall flow
-
-`/recall`은 일반 응답용 retrieval과는 별도로,
-기억을 사람이 확인하기 위한 조회 경로입니다.
-
-현재 기준으로는:
-
-1. episode relevance를 임베딩 기반으로 확인
-2. active profile / correction / summary를 query 의미 기준으로 ranking
-3. raw message window도 semantic scoring으로 확장
-4. 현재 이해에 어떤 영향이 있는지 요약
-
-하는 구조입니다.
-
----
-
-## 5. 현재 코드 구조
-
-### `app/`
-
-- `app/api.py`: FastAPI 엔트리포인트
-- `app/request_orchestrator.py`: 요청 타입 분기
-- `app/orchestrator.py`: 일반 채팅 orchestration
-- `app/agent.py`: 모델 응답 호출
-
-### `memory/`
-
-- `services/topic_router.py`: active topic 유지 / attach / create
-- `services/memory_ingress_service.py`: 공통 ingress
-- `services/memory_apply_service.py`: 공통 apply / promotion / rebuild
-- `services/chat_evidence_service.py`: chat evidence 추출
-- `services/evidence_normalization_service.py`: evidence 정규화
-- `retrieval/response_retriever.py`: 응답용 memory retrieval
-- `retrieval/recall_retriever.py`: memory recall 조회
-- `stores/`: topics, profiles, corrections, states, evidences 등 저장소
-
-### `profile_analysis/`
-
-- 첨부 텍스트 source 저장
-- profile evidence 추출
-- uploaded evidence 저장
-- memory sync
-
-### `project_analysis/`
-
-- ZIP ingest
-- project file / chunk 저장
-- project retrieval
-- `ProjectAskService` 기준 project 질문 응답 orchestration
-- `ProjectProfileEvidenceService` 기준 project artifact에서 profile evidence 증분 추출 / sync / profile answer
-
-### `prompts/`
-
-- 운영 원칙 중심 system prompt
-- chat update extract prompt
-- profile attachment answer prompt
-- project / review / evidence extract prompt
-
-### `tools/`
-
-- Ollama 호출
-- embedding 생성
-- response continuation 처리
-- reply guard
-
----
-
-## 6. 현재 기술 스택
-
-- Python
-- FastAPI
-- Uvicorn
-- SQLite
-- Ollama
-- `sentence-transformers`
-- NumPy
-
-기본 패키지는 `requirements.txt`에 정리되어 있습니다.
-
-의존성 원칙:
-최근에도 chunking 라이브러리와 `sqlite-vec`을 제거하고, 가능한 부분은 자체 구현과 표준 라이브러리 중심으로 정리했습니다. MK4는 기능 추가보다도 장기 유지보수성과 버전 독립성을 더 중요하게 봅니다.
-
----
-
-## 7. 실행 방법
-
-### 7-1. 가상환경
-
-PowerShell:
+### 2. 가상환경 만들기
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Git Bash:
+### 3. Ollama 준비
 
-```bash
-python -m venv .venv
-source .venv/Scripts/activate
-pip install -r requirements.txt
-```
-
-### 7-2. Ollama 준비
-
-Ollama가 먼저 설치되어 있어야 합니다.
-
-예:
+`MK4`는 생성 모델과 임베딩 모델을 둘 다 쓴다.
 
 ```powershell
-irm https://ollama.com/install.ps1 | iex
-ollama --version
+ollama serve
 ```
 
-예시 모델:
+새 PowerShell 창에서:
 
-```bash
-ollama pull qwen2.5:3b
-ollama pull gemma3:1b
-ollama pull llama3.2:3b
+```powershell
 ollama pull gemma3:4b
+ollama pull nomic-embed-text
 ```
 
-### 7-3. 서버 실행
+### 4. 서버 실행
 
-```bash
-python -m uvicorn app.api:app --reload --host 127.0.0.1 --port 8000
+```powershell
+python run_server.py --host 127.0.0.1 --port 8000 --reload
 ```
 
-브라우저:
+### 5. 접속 확인
+
+브라우저에서 아래 주소를 연다.
 
 ```text
-http://127.0.0.1:8000/ui
+http://127.0.0.1:8000/
 ```
 
----
+CLI로 바로 시험하려면:
 
-## 8. 현재 기본 설정
-
-현재 코드 기준 주요 기본값:
-
-- 기본 LLM: `qwen2.5:3b`
-- 기본 embedding: `intfloat/multilingual-e5-small`
-- active topic 유지 threshold: `0.73`
-- existing topic attach threshold: `0.78`
-- 운영 DB 경로: `data/memory.db`
-
-이 값들은 절대 규칙이 아니라, 로컬 환경과 실제 사용 경험에 따라 조정 가능한 운영값입니다.
-
-운영 timeout도 `config.py`에 모아 관리합니다.
-
-- 일반 응답 / 첨부 응답 / project 응답 timeout
-- chat extract / attachment extract / route classify timeout
-- Ollama 기본 요청 timeout / 모델 목록 timeout
-- UI 요청 timeout (`/ui-config`를 통해 프론트에 전달)
-
----
-
-## 9. API / 사용 흐름
-
-### 기본 엔드포인트
-
-- `GET /`: 서버 상태 확인
-- `GET /ui`: 간단한 채팅 UI
-- `GET /ui-config`: 프론트 요청 timeout 등 UI 설정
-- `GET /models`: 로컬 Ollama 모델 목록
-- `GET /projects`: 최근 프로젝트 목록
-- `POST /chat`: 일반 채팅 / 첨부 텍스트 / ZIP artifact 처리
-- `GET /recall?query=...`: semantic memory recall 조회
-
-### `/chat`의 대표 흐름
-
-- `message`만 있으면 일반 채팅
-- `message + text file`이면 일반 채팅 또는 profile update 경로
-- `zip file`이면 project artifact ingest
-- `zip file + project_name`이면 사용자 지정 이름으로 project 생성
-- `project_id + message`이면 project 기반 질문
-
-project 기반 질문 안에서도 다시 두 갈래가 있습니다.
-
-- 프로젝트 자체 구조/코드/파일에 대한 질문: `ProjectAskService` + `ProjectRetriever`
-- 프로젝트에서 드러나는 사용자 성향/작업 방식 질문: `ProjectProfileEvidenceService`
-
-UI에서는 ZIP 업로드 후 프로젝트가 이름으로 목록에 등록되고, 이후에는 목록에서 선택해서 이어서 질문합니다.
-
----
-
-## 10. 현재 어디까지 와 있는가
-
-현재 코드에 이미 들어와 있는 핵심 뼈대는 다음과 같습니다.
-
-- topic 객체화
-- topic router 기반 active/attach/create
-- update-first attachment 처리
-- 공통 ingress / apply 구조
-- chat / uploaded_text / project_artifact evidence 통합
-- general / candidate / confirmed 분기
-- evidence pool 기반 promotion
-- candidate semantic refresh / archive / demotion 지원
-- project profile evidence의 file-hash 기반 incremental extraction
-- project artifact -> profile evidence sync
-- recall 경로의 semantic ranking + semantic raw message expansion
-- ResponseRunner 기반 continuation 처리
-
-즉, MK4는 아직 실험 중인 프로젝트이지만, 단순한 아이디어 문서 수준은 아니고 **memory 시스템의 실제 골격이 이미 코드에 들어와 있는 상태**입니다.
-
----
-
-## 11. 아직 중요한 미완 과제
-
-현재 우선순위가 높은 과제는 대략 다음과 같습니다.
-
-1. 일반 채팅 품질을 첨부 / project 수준의 memory 처리 품질까지 끌어올리기
-2. `general / candidate / confirmed` 의미론을 전 채널에서 더 엄밀하게 통일하기
-3. source lookup layer 설계 및 도입
-4. correction을 topic merge / split / rebuild 수준까지 확장하기
-5. retrieval 철학과 budget을 더 정교하게 정리하기
-6. 실제 속도/품질 측정 루프 만들기
-7. 남아 있는 하드코딩 / 레거시 브리지 / 중복 구현 정리
-8. 응답 프롬프트를 더 가볍게 다이어트하되, memory 구조 신호는 유지하는 균형점 찾기
-
----
-
-## 12. 이 프로젝트가 중요하게 보는 원칙
-
-MK4를 수정할 때는 아래 원칙을 강하게 유지합니다.
-
-- assistant 발화는 profile tier 재료로 쓰지 않기
-- 문자열 의미 해석 하드코딩 줄이기
-- 실패를 fallback으로 감추지 않기
-- general은 넓게 저장하되 기본 주입하지 않기
-- correction이 오면 과거 profile도 다시 깨질 수 있어야 하기
-- prompt 하드코딩보다 memory 구조를 우선하기
-- 최신 로컬 기준본 위에서만 순차적으로 작업하기
-
----
-
-## 13. 2026-04-14 기준 추가 메모
-
-- correction target kind 분류(`profile / topic_fact / response_behavior`)는 현재 코드에 반영되어 있으며,
-  실제 rebuild에는 현재 `profile` 정정만 직접 사용합니다.
-- candidate profile은 exact string 기준이 아니라 semantic match 기준으로 refresh / archive 되도록 강화되었습니다.
-- project profile evidence는 전체 재추출이 아니라 file hash를 기준으로 증분 재추출하도록 정리되었습니다.
-- topic 수준 merge / split / rebuild는 아직 미구현이며, 현재 rebuild 깊이는 profile 수준이 중심입니다.
-
-### 13-4. 메모리 노이즈 필터 강화
-
-`response_builder.py`에 더 정교한 시스템 프롬프트 및 정책 echo 감지:
-
-```python
-MEMORY_NOISE_PATTERNS = (
-    "당신은 특정 사용자를 장기적으로 보조하는 개인 ai 어시스턴트다",
-    "이 시스템 프롬프트는",
-    "최종 운영 지시",
-    # ...
-)
-
-POLICY_ECHO_PATTERNS = (
-    "현재 턴의 명시적 진술",
-    "최신 correction",
-    "기계적으로 복사하지",
-    # ...
-)
+```powershell
+python run_cli.py
 ```
 
-- System prompt 문장이 profile에 들어가는 것을 더 강하게 차단
-- Assistant가 자신의 정책을 반복하는 것도 차단
+구현을 볼 때 우선순위가 높은 파일은 아래다.
 
-### 13-5. 왜 이 개선이 중요한가
+- `core/utils/hash_resolver.py`
+- `core/storage/world_graph.py`
+- `core/translation/lang_to_graph.py`
+- `core/thinking/temp_thought_graph.py`
+- `core/thinking/thought_engine.py`
+- `docs/architecture/graph_schema.md`
 
-1. **Correction 의도의 명확화**: "틀렸어"라는 정정이 정보 오류인지, 자기 모델 정정인지, 태도 불만인지 명확히 구분
-
-2. **Profile 무결성 강화**: Profile rebuild 시 자신의 취향/특성 정정만 반영, 사실 오류 정정으로 인한 profile 오염 방지
-
-3. **다층적 정정 처리**: 같은 "correction" 타입이지만, 각각 다른 메모리 계층에 영향을 주도록 설계
-
-4. **향후 확장성**: response_behavior 정정을 모아두면, 향후 "사용자의 선호 응답 방식" 학습 가능
-
-### 13-6. 다음 단계
-
-- `general` tier의 promotion 조건에서 `topic_fact` 정정도 참고하기
-- Conflict detection 로직을 `topic_fact` 정정까지 확장하기
-- Response behavior 정정을 바탕으로 응답 스타일 가이드 자동 생성 고려
-- Message/embedding 캐시 및 성능 최적화
-
----
-
-## 13. 문서 가이드
-
-프로젝트 문서는 다음 성격으로 나뉩니다.
-
-- `docs/프로젝트_요구사항/MK4_프로젝트_핵심원칙.md`
-  - 쉽게 바뀌지 않을 철학과 장기 원칙
-- `docs/프로젝트_진행상황/진행상황.txt`
-  - 현재 코드 기준 완료 / 미완 정리
-- `docs/프로젝트_진행상황/troubleshooting_updated_MK4.md`
-  - 왜 설계 방향이 바뀌었는지에 대한 구조적 기록
-
-README는 이 셋을 요약한 **프로젝트 입구 문서** 역할을 맡습니다.
-
----
-
-## 14. 마무리
-
-MK4는 데모형 챗봇 프로젝트가 아니라,
-
-- 시간이 지날수록 더 나를 이해하고
-- 틀리면 다시 고칠 수 있고
-- 텍스트 / artifact / 대화 전체를 근거로 삼으며
-- 로컬 환경에서 실제로 굴러가는
-
-personalization system을 만드는 쪽에 더 가깝습니다.
-
-그래서 이 프로젝트는 단기적으로 답변만 예쁘게 만드는 것보다,
-**구조 일관성, 재구성 가능성, evidence 기반 memory, 로컬 실행 가능성**을 더 중요하게 봅니다.

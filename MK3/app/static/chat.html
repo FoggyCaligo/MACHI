@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MK3</title>
+  <link rel="stylesheet" href="/static/chat.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="logo">MK3 <span>graph chat UI</span></div>
+      <div class="header-right">
+        <select id="modelSelect" aria-label="모델 선택">
+          <option value="">모델 불러오는 중...</option>
+        </select>
+        <button type="button" id="newChatBtn">새 채팅</button>
+      </div>
+    </header>
+
+    <main id="messages" class="messages">
+      <div id="emptyState" class="empty-state">
+        <div class="empty-title">MK3</div>
+        <div class="empty-sub">메시지를 입력하면 MK3 파이프라인으로 응답합니다.</div>
+      </div>
+    </main>
+
+    <form id="chatForm" class="composer">
+      <div id="fileBadge" class="file-badge hidden">
+        <span class="file-icon">FILE</span>
+        <span id="fileName" class="file-name"></span>
+        <button type="button" id="clearFileBtn" class="icon-button" aria-label="파일 제거">x</button>
+      </div>
+
+      <div class="input-shell">
+        <label for="fileInput" id="fileBtn" class="icon-button" title="파일 첨부">+</label>
+        <input id="fileInput" name="file" type="file" />
+        <textarea
+          id="messageInput"
+          name="message"
+          rows="1"
+          placeholder="메시지를 입력하세요. Shift+Enter 줄바꿈, Enter 전송"
+        ></textarea>
+        <button type="submit" id="sendBtn">전송</button>
+      </div>
+    </form>
+  </div>
+
+  <script src="/static/chat.js"></script>
+</body>
+</html>

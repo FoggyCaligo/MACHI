@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+requests
+python-multipart
+pydantic
+sentence-transformers
+numpy
+beautifulsoup4
+chardet
+lxml
+python-dotenv

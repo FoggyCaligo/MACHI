@@ -1,277 +1,214 @@
+"""Ollama HTTP client helpers for embeddings, text generation, and model listing."""
+from __future__ import annotations
+
 from typing import Any
 
-import requests
+import httpx
 
-from config import (
-    GENERAL_REPLY_NUM_PREDICT,
-    OLLAMA_BASE_URL,
-    OLLAMA_DEFAULT_MODEL,
-    OLLAMA_LIST_TIMEOUT,
-    OLLAMA_TIMEOUT,
-)
+from .. import config
+
+_shared_client: httpx.AsyncClient | None = None
 
 
-DEFAULT_TIMEOUT = OLLAMA_TIMEOUT
-DEFAULT_NUM_PREDICT = GENERAL_REPLY_NUM_PREDICT
-DEFAULT_TRUNCATED_NOTICE = "\n\n[주의: 답변이 길이 제한으로 중간 종료되었을 수 있습니다. 더 짧게 다시 요청해 주세요.]"
+def _get_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=5.0,
+                read=config.EMBEDDING_TIMEOUT_SECONDS,
+                write=5.0,
+                pool=None,
+            ),
+        )
+    return _shared_client
 
 
-class OllamaClient:
-    def __init__(
-        self,
-        base_url: str = OLLAMA_BASE_URL,
-        model: str = OLLAMA_DEFAULT_MODEL,
-        timeout: int = DEFAULT_TIMEOUT,
-        num_predict: int = DEFAULT_NUM_PREDICT,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.timeout = timeout
-        self.num_predict = num_predict
+_EMBEDDING_ONLY_FAMILIES: frozenset[str] = frozenset({"nomic-bert", "bert", "clip"})
 
-    def _sanitize_messages(self, messages: list[dict]) -> list[dict]:
-        sanitized: list[dict] = []
 
-        for msg in messages:
-            role = (msg.get("role") or "").strip()
-            content = str(msg.get("content") or "")
-            tool_calls = msg.get("tool_calls") or []
-            name = str(msg.get("name") or "").strip()
-            tool_call_id = str(msg.get("tool_call_id") or "").strip()
+def _generation_options(*, num_predict: int | None = None) -> dict:
+    return {"num_predict": num_predict if num_predict is not None else config.OLLAMA_NUM_PREDICT}
 
-            if not role:
-                continue
 
-            if role == "system":
-                content = content.replace("<|think|>", "").strip()
+def _generation_payload(
+    base: dict,
+    *,
+    num_predict: int | None = None,
+    think: bool | None = None,
+    response_format: str | dict[str, Any] | None = None,
+) -> dict:
+    payload = {
+        **base,
+        "stream": False,
+        "options": _generation_options(num_predict=num_predict),
+    }
+    payload["think"] = config.OLLAMA_THINK if think is None else think
+    if response_format is not None:
+        payload["format"] = response_format
+    return payload
 
-            if not content.strip() and not tool_calls:
-                continue
 
-            sanitized_msg: dict[str, Any] = {"role": role}
-            if content.strip():
-                sanitized_msg["content"] = content
-            if tool_calls:
-                sanitized_msg["tool_calls"] = tool_calls
-            if name:
-                sanitized_msg["name"] = name
-            if tool_call_id:
-                sanitized_msg["tool_call_id"] = tool_call_id
-
-            sanitized.append(sanitized_msg)
-
-        return sanitized
-
-    def _build_payload(
-        self,
-        messages: list[dict],
-        model_name: str,
-        *,
-        tools: list[dict[str, Any]] | None = None,
-    ) -> dict:
-        payload = {
-            "model": model_name,
-            "messages": self._sanitize_messages(messages),
-            "stream": False,
-            "think": False,
-            "options": {"num_predict": self.num_predict},
-        }
-        if tools:
-            payload["tools"] = tools
-        return payload
-
-    def _summarize_response(self, data: dict) -> dict:
-        message = data.get("message") or {}
-        content = (message.get("content") or "").strip()
-        thinking = (message.get("thinking") or "").strip()
-
-        return {
-            "model": data.get("model"),
-            "done": data.get("done"),
-            "done_reason": data.get("done_reason"),
-            "content_len": len(content),
-            "has_thinking": bool(thinking),
-            "thinking_len": len(thinking),
-            "prompt_eval_count": data.get("prompt_eval_count"),
-            "eval_count": data.get("eval_count"),
-            "total_duration": data.get("total_duration"),
-            "load_duration": data.get("load_duration"),
-        }
-
-    def _classify_empty_reply(self, data: dict) -> str:
-        message = data.get("message") or {}
-        content = (message.get("content") or "").strip()
-        thinking = (message.get("thinking") or "").strip()
-        done_reason = data.get("done_reason")
-
-        if content:
-            return "ok"
-
-        if thinking and done_reason == "length":
-            return (
-                "EMPTY_REPLY_THINKING_TOKEN_BUDGET: "
-                "최종 답변(content) 없이 thinking만 생성하다가 num_predict 한도에 걸렸습니다. "
-                "think=false가 무시되었거나 모델이 여전히 reasoning trace를 생성한 상태일 수 있습니다."
-            )
-
-        if thinking and not content:
-            return (
-                "EMPTY_REPLY_THINKING_ONLY: "
-                "최종 답변(content)은 비어 있고 thinking만 존재합니다. "
-                "think=false가 무시되었거나 모델이 reasoning trace만 반환한 상태일 수 있습니다."
-            )
-
-        if done_reason == "length":
-            return (
-                "EMPTY_REPLY_LENGTH_WITHOUT_CONTENT: "
-                "응답이 길이 제한에서 종료되었지만 content가 비어 있습니다."
-            )
-
-        if done_reason == "stop":
-            return (
-                "EMPTY_REPLY_STOPPED_WITHOUT_CONTENT: "
-                "모델이 stop으로 종료되었지만 content가 비어 있습니다."
-            )
-
-        return (
-            "EMPTY_REPLY_UNKNOWN: "
-            "최종 답변(content)이 비어 있습니다. 원인을 단정할 수 없어 raw 응답 요약을 함께 확인해야 합니다."
+async def get_embedding(text: str) -> list[float]:
+    """Return an embedding vector from Ollama for the configured embedding model."""
+    client = _get_client()
+    r = await client.post(
+        f"{config.OLLAMA_HOST}/api/embeddings",
+        json={"model": config.EMBEDDING_MODEL_NAME, "prompt": text},
+    )
+    if r.status_code == 404:
+        r = await client.post(
+            f"{config.OLLAMA_HOST}/api/embed",
+            json={"model": config.EMBEDDING_MODEL_NAME, "input": text},
         )
 
-    def chat_with_metadata(
-        self,
-        messages: list[dict],
-        model: str | None = None,
-        require_complete: bool = False,
-        truncated_notice: str | None = DEFAULT_TRUNCATED_NOTICE,
-        tools: list[dict[str, Any]] | None = None,
-    ) -> dict:
-        model_name = (model or self.model).strip()
-        payload = self._build_payload(messages, model_name=model_name, tools=tools)
-
-        try:
-            resp = requests.post(
-                f"{self.base_url}/api/chat",
-                json=payload,
-                timeout=self.timeout,
-            )
-        except requests.exceptions.Timeout as exc:
-            raise RuntimeError(
-                f"OLLAMA_TIMEOUT: 모델 '{model_name}' 응답이 {self.timeout}초 안에 오지 않았습니다."
-            ) from exc
-
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Ollama error {resp.status_code}: {resp.text}")
-
-        data = resp.json()
-        message = data.get("message") or {}
-        content = (message.get("content") or "").strip()
-        tool_calls = message.get("tool_calls") or []
-        done_reason = str(data.get("done_reason") or "").strip().lower()
-
-        if tool_calls:
-            return {
-                "content": content,
-                "raw_content": content,
-                "done_reason": done_reason,
-                "truncated": done_reason == "length",
-                "summary": self._summarize_response(data),
-                "message": message,
-                "tool_calls": tool_calls,
-            }
-
-        if content:
-            if done_reason == "length" and require_complete:
-                summary = self._summarize_response(data)
-                raise RuntimeError(f"TRUNCATED_REPLY_LENGTH | summary={summary}")
-
-            returned = content
-            if done_reason == "length" and truncated_notice:
-                returned = content + truncated_notice
-
-            return {
-                "content": returned,
-                "raw_content": content,
-                "done_reason": done_reason,
-                "truncated": done_reason == "length",
-                "summary": self._summarize_response(data),
-                "message": message,
-                "tool_calls": tool_calls,
-            }
-
-        classification = self._classify_empty_reply(data)
-        summary = self._summarize_response(data)
-        raise RuntimeError(f"{classification} | summary={summary}")
-
-    def chat(
-        self,
-        messages: list[dict],
-        model: str | None = None,
-        require_complete: bool = False,
-        truncated_notice: str | None = DEFAULT_TRUNCATED_NOTICE,
-        tools: list[dict[str, Any]] | None = None,
-    ) -> str:
-        result = self.chat_with_metadata(
-            messages=messages,
-            model=model,
-            require_complete=require_complete,
-            truncated_notice=truncated_notice,
-            tools=tools,
+    if r.status_code == 404:
+        raise RuntimeError(
+            "Ollama embedding API was not found at either /api/embeddings or /api/embed."
         )
-        return str(result.get("content") or "")
+    if r.status_code == 400:
+        raise ValueError(
+            f"Ollama could not serve embedding model '{config.EMBEDDING_MODEL_NAME}'. "
+            "Install it first with `ollama pull nomic-embed-text` or set EMBEDDING_MODEL_NAME."
+        )
+    r.raise_for_status()
 
-    @classmethod
-    def list_local_models(
-        cls,
-        base_url: str = OLLAMA_BASE_URL,
-        timeout: int = OLLAMA_LIST_TIMEOUT,
-    ) -> list[dict]:
-        try:
-            resp = requests.get(
-                f"{base_url.rstrip('/')}/api/tags",
-                timeout=timeout,
+    data = r.json()
+    embedding = data.get("embedding")
+    if isinstance(embedding, list):
+        return embedding
+
+    embeddings = data.get("embeddings")
+    if isinstance(embeddings, list) and embeddings:
+        first = embeddings[0]
+        if isinstance(first, list):
+            return first
+
+    raise RuntimeError("Ollama embedding response did not include an embedding vector.")
+
+
+async def generate(prompt: str, model: str | None = None) -> str:
+    """Generate text with Ollama's non-streaming generate API."""
+    model_name = model or config.OLLAMA_MODEL_NAME
+    if not model_name:
+        raise ValueError(
+            "OLLAMA_MODEL_NAME environment variable is not configured. "
+            "Set it in your environment or choose a model in the UI."
+        )
+    url = f"{config.OLLAMA_HOST}/api/generate"
+    try:
+        async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_SECONDS) as client:
+            r = await client.post(
+                url,
+                json=_generation_payload(
+                    {
+                        "model": model_name,
+                        "prompt": prompt,
+                    }
+                ),
             )
-        except requests.exceptions.Timeout as exc:
-            raise RuntimeError(
-                f"OLLAMA_TIMEOUT: 로컬 모델 목록 응답이 {timeout}초 안에 오지 않았습니다."
-            ) from exc
+    except httpx.ReadTimeout:
+        raise TimeoutError(
+            f"Ollama model '{model_name}' did not respond within "
+            f"{config.OLLAMA_TIMEOUT_SECONDS:.0f} seconds."
+        )
 
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Ollama tags error {resp.status_code}: {resp.text}")
+    if r.status_code == 400:
+        raise ValueError(
+            f"Ollama rejected generate request for model '{model_name}' (400). "
+            "The model name may be wrong or an embedding-only model may have been selected."
+        )
+    r.raise_for_status()
+    return r.json()["response"]
 
-        data = resp.json()
-        models = data.get("models") or []
 
-        result: list[dict] = []
-        seen: set[str] = set()
+async def chat(
+    system: str,
+    user: str,
+    model: str | None = None,
+    *,
+    num_predict: int | None = None,
+    think: bool | None = None,
+    response_format: str | dict[str, Any] | None = None,
+) -> str:
+    """Generate text with Ollama's non-streaming chat API."""
+    model_name = model or config.OLLAMA_MODEL_NAME
+    if not model_name:
+        raise ValueError(
+            "OLLAMA_MODEL_NAME environment variable is not configured. "
+            "Choose a model in the UI or set it in your environment."
+        )
+    url = f"{config.OLLAMA_HOST}/api/chat"
+    try:
+        async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_SECONDS) as client:
+            r = await client.post(
+                url,
+                json=_generation_payload(
+                    {
+                        "model": model_name,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                    },
+                    num_predict=num_predict,
+                    think=think,
+                    response_format=response_format,
+                ),
+            )
+    except httpx.ReadTimeout:
+        raise TimeoutError(
+            f"Ollama model '{model_name}' did not respond within "
+            f"{config.OLLAMA_TIMEOUT_SECONDS:.0f} seconds."
+        )
 
-        for item in models:
-            name = str(item.get("name") or item.get("model") or "").strip()
-            if not name or name in seen:
+    if r.status_code == 400:
+        raise ValueError(
+            f"Ollama rejected chat request for model '{model_name}' (400). "
+            "The model name may be wrong or an embedding-only model may have been selected."
+        )
+    r.raise_for_status()
+
+    data = r.json()
+    message = data.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError(
+            "Ollama chat response content was empty. "
+            f"model='{model_name}', "
+            f"http_status={r.status_code}, "
+            f"done={data.get('done')!r}, "
+            f"done_reason={data.get('done_reason')!r}, "
+            f"think={config.OLLAMA_THINK!r}, "
+            f"num_predict={config.OLLAMA_NUM_PREDICT}"
+        )
+    return content
+
+
+async def list_models() -> list[str]:
+    """Return Ollama models that look usable for text generation."""
+    url = f"{config.OLLAMA_HOST}/api/tags"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
+
+        result: list[str] = []
+        for m in data.get("models", []):
+            name: str = m["name"]
+            if name in config.OLLAMA_EXCLUDED_MODELS:
                 continue
-
-            seen.add(name)
-
-            details = item.get("details") or {}
-            result.append(
-                {
-                    "name": name,
-                    "model": str(item.get("model") or name),
-                    "size": item.get("size"),
-                    "modified_at": item.get("modified_at"),
-                    "parameter_size": details.get("parameter_size"),
-                    "quantization_level": details.get("quantization_level"),
-                    "family": details.get("family"),
-                }
-            )
-
-        result.sort(key=lambda x: x["name"].lower())
+            details = m.get("details") or {}
+            families: list[str] = details.get("families") or []
+            if not families:
+                singular = details.get("family") or ""
+                if singular:
+                    families = [singular]
+            if families and all(f in _EMBEDDING_ONLY_FAMILIES for f in families):
+                continue
+            result.append(name)
         return result
 
-    @classmethod
-    def list_local_model_names(
-        cls,
-        base_url: str = OLLAMA_BASE_URL,
-        timeout: int = OLLAMA_LIST_TIMEOUT,
-    ) -> list[str]:
-        return [item["name"] for item in cls.list_local_models(base_url=base_url, timeout=timeout)]
+    except Exception:
+        return []
