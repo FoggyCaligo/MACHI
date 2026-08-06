@@ -21,7 +21,7 @@ def test_projection_prefers_repeated_subsequence(tmp_path: Path) -> None:
     graph.close()
 
 
-def test_projection_splits_when_density_changes(tmp_path: Path) -> None:
+def test_projection_splits_when_layers_change(tmp_path: Path) -> None:
     graph = LanguageGraph(tmp_path / "mk.db")
 
     first = graph.process("엄마는 내일 출장 가")
@@ -33,6 +33,29 @@ def test_projection_splits_when_density_changes(tmp_path: Path) -> None:
     third = graph.process("엄마는 내일 출장 가")
     assert third.segments == ["엄마", "는 내일 출장 가"]
     assert [item.support for item in third.evidence] == [2, 1]
+    graph.close()
+
+
+def test_same_count_from_different_inputs_does_not_stitch(tmp_path: Path) -> None:
+    graph = LanguageGraph(tmp_path / "mk.db")
+    graph.process("엄마")
+    graph.process("마는")
+
+    result = graph.process("엄마는")
+
+    assert result.segments == ["엄마", "는"]
+    graph.close()
+
+
+def test_unrelated_single_alph_does_not_strengthen_current_path(tmp_path: Path) -> None:
+    graph = LanguageGraph(tmp_path / "mk.db")
+    graph.process("엄청")
+    graph.process("엄마")
+
+    result = graph.process("엄마는")
+
+    assert result.segments == ["엄마", "는"]
+    assert result.evidence[0].support == 1
     graph.close()
 
 
