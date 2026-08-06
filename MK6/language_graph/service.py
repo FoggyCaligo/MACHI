@@ -30,7 +30,7 @@ class LanguageGraph:
     - 모든 Unicode code point를 alph로 동일 취급한다.
     - 한 턴 입력은 하나의 seq이며 매번 새로 저장한다.
     - 현재 seq에 존재하는 연속 구간만 과거 seq에서 proj한다.
-    - proj의 중첩 밀도를 이용해 segment를 선택한다.
+    - proj의 인접 연결 중첩 밀도가 바뀌는 지점에서 segment를 나눈다.
     """
 
     def __init__(self, db_path: str | Path = "data/mk_language.db") -> None:
@@ -106,48 +106,64 @@ class LanguageGraph:
     @staticmethod
     def _contains(sequence: list[str], candidate: tuple[str, ...]) -> bool:
         size = len(candidate)
-        return any(tuple(sequence[i : i + size]) == candidate for i in range(len(sequence) - size + 1))
+        return any(
+            tuple(sequence[i : i + size]) == candidate
+            for i in range(len(sequence) - size + 1)
+        )
 
     def _support(self, candidate: tuple[str, ...], prior: list[list[str]]) -> int:
+        """후보 경로를 포함하는 서로 다른 과거 seq의 수."""
         return sum(1 for seq in prior if self._contains(seq, candidate))
 
     def _segment(
         self, alphs: list[str], prior: list[list[str]]
     ) -> tuple[list[str], list[SegmentEvidence]]:
+        """현재 seq 위의 인접 연결 밀도를 기준으로 segment를 만든다.
+
+        각 경계 i는 ``alphs[i] -> alphs[i + 1]`` 연결을 뜻한다.
+        해당 연결이 과거의 서로 다른 seq에 몇 번 포함됐는지를 밀도로 삼는다.
+
+        - 밀도가 0이면 두 alph를 묶지 않는다.
+        - 양수 밀도가 연속해서 같으면 같은 segment로 묶는다.
+        - 밀도가 달라지는 지점은 셀로판지의 색 농도가 달라지는 경계이므로 자른다.
+        """
         n = len(alphs)
-        # dp[i] = 0..i를 가장 잘 설명한 점수와 구간 목록
-        dp: list[tuple[float, list[SegmentEvidence]] | None] = [None] * (n + 1)
-        dp[0] = (0.0, [])
+        if n == 1:
+            item = SegmentEvidence(alphs[0], 0, 1, 0)
+            return [item.text], [item]
 
-        for end in range(1, n + 1):
-            best: tuple[float, list[SegmentEvidence]] | None = None
-            for start in range(0, end):
-                prev = dp[start]
-                if prev is None:
-                    continue
-                length = end - start
-                candidate = tuple(alphs[start:end])
-                support = self._support(candidate, prior) if length >= 2 else 0
+        edge_support = [
+            self._support((alphs[i], alphs[i + 1]), prior)
+            for i in range(n - 1)
+        ]
 
-                # 단일 alph는 증거가 아니라 긴 segment로 덮이지 않는 경우의 fallback.
-                if length == 1:
-                    score = prev[0] - 0.25
-                elif support > 0:
-                    score = prev[0] + support * (length ** 2)
-                else:
-                    continue
+        evidence: list[SegmentEvidence] = []
+        start = 0
 
-                item = SegmentEvidence("".join(candidate), start, end, support)
-                proposal = (score, [*prev[1], item])
-                if best is None or proposal[0] > best[0]:
-                    best = proposal
-            dp[end] = best
+        for boundary in range(n - 1):
+            current_support = edge_support[boundary]
+            next_support = edge_support[boundary + 1] if boundary + 1 < n - 1 else None
 
-        chosen = dp[n]
-        if chosen is None:
-            evidence = [SegmentEvidence(a, i, i + 1, 0) for i, a in enumerate(alphs)]
-        else:
-            evidence = chosen[1]
+            should_cut = (
+                current_support == 0
+                or next_support is None
+                or next_support != current_support
+            )
+            if not should_cut:
+                continue
+
+            end = boundary + 2 if current_support > 0 else boundary + 1
+            if end > start:
+                segment_support = current_support if end - start >= 2 else 0
+                evidence.append(
+                    SegmentEvidence("".join(alphs[start:end]), start, end, segment_support)
+                )
+                start = end
+
+        while start < n:
+            evidence.append(SegmentEvidence(alphs[start], start, start + 1, 0))
+            start += 1
+
         return [item.text for item in evidence], evidence
 
     def _save_seq(self, text: str, alphs: list[str]) -> int:
@@ -155,7 +171,9 @@ class LanguageGraph:
         input_id = int(cur.lastrowid)
         for position, value in enumerate(alphs):
             self.conn.execute("INSERT OR IGNORE INTO alph(value) VALUES (?)", (value,))
-            alph_id = self.conn.execute("SELECT alph_id FROM alph WHERE value = ?", (value,)).fetchone()[0]
+            alph_id = self.conn.execute(
+                "SELECT alph_id FROM alph WHERE value = ?", (value,)
+            ).fetchone()[0]
             self.conn.execute(
                 "INSERT INTO seq_alph(input_id, position, alph_id) VALUES (?, ?, ?)",
                 (input_id, position, alph_id),
