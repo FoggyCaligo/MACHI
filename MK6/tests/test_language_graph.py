@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from MK.language_graph import LanguageGraph
+from MK6.language_graph import LanguageGraph
 
 
 def test_each_turn_creates_new_seq(tmp_path: Path) -> None:
