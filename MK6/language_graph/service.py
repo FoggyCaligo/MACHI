@@ -29,8 +29,8 @@ class LanguageGraph:
 
     - 모든 Unicode code point를 alph로 동일 취급한다.
     - 한 턴 입력은 하나의 seq이며 매번 새로 저장한다.
-    - 현재 seq에 존재하는 연속 구간만 과거 seq에서 proj한다.
-    - proj의 중첩 밀도를 이용해 segment를 선택한다.
+    - 현재 seq 안에 같은 순서로 존재하는 연결만 과거 seq에서 proj한다.
+    - 동일한 과거 input_id 층이 이어지는 동안만 하나의 segment로 묶는다.
     """
 
     def __init__(self, db_path: str | Path = "data/mk_language.db") -> None:
@@ -83,7 +83,7 @@ class LanguageGraph:
         input_id = self._save_seq(text, alphs)
         return ProjectionResult(input_id, text, alphs, segments, evidence)
 
-    def _load_sequences(self) -> Iterable[list[str]]:
+    def _load_sequences(self) -> Iterable[tuple[int, list[str]]]:
         rows = self.conn.execute(
             """
             SELECT sa.input_id, sa.position, a.value
@@ -95,59 +95,82 @@ class LanguageGraph:
         current_id: int | None = None
         current: list[str] = []
         for row in rows:
-            if current_id is not None and row["input_id"] != current_id:
-                yield current
+            row_input_id = int(row["input_id"])
+            if current_id is not None and row_input_id != current_id:
+                yield current_id, current
                 current = []
-            current_id = row["input_id"]
+            current_id = row_input_id
             current.append(row["value"])
         if current_id is not None:
-            yield current
+            yield current_id, current
 
     @staticmethod
     def _contains(sequence: list[str], candidate: tuple[str, ...]) -> bool:
         size = len(candidate)
-        return any(tuple(sequence[i : i + size]) == candidate for i in range(len(sequence) - size + 1))
+        return any(
+            tuple(sequence[i : i + size]) == candidate
+            for i in range(len(sequence) - size + 1)
+        )
 
-    def _support(self, candidate: tuple[str, ...], prior: list[list[str]]) -> int:
-        return sum(1 for seq in prior if self._contains(seq, candidate))
+    def _support_ids(
+        self,
+        candidate: tuple[str, ...],
+        prior: list[tuple[int, list[str]]],
+    ) -> frozenset[int]:
+        """현재 순서의 후보 연결을 포함하는 과거 input_id 층들."""
+        return frozenset(
+            input_id
+            for input_id, sequence in prior
+            if self._contains(sequence, candidate)
+        )
 
     def _segment(
-        self, alphs: list[str], prior: list[list[str]]
+        self,
+        alphs: list[str],
+        prior: list[tuple[int, list[str]]],
     ) -> tuple[list[str], list[SegmentEvidence]]:
+        """현재 입력 위에 투영된 seq 층의 동일 구간을 segment로 만든다.
+
+        현재 입력의 각 인접 연결만 검사한다. 각 연결에는 그것을 실제로
+        포함했던 과거 input_id 집합이 투영된다. 단순히 집합의 크기만 같은
+        것으로는 이어 붙이지 않고, 집합 자체가 같을 때만 같은 색의 연속
+        셀로판지 층으로 취급한다.
+        """
         n = len(alphs)
-        # dp[i] = 0..i를 가장 잘 설명한 점수와 구간 목록
-        dp: list[tuple[float, list[SegmentEvidence]] | None] = [None] * (n + 1)
-        dp[0] = (0.0, [])
+        if n == 1:
+            item = SegmentEvidence(alphs[0], 0, 1, 0)
+            return [item.text], [item]
 
-        for end in range(1, n + 1):
-            best: tuple[float, list[SegmentEvidence]] | None = None
-            for start in range(0, end):
-                prev = dp[start]
-                if prev is None:
-                    continue
-                length = end - start
-                candidate = tuple(alphs[start:end])
-                support = self._support(candidate, prior) if length >= 2 else 0
+        edge_layers = [
+            self._support_ids((alphs[i], alphs[i + 1]), prior)
+            for i in range(n - 1)
+        ]
 
-                # 단일 alph는 증거가 아니라 긴 segment로 덮이지 않는 경우의 fallback.
-                if length == 1:
-                    score = prev[0] - 0.25
-                elif support > 0:
-                    score = prev[0] + support * (length ** 2)
-                else:
-                    continue
+        evidence: list[SegmentEvidence] = []
+        start = 0
 
-                item = SegmentEvidence("".join(candidate), start, end, support)
-                proposal = (score, [*prev[1], item])
-                if best is None or proposal[0] > best[0]:
-                    best = proposal
-            dp[end] = best
+        while start < n:
+            if start >= n - 1 or not edge_layers[start]:
+                evidence.append(SegmentEvidence(alphs[start], start, start + 1, 0))
+                start += 1
+                continue
 
-        chosen = dp[n]
-        if chosen is None:
-            evidence = [SegmentEvidence(a, i, i + 1, 0) for i, a in enumerate(alphs)]
-        else:
-            evidence = chosen[1]
+            layers = edge_layers[start]
+            last_edge = start
+            while last_edge + 1 < n - 1 and edge_layers[last_edge + 1] == layers:
+                last_edge += 1
+
+            end = last_edge + 2
+            evidence.append(
+                SegmentEvidence(
+                    "".join(alphs[start:end]),
+                    start,
+                    end,
+                    len(layers),
+                )
+            )
+            start = end
+
         return [item.text for item in evidence], evidence
 
     def _save_seq(self, text: str, alphs: list[str]) -> int:
@@ -155,7 +178,9 @@ class LanguageGraph:
         input_id = int(cur.lastrowid)
         for position, value in enumerate(alphs):
             self.conn.execute("INSERT OR IGNORE INTO alph(value) VALUES (?)", (value,))
-            alph_id = self.conn.execute("SELECT alph_id FROM alph WHERE value = ?", (value,)).fetchone()[0]
+            alph_id = self.conn.execute(
+                "SELECT alph_id FROM alph WHERE value = ?", (value,)
+            ).fetchone()[0]
             self.conn.execute(
                 "INSERT INTO seq_alph(input_id, position, alph_id) VALUES (?, ?, ?)",
                 (input_id, position, alph_id),
