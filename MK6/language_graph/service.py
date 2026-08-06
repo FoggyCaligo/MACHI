@@ -29,8 +29,8 @@ class LanguageGraph:
 
     - 모든 Unicode code point를 alph로 동일 취급한다.
     - 한 턴 입력은 하나의 seq이며 매번 새로 저장한다.
-    - 현재 seq에 존재하는 연속 구간만 과거 seq에서 proj한다.
-    - proj의 인접 연결 중첩 밀도가 바뀌는 지점에서 segment를 나눈다.
+    - 현재 seq 안에 같은 순서로 존재하는 연결만 과거 seq에서 proj한다.
+    - 동일한 과거 input_id 층이 이어지는 동안만 하나의 segment로 묶는다.
     """
 
     def __init__(self, db_path: str | Path = "data/mk_language.db") -> None:
@@ -83,7 +83,7 @@ class LanguageGraph:
         input_id = self._save_seq(text, alphs)
         return ProjectionResult(input_id, text, alphs, segments, evidence)
 
-    def _load_sequences(self) -> Iterable[list[str]]:
+    def _load_sequences(self) -> Iterable[tuple[int, list[str]]]:
         rows = self.conn.execute(
             """
             SELECT sa.input_id, sa.position, a.value
@@ -95,13 +95,14 @@ class LanguageGraph:
         current_id: int | None = None
         current: list[str] = []
         for row in rows:
-            if current_id is not None and row["input_id"] != current_id:
-                yield current
+            row_input_id = int(row["input_id"])
+            if current_id is not None and row_input_id != current_id:
+                yield current_id, current
                 current = []
-            current_id = row["input_id"]
+            current_id = row_input_id
             current.append(row["value"])
         if current_id is not None:
-            yield current
+            yield current_id, current
 
     @staticmethod
     def _contains(sequence: list[str], candidate: tuple[str, ...]) -> bool:
@@ -111,58 +112,64 @@ class LanguageGraph:
             for i in range(len(sequence) - size + 1)
         )
 
-    def _support(self, candidate: tuple[str, ...], prior: list[list[str]]) -> int:
-        """후보 경로를 포함하는 서로 다른 과거 seq의 수."""
-        return sum(1 for seq in prior if self._contains(seq, candidate))
+    def _support_ids(
+        self,
+        candidate: tuple[str, ...],
+        prior: list[tuple[int, list[str]]],
+    ) -> frozenset[int]:
+        """현재 순서의 후보 연결을 포함하는 과거 input_id 층들."""
+        return frozenset(
+            input_id
+            for input_id, sequence in prior
+            if self._contains(sequence, candidate)
+        )
 
     def _segment(
-        self, alphs: list[str], prior: list[list[str]]
+        self,
+        alphs: list[str],
+        prior: list[tuple[int, list[str]]],
     ) -> tuple[list[str], list[SegmentEvidence]]:
-        """현재 seq 위의 인접 연결 밀도를 기준으로 segment를 만든다.
+        """현재 입력 위에 투영된 seq 층의 동일 구간을 segment로 만든다.
 
-        각 경계 i는 ``alphs[i] -> alphs[i + 1]`` 연결을 뜻한다.
-        해당 연결이 과거의 서로 다른 seq에 몇 번 포함됐는지를 밀도로 삼는다.
-
-        - 밀도가 0이면 두 alph를 묶지 않는다.
-        - 양수 밀도가 연속해서 같으면 같은 segment로 묶는다.
-        - 밀도가 달라지는 지점은 셀로판지의 색 농도가 달라지는 경계이므로 자른다.
+        현재 입력의 각 인접 연결만 검사한다. 각 연결에는 그것을 실제로
+        포함했던 과거 input_id 집합이 투영된다. 단순히 집합의 크기만 같은
+        것으로는 이어 붙이지 않고, 집합 자체가 같을 때만 같은 색의 연속
+        셀로판지 층으로 취급한다.
         """
         n = len(alphs)
         if n == 1:
             item = SegmentEvidence(alphs[0], 0, 1, 0)
             return [item.text], [item]
 
-        edge_support = [
-            self._support((alphs[i], alphs[i + 1]), prior)
+        edge_layers = [
+            self._support_ids((alphs[i], alphs[i + 1]), prior)
             for i in range(n - 1)
         ]
 
         evidence: list[SegmentEvidence] = []
         start = 0
 
-        for boundary in range(n - 1):
-            current_support = edge_support[boundary]
-            next_support = edge_support[boundary + 1] if boundary + 1 < n - 1 else None
-
-            should_cut = (
-                current_support == 0
-                or next_support is None
-                or next_support != current_support
-            )
-            if not should_cut:
+        while start < n:
+            if start >= n - 1 or not edge_layers[start]:
+                evidence.append(SegmentEvidence(alphs[start], start, start + 1, 0))
+                start += 1
                 continue
 
-            end = boundary + 2 if current_support > 0 else boundary + 1
-            if end > start:
-                segment_support = current_support if end - start >= 2 else 0
-                evidence.append(
-                    SegmentEvidence("".join(alphs[start:end]), start, end, segment_support)
-                )
-                start = end
+            layers = edge_layers[start]
+            last_edge = start
+            while last_edge + 1 < n - 1 and edge_layers[last_edge + 1] == layers:
+                last_edge += 1
 
-        while start < n:
-            evidence.append(SegmentEvidence(alphs[start], start, start + 1, 0))
-            start += 1
+            end = last_edge + 2
+            evidence.append(
+                SegmentEvidence(
+                    "".join(alphs[start:end]),
+                    start,
+                    end,
+                    len(layers),
+                )
+            )
+            start = end
 
         return [item.text for item in evidence], evidence
 
