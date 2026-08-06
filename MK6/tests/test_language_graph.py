@@ -21,6 +21,21 @@ def test_projection_prefers_repeated_subsequence(tmp_path: Path) -> None:
     graph.close()
 
 
+def test_projection_splits_when_density_changes(tmp_path: Path) -> None:
+    graph = LanguageGraph(tmp_path / "mk.db")
+
+    first = graph.process("엄마는 내일 출장 가")
+    assert first.segments == list("엄마는 내일 출장 가")
+
+    second = graph.process("엄마")
+    assert second.segments == ["엄마"]
+
+    third = graph.process("엄마는 내일 출장 가")
+    assert third.segments == ["엄마", "는 내일 출장 가"]
+    assert [item.support for item in third.evidence] == [2, 1]
+    graph.close()
+
+
 def test_space_and_punctuation_are_alphs(tmp_path: Path) -> None:
     graph = LanguageGraph(tmp_path / "mk.db")
     result = graph.process("가 .")
