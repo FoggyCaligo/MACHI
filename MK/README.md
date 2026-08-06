@@ -20,7 +20,8 @@ MK/
 ├─ segment_consumer/     # 후속 개념 처리용 빈 패키지
 ├─ static/index.html     # MK4 분위기의 독립 UI
 ├─ app.py                # FastAPI API
-└─ run.py                # 실행 진입점
+├─ run.py                # 서버 실행 진입점
+└─ to_list.py            # 터미널용 문장 → segment 리스트 테스트
 ```
 
 ## 실행
@@ -36,6 +37,27 @@ python -m MK.run
 
 브라우저에서 `http://127.0.0.1:8000`에 접속한다.
 
+## 터미널에서 리스트 출력
+
+문장을 명령어 인자로 넘기면 최종 segment만 리스트로 출력한다.
+
+```powershell
+python -m MK.to_list "엄마는 내일 출장가"
+```
+
+문장을 생략하면 터미널에서 직접 입력할 수 있다.
+
+```powershell
+python -m MK.to_list
+입력: 엄마는 내일 출장가
+```
+
+별도의 테스트 DB를 사용하려면:
+
+```powershell
+python -m MK.to_list "엄마" --db MK/data/test_language.db
+```
+
 ## 내부 코드에서 사용
 
 ```python
@@ -45,6 +67,15 @@ graph = LanguageGraph("MK/data/mk_language.db")
 result = graph.process("엄마는 내일 출장가")
 print(result.segments)
 graph.close()
+```
+
+리스트만 필요하면:
+
+```python
+from MK.to_list import input_to_list
+
+segments = input_to_list("엄마는 내일 출장가")
+print(segments)
 ```
 
 `process()`는 현재 입력을 분석한 뒤에 새 seq를 저장한다. 따라서 같은 턴의 입력이 자기 자신의 proj 증거로 사용되지는 않는다.
