@@ -56,6 +56,32 @@ async def test_workspace_file_tool_appends_utf8_text(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_file_tool_replaces_exact_utf8_text(tmp_path: Path) -> None:
+    suite = WorkspaceFileToolSuite(tmp_path)
+    registry = suite.build_registry()
+
+    await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "write",
+        "path": "tags.txt",
+        "content": "\"감성\"\n\"샤워\"\n",
+    }))
+    result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "replace",
+        "path": "tags.txt",
+        "old": "\"감성\"\n\"샤워\"",
+        "new": "감성\n샤워",
+    }))
+    read_result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "read",
+        "path": "tags.txt",
+    }))
+
+    assert result["ok"] is True
+    assert result["replacements"] == 1
+    assert read_result["content"] == "감성\n샤워\n"
+
+
+@pytest.mark.asyncio
 async def test_workspace_file_tool_returns_not_found_result_instead_of_raising(tmp_path: Path) -> None:
     suite = WorkspaceFileToolSuite(tmp_path)
     registry = suite.build_registry()

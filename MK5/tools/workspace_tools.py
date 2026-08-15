@@ -22,6 +22,8 @@ class WorkspaceFileToolSuite:
                         "action": {"type": "string"},
                         "path": {"type": "string"},
                         "content": {"type": "string"},
+                        "old": {"type": "string"},
+                        "new": {"type": "string"},
                     },
                     "required": ["action", "path"],
                     "additionalProperties": False,
@@ -88,4 +90,41 @@ class WorkspaceFileToolSuite:
             with target.open("a", encoding="utf-8") as handle:
                 handle.write(content)
             return {"ok": True, "path": relative_path, "status": "appended", "bytes": len(content.encode("utf-8"))}
-        raise ValueError("workspace_file action must be one of: read, list, write, append")
+        if action == "replace":
+            old = str(arguments.get("old") or "")
+            new = str(arguments.get("new") or "")
+            if not target.exists():
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "not_found",
+                    "message": f"File not found: {relative_path}",
+                }
+            if not target.is_file():
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "not_file",
+                    "message": f"Path is not a file: {relative_path}",
+                }
+            if old == "":
+                raise ValueError("workspace_file replace requires old")
+            original = target.read_text(encoding="utf-8")
+            count = original.count(old)
+            if count == 0:
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "old_not_found",
+                    "message": "Old text not found.",
+                }
+            updated = original.replace(old, new)
+            target.write_text(updated, encoding="utf-8")
+            return {
+                "ok": True,
+                "path": relative_path,
+                "status": "replaced",
+                "replacements": count,
+                "bytes": len(updated.encode("utf-8")),
+            }
+        raise ValueError("workspace_file action must be one of: read, list, write, append, replace")

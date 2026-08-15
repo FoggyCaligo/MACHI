@@ -16,6 +16,8 @@ Rules:
 - terminal_command runs with its current working directory set to the workspace root. If the user refers to a parent or sibling directory, use normal explicit relative paths such as `..` or `../playlist2`.
 - workspace_file resolves relative paths from the workspace root, and parent paths such as `../playlist2/file.txt` or absolute paths are allowed.
 - Prefer workspace_file over terminal_command for reading or modifying text files, including files in parent or sibling directories.
+- When the user asks to edit, change, remove, or replace text in a file, perform an actual workspace_file write or replace action. Do not only show the edited content.
+- For small exact text edits, prefer workspace_file action="replace" with old/new.
 - Do not claim that you checked, read, listed, counted, or modified a file unless tool_history contains a successful workspace_file or terminal_command result for that exact operation.
 - For text file writes/appends inside the workspace root, prefer workspace_file because it writes UTF-8.
 - If terminal_command is necessary to read or write non-ASCII text, force UTF-8 explicitly. Prefer Python with encoding="utf-8", or PowerShell Get-Content/Set-Content/Add-Content with -Encoding UTF8 and [Console]::OutputEncoding set to UTF-8. Do not use plain echo/type/redirection for Korean text.
