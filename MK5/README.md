@@ -138,3 +138,15 @@ http://127.0.0.1:8010/
 - `tools/graph_tools.py`
 - `tools/web_search.py`
 
+## 다른 레포에서 사용하기
+
+`MK5`는 `playlist2` 같은 다른 레포에서 그래프 메모리와 도구 오케스트레이션 엔진으로 가져다 쓸 수 있다.
+
+이때 호스트 레포별로 아래 경로를 분리해서 지정하는 것이 좋다.
+
+- `MK5_WORKSPACE_ROOT`
+- `MK5_DB_PATH`
+- `MK5_SENTENCE_BREAKER_DB_PATH`
+
+자세한 예시는 `docs/using_mk5_from_other_repo.md`를 참고하면 된다.
+

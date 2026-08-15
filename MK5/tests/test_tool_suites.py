@@ -32,6 +32,21 @@ async def test_workspace_file_tool_can_write_and_read(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_file_tool_returns_not_found_result_instead_of_raising(tmp_path: Path) -> None:
+    suite = WorkspaceFileToolSuite(tmp_path)
+    registry = suite.build_registry()
+
+    result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "read",
+        "path": "architecture.md",
+    }))
+
+    assert result["ok"] is False
+    assert result["error"] == "not_found"
+    assert result["path"] == "architecture.md"
+
+
+@pytest.mark.asyncio
 async def test_terminal_tool_blocks_destructive_command(tmp_path: Path) -> None:
     suite = TerminalToolSuite(tmp_path)
     registry = suite.build_registry()

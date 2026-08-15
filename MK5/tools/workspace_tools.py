@@ -47,14 +47,37 @@ class WorkspaceFileToolSuite:
         target = self._resolve(relative_path)
         if action == "read":
             if not target.exists():
-                raise FileNotFoundError(relative_path)
-            return {"path": relative_path, "content": target.read_text(encoding="utf-8")}
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "not_found",
+                    "message": f"File not found: {relative_path}",
+                }
+            if not target.is_file():
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "not_file",
+                    "message": f"Path is not a file: {relative_path}",
+                }
+            return {"ok": True, "path": relative_path, "content": target.read_text(encoding="utf-8")}
         if action == "list":
             if not target.exists():
-                raise FileNotFoundError(relative_path)
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "not_found",
+                    "message": f"Path not found: {relative_path}",
+                }
             if not target.is_dir():
-                raise ValueError("list action requires a directory path")
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "not_directory",
+                    "message": f"Path is not a directory: {relative_path}",
+                }
             return {
+                "ok": True,
                 "path": relative_path,
                 "entries": sorted(item.name for item in target.iterdir()),
             }

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "machi"
+version = "0.1.0"
+description = "Local graph-memory and cognitive-agent experiments."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "httpx",
+    "ddgs",
+    "sentence-breaker @ git+https://github.com/FoggyCaligo/Sentence_Breaker.git@f36bd37c95bbb77482ece0caab33b8b936f90f29",
+]
+
+[tool.setuptools.packages.find]
+include = ["MK5*"]

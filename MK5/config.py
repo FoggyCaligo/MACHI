@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-WORKSPACE_ROOT = BASE_DIR.parent
+WORKSPACE_ROOT = Path(os.getenv("MK5_WORKSPACE_ROOT", str(BASE_DIR.parent))).resolve()
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = Path(os.getenv("MK5_DB_PATH", str(DATA_DIR / "memory.db"))).resolve()
 SENTENCE_BREAKER_DB_PATH = Path(
