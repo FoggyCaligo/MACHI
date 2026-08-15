@@ -14,21 +14,26 @@ from MK5.tools.web_search import HttpWebSearchTool, SearchHit
 
 
 @pytest.mark.asyncio
-async def test_workspace_file_tool_can_write_and_read(tmp_path: Path) -> None:
+async def test_workspace_file_tool_can_create_update_and_read(tmp_path: Path) -> None:
     suite = WorkspaceFileToolSuite(tmp_path)
     registry = suite.build_registry()
 
     await registry.run(ToolCall(tool="workspace_file", arguments={
-        "action": "write",
+        "action": "create",
         "path": "notes/test.txt",
         "content": "hello",
+    }))
+    await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "update",
+        "path": "notes/test.txt",
+        "content": "goodbye",
     }))
     result = await registry.run(ToolCall(tool="workspace_file", arguments={
         "action": "read",
         "path": "notes/test.txt",
     }))
 
-    assert result["content"] == "hello"
+    assert result["content"] == "goodbye"
 
 
 @pytest.mark.asyncio
@@ -37,14 +42,15 @@ async def test_workspace_file_tool_appends_utf8_text(tmp_path: Path) -> None:
     registry = suite.build_registry()
 
     await registry.run(ToolCall(tool="workspace_file", arguments={
-        "action": "write",
+        "action": "create",
         "path": "tags.txt",
         "content": "고음\n",
     }))
     result = await registry.run(ToolCall(tool="workspace_file", arguments={
-        "action": "append",
+        "action": "update",
         "path": "tags.txt",
         "content": "\"감성\"\n\"샤워\"\n",
+        "mode": "append",
     }))
     read_result = await registry.run(ToolCall(tool="workspace_file", arguments={
         "action": "read",
@@ -61,12 +67,12 @@ async def test_workspace_file_tool_replaces_exact_utf8_text(tmp_path: Path) -> N
     registry = suite.build_registry()
 
     await registry.run(ToolCall(tool="workspace_file", arguments={
-        "action": "write",
+        "action": "create",
         "path": "tags.txt",
         "content": "\"감성\"\n\"샤워\"\n",
     }))
     result = await registry.run(ToolCall(tool="workspace_file", arguments={
-        "action": "replace",
+        "action": "update",
         "path": "tags.txt",
         "old": "\"감성\"\n\"샤워\"",
         "new": "감성\n샤워",
@@ -117,6 +123,30 @@ async def test_workspace_file_tool_can_access_parent_and_absolute_paths(tmp_path
 
     assert relative_result["content"] == "감성\n"
     assert absolute_result["content"] == "감성\n"
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_tool_can_delete_file(tmp_path: Path) -> None:
+    suite = WorkspaceFileToolSuite(tmp_path)
+    registry = suite.build_registry()
+
+    await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "create",
+        "path": "tags.txt",
+        "content": "감성\n",
+    }))
+    delete_result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "delete",
+        "path": "tags.txt",
+    }))
+    read_result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "read",
+        "path": "tags.txt",
+    }))
+
+    assert delete_result["ok"] is True
+    assert read_result["ok"] is False
+    assert read_result["error"] == "not_found"
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ class WorkspaceFileToolSuite:
         registry.register(
             ToolDefinition(
                 name="workspace_file",
-                description="Read, list, write, or append files using paths resolved from the workspace root. Parent and absolute paths are allowed.",
+                description="CRUD file tool. Use create, read, update, or delete with paths resolved from the workspace root. Parent and absolute paths are allowed.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -24,6 +24,7 @@ class WorkspaceFileToolSuite:
                         "content": {"type": "string"},
                         "old": {"type": "string"},
                         "new": {"type": "string"},
+                        "mode": {"type": "string"},
                     },
                     "required": ["action", "path"],
                     "additionalProperties": False,
@@ -61,38 +62,21 @@ class WorkspaceFileToolSuite:
                     "message": f"Path is not a file: {relative_path}",
                 }
             return {"ok": True, "path": relative_path, "content": target.read_text(encoding="utf-8")}
-        if action == "list":
-            if not target.exists():
+        if action == "create":
+            if target.exists():
                 return {
                     "ok": False,
                     "path": relative_path,
-                    "error": "not_found",
-                    "message": f"Path not found: {relative_path}",
+                    "error": "already_exists",
+                    "message": f"Path already exists: {relative_path}",
                 }
-            if not target.is_dir():
-                return {
-                    "ok": False,
-                    "path": relative_path,
-                    "error": "not_directory",
-                    "message": f"Path is not a directory: {relative_path}",
-                }
-            return {
-                "ok": True,
-                "path": relative_path,
-                "entries": sorted(item.name for item in target.iterdir()),
-            }
-        if action == "write":
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
-            return {"ok": True, "path": relative_path, "status": "written", "bytes": len(content.encode("utf-8"))}
-        if action == "append":
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write(content)
-            return {"ok": True, "path": relative_path, "status": "appended", "bytes": len(content.encode("utf-8"))}
-        if action == "replace":
+            return {"ok": True, "path": relative_path, "status": "created", "bytes": len(content.encode("utf-8"))}
+        if action == "update":
             old = str(arguments.get("old") or "")
             new = str(arguments.get("new") or "")
+            mode = str(arguments.get("mode") or "").strip().lower()
             if not target.exists():
                 return {
                     "ok": False,
@@ -107,8 +91,13 @@ class WorkspaceFileToolSuite:
                     "error": "not_file",
                     "message": f"Path is not a file: {relative_path}",
                 }
+            if mode == "append":
+                with target.open("a", encoding="utf-8") as handle:
+                    handle.write(content)
+                return {"ok": True, "path": relative_path, "status": "updated", "mode": "append", "bytes": len(content.encode("utf-8"))}
             if old == "":
-                raise ValueError("workspace_file replace requires old")
+                target.write_text(content, encoding="utf-8")
+                return {"ok": True, "path": relative_path, "status": "updated", "mode": "write", "bytes": len(content.encode("utf-8"))}
             original = target.read_text(encoding="utf-8")
             count = original.count(old)
             if count == 0:
@@ -123,8 +112,21 @@ class WorkspaceFileToolSuite:
             return {
                 "ok": True,
                 "path": relative_path,
-                "status": "replaced",
+                "status": "updated",
+                "mode": "replace",
                 "replacements": count,
                 "bytes": len(updated.encode("utf-8")),
             }
-        raise ValueError("workspace_file action must be one of: read, list, write, append, replace")
+        if action == "delete":
+            if not target.exists():
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "not_found",
+                    "message": f"Path not found: {relative_path}",
+                }
+            if target.is_dir():
+                raise ValueError("workspace_file delete only supports files")
+            target.unlink()
+            return {"ok": True, "path": relative_path, "status": "deleted"}
+        raise ValueError("workspace_file action must be one of: create, read, update, delete")

@@ -15,12 +15,14 @@ class GraphToolSuite:
         query: str = "",
         limit: int = 5,
         exclude_node_ids: set[str] | None = None,
+        activation_node_ids: set[str] | None = None,
     ) -> list[str]:
         return self._memory_service.user_memory_summary(
             user_id,
             query=query,
             limit=limit,
             exclude_node_ids=exclude_node_ids,
+            activation_node_ids=activation_node_ids,
         )
 
     def build_registry(self) -> ToolRegistry:

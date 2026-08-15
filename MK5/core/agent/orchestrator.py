@@ -36,7 +36,8 @@ class AgentOrchestrator:
         self._tool_registry.merge(self._graph_tools.build_registry())
         if hasattr(self._web_search, "build_registry"):
             self._tool_registry.merge(self._web_search.build_registry())  # type: ignore[arg-type]
-        self._recent_user_messages: dict[str, list[str]] = {}
+        self._recent_dialogue_messages: dict[str, list[str]] = {}
+        self._previous_activation_node_ids: dict[str, set[str]] = {}
 
     async def respond(
         self,
@@ -48,11 +49,17 @@ class AgentOrchestrator:
     ) -> AgentResponse:
         self._memory_service.ensure_user_anchor(user_id)
         conversation_key = f"{user_id}::{session_id or 'default'}"
-        recent_messages = list(self._recent_user_messages.get(conversation_key, []))
+        recent_dialogue_messages = list(self._recent_dialogue_messages.get(conversation_key, []))
+        previous_activation_node_ids = set(self._previous_activation_node_ids.get(conversation_key, set()))
         utterance_id = self._memory_service.record_user_utterance(
             user_id=user_id,
             text=message,
             session_id=session_id,
+        )
+        local_activation_node_ids = self._memory_service.local_activation_node_ids_for_utterance(
+            user_id=user_id,
+            utterance_id=utterance_id,
+            previous_activation_node_ids=previous_activation_node_ids,
         )
 
         memory_summary = self._graph_tools.get_user_memory_summary(
@@ -60,12 +67,16 @@ class AgentOrchestrator:
             query=message,
             limit=5,
             exclude_node_ids={utterance_id},
+            activation_node_ids=local_activation_node_ids,
         )
         tool_history: list[dict] = []
         used_tools = ["memory.record_user_utterance", "graph.get_user_memory_summary"]
         memory_writes = ["user_utterance", "user_fact"]
         tool_events: list[dict] = []
-        model_user_message = _compose_user_message(message=message, recent_messages=recent_messages)
+        model_user_message = _compose_user_message(
+            message=message,
+            recent_dialogue_messages=recent_dialogue_messages,
+        )
 
         if (
             not memory_summary
@@ -96,7 +107,15 @@ class AgentOrchestrator:
                 tool_history=tool_history,
             )
             if turn.final_answer:
-                self._remember_user_message(conversation_key=conversation_key, message=message)
+                self._remember_dialogue_messages(
+                    conversation_key=conversation_key,
+                    user_message=message,
+                    assistant_message=turn.final_answer,
+                )
+                self._remember_activation_node_ids(
+                    conversation_key=conversation_key,
+                    node_ids=local_activation_node_ids,
+                )
                 return AgentResponse(
                     text=turn.final_answer,
                     used_tools=used_tools,
@@ -122,17 +141,37 @@ class AgentOrchestrator:
                 tool_events.append(event)
                 tool_history.append(event)
 
-        self._remember_user_message(conversation_key=conversation_key, message=message)
+        fallback_answer = "?? ?? ???? ?? ??? ??? ?????."
+        self._remember_dialogue_messages(
+            conversation_key=conversation_key,
+            user_message=message,
+            assistant_message=fallback_answer,
+        )
+        self._remember_activation_node_ids(
+            conversation_key=conversation_key,
+            node_ids=local_activation_node_ids,
+        )
         return AgentResponse(
-            text="도구 실행 이후에도 최종 응답을 만들지 못했습니다.",
+            text=fallback_answer,
             used_tools=used_tools,
             memory_writes=memory_writes,
             tool_events=tool_events,
         )
 
-    def _remember_user_message(self, *, conversation_key: str, message: str) -> None:
-        messages = [*self._recent_user_messages.get(conversation_key, []), message]
-        self._recent_user_messages[conversation_key] = messages[-6:]
+    def _remember_dialogue_messages(
+        self,
+        *,
+        conversation_key: str,
+        user_message: str,
+        assistant_message: str,
+    ) -> None:
+        self._recent_dialogue_messages[conversation_key] = [
+            f"User: {user_message}",
+            f"Assistant: {assistant_message}",
+        ]
+
+    def _remember_activation_node_ids(self, *, conversation_key: str, node_ids: set[str]) -> None:
+        self._previous_activation_node_ids[conversation_key] = set(node_ids)
 
     def register_tool_registry(self, registry: ToolRegistry) -> None:
         self._tool_registry.merge(registry)
@@ -169,8 +208,14 @@ class AgentOrchestrator:
             self._memory_service.record_search_results(query=query_node, results=node_hits)
 
 
-def _compose_user_message(*, message: str, recent_messages: list[str]) -> str:
-    if not recent_messages:
-        return message
-    recent = "\n".join(f"- {item}" for item in recent_messages[-3:])
-    return f"Recent user messages:\n{recent}\n\nCurrent user message:\n{message}"
+def _compose_user_message(
+    *,
+    message: str,
+    recent_dialogue_messages: list[str],
+) -> str:
+    sections: list[str] = []
+    if recent_dialogue_messages:
+        dialogue = "\n".join(f"- {item}" for item in recent_dialogue_messages)
+        sections.append(f"Previous dialogue turn:\n{dialogue}")
+    sections.append(f"Current user message:\n{message}")
+    return "\n\n".join(sections)

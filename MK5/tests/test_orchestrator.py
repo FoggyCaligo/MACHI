@@ -98,6 +98,28 @@ class ContextAwareFileReadModel:
         return ModelTurn(final_answer="done")
 
 
+class PreviousDialogueModel:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self._turn = 0
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[str],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        self.messages.append(user_message)
+        self._turn += 1
+        if self._turn == 1:
+            return ModelTurn(final_answer="graph_search 도구로 확인해보겠습니다.")
+        return ModelTurn(final_answer="done")
+
+
 class CapturingWebSearchTool:
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -253,7 +275,7 @@ async def test_orchestrator_does_not_no_slot_search_when_memory_summary_exists()
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_passes_recent_context_so_model_can_read_files(tmp_path) -> None:
+async def test_orchestrator_passes_previous_dialogue_so_model_can_read_files(tmp_path) -> None:
     (tmp_path / "README.md").write_text("Root project", encoding="utf-8")
     (tmp_path / "MK5").mkdir()
     (tmp_path / "MK5" / "README.md").write_text("MK5 project", encoding="utf-8")
@@ -289,5 +311,68 @@ async def test_orchestrator_passes_recent_context_so_model_can_read_files(tmp_pa
     assert file_events[1]["result"]["content"] == "MK5 project"
     assert "루트의 README.md" in chat_model.last_user_message
     assert "응. 읽어봐줘." in chat_model.last_user_message
+    repo.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_orchestrator_passes_previous_dialogue_turn_for_confirmation() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    chat_model = PreviousDialogueModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=chat_model,
+        web_search=CapturingWebSearchTool(),
+    )
+
+    await orchestrator.respond(
+        user_id="alice",
+        message="나에 대해 기억하니?",
+        model=None,
+        session_id="s1",
+    )
+    await orchestrator.respond(
+        user_id="alice",
+        message="응. 그 도구로 한번 진행해봐.",
+        model=None,
+        session_id="s1",
+    )
+
+    assert "Previous dialogue turn" in chat_model.messages[-1]
+    assert "Assistant: graph_search 도구로 확인해보겠습니다." in chat_model.messages[-1]
+    assert "응. 그 도구로 한번 진행해봐." in chat_model.messages[-1]
+    repo.close()
+
+
+def test_memory_local_activation_carries_previous_non_overlapping_nodes() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    first_utterance_id = memory.record_user_utterance(
+        user_id="alice",
+        text="playlist2 폴더의 tag.txt를 확인했다.",
+        session_id="s1",
+    )
+    first_activation = memory.local_activation_node_ids_for_utterance(
+        user_id="alice",
+        utterance_id=first_utterance_id,
+    )
+
+    second_utterance_id = memory.record_user_utterance(
+        user_id="alice",
+        text="다음 작업으로 넘어가자.",
+        session_id="s1",
+    )
+    second_activation = memory.local_activation_node_ids_for_utterance(
+        user_id="alice",
+        utterance_id=second_utterance_id,
+        previous_activation_node_ids=first_activation,
+    )
+
+    assert second_utterance_id in second_activation
+    assert first_activation - {second_utterance_id}
+    assert (first_activation - {second_utterance_id}).issubset(second_activation)
     repo.close()
 
