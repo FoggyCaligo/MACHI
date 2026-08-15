@@ -7,19 +7,6 @@ from .. import config
 from .tool_runtime import ToolDefinition, ToolRegistry
 
 
-_BLOCKED_TERMINAL_TOKENS = (
-    "del ",
-    " rm ",
-    "rm -",
-    "rmdir ",
-    "shutdown",
-    "reboot",
-    "format ",
-    "mkfs",
-    "diskpart",
-)
-
-
 class TerminalToolSuite:
     def __init__(self, workspace_root: Path | None = None) -> None:
         self._workspace_root = (workspace_root or config.WORKSPACE_ROOT).resolve()
@@ -29,7 +16,7 @@ class TerminalToolSuite:
         registry.register(
             ToolDefinition(
                 name="terminal_command",
-                description="Run a non-destructive shell command in the workspace root and return stdout/stderr.",
+                description="Run a shell command from the workspace root and return stdout/stderr.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -47,10 +34,6 @@ class TerminalToolSuite:
         command = str(arguments.get("command") or "").strip()
         if not command:
             raise ValueError("terminal_command requires command")
-
-        lowered = f" {command.lower()} "
-        if any(token in lowered for token in _BLOCKED_TERMINAL_TOKENS):
-            raise ValueError("Blocked potentially destructive terminal command.")
 
         process = await asyncio.create_subprocess_shell(
             command,

@@ -150,12 +150,14 @@ async def test_workspace_file_tool_can_delete_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_terminal_tool_blocks_destructive_command(tmp_path: Path) -> None:
+async def test_terminal_tool_allows_shell_commands_without_command_blocklist(tmp_path: Path) -> None:
     suite = TerminalToolSuite(tmp_path)
     registry = suite.build_registry()
 
-    with pytest.raises(ValueError):
-        await registry.run(ToolCall(tool="terminal_command", arguments={"command": "rm -rf ."}))
+    result = await registry.run(ToolCall(tool="terminal_command", arguments={"command": "echo ok"}))
+
+    assert result["returncode"] == 0
+    assert "ok" in result["stdout"]
 
 
 @pytest.mark.asyncio

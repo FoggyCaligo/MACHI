@@ -79,5 +79,5 @@ async def ask_mk5(user_id: str, message: str):
 - Create or set the environment variables before importing modules that read `MK5.config`.
 - Use a stable `user_id` if the host app wants long-term user memory.
 - Use a stable `session_id` when a host app wants short-term conversational continuity.
-- `workspace_file` is scoped to `MK5_WORKSPACE_ROOT` and rejects paths that escape it.
-- `terminal_command` also runs inside `MK5_WORKSPACE_ROOT`.
+- `workspace_file` resolves relative paths from `MK5_WORKSPACE_ROOT`, but parent and absolute paths are allowed when the user intentionally works outside the root.
+- `terminal_command` starts in `MK5_WORKSPACE_ROOT`, but the command itself may use normal shell navigation such as `..`, absolute paths, or sibling repository paths.
