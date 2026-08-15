@@ -46,18 +46,44 @@ class WorkspaceFileToolSuite:
         registry.register(
             ToolDefinition(
                 name="file_update",
-                description="Update a UTF-8 text file. Use content to overwrite the whole file, mode='append' with content containing only the new text to append, or old+new together for exact replacement. Never send new without old.",
+                description=(
+                    "Update a UTF-8 text file using exactly one operation shape: "
+                    "append with path+mode='append'+content, exact replacement with path+old+new, "
+                    "or full overwrite with path+content. For local edits, prefer old+new exact replacement."
+                ),
                 input_schema={
                     "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
-                        "old": {"type": "string"},
-                        "new": {"type": "string"},
-                        "mode": {"type": "string"},
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "mode": {"type": "string", "enum": ["append"]},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["path", "mode", "content"],
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "old": {"type": "string"},
+                                "new": {"type": "string"},
+                            },
+                            "required": ["path", "old", "new"],
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["path", "content"],
+                            "additionalProperties": False,
+                        },
+                    ],
                 },
             ),
             self._update,
@@ -150,11 +176,12 @@ class WorkspaceFileToolSuite:
             return {"ok": True, "path": relative_path, "status": "updated", "mode": "append", "bytes": len(content.encode("utf-8"))}
         if has_old:
             if not has_new:
+                hint = " Use new for the replacement text; do not send replacement text as content." if has_content else ""
                 return {
                     "ok": False,
                     "path": relative_path,
                     "error": "invalid_arguments",
-                    "message": "file_update replacement requires both old and new.",
+                    "message": f"file_update replacement requires both old and new.{hint}",
                 }
             if old == "":
                 return {

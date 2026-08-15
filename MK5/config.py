@@ -15,12 +15,13 @@ SENTENCE_BREAKER_DB_PATH = Path(
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").strip()
 OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "gemma3:4b").strip()
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "90"))
-OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "1536"))
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "768"))
 OLLAMA_THINK = os.getenv("OLLAMA_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
 
-AGENT_MAX_TOOL_ROUNDS = int(os.getenv("MK5_AGENT_MAX_TOOL_ROUNDS", "4"))
+AGENT_MAX_TOOL_ROUNDS = int(os.getenv("MK5_AGENT_MAX_TOOL_ROUNDS", "10"))
 TERMINAL_TIMEOUT_SECONDS = float(os.getenv("MK5_TERMINAL_TIMEOUT_SECONDS", "20"))
 WEB_SEARCH_TIMEOUT_SECONDS = float(os.getenv("MK5_WEB_SEARCH_TIMEOUT_SECONDS", "12"))
+AGENT_DEBUG_LOG = os.getenv("MK5_AGENT_DEBUG_LOG", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 OLLAMA_EXCLUDED_MODELS: frozenset[str] = frozenset(
     name.strip()

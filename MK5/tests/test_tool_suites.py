@@ -206,6 +206,23 @@ def test_model_turn_parser_rejects_plain_text_fallback() -> None:
         _parse_model_turn("검색 결과를 바탕으로 답변합니다.")
 
 
+def test_model_turn_parser_reads_completion_evidence_fields() -> None:
+    turn = _parse_model_turn(
+        """
+        {
+          "final_answer": "수정했습니다.",
+          "tool_calls": [],
+          "final_answer_kind": "tool_completion",
+          "completion_tools": ["file_update"]
+        }
+        """
+    )
+
+    assert turn.final_answer == "수정했습니다."
+    assert turn.final_answer_kind == "tool_completion"
+    assert turn.completion_tools == ["file_update"]
+
+
 @pytest.mark.asyncio
 async def test_internet_search_runs_per_concept_node(monkeypatch: pytest.MonkeyPatch) -> None:
     searched: list[tuple[str, str]] = []
