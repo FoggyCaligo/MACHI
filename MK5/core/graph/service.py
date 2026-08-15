@@ -448,10 +448,18 @@ class GraphMemoryService:
             self._repo.upsert_node(utterance)
         return replacement_id
 
-    def graph_search(self, *, user_id: str, query: str, limit: int = 8) -> list[dict]:
+    def graph_search(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        limit: int = 8,
+        exclude_node_ids: set[str] | None = None,
+    ) -> list[dict]:
         _ = self.ensure_user_anchor(user_id)
         if not query.strip():
             return []
+        excluded = exclude_node_ids or set()
         results: list[dict] = []
         anchor_id = self.ensure_user_anchor(user_id)
         user_reachable = {node.node_id for node in self._repo.neighbors(anchor_id)} | {anchor_id}
@@ -459,6 +467,10 @@ class GraphMemoryService:
         for node in candidates:
             if len(results) >= limit:
                 break
+            if node.node_id in excluded:
+                continue
+            if self._is_derived_from_excluded_node(node.node_id, excluded):
+                continue
             owner = str(node.payload.get("user_id") or "")
             is_external = node.provenance == "search" or node.node_type.startswith("search_")
             if owner and owner != user_id:
@@ -470,6 +482,8 @@ class GraphMemoryService:
                 if not edge.is_active:
                     continue
                 other_id = edge.target_id if edge.source_id == node.node_id else edge.source_id
+                if other_id in excluded:
+                    continue
                 other_node = self._repo.get_node(other_id)
                 if other_node is None or not other_node.is_active:
                     continue

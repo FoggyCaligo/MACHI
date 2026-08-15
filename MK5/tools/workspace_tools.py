@@ -15,7 +15,7 @@ class WorkspaceFileToolSuite:
         registry.register(
             ToolDefinition(
                 name="workspace_file",
-                description="Read, list, write, or append files under the workspace root.",
+                description="Read, list, write, or append files using paths resolved from the workspace root. Parent and absolute paths are allowed.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -32,10 +32,8 @@ class WorkspaceFileToolSuite:
         return registry
 
     def _resolve(self, relative_path: str) -> Path:
-        candidate = (self._workspace_root / relative_path).resolve()
-        if self._workspace_root not in candidate.parents and candidate != self._workspace_root:
-            raise ValueError("Path escapes workspace root.")
-        return candidate
+        raw_path = Path(relative_path)
+        return raw_path.resolve() if raw_path.is_absolute() else (self._workspace_root / raw_path).resolve()
 
     async def _run(self, arguments: dict) -> dict:
         action = str(arguments.get("action") or "").strip().lower()
@@ -84,10 +82,10 @@ class WorkspaceFileToolSuite:
         if action == "write":
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
-            return {"path": relative_path, "status": "written", "bytes": len(content.encode("utf-8"))}
+            return {"ok": True, "path": relative_path, "status": "written", "bytes": len(content.encode("utf-8"))}
         if action == "append":
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("a", encoding="utf-8") as handle:
                 handle.write(content)
-            return {"path": relative_path, "status": "appended", "bytes": len(content.encode("utf-8"))}
+            return {"ok": True, "path": relative_path, "status": "appended", "bytes": len(content.encode("utf-8"))}
         raise ValueError("workspace_file action must be one of: read, list, write, append")

@@ -32,6 +32,30 @@ async def test_workspace_file_tool_can_write_and_read(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_file_tool_appends_utf8_text(tmp_path: Path) -> None:
+    suite = WorkspaceFileToolSuite(tmp_path)
+    registry = suite.build_registry()
+
+    await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "write",
+        "path": "tags.txt",
+        "content": "고음\n",
+    }))
+    result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "append",
+        "path": "tags.txt",
+        "content": "\"감성\"\n\"샤워\"\n",
+    }))
+    read_result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "read",
+        "path": "tags.txt",
+    }))
+
+    assert result["ok"] is True
+    assert read_result["content"] == "고음\n\"감성\"\n\"샤워\"\n"
+
+
+@pytest.mark.asyncio
 async def test_workspace_file_tool_returns_not_found_result_instead_of_raising(tmp_path: Path) -> None:
     suite = WorkspaceFileToolSuite(tmp_path)
     registry = suite.build_registry()
@@ -44,6 +68,29 @@ async def test_workspace_file_tool_returns_not_found_result_instead_of_raising(t
     assert result["ok"] is False
     assert result["error"] == "not_found"
     assert result["path"] == "architecture.md"
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_tool_can_access_parent_and_absolute_paths(tmp_path: Path) -> None:
+    main_root = tmp_path / "main"
+    sibling_root = tmp_path / "playlist2"
+    main_root.mkdir()
+    sibling_root.mkdir()
+    (sibling_root / "tag.txt").write_text("감성\n", encoding="utf-8")
+    suite = WorkspaceFileToolSuite(main_root)
+    registry = suite.build_registry()
+
+    relative_result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "read",
+        "path": "../playlist2/tag.txt",
+    }))
+    absolute_result = await registry.run(ToolCall(tool="workspace_file", arguments={
+        "action": "read",
+        "path": str(sibling_root / "tag.txt"),
+    }))
+
+    assert relative_result["content"] == "감성\n"
+    assert absolute_result["content"] == "감성\n"
 
 
 @pytest.mark.asyncio

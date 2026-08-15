@@ -79,7 +79,13 @@
 - 현재 질문에 맞는 기억은 anchor 주변 이웃과 관련 노드 검색으로 가져온다.
 - 그래프는 추론 본체가 아니라 retrieval substrate다.
 
-즉 `MK5`의 기억 구조는 **사용자 anchor + 장기 그래프 + 도구 기반 회수**로 요약할 수 있다.
+### 4. Active graph context
+
+- 이전 턴에서 실제로 활성화됐던 그래프 문맥을 세션 단위로 짧게 들고 간다.
+- 동시에 현재 질문 기준으로 그래프를 새로 활성화한다.
+- 이 둘은 각각 `Previous active graph context`, `Current graph activation`으로 LLM 입력에 들어간다.
+
+즉 `MK5`의 기억 구조는 **사용자 anchor + 장기 그래프 + 도구 기반 회수 + 턴 단위 active graph context**로 요약할 수 있다.
 
 ## 실행방법
 
@@ -137,6 +143,7 @@ http://127.0.0.1:8010/
 - `core/graph/service.py`
 - `tools/graph_tools.py`
 - `tools/web_search.py`
+- `docs/architecture.md`
 
 ## 다른 레포에서 사용하기
 
