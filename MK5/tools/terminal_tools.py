@@ -70,6 +70,7 @@ class TerminalToolSuite:
 
         return {
             "command": command,
+            "cwd": str(self._workspace_root),
             "returncode": process.returncode,
             "stdout": stdout.decode("utf-8", errors="replace"),
             "stderr": stderr.decode("utf-8", errors="replace"),

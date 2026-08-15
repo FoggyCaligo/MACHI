@@ -55,6 +55,16 @@ async def test_terminal_tool_blocks_destructive_command(tmp_path: Path) -> None:
         await registry.run(ToolCall(tool="terminal_command", arguments={"command": "rm -rf ."}))
 
 
+@pytest.mark.asyncio
+async def test_terminal_tool_result_includes_cwd(tmp_path: Path) -> None:
+    suite = TerminalToolSuite(tmp_path)
+    registry = suite.build_registry()
+
+    result = await registry.run(ToolCall(tool="terminal_command", arguments={"command": "pwd"}))
+
+    assert Path(result["cwd"]) == tmp_path.resolve()
+
+
 def test_model_turn_parser_accepts_plain_text_fallback() -> None:
     turn = _parse_model_turn("검색 결과를 바탕으로 답변합니다.")
 
