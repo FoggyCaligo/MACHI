@@ -46,13 +46,17 @@ class AgentOrchestrator:
         session_id: str | None = None,
     ) -> AgentResponse:
         self._memory_service.ensure_user_anchor(user_id)
-        self._memory_service.record_user_utterance(
+        utterance_id = self._memory_service.record_user_utterance(
             user_id=user_id,
             text=message,
             session_id=session_id,
         )
 
-        memory_summary = self._graph_tools.get_user_memory_summary(user_id=user_id, limit=5)
+        memory_summary = self._graph_tools.get_user_memory_summary(
+            user_id=user_id,
+            query=message,
+            limit=5,
+        )
         tool_history: list[dict] = []
         used_tools = ["memory.record_user_utterance", "graph.get_user_memory_summary"]
         memory_writes = ["user_utterance", "user_fact"]
@@ -77,10 +81,12 @@ class AgentOrchestrator:
             if not turn.tool_calls:
                 break
             for call in turn.tool_calls:
-                result = await self._run_tool_call(call, user_id=user_id)
+                result = await self._run_tool_call(call, user_id=user_id, utterance_id=utterance_id)
                 used_tools.append(call.tool)
                 if call.tool == "internet_search":
                     memory_writes.extend(["search_result", "search_fact"])
+                elif call.tool == "record_memory_correction":
+                    memory_writes.append("user_fact_correction")
                 event = {
                     "tool": call.tool,
                     "arguments": result["arguments"],
@@ -99,17 +105,28 @@ class AgentOrchestrator:
     def register_tool_registry(self, registry: ToolRegistry) -> None:
         self._tool_registry.merge(registry)
 
-    async def _run_tool_call(self, call: ToolCall, *, user_id: str) -> dict:
+    async def _run_tool_call(self, call: ToolCall, *, user_id: str, utterance_id: str) -> dict:
         arguments = dict(call.arguments)
-        if call.tool == "graph_search" and "user_id" not in arguments:
+        if call.tool in {"graph_search", "record_memory_correction"} and "user_id" not in arguments:
             arguments["user_id"] = user_id
+        if call.tool == "internet_search" and "search_nodes" not in arguments:
+            search_nodes = self._memory_service.search_concept_nodes_for_utterance(
+                user_id=user_id,
+                utterance_id=utterance_id,
+            )
+            if search_nodes:
+                arguments["search_nodes"] = search_nodes
         result = await self._tool_registry.run(ToolCall(tool=call.tool, arguments=arguments))
         if call.tool == "internet_search":
             query = str(arguments.get("query") or "").strip()
             hits = result.get("results")
             if query and isinstance(hits, list):
-                self._memory_service.record_search_results(
-                    query=query,
-                    results=[item for item in hits if isinstance(item, dict)],
-                )
+                grouped: dict[str, list[dict]] = {}
+                for item in hits:
+                    if not isinstance(item, dict):
+                        continue
+                    query_node = str(item.get("query_node") or query).strip() or query
+                    grouped.setdefault(query_node, []).append(item)
+                for query_node, node_hits in grouped.items():
+                    self._memory_service.record_search_results(query=query_node, results=node_hits)
         return {"arguments": arguments, "result": result}

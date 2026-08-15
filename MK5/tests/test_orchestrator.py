@@ -11,6 +11,7 @@ from MK5.tools.graph_tools import GraphToolSuite
 from MK5.tools.llm_client import ModelTurn
 from MK5.tools.tool_runtime import ToolCall, ToolDefinition
 from MK5.tools.web_search import StubWebSearchTool
+from MK5.tools.tool_runtime import ToolRegistry
 
 
 class FakeToolCallingModel:
@@ -55,6 +56,43 @@ class FakeInternetSearchModel:
         return ModelTurn(final_answer="search done")
 
 
+class CapturingWebSearchTool:
+    def build_registry(self) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="internet_search",
+                description="capture search arguments",
+                input_schema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}, "search_nodes": {"type": "array"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._run,
+        )
+        return registry
+
+    async def _run(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        nodes = [str(node) for node in arguments.get("search_nodes", [])]
+        return {
+            "query": arguments.get("query"),
+            "search_nodes": nodes,
+            "results": [
+                {
+                    "title": f"{node} result",
+                    "url": f"https://example.com/{node}",
+                    "snippet": "result",
+                    "source": "stub",
+                    "query_node": node,
+                }
+                for node in nodes
+            ],
+            "source_errors": [],
+        }
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_runs_tool_then_returns_answer() -> None:
     repo = GraphRepository(":memory:")
@@ -94,5 +132,30 @@ async def test_orchestrator_persists_search_results_after_tool_call() -> None:
     assert "internet_search" in result.used_tools
     persisted = memory.graph_search(user_id="alice", query="stub-result", limit=8)
     assert any(item["node_type"] == "search_result" for item in persisted)
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_recorded_concept_nodes_to_internet_search() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=FakeInternetSearchModel(),
+        web_search=CapturingWebSearchTool(),
+    )
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        message="Glock features and market significance",
+        model=None,
+        session_id="s1",
+    )
+
+    search_event = next(event for event in result.tool_events if event["tool"] == "internet_search")
+    assert "glock" in search_event["arguments"]["search_nodes"]
+    assert search_event["result"]["search_nodes"] == search_event["arguments"]["search_nodes"]
     repo.close()
 
