@@ -22,8 +22,8 @@ MACHI는 단순한 챗봇 저장소가 아니라, 한 사람을 장기적으로 
 - `MK2`: evidence-first memory 계층 구축
 - `MK3`: memory 중심 구조를 실제 대화 루프에서 안정화
 - `MK4`: 그래프 자체를 사고 본체로 두는 graph-first thinking loop
-- `MK5`: `MK4`의 그래프 사고 구조를 흡수하고, 검색·correction·merge 경로까지 정리한 현재 그래프 사고 스택
-- `MK6`: 그래프를 사고 엔진이 아니라 장기 기억 인프라로 두는 다음 방향
+- `MK5`: `MK4`의 일부 아이디어를 가져오되, 그래프를 장기 기억과 회수 인프라로 단순화한 현재 실행형 에이전트
+- `MK6`: 언어 표면을 `LANG_GRAPH`로 segment화하고, 그 결과를 `CONCEPT_GRAPH`로 넘기는 다음 실험
 
 즉, 이 레포는 "버전 업된 단일 앱"이라기보다, MACHI라는 큰 목표를 향해 아키텍처를 계속 재구성해 온 기록에 가깝습니다.
 
@@ -31,33 +31,34 @@ MACHI는 단순한 챗봇 저장소가 아니라, 한 사람을 장기적으로 
 
 ## 지금 시점의 핵심 해석
 
-2026-08-05 기준으로 이 저장소에는 두 개의 중요한 현재 축이 함께 있습니다.
+현재 이 저장소에는 두 개의 중요한 후속 축이 함께 있습니다.
 
-### 1. `MK5`: 그래프 사고 중심 축
+### 1. `MK5`: 그래프 메모리 + 도구 오케스트레이션 축
 
-`MK5`은 입력을 그래프로 번역하고, 그래프를 확장하고, 필요 시 검색을 붙인 뒤, 결론 그래프를 다시 언어로 바꾸는 구조를 다룹니다.
-
-이 축의 관심사는 주로 다음과 같습니다.
-
-- LangToGraph 기반 입력 번역
-- world graph + temp thought graph 조합
-- 검색 결과를 문자열이 아니라 relation graph로 다시 주입
-- conclusion graph를 기준으로 응답 언어화
-
-한마디로 말하면, **그래프가 직접 사고에 참여하는 구조**를 다루는 실험입니다.
-
-### 2. `MK6`: 메모리 인프라 중심 축
-
-`MK6`은 그래프를 사고 엔진 본체로 쓰기보다, 사용자별 장기 기억과 검색 기반 회수를 담당하는 인프라로 둡니다.
+`MK5`는 그래프를 사고 엔진 본체로 직접 돌리기보다, **사용자별 장기 기억과 회수 인프라**로 둡니다. 실제 응답 계획, 도구 사용 판단, 최종 답변 생성은 대화 LLM이 맡고, 그래프는 그 LLM을 보조하는 기억 계층으로 작동합니다.
 
 이 축의 관심사는 주로 다음과 같습니다.
 
 - 사용자별 persistent anchor
-- SQLite 기반 world graph 저장소
-- LLM이 필요할 때 그래프 검색, 웹 검색, 파일/터미널 도구를 호출하는 구조
-- 기억 누적과 회수의 안정화
+- SQLite 기반 장기 그래프 저장소
+- 사용자 발화, 중요 사실, 검색 결과, correction/conflict 단서 저장
+- 기억 요약, 그래프 조회, 웹 검색, 파일 도구를 LLM이 필요할 때 호출하는 구조
+- 검색은 문장 전체가 아니라 그래프에서 얻은 노드 단위 후보를 함께 사용하는 방향
 
-한마디로 말하면, **LLM + 도구 오케스트레이션 위에 그래프 메모리를 붙이는 구조**입니다.
+한마디로 말하면, **LLM + 도구 오케스트레이션 위에 수정 가능한 그래프 기억을 붙이는 실행형 에이전트**입니다.
+
+### 2. `MK6`: 언어 그래프와 개념 그래프 분리 축
+
+`MK6`는 완성된 대화 에이전트라기보다, 입력 문장을 곧바로 일반 토큰으로 자르지 않고 **문자 흐름 기반의 `LANG_GRAPH`에서 segment를 만들고**, 그 segment 리스트를 별도의 `CONCEPT_GRAPH`로 넘기는 실험입니다.
+
+이 축의 관심사는 주로 다음과 같습니다.
+
+- `LANG_GRAPH`가 글자 흐름과 substring overlap을 이용해 segment 후보를 형성하는 구조
+- `LANG_GRAPH`와 `CONCEPT_GRAPH`의 저장 구조 분리
+- `CONCEPT_GRAPH`가 segment 리스트를 받아 이후의 기억, 연결, 사고를 담당하는 구조
+- 언어 표면 구조를 개념 그래프 입력으로 넘기는 전처리 계층 실험
+
+한마디로 말하면, **생각 이전의 언어 표면 구조를 그래프로 다루고, 그 결과를 개념 그래프로 넘기는 실험**입니다.
 
 ---
 
@@ -97,8 +98,9 @@ MACHI/
 ├── MK1/      # 초기 로컬 에이전트 프로토타입
 ├── MK2/      # memory 계층 실험
 ├── MK3/      # memory 기반 대화 루프 안정화
-├── MK5/      # graph-first thinking architecture의 현재 통합 구현
-└── MK6/      # graph memory + tool-using agent 방향
+├── MK4/      # graph-first thinking loop 실험
+├── MK5/      # graph memory + tool-using agent 구현
+└── MK6/      # LANG_GRAPH + CONCEPT_GRAPH 실험
 ```
 
 실행 가능한 최신 프로토타입을 보려면 보통 `MK5` 또는 `MK6`부터 읽는 것이 가장 효율적입니다.
@@ -120,17 +122,23 @@ MACHI/
 1. `MK2/README.md`
 2. `MK3/README.md`
 
-### 그래프 사고 아키텍처를 보고 싶다면
+### 그래프 사고 아키텍처의 흐름을 보고 싶다면
 
-1. `MK5/README.md`
-2. `MK5/docs/architecture/MK5_overview.md`
-3. `MK5/core/`
+1. `MK4/`
+2. `MK5/README.md`
+3. `MK5/docs/architecture/MK5_overview.md`
 
 ### 현재 가장 실용적인 실행 축을 보고 싶다면
 
 1. `MK5/README.md`
-2. `MK6/README.md`
-3. 각 폴더의 `run_*.py`, `app/`, `core/`, `tools/`
+2. `MK5/run_server.py`
+3. `MK5/app/`, `MK5/core/`, `MK5/tools/`
+
+### 언어 segment와 개념 그래프 분리 실험을 보고 싶다면
+
+1. `MK6/LANG_GRAPH/README.md`
+2. `MK6/LANG_GRAPH/lang_graph.py`
+3. `MK6/CONCEPT_GRAPH/concept_graph.py`
 
 ---
 
@@ -141,12 +149,11 @@ MACHI/
 대표적으로:
 
 - `MK5`
-  - `run_cli.py`
   - `run_server.py`
 - `MK6`
   - `run_server.py`
 
-실행 전에는 각 폴더의 `README.md`와 `requirements.txt`를 먼저 확인하는 것이 안전합니다.
+실행 전에는 해당 폴더의 README와 의존성 파일을 먼저 확인하는 것이 안전합니다. 현재 루트 기준으로는 `MK5/README.md`와 `MK5/requirements.txt`, 그리고 `MK6/LANG_GRAPH/README.md`가 주요 출발점입니다.
 
 ---
 
