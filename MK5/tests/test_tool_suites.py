@@ -56,6 +56,30 @@ async def test_file_update_appends_utf8_text(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_file_update_rejects_append_content_that_contains_existing_file(tmp_path: Path) -> None:
+    suite = WorkspaceFileToolSuite(tmp_path)
+    registry = suite.build_registry()
+
+    original = "고음\n그루브\n\n"
+    await registry.run(ToolCall(tool="file_create", arguments={
+        "path": "tags.txt",
+        "content": original,
+    }))
+    result = await registry.run(ToolCall(tool="file_update", arguments={
+        "path": "tags.txt",
+        "content": original + "감성 샤워",
+        "mode": "append",
+    }))
+    read_result = await registry.run(ToolCall(tool="file_read", arguments={
+        "path": "tags.txt",
+    }))
+
+    assert result["ok"] is False
+    assert result["error"] == "append_content_contains_existing_file"
+    assert read_result["content"] == original
+
+
+@pytest.mark.asyncio
 async def test_file_update_replaces_exact_utf8_text(tmp_path: Path) -> None:
     suite = WorkspaceFileToolSuite(tmp_path)
     registry = suite.build_registry()
@@ -76,6 +100,28 @@ async def test_file_update_replaces_exact_utf8_text(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert result["replacements"] == 1
     assert read_result["content"] == "감성\n샤워\n"
+
+
+@pytest.mark.asyncio
+async def test_file_update_rejects_new_without_old_instead_of_empty_overwrite(tmp_path: Path) -> None:
+    suite = WorkspaceFileToolSuite(tmp_path)
+    registry = suite.build_registry()
+
+    await registry.run(ToolCall(tool="file_create", arguments={
+        "path": "tags.txt",
+        "content": "고음\n감성\n샤워",
+    }))
+    result = await registry.run(ToolCall(tool="file_update", arguments={
+        "path": "tags.txt",
+        "new": "고음\n감성 샤워",
+    }))
+    read_result = await registry.run(ToolCall(tool="file_read", arguments={
+        "path": "tags.txt",
+    }))
+
+    assert result["ok"] is False
+    assert result["error"] == "invalid_arguments"
+    assert read_result["content"] == "고음\n감성\n샤워"
 
 
 @pytest.mark.asyncio
@@ -155,11 +201,9 @@ async def test_terminal_tool_result_includes_cwd(tmp_path: Path) -> None:
     assert Path(result["cwd"]) == tmp_path.resolve()
 
 
-def test_model_turn_parser_accepts_plain_text_fallback() -> None:
-    turn = _parse_model_turn("검색 결과를 바탕으로 답변합니다.")
-
-    assert turn.final_answer == "검색 결과를 바탕으로 답변합니다."
-    assert turn.tool_calls == []
+def test_model_turn_parser_rejects_plain_text_fallback() -> None:
+    with pytest.raises(RuntimeError):
+        _parse_model_turn("검색 결과를 바탕으로 답변합니다.")
 
 
 @pytest.mark.asyncio

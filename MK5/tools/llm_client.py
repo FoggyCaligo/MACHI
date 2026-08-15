@@ -57,10 +57,7 @@ def _parse_model_turn(raw: str) -> ModelTurn:
         if extracted:
             data = json.loads(extracted)
         else:
-            plain = raw.strip()
-            if plain:
-                return ModelTurn(final_answer=plain)
-            raise
+            raise RuntimeError("Model response must be JSON with final_answer and tool_calls.")
     if not isinstance(data, dict):
         raise RuntimeError("Model response must be a JSON object.")
     final_answer = data.get("final_answer")

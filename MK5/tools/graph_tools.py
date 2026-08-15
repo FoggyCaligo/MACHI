@@ -16,6 +16,7 @@ class GraphToolSuite:
         limit: int = 5,
         exclude_node_ids: set[str] | None = None,
         activation_node_ids: set[str] | None = None,
+        activation_node_weights: dict[str, float] | None = None,
     ) -> list[str]:
         return self._memory_service.user_memory_summary(
             user_id,
@@ -23,6 +24,7 @@ class GraphToolSuite:
             limit=limit,
             exclude_node_ids=exclude_node_ids,
             activation_node_ids=activation_node_ids,
+            activation_node_weights=activation_node_weights,
         )
 
     def build_registry(self) -> ToolRegistry:

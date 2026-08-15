@@ -46,7 +46,7 @@ class WorkspaceFileToolSuite:
         registry.register(
             ToolDefinition(
                 name="file_update",
-                description="Update a UTF-8 text file. Use mode='append' to append, old/new for replacement, or content without old to overwrite the whole file.",
+                description="Update a UTF-8 text file. Use content to overwrite the whole file, mode='append' with content containing only the new text to append, or old+new together for exact replacement. Never send new without old.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -114,6 +114,9 @@ class WorkspaceFileToolSuite:
 
     async def _update(self, arguments: dict) -> dict:
         relative_path = self._path_argument(arguments)
+        has_content = "content" in arguments
+        has_old = "old" in arguments
+        has_new = "new" in arguments
         content = str(arguments.get("content") or "")
         old = str(arguments.get("old") or "")
         new = str(arguments.get("new") or "")
@@ -123,30 +126,77 @@ class WorkspaceFileToolSuite:
         if missing is not None:
             return missing
         if mode == "append":
+            if not has_content:
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "invalid_arguments",
+                    "message": "file_update append mode requires content.",
+                }
+            original = target.read_text(encoding="utf-8")
+            if original and content.startswith(original):
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "append_content_contains_existing_file",
+                    "message": (
+                        "Append content appears to include the current file content. "
+                        "In append mode, content must contain only the new text to append. "
+                        "Use content without mode='append' for full overwrite."
+                    ),
+                }
             with target.open("a", encoding="utf-8") as handle:
                 handle.write(content)
             return {"ok": True, "path": relative_path, "status": "updated", "mode": "append", "bytes": len(content.encode("utf-8"))}
-        if old == "":
-            target.write_text(content, encoding="utf-8")
-            return {"ok": True, "path": relative_path, "status": "updated", "mode": "write", "bytes": len(content.encode("utf-8"))}
-        original = target.read_text(encoding="utf-8")
-        count = original.count(old)
-        if count == 0:
+        if has_old:
+            if not has_new:
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "invalid_arguments",
+                    "message": "file_update replacement requires both old and new.",
+                }
+            if old == "":
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "invalid_arguments",
+                    "message": "file_update replacement old text must not be empty.",
+                }
+            original = target.read_text(encoding="utf-8")
+            count = original.count(old)
+            if count == 0:
+                return {
+                    "ok": False,
+                    "path": relative_path,
+                    "error": "old_not_found",
+                    "message": "Old text not found.",
+                }
+            updated = original.replace(old, new)
+            target.write_text(updated, encoding="utf-8")
+            return {
+                "ok": True,
+                "path": relative_path,
+                "status": "updated",
+                "mode": "replace",
+                "replacements": count,
+                "bytes": len(updated.encode("utf-8")),
+            }
+        if has_new and not has_content:
             return {
                 "ok": False,
                 "path": relative_path,
-                "error": "old_not_found",
-                "message": "Old text not found.",
+                "error": "invalid_arguments",
+                "message": "file_update received new without old. Use old/new replacement or content overwrite.",
             }
-        updated = original.replace(old, new)
-        target.write_text(updated, encoding="utf-8")
+        if has_content:
+            target.write_text(content, encoding="utf-8")
+            return {"ok": True, "path": relative_path, "status": "updated", "mode": "write", "bytes": len(content.encode("utf-8"))}
         return {
-            "ok": True,
+            "ok": False,
             "path": relative_path,
-            "status": "updated",
-            "mode": "replace",
-            "replacements": count,
-            "bytes": len(updated.encode("utf-8")),
+            "error": "invalid_arguments",
+            "message": "file_update requires content, mode='append' with content, or old/new replacement.",
         }
 
     async def _delete(self, arguments: dict) -> dict:

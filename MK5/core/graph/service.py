@@ -263,11 +263,16 @@ class GraphMemoryService:
         limit: int = 5,
         exclude_node_ids: set[str] | None = None,
         activation_node_ids: set[str] | None = None,
+        activation_node_weights: dict[str, float] | None = None,
     ) -> list[str]:
         anchor_id = self.ensure_user_anchor(user_id)
         terms = {term.lower() for term in re.findall(r"\w+", query) if len(term) >= 2}
         excluded = exclude_node_ids or set()
-        activation_related = self._activation_related_node_ids(activation_node_ids or set())
+        activation_weights = self._activation_related_node_weights(
+            activation_node_weights
+            if activation_node_weights is not None
+            else {node_id: 1.0 for node_id in (activation_node_ids or set())}
+        )
         ranked: list[tuple[float, str]] = []
         for node in self._repo.neighbors(anchor_id):
             if node.node_id in excluded:
@@ -284,21 +289,30 @@ class GraphMemoryService:
             label_terms = {term.lower() for term in re.findall(r"\w+", label)}
             relevance = len(terms.intersection(label_terms)) / max(1, len(terms)) if terms else 0.0
             type_bonus = 1.0 if node.node_type == "fact" else 0.25
-            activation_bonus = 1.5 if node.node_id in activation_related else 0.0
+            activation_bonus = 1.5 * activation_weights.get(node.node_id, 0.0)
             score = relevance * 4.0 + activation_bonus + type_bonus + node.trust_score + node.stability_score
             ranked.append((score, self._format_user_memory_for_model(user_id=user_id, node=node, label=label)))
         ranked.sort(key=lambda item: (-item[0], item[1]))
         return [label for _, label in ranked[:limit]]
 
-    def _activation_related_node_ids(self, activation_node_ids: set[str]) -> set[str]:
-        related = set(activation_node_ids)
-        for node_id in activation_node_ids:
+    def _activation_related_node_weights(self, activation_node_weights: dict[str, float]) -> dict[str, float]:
+        related = {
+            node_id: max(0.0, weight)
+            for node_id, weight in activation_node_weights.items()
+            if weight > 0.0
+        }
+        for node_id, weight in activation_node_weights.items():
+            if weight <= 0.0:
+                continue
             for edge in self._repo.edges_for_node(node_id):
                 if not edge.is_active:
                     continue
-                related.add(edge.source_id)
-                related.add(edge.target_id)
+                related[edge.source_id] = max(related.get(edge.source_id, 0.0), weight)
+                related[edge.target_id] = max(related.get(edge.target_id, 0.0), weight)
         return related
+
+    def _activation_related_node_ids(self, activation_node_ids: set[str]) -> set[str]:
+        return set(self._activation_related_node_weights({node_id: 1.0 for node_id in activation_node_ids}))
 
     def local_activation_node_ids_for_utterance(
         self,
@@ -326,6 +340,25 @@ class GraphMemoryService:
         previous = previous_activation_node_ids or set()
         previous_non_overlapping = {node_id for node_id in previous if node_id not in current_local}
         return current_local | previous_non_overlapping
+
+    def local_activation_node_weights_for_utterance(
+        self,
+        *,
+        user_id: str,
+        utterance_id: str,
+        previous_activation_node_ids: set[str] | None = None,
+        previous_weight: float = 0.5,
+    ) -> dict[str, float]:
+        current_local = self.local_activation_node_ids_for_utterance(
+            user_id=user_id,
+            utterance_id=utterance_id,
+            previous_activation_node_ids=None,
+        )
+        weights = {node_id: 1.0 for node_id in current_local}
+        for node_id in previous_activation_node_ids or set():
+            if node_id not in current_local:
+                weights[node_id] = max(weights.get(node_id, 0.0), previous_weight)
+        return weights
 
     def _is_derived_from_excluded_node(self, node_id: str, excluded_node_ids: set[str]) -> bool:
         if not excluded_node_ids:

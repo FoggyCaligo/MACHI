@@ -61,13 +61,19 @@ class AgentOrchestrator:
             utterance_id=utterance_id,
             previous_activation_node_ids=previous_activation_node_ids,
         )
+        local_activation_node_weights = self._memory_service.local_activation_node_weights_for_utterance(
+            user_id=user_id,
+            utterance_id=utterance_id,
+            previous_activation_node_ids=previous_activation_node_ids,
+            previous_weight=0.5,
+        )
 
         memory_summary = self._graph_tools.get_user_memory_summary(
             user_id=user_id,
             query=message,
-            limit=5,
+            limit=10,
             exclude_node_ids={utterance_id},
-            activation_node_ids=local_activation_node_ids,
+            activation_node_weights=local_activation_node_weights,
         )
         tool_history: list[dict] = []
         used_tools = ["memory.record_user_utterance", "graph.get_user_memory_summary"]
@@ -107,6 +113,17 @@ class AgentOrchestrator:
                 tool_history=tool_history,
             )
             if turn.final_answer:
+                guard_result = _file_execution_guard_result(
+                    tool_history=tool_history,
+                    rejected_final_answer=turn.final_answer,
+                )
+                if guard_result is not None:
+                    tool_history.append({
+                        "tool": "execution_guard",
+                        "arguments": {},
+                        "result": guard_result,
+                    })
+                    continue
                 self._remember_dialogue_messages(
                     conversation_key=conversation_key,
                     user_message=message,
@@ -141,7 +158,7 @@ class AgentOrchestrator:
                 tool_events.append(event)
                 tool_history.append(event)
 
-        fallback_answer = "?? ?? ???? ?? ??? ??? ?????."
+        fallback_answer = "도구 실행 이후에도 최종 답변을 만들지 못했습니다."
         self._remember_dialogue_messages(
             conversation_key=conversation_key,
             user_message=message,
@@ -219,3 +236,81 @@ def _compose_user_message(
         sections.append(f"Previous dialogue turn:\n{dialogue}")
     sections.append(f"Current user message:\n{message}")
     return "\n\n".join(sections)
+
+
+def _has_file_execution_event(tool_history: list[dict]) -> bool:
+    return any(
+        event.get("tool") in {"file_create", "file_read", "file_update", "file_delete", "terminal_command"}
+        for event in tool_history
+    )
+
+
+def _has_successful_file_mutation_event(tool_history: list[dict]) -> bool:
+    for event in tool_history:
+        if event.get("tool") not in {"file_create", "file_update", "file_delete"}:
+            continue
+        result = event.get("result")
+        if isinstance(result, dict) and result.get("ok") is True:
+            return True
+    return False
+
+
+def _has_failed_file_mutation_event(tool_history: list[dict]) -> bool:
+    for event in tool_history:
+        if event.get("tool") not in {"file_create", "file_update", "file_delete"}:
+            continue
+        result = event.get("result")
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return True
+    return False
+
+
+def _has_terminal_filesystem_change_without_verification(tool_history: list[dict]) -> bool:
+    latest_change_index: int | None = None
+    for index, event in enumerate(tool_history):
+        result = event.get("result")
+        if (
+            event.get("tool") == "terminal_command"
+            and isinstance(result, dict)
+            and result.get("filesystem_changed") is True
+        ):
+            latest_change_index = index
+    if latest_change_index is None:
+        return False
+    for event in tool_history[latest_change_index + 1:]:
+        result = event.get("result")
+        if event.get("tool") == "file_read" and isinstance(result, dict) and result.get("ok") is True:
+            return False
+        if event.get("tool") in {"file_create", "file_update", "file_delete"} and isinstance(result, dict) and result.get("ok") is True:
+            return False
+    return True
+
+
+def _file_execution_guard_result(
+    *,
+    tool_history: list[dict],
+    rejected_final_answer: str,
+) -> dict | None:
+    if _has_failed_file_mutation_event(tool_history):
+        return {
+            "ok": False,
+            "error": "file_mutation_failed",
+            "message": (
+                "A file mutation tool was called, but it did not return ok=true. "
+                "Do not report completion until a file_create, file_update, or file_delete "
+                "tool succeeds, or explain the blocker."
+            ),
+            "rejected_final_answer": rejected_final_answer,
+        }
+    if _has_terminal_filesystem_change_without_verification(tool_history):
+        return {
+            "ok": False,
+            "error": "terminal_filesystem_change_not_verified",
+            "message": (
+                "A terminal_command changed the filesystem. Verify the affected file with "
+                "file_read, or use a successful file_create, file_update, or file_delete "
+                "before reporting completion."
+            ),
+            "rejected_final_answer": rejected_final_answer,
+        }
+    return None
