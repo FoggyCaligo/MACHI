@@ -56,6 +56,20 @@ class FakeInternetSearchModel:
         return ModelTurn(final_answer="search done")
 
 
+class FinalOnlyModel:
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[str],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        return ModelTurn(final_answer="done")
+
+
 class CapturingWebSearchTool:
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -157,5 +171,30 @@ async def test_orchestrator_passes_recorded_concept_nodes_to_internet_search() -
     search_event = next(event for event in result.tool_events if event["tool"] == "internet_search")
     assert "glock" in search_event["arguments"]["search_nodes"]
     assert search_event["result"]["search_nodes"] == search_event["arguments"]["search_nodes"]
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_runs_no_slot_search_when_focus_lacks_search_support() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=FinalOnlyModel(),
+        web_search=CapturingWebSearchTool(),
+    )
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        message="Glock features and market significance",
+        model=None,
+        session_id="s1",
+    )
+
+    assert result.text == "done"
+    search_event = next(event for event in result.tool_events if event["tool"] == "internet_search")
+    assert "glock" in search_event["arguments"]["search_nodes"]
     repo.close()
 

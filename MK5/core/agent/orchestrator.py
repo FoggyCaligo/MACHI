@@ -62,6 +62,22 @@ class AgentOrchestrator:
         memory_writes = ["user_utterance", "user_fact"]
         tool_events: list[dict] = []
 
+        if self._memory_service.should_search_without_slots(user_id=user_id, utterance_id=utterance_id):
+            result = await self._run_tool_call(
+                ToolCall(tool="internet_search", arguments={"query": message}),
+                user_id=user_id,
+                utterance_id=utterance_id,
+            )
+            used_tools.append("internet_search")
+            memory_writes.extend(["search_result", "search_fact"])
+            event = {
+                "tool": "internet_search",
+                "arguments": result["arguments"],
+                "result": result["result"],
+            }
+            tool_events.append(event)
+            tool_history.append(event)
+
         for _ in range(config.AGENT_MAX_TOOL_ROUNDS):
             turn = await self._chat_model.next_turn(
                 system=SYSTEM_PROMPT,
@@ -118,15 +134,20 @@ class AgentOrchestrator:
                 arguments["search_nodes"] = search_nodes
         result = await self._tool_registry.run(ToolCall(tool=call.tool, arguments=arguments))
         if call.tool == "internet_search":
-            query = str(arguments.get("query") or "").strip()
-            hits = result.get("results")
-            if query and isinstance(hits, list):
-                grouped: dict[str, list[dict]] = {}
-                for item in hits:
-                    if not isinstance(item, dict):
-                        continue
-                    query_node = str(item.get("query_node") or query).strip() or query
-                    grouped.setdefault(query_node, []).append(item)
-                for query_node, node_hits in grouped.items():
-                    self._memory_service.record_search_results(query=query_node, results=node_hits)
+            self._persist_search_results(arguments=arguments, result=result)
         return {"arguments": arguments, "result": result}
+
+    def _persist_search_results(self, *, arguments: dict, result: dict) -> None:
+        query = str(arguments.get("query") or "").strip()
+        hits = result.get("results")
+        if not query or not isinstance(hits, list):
+            return
+
+        grouped: dict[str, list[dict]] = {}
+        for item in hits:
+            if not isinstance(item, dict):
+                continue
+            query_node = str(item.get("query_node") or query).strip() or query
+            grouped.setdefault(query_node, []).append(item)
+        for query_node, node_hits in grouped.items():
+            self._memory_service.record_search_results(query=query_node, results=node_hits)

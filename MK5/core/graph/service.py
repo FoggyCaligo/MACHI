@@ -271,9 +271,20 @@ class GraphMemoryService:
             relevance = len(terms.intersection(label_terms)) / max(1, len(terms)) if terms else 0.0
             type_bonus = 1.0 if node.node_type == "fact" else 0.25
             score = relevance * 4.0 + type_bonus + node.trust_score + node.stability_score
-            ranked.append((score, label))
+            ranked.append((score, self._format_user_memory_for_model(user_id=user_id, node=node, label=label)))
         ranked.sort(key=lambda item: (-item[0], item[1]))
         return [label for _, label in ranked[:limit]]
+
+    def _format_user_memory_for_model(self, *, user_id: str, node: GraphNode, label: str) -> str:
+        if node.node_type == "fact":
+            return (
+                f'사용자({user_id})에 대한 기억: "{label}" '
+                "이 문장의 1인칭 표현은 assistant가 아니라 사용자에게 귀속됩니다."
+            )
+        return (
+            f'사용자({user_id})가 이전에 말한 발화: "{label}" '
+            "이 발화의 speaker는 사용자이며 assistant의 자기소개가 아닙니다."
+        )
 
     def search_concept_nodes_for_utterance(
         self,
@@ -314,6 +325,33 @@ class GraphMemoryService:
 
         candidates.sort(key=lambda item: (-item[0], item[1]))
         return [label for _, label in candidates[:limit]]
+
+    def should_search_without_slots(self, *, user_id: str, utterance_id: str) -> bool:
+        search_nodes = self.search_concept_nodes_for_utterance(
+            user_id=user_id,
+            utterance_id=utterance_id,
+        )
+        if not search_nodes:
+            return False
+        for label in search_nodes:
+            concept = self._repo.get_node(concept_node_id(label))
+            if concept is not None and self._has_search_support(concept.node_id):
+                return False
+        return True
+
+    def _has_search_support(self, node_id: str) -> bool:
+        for edge in self._repo.edges_for_node(node_id):
+            if not edge.is_active:
+                continue
+            if edge.provenance == "search" or edge.relation.startswith("search_"):
+                return True
+            other_id = edge.target_id if edge.source_id == node_id else edge.source_id
+            other = self._repo.get_node(other_id)
+            if other is None:
+                continue
+            if other.provenance == "search" or other.node_type.startswith("search_"):
+                return True
+        return False
 
     def record_fact_correction(
         self,

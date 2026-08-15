@@ -20,8 +20,8 @@ def test_record_user_utterance_exposes_memory_summary() -> None:
     )
 
     summary = service.user_memory_summary("alice")
-    assert "I build user interfaces." in summary
-    assert "I enjoy TypeScript." in summary
+    assert any("I build user interfaces." in item for item in summary)
+    assert any("I enjoy TypeScript." in item for item in summary)
     repo.close()
 
 
@@ -89,6 +89,39 @@ def test_search_concept_nodes_come_from_recorded_utterance_graph() -> None:
     repo.close()
 
 
+def test_no_slot_search_need_depends_on_search_support_not_node_existence() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+
+    first_utterance = service.record_user_utterance(
+        user_id="alice",
+        text="글록",
+        session_id="s1",
+    )
+    second_utterance = service.record_user_utterance(
+        user_id="alice",
+        text="글록의 특징과 총기시장에서의 의의에 대해 말해줘.",
+        session_id="s1",
+    )
+
+    assert service.should_search_without_slots(user_id="alice", utterance_id=second_utterance)
+
+    service.record_search_results(
+        query="글록",
+        results=[{
+            "title": "글록",
+            "url": "https://example.com/glock",
+            "snippet": "글록은 오스트리아 총기 제조사와 그 권총 제품군을 가리킨다.",
+            "source": "stub",
+            "query_node": "글록",
+        }],
+    )
+
+    assert not service.should_search_without_slots(user_id="alice", utterance_id=second_utterance)
+    assert service.search_concept_nodes_for_utterance(user_id="alice", utterance_id=first_utterance)
+    repo.close()
+
+
 def test_graph_search_expands_neighbors() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)
@@ -121,7 +154,7 @@ def test_graph_repository_persists_across_reopen(tmp_path: Path) -> None:
     service_b = GraphMemoryService(repo_b)
     summary = service_b.user_memory_summary("alice")
 
-    assert "persist me" in summary
+    assert any("persist me" in item for item in summary)
     repo_b.close()
 
 
@@ -172,7 +205,22 @@ def test_memory_summary_ranks_current_query_context() -> None:
 
     summary = service.user_memory_summary("alice", query="TypeScript project", limit=1)
 
-    assert summary == ["I enjoy TypeScript."]
+    assert len(summary) == 1
+    assert "I enjoy TypeScript." in summary[0]
+    assert "사용자(alice)" in summary[0]
+    repo.close()
+
+
+def test_memory_summary_preserves_user_speaker_attribution() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    service.record_user_utterance(user_id="신재용", text="나는 신재용이야.", session_id="s1")
+
+    summary = service.user_memory_summary("신재용", query="나에 대해 기억하니", limit=3)
+
+    assert summary
+    assert any("사용자(신재용)" in item for item in summary)
+    assert any("assistant가 아니라 사용자" in item or "speaker는 사용자" in item for item in summary)
     repo.close()
 
 
@@ -194,8 +242,9 @@ def test_fact_correction_preserves_history_and_hides_superseded_fact() -> None:
     assert old is not None and old.is_active is False
     assert old.payload["superseded_by"] == replacement_id
     assert replacement is not None and replacement.provenance == "user_correction"
-    assert "I use JavaScript." not in service.user_memory_summary("alice")
-    assert "I use TypeScript." in service.user_memory_summary("alice")
+    corrected_summary = service.user_memory_summary("alice")
+    assert not any("I use JavaScript." in item for item in corrected_summary)
+    assert any("I use TypeScript." in item for item in corrected_summary)
     assert any(edge.relation == "replaces" for edge in repo.all_edges())
     repo.close()
 
