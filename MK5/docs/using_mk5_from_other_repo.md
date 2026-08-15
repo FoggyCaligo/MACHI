@@ -38,7 +38,7 @@ $env:MK5_SENTENCE_BREAKER_DB_PATH="C:\Users\bigla\Documents\Git\playlist2\.machi
 
 ### What each path means
 
-- `MK5_WORKSPACE_ROOT`: the root that `workspace_file` and `terminal_command` operate inside.
+- `MK5_WORKSPACE_ROOT`: the root that `file_create`, `file_read`, `file_update`, `file_delete`, and `terminal_command` use as their starting point.
 - `MK5_DB_PATH`: the graph-memory SQLite database for this host project.
 - `MK5_SENTENCE_BREAKER_DB_PATH`: the Sentence_Breaker database for this host project.
 
@@ -79,5 +79,5 @@ async def ask_mk5(user_id: str, message: str):
 - Create or set the environment variables before importing modules that read `MK5.config`.
 - Use a stable `user_id` if the host app wants long-term user memory.
 - Use a stable `session_id` when a host app wants short-term conversational continuity.
-- `workspace_file` resolves relative paths from `MK5_WORKSPACE_ROOT`, but parent and absolute paths are allowed when the user intentionally works outside the root.
+- `file_create`, `file_read`, `file_update`, and `file_delete` resolve relative paths from `MK5_WORKSPACE_ROOT`, but parent and absolute paths are allowed when the user intentionally works outside the root.
 - `terminal_command` starts in `MK5_WORKSPACE_ROOT`, but the command itself may use normal shell navigation such as `..`, absolute paths, or sibling repository paths.

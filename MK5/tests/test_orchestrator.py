@@ -92,8 +92,8 @@ class ContextAwareFileReadModel:
             return ModelTurn(final_answer="ready")
         if not tool_history:
             return ModelTurn(tool_calls=[
-                ToolCall(tool="workspace_file", arguments={"action": "read", "path": "README.md"}),
-                ToolCall(tool="workspace_file", arguments={"action": "read", "path": "MK5/README.md"}),
+                ToolCall(tool="file_read", arguments={"path": "README.md"}),
+                ToolCall(tool="file_read", arguments={"path": "MK5/README.md"}),
             ])
         return ModelTurn(final_answer="done")
 
@@ -305,7 +305,7 @@ async def test_orchestrator_passes_previous_dialogue_so_model_can_read_files(tmp
         session_id="s1",
     )
 
-    file_events = [event for event in result.tool_events if event["tool"] == "workspace_file"]
+    file_events = [event for event in result.tool_events if event["tool"] == "file_read"]
     assert [event["arguments"]["path"] for event in file_events] == ["README.md", "MK5/README.md"]
     assert file_events[0]["result"]["content"] == "Root project"
     assert file_events[1]["result"]["content"] == "MK5 project"
@@ -314,7 +314,6 @@ async def test_orchestrator_passes_previous_dialogue_so_model_can_read_files(tmp
     repo.close()
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_orchestrator_passes_previous_dialogue_turn_for_confirmation() -> None:
     repo = GraphRepository(":memory:")

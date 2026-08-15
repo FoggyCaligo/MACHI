@@ -131,8 +131,8 @@ class AgentOrchestrator:
                     memory_writes.extend(["search_result", "search_fact"])
                 elif call.tool == "record_memory_correction":
                     memory_writes.append("user_fact_correction")
-                elif call.tool == "workspace_file":
-                    memory_writes.append("workspace_file")
+                elif call.tool in {"file_create", "file_read", "file_update", "file_delete"}:
+                    memory_writes.append(call.tool)
                 event = {
                     "tool": call.tool,
                     "arguments": result["arguments"],

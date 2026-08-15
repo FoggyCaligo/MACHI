@@ -14,23 +14,68 @@ class WorkspaceFileToolSuite:
         registry = ToolRegistry()
         registry.register(
             ToolDefinition(
-                name="workspace_file",
-                description="CRUD file tool. Use create, read, update, or delete with paths resolved from the workspace root. Parent and absolute paths are allowed.",
+                name="file_create",
+                description="Create a UTF-8 text file. Paths resolve from the workspace root; parent and absolute paths are allowed.",
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string"},
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._create,
+        )
+        registry.register(
+            ToolDefinition(
+                name="file_read",
+                description="Read a UTF-8 text file. Paths resolve from the workspace root; parent and absolute paths are allowed.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._read,
+        )
+        registry.register(
+            ToolDefinition(
+                name="file_update",
+                description="Update a UTF-8 text file. Use mode='append' to append, old/new for replacement, or content without old to overwrite the whole file.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
                         "path": {"type": "string"},
                         "content": {"type": "string"},
                         "old": {"type": "string"},
                         "new": {"type": "string"},
                         "mode": {"type": "string"},
                     },
-                    "required": ["action", "path"],
+                    "required": ["path"],
                     "additionalProperties": False,
                 },
             ),
-            self._run,
+            self._update,
+        )
+        registry.register(
+            ToolDefinition(
+                name="file_delete",
+                description="Delete a file. Paths resolve from the workspace root; parent and absolute paths are allowed. Directories are not deleted.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._delete,
         )
         return registry
 
@@ -38,95 +83,100 @@ class WorkspaceFileToolSuite:
         raw_path = Path(relative_path)
         return raw_path.resolve() if raw_path.is_absolute() else (self._workspace_root / raw_path).resolve()
 
-    async def _run(self, arguments: dict) -> dict:
-        action = str(arguments.get("action") or "").strip().lower()
+    def _path_argument(self, arguments: dict) -> str:
         relative_path = str(arguments.get("path") or "").strip()
-        content = str(arguments.get("content") or "")
         if not relative_path:
-            raise ValueError("workspace_file requires path")
+            raise ValueError("file tool requires path")
+        return relative_path
 
+    async def _read(self, arguments: dict) -> dict:
+        relative_path = self._path_argument(arguments)
         target = self._resolve(relative_path)
-        if action == "read":
-            if not target.exists():
-                return {
-                    "ok": False,
-                    "path": relative_path,
-                    "error": "not_found",
-                    "message": f"File not found: {relative_path}",
-                }
-            if not target.is_file():
-                return {
-                    "ok": False,
-                    "path": relative_path,
-                    "error": "not_file",
-                    "message": f"Path is not a file: {relative_path}",
-                }
-            return {"ok": True, "path": relative_path, "content": target.read_text(encoding="utf-8")}
-        if action == "create":
-            if target.exists():
-                return {
-                    "ok": False,
-                    "path": relative_path,
-                    "error": "already_exists",
-                    "message": f"Path already exists: {relative_path}",
-                }
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            return {"ok": True, "path": relative_path, "status": "created", "bytes": len(content.encode("utf-8"))}
-        if action == "update":
-            old = str(arguments.get("old") or "")
-            new = str(arguments.get("new") or "")
-            mode = str(arguments.get("mode") or "").strip().lower()
-            if not target.exists():
-                return {
-                    "ok": False,
-                    "path": relative_path,
-                    "error": "not_found",
-                    "message": f"File not found: {relative_path}",
-                }
-            if not target.is_file():
-                return {
-                    "ok": False,
-                    "path": relative_path,
-                    "error": "not_file",
-                    "message": f"Path is not a file: {relative_path}",
-                }
-            if mode == "append":
-                with target.open("a", encoding="utf-8") as handle:
-                    handle.write(content)
-                return {"ok": True, "path": relative_path, "status": "updated", "mode": "append", "bytes": len(content.encode("utf-8"))}
-            if old == "":
-                target.write_text(content, encoding="utf-8")
-                return {"ok": True, "path": relative_path, "status": "updated", "mode": "write", "bytes": len(content.encode("utf-8"))}
-            original = target.read_text(encoding="utf-8")
-            count = original.count(old)
-            if count == 0:
-                return {
-                    "ok": False,
-                    "path": relative_path,
-                    "error": "old_not_found",
-                    "message": "Old text not found.",
-                }
-            updated = original.replace(old, new)
-            target.write_text(updated, encoding="utf-8")
+        missing = self._missing_result(relative_path, target, not_found_message="File not found")
+        if missing is not None:
+            return missing
+        return {"ok": True, "path": relative_path, "content": target.read_text(encoding="utf-8")}
+
+    async def _create(self, arguments: dict) -> dict:
+        relative_path = self._path_argument(arguments)
+        content = str(arguments.get("content") or "")
+        target = self._resolve(relative_path)
+        if target.exists():
             return {
-                "ok": True,
+                "ok": False,
                 "path": relative_path,
-                "status": "updated",
-                "mode": "replace",
-                "replacements": count,
-                "bytes": len(updated.encode("utf-8")),
+                "error": "already_exists",
+                "message": f"Path already exists: {relative_path}",
             }
-        if action == "delete":
-            if not target.exists():
-                return {
-                    "ok": False,
-                    "path": relative_path,
-                    "error": "not_found",
-                    "message": f"Path not found: {relative_path}",
-                }
-            if target.is_dir():
-                raise ValueError("workspace_file delete only supports files")
-            target.unlink()
-            return {"ok": True, "path": relative_path, "status": "deleted"}
-        raise ValueError("workspace_file action must be one of: create, read, update, delete")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return {"ok": True, "path": relative_path, "status": "created", "bytes": len(content.encode("utf-8"))}
+
+    async def _update(self, arguments: dict) -> dict:
+        relative_path = self._path_argument(arguments)
+        content = str(arguments.get("content") or "")
+        old = str(arguments.get("old") or "")
+        new = str(arguments.get("new") or "")
+        mode = str(arguments.get("mode") or "").strip().lower()
+        target = self._resolve(relative_path)
+        missing = self._missing_result(relative_path, target, not_found_message="File not found")
+        if missing is not None:
+            return missing
+        if mode == "append":
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(content)
+            return {"ok": True, "path": relative_path, "status": "updated", "mode": "append", "bytes": len(content.encode("utf-8"))}
+        if old == "":
+            target.write_text(content, encoding="utf-8")
+            return {"ok": True, "path": relative_path, "status": "updated", "mode": "write", "bytes": len(content.encode("utf-8"))}
+        original = target.read_text(encoding="utf-8")
+        count = original.count(old)
+        if count == 0:
+            return {
+                "ok": False,
+                "path": relative_path,
+                "error": "old_not_found",
+                "message": "Old text not found.",
+            }
+        updated = original.replace(old, new)
+        target.write_text(updated, encoding="utf-8")
+        return {
+            "ok": True,
+            "path": relative_path,
+            "status": "updated",
+            "mode": "replace",
+            "replacements": count,
+            "bytes": len(updated.encode("utf-8")),
+        }
+
+    async def _delete(self, arguments: dict) -> dict:
+        relative_path = self._path_argument(arguments)
+        target = self._resolve(relative_path)
+        if not target.exists():
+            return {
+                "ok": False,
+                "path": relative_path,
+                "error": "not_found",
+                "message": f"Path not found: {relative_path}",
+            }
+        if target.is_dir():
+            raise ValueError("file_delete only supports files")
+        target.unlink()
+        return {"ok": True, "path": relative_path, "status": "deleted"}
+
+    def _missing_result(self, relative_path: str, target: Path, *, not_found_message: str) -> dict | None:
+        if not target.exists():
+            return {
+                "ok": False,
+                "path": relative_path,
+                "error": "not_found",
+                "message": f"{not_found_message}: {relative_path}",
+            }
+        if not target.is_file():
+            return {
+                "ok": False,
+                "path": relative_path,
+                "error": "not_file",
+                "message": f"Path is not a file: {relative_path}",
+            }
+        return None

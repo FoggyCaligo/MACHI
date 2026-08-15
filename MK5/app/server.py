@@ -62,7 +62,10 @@ async def get_tools() -> dict:
         "tools": [
             "graph_search",
             "internet_search",
-            "workspace_file",
+            "file_create",
+            "file_read",
+            "file_update",
+            "file_delete",
             "terminal_command",
         ]
     }
