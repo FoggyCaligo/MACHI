@@ -35,11 +35,7 @@ def extract_tokens(sentence: str) -> list[str]:
 
 
 def normalize_token(token: str) -> str:
-    normalized = token.strip().lower()
-    for suffix in ("에서의", "으로의", "에의", "에서", "으로", "의", "과", "와", "을", "를", "은", "는", "이", "가"):
-        if normalized.endswith(suffix) and len(normalized) > len(suffix) + 1:
-            return normalized[:-len(suffix)]
-    return normalized
+    return token.strip().lower()
 
 
 def tokenize_spans(text: str) -> list[TokenSpan]:

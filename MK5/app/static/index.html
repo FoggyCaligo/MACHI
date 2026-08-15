@@ -399,7 +399,13 @@
           model: $modelSelect.value || null
         }),
       });
-      const data = await res.json();
+      const raw = await res.text();
+      let data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch (parseErr) {
+        data = { detail: raw || res.statusText };
+      }
       if (!res.ok) throw new Error(data.detail || res.statusText);
       loaderRow.remove();
       appendMk7Bubble(data);

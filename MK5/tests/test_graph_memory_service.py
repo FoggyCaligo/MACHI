@@ -69,6 +69,27 @@ def test_record_user_utterance_uses_sentence_breaker_segments() -> None:
     repo.close()
 
 
+def test_korean_concept_labels_are_not_suffix_stripped_by_text_graph() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+
+    service.record_user_utterance(
+        user_id="alice",
+        text="글록의 특징과 총기시장에서의 의의",
+        session_id="s1",
+    )
+
+    labels = {
+        label
+        for node in repo.all_nodes()
+        if node.node_type == "concept"
+        for label in node.labels
+    }
+    assert labels
+    assert "글록의" in labels or "글록" in labels
+    repo.close()
+
+
 def test_search_concept_nodes_come_from_recorded_utterance_graph() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)

@@ -19,11 +19,6 @@ _HEADERS = {
     "Accept": "application/json",
     "Accept-Language": "ko,en;q=0.8",
 }
-_QUERY_STOPWORDS = {
-    "특징", "의의", "설명", "설명해줘", "설명해볼래", "알려줘", "한번",
-    "시장", "총기시장", "비교", "차이", "대해", "대한", "무엇", "어떤", "the", "and",
-    "features", "significance", "explain", "about",
-}
 
 
 @dataclass(slots=True)
@@ -77,7 +72,7 @@ class HttpWebSearchTool:
         if not query:
             return [], []
 
-        query_nodes = _clean_query_nodes(search_nodes) or _query_nodes(query)
+        query_nodes = _clean_query_nodes(search_nodes) or [query]
         tasks = []
         task_meta: list[tuple[str, str]] = []
         for query_node in query_nodes:
@@ -125,7 +120,7 @@ class HttpWebSearchTool:
         if not query:
             raise ValueError("internet_search requires query")
         search_nodes = _argument_search_nodes(arguments.get("search_nodes"))
-        query_nodes = _clean_query_nodes(search_nodes) or _query_nodes(query)
+        query_nodes = _clean_query_nodes(search_nodes) or [query]
         results, errors = await self._search_with_diagnostics(query, search_nodes=query_nodes)
         return {
             "query": query,
@@ -149,34 +144,18 @@ def _clean_query_nodes(raw_nodes: list[str] | None) -> list[str]:
         node = raw.strip()
         if not node:
             continue
-        normalized = node.lower()
-        if normalized in _QUERY_STOPWORDS or len(normalized) < 2:
+        if len(node) < 2:
             continue
-        if normalized not in compact:
-            compact.append(normalized)
+        if node not in compact:
+            compact.append(node)
     return compact[:4]
 
 
-def _query_nodes(query: str) -> list[str]:
-    tokens = re.findall(r"[0-9A-Za-z가-힣]+", query)
-    compact: list[str] = []
-    for token in tokens:
-        normalized = token.lower()
-        for suffix in ("에서의", "으로의", "에의", "에서", "으로", "의", "과", "와", "을", "를", "은", "는", "이", "가"):
-            if normalized.endswith(suffix) and len(normalized) > len(suffix) + 1:
-                normalized = normalized[:-len(suffix)]
-                break
-        if normalized in _QUERY_STOPWORDS or len(normalized) < 2:
-            continue
-        if normalized not in compact:
-            compact.append(normalized)
-    # Each item is an independently searchable concept node. Keeping nodes atomic
-    # prevents a conversational sentence from becoming one over-constrained query.
-    return compact[:4] or [query.strip()]
-
-
 def _ddg_search_sync(query: str) -> list[dict[str, Any]]:
-    from ddgs import DDGS
+    try:
+        from ddgs import DDGS
+    except ModuleNotFoundError:
+        return []
 
     with DDGS(timeout=config.WEB_SEARCH_TIMEOUT_SECONDS) as ddgs:
         return list(ddgs.text(query, max_results=5, region="kr-ko", safesearch="moderate"))

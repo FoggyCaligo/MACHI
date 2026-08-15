@@ -4,6 +4,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -69,12 +70,24 @@ async def get_tools() -> dict:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
-    result = await _get_pipeline().run(
-        user_id=req.user_id,
-        message=req.message,
-        model=req.model,
-        session_id=req.session_id,
-    )
+    try:
+        result = await _get_pipeline().run(
+            user_id=req.user_id,
+            message=req.message,
+            model=req.model,
+            session_id=req.session_id,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": f"{type(exc).__name__}: {exc}",
+                "text": f"[오류] {type(exc).__name__}: {exc}",
+                "used_tools": [],
+                "memory_writes": [],
+                "tool_events": [],
+            },
+        )
     return ChatResponse(
         text=result.text,
         used_tools=result.used_tools,

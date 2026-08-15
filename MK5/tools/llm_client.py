@@ -50,7 +50,17 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
 
 
 def _parse_model_turn(raw: str) -> ModelTurn:
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        extracted = _extract_braced_json(raw)
+        if extracted:
+            data = json.loads(extracted)
+        else:
+            plain = raw.strip()
+            if plain:
+                return ModelTurn(final_answer=plain)
+            raise
     if not isinstance(data, dict):
         raise RuntimeError("Model response must be a JSON object.")
     final_answer = data.get("final_answer")
@@ -72,6 +82,14 @@ def _parse_model_turn(raw: str) -> ModelTurn:
             raise RuntimeError(f"tool_calls[{idx}].arguments must be an object.")
         tool_calls.append(ToolCall(tool=tool.strip(), arguments=arguments))
     return ModelTurn(final_answer=final_answer.strip() if isinstance(final_answer, str) else None, tool_calls=tool_calls)
+
+
+def _extract_braced_json(text: str) -> str:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return ""
+    return text[start:end + 1]
 
 
 class OllamaToolChatModel:
