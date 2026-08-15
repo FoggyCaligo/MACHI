@@ -8,8 +8,20 @@ class GraphToolSuite:
     def __init__(self, memory_service: GraphMemoryService) -> None:
         self._memory_service = memory_service
 
-    def get_user_memory_summary(self, *, user_id: str, query: str = "", limit: int = 5) -> list[str]:
-        return self._memory_service.user_memory_summary(user_id, query=query, limit=limit)
+    def get_user_memory_summary(
+        self,
+        *,
+        user_id: str,
+        query: str = "",
+        limit: int = 5,
+        exclude_node_ids: set[str] | None = None,
+    ) -> list[str]:
+        return self._memory_service.user_memory_summary(
+            user_id,
+            query=query,
+            limit=limit,
+            exclude_node_ids=exclude_node_ids,
+        )
 
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()

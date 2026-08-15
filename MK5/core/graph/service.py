@@ -255,11 +255,23 @@ class GraphMemoryService:
                 recorded.append(fact_id)
         return recorded
 
-    def user_memory_summary(self, user_id: str, *, query: str = "", limit: int = 5) -> list[str]:
+    def user_memory_summary(
+        self,
+        user_id: str,
+        *,
+        query: str = "",
+        limit: int = 5,
+        exclude_node_ids: set[str] | None = None,
+    ) -> list[str]:
         anchor_id = self.ensure_user_anchor(user_id)
         terms = {term.lower() for term in re.findall(r"\w+", query) if len(term) >= 2}
+        excluded = exclude_node_ids or set()
         ranked: list[tuple[float, str]] = []
         for node in self._repo.neighbors(anchor_id):
+            if node.node_id in excluded:
+                continue
+            if self._is_derived_from_excluded_node(node.node_id, excluded):
+                continue
             if not node.labels or not node.is_active:
                 continue
             if node.payload.get("suppress_from_summary"):
@@ -274,6 +286,16 @@ class GraphMemoryService:
             ranked.append((score, self._format_user_memory_for_model(user_id=user_id, node=node, label=label)))
         ranked.sort(key=lambda item: (-item[0], item[1]))
         return [label for _, label in ranked[:limit]]
+
+    def _is_derived_from_excluded_node(self, node_id: str, excluded_node_ids: set[str]) -> bool:
+        if not excluded_node_ids:
+            return False
+        for edge in self._repo.edges_for_node(node_id):
+            if edge.relation != "derived_fact":
+                continue
+            if edge.source_id in excluded_node_ids or edge.target_id in excluded_node_ids:
+                return True
+        return False
 
     def _format_user_memory_for_model(self, *, user_id: str, node: GraphNode, label: str) -> str:
         if node.node_type == "fact":

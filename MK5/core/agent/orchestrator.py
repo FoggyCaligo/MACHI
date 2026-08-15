@@ -36,6 +36,7 @@ class AgentOrchestrator:
         self._tool_registry.merge(self._graph_tools.build_registry())
         if hasattr(self._web_search, "build_registry"):
             self._tool_registry.merge(self._web_search.build_registry())  # type: ignore[arg-type]
+        self._recent_user_messages: dict[str, list[str]] = {}
 
     async def respond(
         self,
@@ -46,6 +47,8 @@ class AgentOrchestrator:
         session_id: str | None = None,
     ) -> AgentResponse:
         self._memory_service.ensure_user_anchor(user_id)
+        conversation_key = f"{user_id}::{session_id or 'default'}"
+        recent_messages = list(self._recent_user_messages.get(conversation_key, []))
         utterance_id = self._memory_service.record_user_utterance(
             user_id=user_id,
             text=message,
@@ -56,13 +59,18 @@ class AgentOrchestrator:
             user_id=user_id,
             query=message,
             limit=5,
+            exclude_node_ids={utterance_id},
         )
         tool_history: list[dict] = []
         used_tools = ["memory.record_user_utterance", "graph.get_user_memory_summary"]
         memory_writes = ["user_utterance", "user_fact"]
         tool_events: list[dict] = []
+        model_user_message = _compose_user_message(message=message, recent_messages=recent_messages)
 
-        if self._memory_service.should_search_without_slots(user_id=user_id, utterance_id=utterance_id):
+        if (
+            not memory_summary
+            and self._memory_service.should_search_without_slots(user_id=user_id, utterance_id=utterance_id)
+        ):
             result = await self._run_tool_call(
                 ToolCall(tool="internet_search", arguments={"query": message}),
                 user_id=user_id,
@@ -81,13 +89,14 @@ class AgentOrchestrator:
         for _ in range(config.AGENT_MAX_TOOL_ROUNDS):
             turn = await self._chat_model.next_turn(
                 system=SYSTEM_PROMPT,
-                user_message=message,
+                user_message=model_user_message,
                 model=model,
                 memory_summary=memory_summary,
                 tool_definitions=self._tool_registry.definitions(),
                 tool_history=tool_history,
             )
             if turn.final_answer:
+                self._remember_user_message(conversation_key=conversation_key, message=message)
                 return AgentResponse(
                     text=turn.final_answer,
                     used_tools=used_tools,
@@ -103,6 +112,8 @@ class AgentOrchestrator:
                     memory_writes.extend(["search_result", "search_fact"])
                 elif call.tool == "record_memory_correction":
                     memory_writes.append("user_fact_correction")
+                elif call.tool == "workspace_file":
+                    memory_writes.append("workspace_file")
                 event = {
                     "tool": call.tool,
                     "arguments": result["arguments"],
@@ -111,12 +122,17 @@ class AgentOrchestrator:
                 tool_events.append(event)
                 tool_history.append(event)
 
+        self._remember_user_message(conversation_key=conversation_key, message=message)
         return AgentResponse(
             text="도구 실행 이후에도 최종 응답을 만들지 못했습니다.",
             used_tools=used_tools,
             memory_writes=memory_writes,
             tool_events=tool_events,
         )
+
+    def _remember_user_message(self, *, conversation_key: str, message: str) -> None:
+        messages = [*self._recent_user_messages.get(conversation_key, []), message]
+        self._recent_user_messages[conversation_key] = messages[-6:]
 
     def register_tool_registry(self, registry: ToolRegistry) -> None:
         self._tool_registry.merge(registry)
@@ -151,3 +167,10 @@ class AgentOrchestrator:
             grouped.setdefault(query_node, []).append(item)
         for query_node, node_hits in grouped.items():
             self._memory_service.record_search_results(query=query_node, results=node_hits)
+
+
+def _compose_user_message(*, message: str, recent_messages: list[str]) -> str:
+    if not recent_messages:
+        return message
+    recent = "\n".join(f"- {item}" for item in recent_messages[-3:])
+    return f"Recent user messages:\n{recent}\n\nCurrent user message:\n{message}"
