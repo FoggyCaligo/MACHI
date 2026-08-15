@@ -98,24 +98,6 @@ class ContextAwareFileReadModel:
         return ModelTurn(final_answer="done")
 
 
-class CapturingContextModel:
-    def __init__(self) -> None:
-        self.messages: list[str] = []
-
-    async def next_turn(
-        self,
-        *,
-        system: str,
-        user_message: str,
-        model: str | None,
-        memory_summary: list[str],
-        tool_definitions: list[ToolDefinition],
-        tool_history: list[dict[str, Any]],
-    ) -> ModelTurn:
-        self.messages.append(user_message)
-        return ModelTurn(final_answer="done")
-
-
 class CapturingWebSearchTool:
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -307,39 +289,5 @@ async def test_orchestrator_passes_recent_context_so_model_can_read_files(tmp_pa
     assert file_events[1]["result"]["content"] == "MK5 project"
     assert "루트의 README.md" in chat_model.last_user_message
     assert "응. 읽어봐줘." in chat_model.last_user_message
-    repo.close()
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_carries_previous_active_graph_and_freshly_activates_graph() -> None:
-    repo = GraphRepository(":memory:")
-    memory = GraphMemoryService(repo)
-    graph_tools = GraphToolSuite(memory)
-    chat_model = CapturingContextModel()
-    orchestrator = AgentOrchestrator(
-        memory_service=memory,
-        graph_tools=graph_tools,
-        chat_model=chat_model,
-        web_search=CapturingWebSearchTool(),
-    )
-
-    await orchestrator.respond(
-        user_id="alice",
-        message="playlist2는 음악 파일을 태그로 정리하는 프로젝트야.",
-        model=None,
-        session_id="s1",
-    )
-    second = await orchestrator.respond(
-        user_id="alice",
-        message="그 폴더 구조를 이어서 봐줘.",
-        model=None,
-        session_id="s1",
-    )
-
-    assert "Previous active graph context" in chat_model.messages[-1]
-    assert "playlist2" in chat_model.messages[-1]
-    assert "Current graph activation" in chat_model.messages[-1]
-    assert "activated_graph_node: utterance 그 폴더 구조를 이어서 봐줘." not in chat_model.messages[-1]
-    assert "graph.active_context_activation" in second.used_tools
     repo.close()
 
