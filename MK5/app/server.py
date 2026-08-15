@@ -62,6 +62,8 @@ async def get_tools() -> dict:
         "tools": [
             "graph_search",
             "internet_search",
+            "latest_search",
+            "market_snapshot",
             "file_create",
             "file_read",
             "file_update",

@@ -218,8 +218,10 @@ class AgentOrchestrator:
                     f"ok={_tool_ok(result.get('result'))}"
                 )
                 used_tools.append(call.tool)
-                if call.tool == "internet_search":
+                if call.tool in {"internet_search", "latest_search"}:
                     memory_writes.extend(["search_result", "search_fact"])
+                elif call.tool == "market_snapshot":
+                    memory_writes.append("market_snapshot")
                 elif call.tool == "record_memory_correction":
                     memory_writes.append("user_fact_correction")
                 elif call.tool in {"file_create", "file_read", "file_update", "file_delete"}:
@@ -305,7 +307,7 @@ class AgentOrchestrator:
         arguments = dict(call.arguments)
         if call.tool in {"graph_search", "record_memory_correction"} and "user_id" not in arguments:
             arguments["user_id"] = user_id
-        if call.tool == "internet_search" and "search_nodes" not in arguments:
+        if call.tool in {"internet_search", "latest_search"} and "search_nodes" not in arguments:
             search_nodes = self._memory_service.search_concept_nodes_for_utterance(
                 user_id=user_id,
                 utterance_id=utterance_id,
@@ -313,7 +315,7 @@ class AgentOrchestrator:
             if search_nodes:
                 arguments["search_nodes"] = search_nodes
         result = await self._tool_registry.run(ToolCall(tool=call.tool, arguments=arguments))
-        if call.tool == "internet_search":
+        if call.tool in {"internet_search", "latest_search"}:
             self._persist_search_results(arguments=arguments, result=result)
         return {"arguments": arguments, "result": result}
 
