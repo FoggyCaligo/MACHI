@@ -55,6 +55,8 @@
 ### 6. 파일, 문서, 이미지 입력
 
 - 텍스트 파일은 `file_read`, `file_create`, `file_update`, `file_delete`로 다룬다.
+- `.txt`, `.md`, `.markdown` 파일을 `file_read`로 읽으면 파일 본문에서 핵심 노드 후보를 뽑아 국소활성화 그래프에 임시 편입한다.
+- 파일에서 온 노드는 사용자 발화 노드보다 약한 `0.25` 활성 강도로 들어가며, 장기 기억 점수로 고정되지 않는다.
 - PDF/DOCX는 `document_read`로 텍스트를 추출한다.
 - PNG/JPEG/WEBP/BMP/GIF 이미지는 `image_analyze`로 메타데이터와 시각 설명을 얻는다.
 - UI에서는 파일 첨부를 지원하며, 업로드된 파일은 `.mk5_uploads/` 아래에 저장된다.
@@ -116,11 +118,14 @@
 - 현재 입력 기준 memory summary
 - 이전 턴의 active graph context
 - 현재 턴에서 새로 활성화한 graph context
+- 텍스트 파일 읽기에서 만들어진 약한 file text activation
 - 짧게 압축된 도구 목록
 - 요약된 tool history
 - JSON 출력 계약
 
 현재 최근 대화 기본 개수는 `MK5_RECENT_MESSAGE_LIMIT=6`이다. 너무 많은 프롬프트와 도구 schema를 한 번에 넣으면 모델이 도구 사용을 회피하거나 문맥을 잃기 쉬워서, `MK5`는 전체 schema 대신 `tool_manual:<tool_name>` 주소를 제공하는 방식으로 줄였다.
+
+텍스트 파일에서 만들어지는 노드는 기본적으로 상위 70%, 최대 24개만 유지한다. 이 값은 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`로 조정할 수 있다. 이 노드들은 파일을 읽은 작업 문맥을 보조하기 위한 임시 활성화이며, 사용자 장기 기억 summary 후보로 직접 고정되지는 않는다.
 
 ## 주요 도구
 

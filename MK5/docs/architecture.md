@@ -69,6 +69,7 @@ active graph context는 다음과 같은 항목에서 만들어진다.
 - graph search 결과 노드
 - internet/latest search에 사용된 search node와 검색 결과
 - file/document/image/terminal command 같은 도구 결과
+- `.txt`, `.md`, `.markdown` 파일 읽기에서 추출된 file text activation 노드
 
 이 context는 장기 기억 그 자체가 아니라, **이전 턴에서 실제로 활성화됐던 작업 문맥**이다. 따라서 모델에게는 `Previous active graph context`로 전달되지만, 항상 답변 근거로 쓰라는 의미는 아니다. 현재 질문과 관련 있을 때만 참고해야 한다.
 
@@ -110,10 +111,25 @@ user_payload
   - memory summary
   - previous active graph context
   - current graph activation
+  - weak file text activation from text file reads
   - compact tool definitions
   - compact tool history
   - output contract
 ```
+
+### File text activation
+
+`file_read`가 `.txt`, `.md`, `.markdown` 파일을 성공적으로 읽으면 MK5는 파일 본문을 그대로 장기 기억으로 저장하지 않는다. 대신 파일 텍스트에서 후보 노드를 뽑고 점수를 매긴 뒤, 하위 30%를 제거한 결과만 `file_context`와 concept node로 국소활성화 그래프에 임시 편입한다.
+
+파일에서 온 노드는 사용자 발화에서 온 노드보다 약한 활성 강도로 들어간다.
+
+```text
+current user utterance / local nodes: 1.0
+previous active graph nodes: 0.5
+file text activation nodes: 0.25
+```
+
+이 값은 “파일을 읽었다”는 사실이 현재 작업에는 중요하지만, 사용자가 직접 말한 기억과 같은 강도로 장기 문맥을 끌어당기면 안 된다는 판단을 반영한다. 파일 text activation은 다음 턴의 작업 문맥에만 약하게 이어지며, 새 턴에서 다시 파일을 읽지 않으면 장기 기억 summary 후보로 고정되거나 계속 재전파되지 않는다. 현재 기본값은 상위 70%, 최대 24개이며, 각각 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`로 조정할 수 있다.
 
 ### Compact tool definitions
 
@@ -235,3 +251,4 @@ UI에서도 대화 모델과 이미지 모델을 별도로 선택할 수 있다.
 - 대화 모델/이미지 모델 선택 분리
 - compact tool definitions + `tool_manual`
 - compact tool history
+- `.txt`/`.md` 파일 읽기 결과의 약한 local graph activation

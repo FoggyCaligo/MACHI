@@ -89,6 +89,7 @@ async def ask_mk5(user_id: str, message: str):
 When `MK5` is embedded into another project, the same tool system is available.
 
 - File work should use `file_create`, `file_read`, `file_update`, and `file_delete`.
+- Reading `.txt`, `.md`, or `.markdown` files creates weak, temporary file text activation nodes for the local graph context. They are not fixed as long-term user memory.
 - PDF/DOCX files should use `document_read`.
 - Images should use `image_analyze`.
 - Shell work should use `terminal_command`.
@@ -111,6 +112,8 @@ $env:MK5_OLLAMA_MODEL_NAME="gemma3:4b"
 $env:MK5_OLLAMA_IMAGE_MODEL_NAME="gemma4:12b"
 $env:MK5_OLLAMA_IMAGE_FALLBACK_MODEL_NAME="gemma4:12b"
 $env:MK5_RECENT_MESSAGE_LIMIT="6"
+$env:MK5_FILE_TEXT_NODE_KEEP_RATIO="0.7"
+$env:MK5_FILE_TEXT_NODE_MAX_ITEMS="24"
 ```
 
 `MK5_RECENT_MESSAGE_LIMIT` controls how many recent dialogue messages are included in the model input. Longer histories can improve continuity, but too much raw context can make a small local model overfit to irrelevant past turns. MK5 therefore combines a short recent dialogue window with graph memory and active graph context.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import Counter
 import re
 
+from ... import config
 from .anchors import (
     ASSISTANT_ANCHOR_ID,
     SEARCH_ANCHOR_ID,
@@ -14,7 +16,7 @@ from .anchors import (
 )
 from .models import GraphEdge, GraphNode
 from .repository import GraphRepository
-from .text_graph import TokenSpan, tokenize_spans
+from .text_graph import TokenSpan, normalize_token, tokenize_spans
 
 
 class GraphMemoryService:
@@ -255,6 +257,56 @@ class GraphMemoryService:
                 recorded.append(fact_id)
         return recorded
 
+    def record_file_text_activation(
+        self,
+        *,
+        user_id: str,
+        path: str,
+        content: str,
+        session_id: str | None,
+    ) -> dict:
+        path_text = path.strip()
+        if not path_text or not _is_nodeable_text_path(path_text):
+            return {"node_ids": [], "nodes": []}
+        ranked_nodes = _rank_text_node_candidates(content)
+        if not ranked_nodes:
+            return {"node_ids": [], "nodes": []}
+
+        _ = self.ensure_user_anchor(user_id)
+        summary_text = " ".join(str(item["label"]) for item in ranked_nodes)
+        context_id = fact_node_id(user_id, f"{path_text}|{summary_text}", namespace="file_context")
+        if self._repo.get_node(context_id) is None:
+            self._repo.upsert_node(
+                GraphNode(
+                    node_id=context_id,
+                    labels=[f"{path_text}: {summary_text}", path_text],
+                    node_type="file_context",
+                    payload={
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "path": path_text,
+                        "source": "file_read",
+                        "node_count": len(ranked_nodes),
+                        "suppress_from_summary": True,
+                    },
+                    provenance="file_read",
+                    trust_score=0.55,
+                    stability_score=0.35,
+                )
+            )
+        concept_ids = self._graphize_text(
+            owner_anchor_id=context_id,
+            carrier_node_id=context_id,
+            text=summary_text,
+            edge_prefix="file",
+            payload={"user_id": user_id, "session_id": session_id, "path": path_text},
+        )
+        return {
+            "context_node_id": context_id,
+            "node_ids": [context_id, *concept_ids],
+            "nodes": ranked_nodes,
+        }
+
     def user_memory_summary(
         self,
         user_id: str,
@@ -363,6 +415,7 @@ class GraphMemoryService:
         user_id: str,
         utterance_id: str,
         previous_activation_node_ids: set[str] | None = None,
+        previous_activation_node_weights: dict[str, float] | None = None,
         previous_weight: float = 0.5,
     ) -> dict[str, float]:
         current_local = self.local_activation_node_ids_for_utterance(
@@ -371,9 +424,14 @@ class GraphMemoryService:
             previous_activation_node_ids=None,
         )
         weights = {node_id: 1.0 for node_id in current_local}
-        for node_id in previous_activation_node_ids or set():
+        previous_weights = (
+            previous_activation_node_weights
+            if previous_activation_node_weights is not None
+            else {node_id: previous_weight for node_id in (previous_activation_node_ids or set())}
+        )
+        for node_id, weight in previous_weights.items():
             if node_id not in current_local:
-                weights[node_id] = max(weights.get(node_id, 0.0), previous_weight)
+                weights[node_id] = max(weights.get(node_id, 0.0), max(0.0, weight))
         return weights
 
     def _is_derived_from_excluded_node(self, node_id: str, excluded_node_ids: set[str]) -> bool:
@@ -655,7 +713,7 @@ class GraphMemoryService:
                         "sentence_index": span.sentence_index,
                         "token_index": span.token_index,
                     },
-                    provenance="user_utterance" if edge_prefix == "user" else "search",
+                    provenance=_graphize_provenance(edge_prefix),
                     trust_score=0.75 if edge_prefix == "user" else 0.6,
                 )
             )
@@ -665,7 +723,7 @@ class GraphMemoryService:
                     target_id=node_id,
                     relation=f"{edge_prefix}_references_concept",
                     payload={**payload, "normalized": span.normalized},
-                    provenance="user_utterance" if edge_prefix == "user" else "search",
+                    provenance=_graphize_provenance(edge_prefix),
                     trust_score=0.7 if edge_prefix == "user" else 0.6,
                 )
             )
@@ -682,7 +740,7 @@ class GraphMemoryService:
                         target_id=right,
                         relation=f"{edge_prefix}_adjacent_concept",
                         payload=payload,
-                        provenance="user_utterance" if edge_prefix == "user" else "search",
+                        provenance=_graphize_provenance(edge_prefix),
                         trust_score=0.65,
                     )
                 )
@@ -716,3 +774,98 @@ class GraphMemoryService:
                 )
             )
         return node_id
+
+
+def _is_nodeable_text_path(path: str) -> bool:
+    lowered = path.lower()
+    return lowered.endswith((".txt", ".md", ".markdown"))
+
+
+def _graphize_provenance(edge_prefix: str) -> str:
+    if edge_prefix == "user":
+        return "user_utterance"
+    if edge_prefix == "file":
+        return "file_read"
+    return "search"
+
+
+def _rank_text_node_candidates(content: str) -> list[dict]:
+    spans = _file_text_tokenize_spans(content)
+    if not spans:
+        return []
+
+    total = max(1, len(spans))
+    counts = Counter(span.normalized for span in spans)
+    first_positions: dict[str, int] = {}
+    labels: dict[str, str] = {}
+    for index, span in enumerate(spans):
+        first_positions.setdefault(span.normalized, index)
+        labels.setdefault(span.normalized, span.token)
+
+    ranked: list[tuple[float, str]] = []
+    for normalized, frequency in counts.items():
+        first_index = first_positions.get(normalized, total)
+        frequency_score = frequency / total
+        first_seen_score = 1.0 - min(first_index, total) / total
+        score = frequency_score * 0.7 + first_seen_score * 0.3
+        ranked.append((score, normalized))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+
+    keep_ratio = min(1.0, max(0.0, config.FILE_TEXT_NODE_KEEP_RATIO))
+    keep_count = int(len(ranked) * keep_ratio)
+    if keep_ratio > 0 and keep_count == 0:
+        keep_count = 1
+    keep_count = min(keep_count, max(0, config.FILE_TEXT_NODE_MAX_ITEMS))
+
+    nodes: list[dict] = []
+    for score, normalized in ranked[:keep_count]:
+        frequency = counts[normalized]
+        first_index = first_positions.get(normalized, total)
+        nodes.append({
+            "label": labels.get(normalized, normalized),
+            "normalized": normalized,
+            "score": round(score, 4),
+            "score_components": {
+                "frequency": frequency,
+                "frequency_score": round(frequency / total, 4),
+                "first_seen_score": round(1.0 - min(first_index, total) / total, 4),
+            },
+        })
+    return nodes
+
+
+def _file_text_tokenize_spans(content: str) -> list[TokenSpan]:
+    spans = tokenize_spans(content)
+    fallback_spans = _regex_token_spans(content)
+    if (
+        len({span.normalized for span in spans}) >= 2
+        and _average_token_length(spans) >= _average_token_length(fallback_spans)
+    ):
+        return spans
+    return fallback_spans or spans
+
+
+def _regex_token_spans(content: str) -> list[TokenSpan]:
+    fallback_spans: list[TokenSpan] = []
+    token_index = 0
+    for sentence_index, line in enumerate(content.splitlines()):
+        for token in re.findall(r"\w+", line, re.UNICODE):
+            normalized = normalize_token(token)
+            if not normalized:
+                continue
+            fallback_spans.append(
+                TokenSpan(
+                    token=token,
+                    normalized=normalized,
+                    sentence_index=sentence_index,
+                    token_index=token_index,
+                )
+            )
+            token_index += 1
+    return fallback_spans
+
+
+def _average_token_length(spans: list[TokenSpan]) -> float:
+    if not spans:
+        return 0.0
+    return sum(len(span.normalized) for span in spans) / len(spans)

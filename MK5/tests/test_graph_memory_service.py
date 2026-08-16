@@ -316,3 +316,43 @@ def test_user_scoped_search_does_not_return_other_users_fact() -> None:
     assert not any(item["node_type"] == "utterance" for item in results)
     repo.close()
 
+
+def test_record_file_text_activation_keeps_ranked_text_nodes() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+
+    result = service.record_file_text_activation(
+        user_id="alice",
+        path="note.md",
+        content="Machi\n\n감성 샤워 감성 몽환 프로젝트 기억 그래프 도구",
+        session_id="s1",
+    )
+
+    assert result["context_node_id"].startswith("file_context::")
+    assert result["node_ids"]
+    labels = [item["label"] for item in result["nodes"]]
+    assert "감성" in labels
+    assert "샤워" in labels
+    context = repo.get_node(result["context_node_id"])
+    assert context is not None
+    assert context.node_type == "file_context"
+    assert context.provenance == "file_read"
+    assert context.payload["suppress_from_summary"] is True
+    assert not service.user_memory_summary("alice", query="감성 샤워", limit=0)
+    repo.close()
+
+
+def test_record_file_text_activation_ignores_non_text_extensions() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+
+    result = service.record_file_text_activation(
+        user_id="alice",
+        path="image.jpg",
+        content="감성 샤워",
+        session_id="s1",
+    )
+
+    assert result == {"node_ids": [], "nodes": []}
+    repo.close()
+

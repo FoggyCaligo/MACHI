@@ -42,6 +42,7 @@ class AgentOrchestrator:
             self._tool_registry.merge(self._web_search.build_registry())  # type: ignore[arg-type]
         self._recent_dialogue_messages: dict[str, list[str]] = {}
         self._previous_activation_node_ids: dict[str, set[str]] = {}
+        self._previous_activation_node_weights: dict[str, dict[str, float]] = {}
         self._recent_file_operations: dict[str, list[dict]] = {}
         self._recent_tool_operations: dict[str, list[dict]] = {}
         self._auto_read_attachment_paths: dict[str, set[str]] = {}
@@ -61,6 +62,12 @@ class AgentOrchestrator:
         recent_file_operations = list(self._recent_file_operations.get(conversation_key, []))
         recent_tool_operations = list(self._recent_tool_operations.get(conversation_key, []))
         previous_activation_node_ids = set(self._previous_activation_node_ids.get(conversation_key, set()))
+        previous_activation_node_weights = dict(
+            self._previous_activation_node_weights.get(
+                conversation_key,
+                {node_id: 0.5 for node_id in previous_activation_node_ids},
+            )
+        )
         utterance_id = self._memory_service.record_user_utterance(
             user_id=user_id,
             text=message,
@@ -71,10 +78,16 @@ class AgentOrchestrator:
             utterance_id=utterance_id,
             previous_activation_node_ids=previous_activation_node_ids,
         )
+        current_activation_node_ids = self._memory_service.local_activation_node_ids_for_utterance(
+            user_id=user_id,
+            utterance_id=utterance_id,
+            previous_activation_node_ids=None,
+        )
         local_activation_node_weights = self._memory_service.local_activation_node_weights_for_utterance(
             user_id=user_id,
             utterance_id=utterance_id,
             previous_activation_node_ids=previous_activation_node_ids,
+            previous_activation_node_weights=previous_activation_node_weights,
             previous_weight=0.5,
         )
 
@@ -89,6 +102,8 @@ class AgentOrchestrator:
         used_tools = ["memory.record_user_utterance", "graph.get_user_memory_summary"]
         memory_writes = ["user_utterance", "user_fact"]
         tool_events: list[dict] = []
+        file_activation_node_ids: set[str] = set()
+        file_activation_node_weights: dict[str, float] = {}
         auto_read_attachment_paths = self._auto_read_attachment_paths.setdefault(conversation_key, set())
         auto_attachment_calls = [
             call
@@ -118,6 +133,16 @@ class AgentOrchestrator:
             }
             tool_events.append(event)
             tool_history.append(event)
+            file_activation_event = self._record_file_text_activation_event(
+                event=event,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if file_activation_event is not None:
+                event_node_ids = set(file_activation_event["result"].get("node_ids", []))
+                file_activation_node_ids.update(event_node_ids)
+                file_activation_node_weights.update({node_id: 0.25 for node_id in event_node_ids})
+                tool_history.append(file_activation_event)
             path = str(result["arguments"].get("path") or "")
             if path:
                 auto_read_attachment_paths.add(path)
@@ -231,7 +256,11 @@ class AgentOrchestrator:
                 )
                 self._remember_activation_node_ids(
                     conversation_key=conversation_key,
-                    node_ids=local_activation_node_ids,
+                    node_ids=current_activation_node_ids | file_activation_node_ids,
+                    node_weights={
+                        **{node_id: 1.0 for node_id in current_activation_node_ids},
+                        **file_activation_node_weights,
+                    },
                 )
                 self._remember_file_operations(
                     conversation_key=conversation_key,
@@ -309,6 +338,16 @@ class AgentOrchestrator:
                 }
                 tool_events.append(event)
                 tool_history.append(event)
+                file_activation_event = self._record_file_text_activation_event(
+                    event=event,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                if file_activation_event is not None:
+                    event_node_ids = set(file_activation_event["result"].get("node_ids", []))
+                    file_activation_node_ids.update(event_node_ids)
+                    file_activation_node_weights.update({node_id: 0.25 for node_id in event_node_ids})
+                    tool_history.append(file_activation_event)
 
         fallback_answer = "도구 실행 이후에도 최종 답변을 만들지 못했습니다."
         self._remember_dialogue_messages(
@@ -318,7 +357,11 @@ class AgentOrchestrator:
         )
         self._remember_activation_node_ids(
             conversation_key=conversation_key,
-            node_ids=local_activation_node_ids,
+            node_ids=current_activation_node_ids | file_activation_node_ids,
+            node_weights={
+                **{node_id: 1.0 for node_id in current_activation_node_ids},
+                **file_activation_node_weights,
+            },
         )
         self._remember_file_operations(
             conversation_key=conversation_key,
@@ -352,8 +395,21 @@ class AgentOrchestrator:
         limit = max(0, config.RECENT_MESSAGE_LIMIT)
         self._recent_dialogue_messages[conversation_key] = updated[-limit:] if limit else []
 
-    def _remember_activation_node_ids(self, *, conversation_key: str, node_ids: set[str]) -> None:
+    def _remember_activation_node_ids(
+        self,
+        *,
+        conversation_key: str,
+        node_ids: set[str],
+        node_weights: dict[str, float] | None = None,
+    ) -> None:
         self._previous_activation_node_ids[conversation_key] = set(node_ids)
+        if node_weights is None:
+            self._previous_activation_node_weights[conversation_key] = {node_id: 0.5 for node_id in node_ids}
+        else:
+            self._previous_activation_node_weights[conversation_key] = {
+                node_id: max(0.0, float(node_weights.get(node_id, 0.0)))
+                for node_id in node_ids
+            }
 
     def _remember_file_operations(self, *, conversation_key: str, tool_events: list[dict]) -> None:
         operations = [_file_operation_context(event) for event in tool_events]
@@ -411,6 +467,46 @@ class AgentOrchestrator:
         if call.tool in {"internet_search", "latest_search"}:
             self._persist_search_results(arguments=arguments, result=result)
         return {"arguments": arguments, "result": result}
+
+    def _record_file_text_activation_event(
+        self,
+        *,
+        event: dict,
+        user_id: str,
+        session_id: str | None,
+    ) -> dict | None:
+        if event.get("tool") != "file_read":
+            return None
+        result = event.get("result")
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return None
+        path = str(result.get("path") or "").strip()
+        content = str(result.get("content") or "")
+        activation = self._memory_service.record_file_text_activation(
+            user_id=user_id,
+            path=path,
+            content=content,
+            session_id=session_id,
+        )
+        if not isinstance(activation, dict):
+            return None
+        nodes = activation.get("nodes")
+        node_ids = activation.get("node_ids")
+        if not nodes or not node_ids:
+            return None
+        return {
+            "tool": "file_text_activation",
+            "arguments": {"path": path, "source_tool": "file_read"},
+            "result": {
+                "ok": True,
+                "path": path,
+                "context_node_id": activation.get("context_node_id"),
+                "node_ids": node_ids,
+                "nodes": nodes,
+                "activation_weight": 0.25,
+                "retention": config.FILE_TEXT_NODE_KEEP_RATIO,
+            },
+        }
 
     def _persist_search_results(self, *, arguments: dict, result: dict) -> None:
         query = str(arguments.get("query") or "").strip()
@@ -586,6 +682,12 @@ def _tool_result_summary(*, tool: str, result: dict) -> str:
     if tool == "image_analyze":
         description = str(result.get("description") or result.get("message") or "")
         return f"path={result.get('path')!r} image={result.get('image')!r} description={_truncate(description, 240)!r}"
+    if tool == "file_text_activation":
+        return (
+            f"path={result.get('path')!r} "
+            f"activation_weight={result.get('activation_weight')!r} "
+            f"nodes={result.get('nodes')!r}"
+        )
     return _truncate(str(result), 240)
 
 

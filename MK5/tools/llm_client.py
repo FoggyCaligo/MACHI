@@ -252,6 +252,11 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
             compact["source_errors"] = _compact_value(source_errors, limit=300)
     elif tool == "market_snapshot":
         compact["snapshot"] = _compact_value(result, limit=700)
+    elif tool == "file_text_activation":
+        compact["context_node_id"] = result.get("context_node_id")
+        compact["activation_weight"] = result.get("activation_weight")
+        compact["retention"] = result.get("retention")
+        compact["nodes"] = _compact_value(result.get("nodes"), limit=500)
     elif tool == "execution_guard":
         compact["message"] = _shorten(str(result.get("message") or ""), 240)
         if result.get("missing_tools"):
