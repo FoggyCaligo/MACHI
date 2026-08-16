@@ -72,6 +72,25 @@ def test_invalid_model_json_raises_specific_parse_error() -> None:
         _parse_model_turn("일반 텍스트 응답")
 
 
+def test_semantically_truncated_final_answer_is_rejected_even_when_json_is_valid() -> None:
+    raw = (
+        '{"final_answer":"문장이 여기서(","tool_calls":[],'
+        '"final_answer_kind":"answer","completion_tools":[]}'
+    )
+
+    with pytest.raises(ModelOutputParseError, match="opening bracket"):
+        _parse_model_turn(raw)
+
+
+def test_complete_final_answer_with_balanced_parentheses_is_accepted() -> None:
+    raw = (
+        '{"final_answer":"마지막 답변(요약)을 확인했습니다.","tool_calls":[],'
+        '"final_answer_kind":"answer","completion_tools":[]}'
+    )
+
+    assert _parse_model_turn(raw).final_answer == "마지막 답변(요약)을 확인했습니다."
+
+
 @pytest.mark.asyncio
 async def test_file_tools_can_create_update_and_read(tmp_path: Path) -> None:
     suite = WorkspaceFileToolSuite(tmp_path)

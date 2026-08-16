@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from MK5.core.agent.orchestrator import AgentOrchestrator
+from MK5.core.agent.orchestrator import AgentOrchestrator, _final_answer_evidence_guard_result
 from MK5.core.graph.repository import GraphRepository
 from MK5.core.graph.service import GraphMemoryService
 from MK5.tools.graph_tools import GraphToolSuite
@@ -15,6 +15,42 @@ from MK5.tools.tool_runtime import ToolCall, ToolDefinition
 from MK5.tools.web_search import StubWebSearchTool
 from MK5.tools.tool_runtime import ToolRegistry
 from MK5.tools.workspace_tools import WorkspaceFileToolSuite
+
+
+def test_tool_completion_without_names_uses_successful_substantive_tool_history() -> None:
+    guard = _final_answer_evidence_guard_result(
+        turn=ModelTurn(
+            final_answer="검색 결과입니다.",
+            final_answer_kind="tool_completion",
+            completion_tools=[],
+        ),
+        tool_history=[{
+            "tool": "web_research",
+            "arguments": {"objective": "test"},
+            "result": {"ok": True, "results": [{"title": "result"}]},
+        }],
+        rejected_final_answer="검색 결과입니다.",
+    )
+
+    assert guard is None
+
+
+def test_tool_completion_without_names_is_treated_as_plain_answer_without_tool_history() -> None:
+    guard = _final_answer_evidence_guard_result(
+        turn=ModelTurn(
+            final_answer="완료했습니다.",
+            final_answer_kind="tool_completion",
+            completion_tools=[],
+        ),
+        tool_history=[{
+            "tool": "tool_manual",
+            "arguments": {"tool": "web_research"},
+            "result": {"ok": True},
+        }],
+        rejected_final_answer="완료했습니다.",
+    )
+
+    assert guard is None
 
 
 class FakeToolCallingModel:

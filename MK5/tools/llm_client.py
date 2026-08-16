@@ -112,12 +112,18 @@ def _parse_model_turn(raw: str) -> ModelTurn:
         if not isinstance(arguments, dict):
             raise ModelOutputParseError(f"tool_calls[{idx}].arguments must be an object.")
         tool_calls.append(ToolCall(tool=tool.strip(), arguments=arguments))
+    if isinstance(final_answer, str) and _has_dangling_opening_bracket(final_answer):
+        raise ModelOutputParseError("final_answer appears truncated because it ends with an opening bracket.")
     return ModelTurn(
         final_answer=final_answer.strip() if isinstance(final_answer, str) else None,
         tool_calls=tool_calls,
         final_answer_kind=final_answer_kind,
         completion_tools=[item.strip() for item in completion_tools_raw if item.strip()],
     )
+
+
+def _has_dangling_opening_bracket(text: str) -> bool:
+    return text.rstrip().endswith(("(", "[", "{"))
 
 
 def _extract_braced_json(text: str) -> str:

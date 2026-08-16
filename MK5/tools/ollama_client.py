@@ -12,6 +12,10 @@ from .. import config
 _EMBEDDING_ONLY_FAMILIES: frozenset[str] = frozenset({"nomic-bert", "bert", "clip"})
 
 
+class OllamaOutputTruncatedError(RuntimeError):
+    pass
+
+
 def _payload(
     *,
     model: str,
@@ -64,6 +68,11 @@ async def chat(
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError(f"Ollama returned an empty response for model '{model_name}'.")
+    if data.get("done_reason") == "length":
+        raise OllamaOutputTruncatedError(
+            f"Ollama output token limit reached for model '{model_name}' "
+            f"(num_predict={config.OLLAMA_NUM_PREDICT}, output_chars={len(content)})."
+        )
     return content
 
 

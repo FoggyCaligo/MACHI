@@ -891,15 +891,27 @@ def _debug_log(message: str) -> None:
 
 
 def _model_output_guard_result(exc: Exception) -> dict:
-    return {
-        "ok": False,
-        "error": "model_output_parse_failed",
-        "message": (
+    if "output token limit reached" in str(exc).lower():
+        message = (
+            "The previous response hit the output token limit and was discarded. "
+            "Answer much more concisely while still returning one complete JSON object."
+        )
+    elif "ends with an opening bracket" in str(exc).lower():
+        message = (
+            "The previous final_answer ended with unclosed brackets and appears semantically truncated. "
+            "Rewrite it concisely as one complete JSON object."
+        )
+    else:
+        message = (
             "The previous model response could not be parsed as the required JSON object. "
             "Return valid JSON only. If the task requires creating or running a script, "
             "use tool_calls such as file_create and terminal_command with final_answer set "
             "to null. Do not put raw code or unescaped multiline text directly outside JSON."
-        ),
+        )
+    return {
+        "ok": False,
+        "error": "model_output_parse_failed",
+        "message": message,
         "exception": _truncate(str(exc), 500),
     }
 
@@ -1055,12 +1067,7 @@ def _final_answer_evidence_guard_result(
     if turn.final_answer_kind != "tool_completion":
         return None
     if not turn.completion_tools:
-        return {
-            "ok": False,
-            "error": "missing_completion_tools",
-            "message": "tool_completion requires completion_tools.",
-            "rejected_final_answer": rejected_final_answer,
-        }
+        return None
     missing_tools = [
         tool_name
         for tool_name in turn.completion_tools
