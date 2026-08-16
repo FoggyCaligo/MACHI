@@ -18,10 +18,20 @@ playlist2/
 
 ## Install MACHI for import
 
-From the host repository, install MACHI as an editable dependency:
+From the host repository, install MACHI as an editable dependency.
+
+PowerShell:
 
 ```powershell
 pip install -e C:\Users\bigla\Documents\Git\MACHI
+```
+
+Git Bash:
+
+```bash
+pip install -e "C:/Users/bigla/Documents/Git/MACHI"
+# or
+pip install -e /c/Users/bigla/Documents/Git/MACHI
 ```
 
 Alternatively, add MACHI as a submodule or vendor directory and make sure the host Python process can import `MK5`.
@@ -73,6 +83,37 @@ async def ask_mk5(user_id: str, message: str):
     finally:
         pipeline.close()
 ```
+
+## Tool behavior from a host repo
+
+When `MK5` is embedded into another project, the same tool system is available.
+
+- File work should use `file_create`, `file_read`, `file_update`, and `file_delete`.
+- PDF/DOCX files should use `document_read`.
+- Images should use `image_analyze`.
+- Shell work should use `terminal_command`.
+- If the model is unsure about arguments, it can call `tool_manual` for the specific tool instead of guessing.
+
+The model receives a short list of all tools by default, not only file tools. This is intentional: a request can start as a file task and then need search, terminal inspection, or image/document analysis in the same turn.
+
+## Uploads and remote browsers
+
+For local CLI usage, paths such as `../playlist2/pli_file/tag.txt` are fine.
+
+For browser usage from another PC, path strings can be ambiguous because the browser machine and the server machine may not share the same filesystem. In that case, use the UI attachment button. Uploaded files are stored on the MK5 server under `.mk5_uploads/`, and the resulting server-side path can be passed to tools.
+
+## Model and context settings
+
+Common environment variables:
+
+```powershell
+$env:MK5_OLLAMA_MODEL_NAME="gemma3:4b"
+$env:MK5_OLLAMA_IMAGE_MODEL_NAME="gemma4:12b"
+$env:MK5_OLLAMA_IMAGE_FALLBACK_MODEL_NAME="gemma4:12b"
+$env:MK5_RECENT_MESSAGE_LIMIT="6"
+```
+
+`MK5_RECENT_MESSAGE_LIMIT` controls how many recent dialogue messages are included in the model input. Longer histories can improve continuity, but too much raw context can make a small local model overfit to irrelevant past turns. MK5 therefore combines a short recent dialogue window with graph memory and active graph context.
 
 ## Notes
 
