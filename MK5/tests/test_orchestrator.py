@@ -286,7 +286,7 @@ class FollowupFileCorrectionModel:
             ])
         if any(event.get("tool") == "file_update" for event in tool_history):
             return ModelTurn(final_answer="완료했습니다.")
-        assert "Previous file operation" in user_message
+        assert "Previous tool operation" in user_message
         assert "../playlist2/pli_file/tag.txt" in user_message
         return ModelTurn(tool_calls=[
             ToolCall(
@@ -824,7 +824,7 @@ async def test_orchestrator_passes_recorded_concept_nodes_to_internet_search() -
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_runs_no_slot_search_when_focus_lacks_search_support() -> None:
+async def test_orchestrator_does_not_auto_search_without_model_request() -> None:
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
     graph_tools = GraphToolSuite(memory)
@@ -843,8 +843,7 @@ async def test_orchestrator_runs_no_slot_search_when_focus_lacks_search_support(
     )
 
     assert result.text == "done"
-    search_event = next(event for event in result.tool_events if event["tool"] == "internet_search")
-    assert "glock" in search_event["arguments"]["search_nodes"]
+    assert not any(event["tool"] == "internet_search" for event in result.tool_events)
     repo.close()
 
 
@@ -874,7 +873,7 @@ async def test_orchestrator_does_not_no_slot_search_when_memory_summary_exists()
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_passes_scored_memory_summary_items_to_model() -> None:
+async def test_orchestrator_pushes_relevant_memory_summary_into_model() -> None:
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
     memory.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
@@ -898,7 +897,6 @@ async def test_orchestrator_passes_scored_memory_summary_items_to_model() -> Non
     assert chat_model.memory_summaries
     assert isinstance(chat_model.memory_summaries[-1][0], dict)
     assert "score" in chat_model.memory_summaries[-1][0]
-    assert "score_components" in chat_model.memory_summaries[-1][0]
     repo.close()
 
 
@@ -1086,7 +1084,8 @@ async def test_orchestrator_passes_previous_file_operation_for_followup_correcti
     )
 
     assert result.text == "완료했습니다."
-    assert "Previous file operation" in chat_model.messages[-1]
+    assert "Previous file operation" not in chat_model.messages[-1]
+    assert "Previous tool operation" in chat_model.messages[-1]
     assert target_file.read_text(encoding="utf-8") == "감성 샤워"
     repo.close()
 
@@ -1737,6 +1736,85 @@ async def test_orchestrator_auto_reads_mentioned_markdown_path(tmp_path) -> None
     result = await orchestrator.respond(user_id="alice", session_id="s1", message="./README.md")
 
     assert any(event["tool"] == "file_read" and event["result"]["ok"] for event in result.tool_events)
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stops_after_repeated_model_parse_failures(tmp_path) -> None:
+    (tmp_path / "README.md").write_text("# Hello\n\n내용 테스트", encoding="utf-8")
+
+    class ParseFailingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def next_turn(
+            self,
+            *,
+            system: str,
+            user_message: str,
+            model: str | None,
+            memory_summary: list[Any],
+            tool_definitions: list[ToolDefinition],
+            tool_history: list[dict[str, Any]],
+        ) -> ModelTurn:
+            self.calls += 1
+            raise RuntimeError("Model response must be JSON with final_answer and tool_calls.")
+
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    model = ParseFailingModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=service,
+        graph_tools=GraphToolSuite(service),
+        chat_model=model,
+        web_search=StubWebSearchTool(),
+    )
+    orchestrator.register_tool_registry(WorkspaceFileToolSuite(tmp_path).build_registry())
+
+    result = await orchestrator.respond(user_id="alice", session_id="s1", message="./README.md")
+
+    assert model.calls == 3
+    assert "JSON 형식" in result.text
+    assert "README.md" in result.text
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stops_after_repeated_unknown_tool_calls() -> None:
+    class UnknownToolModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def next_turn(
+            self,
+            *,
+            system: str,
+            user_message: str,
+            model: str | None,
+            memory_summary: list[Any],
+            tool_definitions: list[ToolDefinition],
+            tool_history: list[dict[str, Any]],
+        ) -> ModelTurn:
+            self.calls += 1
+            return ModelTurn(tool_calls=[
+                ToolCall(tool="text_graph.process", arguments={})
+            ])
+
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    model = UnknownToolModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=service,
+        graph_tools=GraphToolSuite(service),
+        chat_model=model,
+        web_search=StubWebSearchTool(),
+    )
+
+    result = await orchestrator.respond(user_id="alice", session_id="s1", message="text_graph.py 설명해줘")
+
+    assert model.calls == 2
+    assert "사용할 수 없는 도구" in result.text
+    assert "text_graph.process" in result.text
     repo.close()
 
 

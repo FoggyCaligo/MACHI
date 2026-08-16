@@ -43,7 +43,6 @@ class AgentOrchestrator:
         self._recent_dialogue_messages: dict[str, list[str]] = {}
         self._previous_activation_node_ids: dict[str, set[str]] = {}
         self._previous_activation_node_weights: dict[str, dict[str, float]] = {}
-        self._recent_file_operations: dict[str, list[dict]] = {}
         self._recent_tool_operations: dict[str, list[dict]] = {}
         self._auto_read_attachment_paths: dict[str, set[str]] = {}
 
@@ -59,7 +58,6 @@ class AgentOrchestrator:
         self._memory_service.ensure_user_anchor(user_id)
         conversation_key = f"{user_id}::{session_id or 'default'}"
         recent_dialogue_messages = list(self._recent_dialogue_messages.get(conversation_key, []))
-        recent_file_operations = list(self._recent_file_operations.get(conversation_key, []))
         recent_tool_operations = list(self._recent_tool_operations.get(conversation_key, []))
         previous_activation_node_ids = set(self._previous_activation_node_ids.get(conversation_key, set()))
         previous_activation_node_weights = dict(
@@ -149,33 +147,11 @@ class AgentOrchestrator:
         model_user_message = _compose_user_message(
             message=message,
             recent_dialogue_messages=recent_dialogue_messages,
-            recent_file_operations=recent_file_operations,
             recent_tool_operations=recent_tool_operations,
         )
 
-        if (
-            not memory_summary
-            and not tool_history
-            and self._memory_service.should_search_without_slots(user_id=user_id, utterance_id=utterance_id)
-        ):
-            _debug_log("auto_tool_start tool=internet_search")
-            started = time.perf_counter()
-            result = await self._run_tool_call(
-                ToolCall(tool="internet_search", arguments={"query": message}),
-                user_id=user_id,
-                utterance_id=utterance_id,
-                image_model=image_model,
-            )
-            _debug_log(f"auto_tool_end tool=internet_search elapsed={time.perf_counter() - started:.2f}s")
-            used_tools.append("internet_search")
-            memory_writes.extend(["search_result", "search_fact"])
-            event = {
-                "tool": "internet_search",
-                "arguments": result["arguments"],
-                "result": result["result"],
-            }
-            tool_events.append(event)
-            tool_history.append(event)
+        model_parse_failures = 0
+        unknown_tool_guards = 0
 
         for round_index in range(1, config.AGENT_MAX_TOOL_ROUNDS + 1):
             _debug_log(
@@ -193,6 +169,7 @@ class AgentOrchestrator:
                     tool_history=tool_history,
                 )
             except (RuntimeError, ValueError) as exc:
+                model_parse_failures += 1
                 guard_result = _model_output_guard_result(exc)
                 _debug_log(
                     f"model_round_error round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
@@ -204,7 +181,37 @@ class AgentOrchestrator:
                     "arguments": {},
                     "result": guard_result,
                 })
+                if model_parse_failures >= config.AGENT_MAX_PARSE_FAILURES:
+                    fallback_answer = _circuit_breaker_answer(
+                        reason="model_output_parse_failed",
+                        tool_history=tool_history,
+                    )
+                    self._remember_dialogue_messages(
+                        conversation_key=conversation_key,
+                        user_message=message,
+                        assistant_message=fallback_answer,
+                    )
+                    self._remember_activation_node_ids(
+                        conversation_key=conversation_key,
+                        node_ids=current_activation_node_ids | file_activation_node_ids,
+                        node_weights={
+                            **{node_id: 1.0 for node_id in current_activation_node_ids},
+                            **file_activation_node_weights,
+                        },
+                    )
+                    self._remember_tool_operations(
+                        conversation_key=conversation_key,
+                        tool_events=tool_events,
+                        tool_history=tool_history,
+                    )
+                    return AgentResponse(
+                        text=fallback_answer,
+                        used_tools=used_tools,
+                        memory_writes=memory_writes,
+                        tool_events=tool_events,
+                    )
                 continue
+            model_parse_failures = 0
             _debug_log(
                 f"model_round_end round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
                 f"elapsed={time.perf_counter() - started:.2f}s "
@@ -263,10 +270,6 @@ class AgentOrchestrator:
                         **file_activation_node_weights,
                     },
                 )
-                self._remember_file_operations(
-                    conversation_key=conversation_key,
-                    tool_events=tool_events,
-                )
                 self._remember_tool_operations(
                     conversation_key=conversation_key,
                     tool_events=tool_events,
@@ -295,6 +298,7 @@ class AgentOrchestrator:
                 None,
             )
             if unknown_tool_call is not None:
+                unknown_tool_guards += 1
                 guard_result = _unknown_tool_guard_result(
                     unknown_tool=unknown_tool_call.tool,
                     available_tools=[definition.name for definition in self._tool_registry.definitions()],
@@ -308,7 +312,37 @@ class AgentOrchestrator:
                     "arguments": {},
                     "result": guard_result,
                 })
+                if unknown_tool_guards >= config.AGENT_MAX_UNKNOWN_TOOL_GUARDS:
+                    fallback_answer = _circuit_breaker_answer(
+                        reason="unknown_tool_call",
+                        tool_history=tool_history,
+                    )
+                    self._remember_dialogue_messages(
+                        conversation_key=conversation_key,
+                        user_message=message,
+                        assistant_message=fallback_answer,
+                    )
+                    self._remember_activation_node_ids(
+                        conversation_key=conversation_key,
+                        node_ids=current_activation_node_ids | file_activation_node_ids,
+                        node_weights={
+                            **{node_id: 1.0 for node_id in current_activation_node_ids},
+                            **file_activation_node_weights,
+                        },
+                    )
+                    self._remember_tool_operations(
+                        conversation_key=conversation_key,
+                        tool_events=tool_events,
+                        tool_history=tool_history,
+                    )
+                    return AgentResponse(
+                        text=fallback_answer,
+                        used_tools=used_tools,
+                        memory_writes=memory_writes,
+                        tool_events=tool_events,
+                    )
                 continue
+            unknown_tool_guards = 0
             for call in turn.tool_calls:
                 call = _redirect_text_document_read_call(call)
                 _debug_log(f"tool_start round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} tool={call.tool}")
@@ -365,10 +399,6 @@ class AgentOrchestrator:
                 **file_activation_node_weights,
             },
         )
-        self._remember_file_operations(
-            conversation_key=conversation_key,
-            tool_events=tool_events,
-        )
         self._remember_tool_operations(
             conversation_key=conversation_key,
             tool_events=tool_events,
@@ -412,10 +442,6 @@ class AgentOrchestrator:
                 node_id: max(0.0, float(node_weights.get(node_id, 0.0)))
                 for node_id in node_ids
             }
-
-    def _remember_file_operations(self, *, conversation_key: str, tool_events: list[dict]) -> None:
-        operations = [_file_operation_context(event) for event in tool_events]
-        self._recent_file_operations[conversation_key] = [item for item in operations if item is not None][-3:]
 
     def _remember_tool_operations(
         self,
@@ -465,7 +491,35 @@ class AgentOrchestrator:
             )
             if search_nodes:
                 arguments["search_nodes"] = search_nodes
-        result = await self._tool_registry.run(ToolCall(tool=call.tool, arguments=arguments))
+        definition = self._tool_registry.definition(call.tool)
+        schema = definition.input_schema if definition is not None else {}
+        required = schema.get("required") if isinstance(schema, dict) else []
+        missing = [
+            str(name)
+            for name in required or []
+            if name not in arguments or arguments.get(name) is None or arguments.get(name) == ""
+        ]
+        if missing:
+            return {
+                "arguments": arguments,
+                "result": {
+                    "ok": False,
+                    "error": "missing_required_arguments",
+                    "tool": call.tool,
+                    "missing_arguments": missing,
+                    "description": definition.description if definition is not None else "",
+                    "input_schema": schema,
+                },
+            }
+        try:
+            result = await self._tool_registry.run(ToolCall(tool=call.tool, arguments=arguments))
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "error": "tool_execution_failed",
+                "tool": call.tool,
+                "message": _truncate(str(exc), 500),
+            }
         if call.tool in {"internet_search", "latest_search"}:
             self._persist_search_results(arguments=arguments, result=result)
         return {"arguments": arguments, "result": result}
@@ -613,27 +667,12 @@ def _compose_user_message(
     *,
     message: str,
     recent_dialogue_messages: list[str],
-    recent_file_operations: list[dict],
     recent_tool_operations: list[dict],
 ) -> str:
     sections: list[str] = []
     if recent_dialogue_messages:
         dialogue = "\n".join(f"- {item}" for item in recent_dialogue_messages)
         sections.append(f"Previous dialogue turn:\n{dialogue}")
-    if recent_file_operations:
-        lines = []
-        for item in recent_file_operations:
-            lines.append(
-                "- "
-                f"tool={item.get('tool')} "
-                f"path={item.get('path')} "
-                f"ok={item.get('ok')} "
-                f"mode={item.get('mode')} "
-                f"old={item.get('old')!r} "
-                f"new={item.get('new')!r} "
-                f"content_tail={item.get('content_tail')!r}"
-            )
-        sections.append("Previous file operation:\n" + "\n".join(lines))
     if recent_tool_operations:
         lines = []
         for item in recent_tool_operations:
@@ -649,25 +688,6 @@ def _compose_user_message(
         sections.append("Previous tool operation:\n" + "\n".join(lines))
     sections.append(f"Current user message:\n{message}")
     return "\n\n".join(sections)
-
-
-def _file_operation_context(event: dict) -> dict | None:
-    if event.get("tool") not in {"file_create", "file_read", "file_update", "file_delete"}:
-        return None
-    arguments = event.get("arguments")
-    result = event.get("result")
-    if not isinstance(arguments, dict) or not isinstance(result, dict):
-        return None
-    content = str(arguments.get("content") or result.get("content") or "")
-    return {
-        "tool": event.get("tool"),
-        "path": arguments.get("path") or result.get("path"),
-        "ok": result.get("ok"),
-        "mode": result.get("mode"),
-        "old": arguments.get("old"),
-        "new": arguments.get("new"),
-        "content_tail": content[-200:] if content else "",
-    }
 
 
 def _tool_operation_context(event: dict) -> dict | None:
@@ -721,6 +741,37 @@ def _tool_result_summary(*, tool: str, result: dict) -> str:
             f"nodes={result.get('nodes')!r}"
         )
     return _truncate(str(result), 240)
+
+
+def _circuit_breaker_answer(*, reason: str, tool_history: list[dict]) -> str:
+    read_paths: list[str] = []
+    unknown_tools: list[str] = []
+    for event in tool_history:
+        result = event.get("result")
+        if event.get("tool") == "file_read" and isinstance(result, dict) and result.get("ok") is True:
+            path = str(result.get("path") or "").strip()
+            if path and path not in read_paths:
+                read_paths.append(path)
+        if event.get("tool") == "execution_guard" and isinstance(result, dict):
+            unknown_tool = str(result.get("unknown_tool") or "").strip()
+            if unknown_tool and unknown_tool not in unknown_tools:
+                unknown_tools.append(unknown_tool)
+
+    if reason == "model_output_parse_failed":
+        head = "모델 출력이 JSON 형식을 반복해서 벗어나 더 진행하지 않았습니다."
+    elif reason == "unknown_tool_call":
+        head = "모델이 사용할 수 없는 도구를 반복 호출해 더 진행하지 않았습니다."
+    else:
+        head = "모델 복구 루프가 반복되어 더 진행하지 않았습니다."
+
+    details: list[str] = []
+    if read_paths:
+        details.append("읽은 파일: " + ", ".join(read_paths))
+    if unknown_tools:
+        details.append("잘못 호출한 도구: " + ", ".join(unknown_tools))
+    if details:
+        return head + "\n" + "\n".join(details)
+    return head
 
 
 def _truncate(text: str, limit: int) -> str:

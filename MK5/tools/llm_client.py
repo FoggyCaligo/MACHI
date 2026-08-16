@@ -128,18 +128,11 @@ class OllamaToolChatModel:
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
-        tool_spec_payload = [_compact_tool_definition(tool) for tool in tool_definitions]
         user_payload = {
             "user_message": user_message,
-            "memory_summary": memory_summary,
-            "tools": tool_spec_payload,
+            "memory_summary": [_compact_memory_item(item) for item in memory_summary],
+            "tools": [tool.name for tool in tool_definitions],
             "tool_history": [_compact_tool_history_event(event) for event in tool_history],
-            "output_contract": {
-                "final_answer": "string|null",
-                "tool_calls": [{"tool": "name", "arguments": {}}],
-                "final_answer_kind": "answer | tool_completion | blocked",
-                "completion_tools": ["required when final_answer_kind=tool_completion"],
-            },
         }
         raw = await ollama_chat(
             system=system,
@@ -213,12 +206,19 @@ def _argument_variants(schema: dict[str, Any]) -> list[list[str]]:
 
 def _compact_tool_history_event(event: dict[str, Any]) -> dict[str, Any]:
     tool = event.get("tool")
-    arguments = event.get("arguments")
     result = event.get("result")
     return {
         "tool": tool,
-        "arguments": _compact_value(arguments, limit=180),
         "result": _compact_tool_result(tool=tool, result=result),
+    }
+
+
+def _compact_memory_item(item: object) -> object:
+    if not isinstance(item, dict):
+        return _compact_value(item, limit=500)
+    return {
+        "type": item.get("node_type"),
+        "memory": _shorten(str(item.get("label") or item.get("raw_label") or ""), 500),
     }
 
 
@@ -229,13 +229,23 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
     for key in ("ok", "error", "status", "mode", "path", "returncode", "freshness", "query"):
         if key in result:
             compact[key] = result.get(key)
+    if result.get("error") == "missing_required_arguments":
+        compact["tool"] = result.get("tool")
+        compact["missing_arguments"] = result.get("missing_arguments")
+        compact["description"] = _shorten(str(result.get("description") or ""), 300)
+        compact["input_schema"] = result.get("input_schema")
+        return compact
+    if result.get("error") == "tool_execution_failed":
+        compact["tool"] = result.get("tool")
+        compact["message"] = _shorten(str(result.get("message") or ""), 500)
+        return compact
     if tool == "terminal_command":
         _add_tail(compact, "stdout", result.get("stdout"), 320)
         _add_tail(compact, "stderr", result.get("stderr"), 320)
         if result.get("changed_paths"):
             compact["changed_paths"] = _compact_value(result.get("changed_paths"), limit=240)
     elif tool in {"file_read", "document_read"}:
-        _add_tail(compact, "content", result.get("content"), 500)
+        _add_excerpt(compact, "content", result.get("content"), 2000)
     elif tool == "image_analyze":
         if "image" in result:
             compact["image"] = result.get("image")
@@ -291,6 +301,19 @@ def _add_tail(target: dict[str, Any], key: str, value: object, limit: int) -> No
     if not text:
         return
     target[f"{key}_tail"] = _shorten(text[-limit:], limit)
+
+
+def _add_excerpt(target: dict[str, Any], key: str, value: object, limit: int) -> None:
+    if value is None:
+        return
+    text = str(value)
+    if not text:
+        return
+    if len(text) <= limit:
+        target[key] = text
+        return
+    tail_size = min(500, limit // 3)
+    target[key] = text[: limit - tail_size] + "\n...[truncated]...\n" + text[-tail_size:]
 
 
 def _compact_value(value: object, *, limit: int) -> object:
