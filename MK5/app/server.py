@@ -66,6 +66,7 @@ async def get_tools() -> dict:
             "market_snapshot",
             "file_create",
             "file_read",
+            "document_read",
             "file_update",
             "file_delete",
             "terminal_command",

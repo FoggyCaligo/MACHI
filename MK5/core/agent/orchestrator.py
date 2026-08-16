@@ -457,7 +457,7 @@ def _tool_result_summary(*, tool: str, result: dict) -> str:
         if result.get("changed_paths"):
             parts.append(f"changed_paths={result.get('changed_paths')!r}")
         return " ".join(parts)
-    if tool == "file_read":
+    if tool in {"file_read", "document_read"}:
         content = str(result.get("content") or "")
         return f"path={result.get('path')!r} content_tail={_truncate(content[-240:], 240)!r}"
     return _truncate(str(result), 240)
@@ -615,14 +615,14 @@ def _empty_turn_after_tool_guard_result(*, tool_history: list[dict]) -> dict:
                 "use only path, mode='append', and content. For full overwrite, use only path and content."
             ),
         }
-    if latest_tool == "file_read":
+    if latest_tool in {"file_read", "document_read"}:
         return {
             "ok": False,
-            "error": "empty_turn_after_file_read",
+            "error": f"empty_turn_after_{latest_tool}",
             "message": (
-                "A file_read result is available, but the model returned neither final_answer "
-                "nor tool_calls. Use the file_read content to continue with the requested "
-                "file operation, or return a blocker explanation."
+                f"A {latest_tool} result is available, but the model returned neither "
+                "final_answer nor tool_calls. Use the available content to continue with "
+                "the requested operation, or return a blocker explanation."
             ),
         }
     return {

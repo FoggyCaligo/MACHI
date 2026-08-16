@@ -2,10 +2,12 @@
 
 from pathlib import Path
 import builtins
+import zipfile
 
 import pytest
 
 from MK5.tools.terminal_tools import TerminalToolSuite
+from MK5.tools.document_tools import DocumentReadToolSuite, _looks_garbled
 from MK5.tools.llm_client import _parse_model_turn
 from MK5.tools.tool_runtime import ToolCall
 from MK5.tools.workspace_tools import WorkspaceFileToolSuite
@@ -136,6 +138,67 @@ async def test_file_read_returns_not_found_result_instead_of_raising(tmp_path: P
     assert result["ok"] is False
     assert result["error"] == "not_found"
     assert result["path"] == "architecture.md"
+
+
+@pytest.mark.asyncio
+async def test_file_read_rejects_binary_document_instead_of_decoding(tmp_path: Path) -> None:
+    suite = WorkspaceFileToolSuite(tmp_path)
+    registry = suite.build_registry()
+    (tmp_path / "strategy.pdf").write_bytes(b"%PDF-1.4\n\x93binary\n")
+
+    result = await registry.run(ToolCall(tool="file_read", arguments={
+        "path": "strategy.pdf",
+    }))
+
+    assert result["ok"] is False
+    assert result["error"] == "unsupported_binary_document"
+    assert "document_read" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_document_read_extracts_docx_text(tmp_path: Path) -> None:
+    suite = DocumentReadToolSuite(tmp_path)
+    registry = suite.build_registry()
+    docx_path = tmp_path / "strategy.docx"
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>노이즈 회귀 전략</w:t></w:r></w:p>
+    <w:p><w:r><w:t>코스피 환경 판단</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    with zipfile.ZipFile(docx_path, "w") as archive:
+        archive.writestr("word/document.xml", document_xml)
+
+    result = await registry.run(ToolCall(tool="document_read", arguments={
+        "path": "strategy.docx",
+    }))
+
+    assert result["ok"] is True
+    assert result["document_type"] == "docx"
+    assert result["paragraphs"] == 2
+    assert "노이즈 회귀 전략" in result["content"]
+    assert "코스피 환경 판단" in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_document_read_rejects_unsupported_extension(tmp_path: Path) -> None:
+    suite = DocumentReadToolSuite(tmp_path)
+    registry = suite.build_registry()
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+
+    result = await registry.run(ToolCall(tool="document_read", arguments={
+        "path": "notes.txt",
+    }))
+
+    assert result["ok"] is False
+    assert result["error"] == "unsupported_document_type"
+
+
+def test_document_read_detects_low_quality_extracted_text() -> None:
+    assert _looks_garbled("\x00\x00\x00 깨진 \x00\x00 텍스트") is True
+    assert _looks_garbled("노이즈 회귀 기반 스윙 트레이딩 전략") is False
 
 
 @pytest.mark.asyncio

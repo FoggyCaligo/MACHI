@@ -121,7 +121,19 @@ class WorkspaceFileToolSuite:
         missing = self._missing_result(relative_path, target, not_found_message="File not found")
         if missing is not None:
             return missing
-        return {"ok": True, "path": relative_path, "content": target.read_text(encoding="utf-8")}
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return {
+                "ok": False,
+                "path": relative_path,
+                "error": "unsupported_binary_document",
+                "message": (
+                    "file_read only supports UTF-8 text files. Use document_read for "
+                    "PDF or DOCX documents."
+                ),
+            }
+        return {"ok": True, "path": relative_path, "content": content}
 
     async def _create(self, arguments: dict) -> dict:
         relative_path = self._path_argument(arguments)
