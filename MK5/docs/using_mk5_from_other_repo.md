@@ -114,6 +114,7 @@ $env:MK5_OLLAMA_IMAGE_FALLBACK_MODEL_NAME="gemma4:12b"
 $env:MK5_RECENT_MESSAGE_LIMIT="6"
 $env:MK5_FILE_TEXT_NODE_KEEP_RATIO="0.7"
 $env:MK5_FILE_TEXT_NODE_MAX_ITEMS="24"
+$env:MK5_FILE_TEXT_ACTIVATION_MAX_CHARS="8000"
 ```
 
 `MK5_RECENT_MESSAGE_LIMIT` controls how many recent dialogue messages are included in the model input. Longer histories can improve continuity, but too much raw context can make a small local model overfit to irrelevant past turns. MK5 therefore combines a short recent dialogue window with graph memory and active graph context.

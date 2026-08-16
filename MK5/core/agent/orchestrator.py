@@ -484,11 +484,18 @@ class AgentOrchestrator:
             return None
         path = str(result.get("path") or "").strip()
         content = str(result.get("content") or "")
+        _debug_log(f"file_text_activation_start path={path} chars={len(content)}")
+        started = time.perf_counter()
         activation = self._memory_service.record_file_text_activation(
             user_id=user_id,
             path=path,
             content=content,
             session_id=session_id,
+        )
+        _debug_log(
+            f"file_text_activation_end path={path} "
+            f"elapsed={time.perf_counter() - started:.2f}s "
+            f"nodes={len(activation.get('nodes', [])) if isinstance(activation, dict) else 0}"
         )
         if not isinstance(activation, dict):
             return None

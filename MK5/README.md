@@ -125,7 +125,7 @@
 
 현재 최근 대화 기본 개수는 `MK5_RECENT_MESSAGE_LIMIT=6`이다. 너무 많은 프롬프트와 도구 schema를 한 번에 넣으면 모델이 도구 사용을 회피하거나 문맥을 잃기 쉬워서, `MK5`는 전체 schema 대신 `tool_manual:<tool_name>` 주소를 제공하는 방식으로 줄였다.
 
-텍스트 파일에서 만들어지는 노드는 기본적으로 상위 70%, 최대 24개만 유지한다. 이 값은 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`로 조정할 수 있다. 이 노드들은 파일을 읽은 작업 문맥을 보조하기 위한 임시 활성화이며, 사용자 장기 기억 summary 후보로 직접 고정되지는 않는다.
+텍스트 파일에서 만들어지는 노드는 기본적으로 상위 70%, 최대 24개만 유지한다. 이 값은 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`로 조정할 수 있다. 후처리 입력은 기본 8,000자로 제한되며 `MK5_FILE_TEXT_ACTIVATION_MAX_CHARS`로 조정한다. 이 노드들은 파일을 읽은 작업 문맥을 보조하기 위한 임시 활성화이며, 사용자 장기 기억 summary 후보로 직접 고정되지는 않는다.
 
 ## 주요 도구
 

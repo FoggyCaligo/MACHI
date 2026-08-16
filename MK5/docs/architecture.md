@@ -129,7 +129,9 @@ previous active graph nodes: 0.5
 file text activation nodes: 0.25
 ```
 
-이 값은 “파일을 읽었다”는 사실이 현재 작업에는 중요하지만, 사용자가 직접 말한 기억과 같은 강도로 장기 문맥을 끌어당기면 안 된다는 판단을 반영한다. 파일 text activation은 다음 턴의 작업 문맥에만 약하게 이어지며, 새 턴에서 다시 파일을 읽지 않으면 장기 기억 summary 후보로 고정되거나 계속 재전파되지 않는다. 현재 기본값은 상위 70%, 최대 24개이며, 각각 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`로 조정할 수 있다.
+이 값은 “파일을 읽었다”는 사실이 현재 작업에는 중요하지만, 사용자가 직접 말한 기억과 같은 강도로 장기 문맥을 끌어당기면 안 된다는 판단을 반영한다. 파일 text activation은 다음 턴의 작업 문맥에만 약하게 이어지며, 새 턴에서 다시 파일을 읽지 않으면 장기 기억 summary 후보로 고정되거나 계속 재전파되지 않는다.
+
+긴 파일에서 후처리가 멈추지 않도록 파일 text activation 입력은 기본 8,000자로 제한한다. 또한 2,000자를 넘는 파일은 Sentence_Breaker 대신 더 가벼운 token fallback으로 후보를 만든다. 현재 기본값은 상위 70%, 최대 24개이며, 각각 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`, `MK5_FILE_TEXT_ACTIVATION_MAX_CHARS`로 조정할 수 있다.
 
 ### Compact tool definitions
 

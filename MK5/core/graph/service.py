@@ -268,7 +268,7 @@ class GraphMemoryService:
         path_text = path.strip()
         if not path_text or not _is_nodeable_text_path(path_text):
             return {"node_ids": [], "nodes": []}
-        ranked_nodes = _rank_text_node_candidates(content)
+        ranked_nodes = _rank_text_node_candidates(_truncate_file_activation_text(content))
         if not ranked_nodes:
             return {"node_ids": [], "nodes": []}
 
@@ -835,8 +835,10 @@ def _rank_text_node_candidates(content: str) -> list[dict]:
 
 
 def _file_text_tokenize_spans(content: str) -> list[TokenSpan]:
-    spans = tokenize_spans(content)
     fallback_spans = _regex_token_spans(content)
+    if len(content) > 2000:
+        return fallback_spans
+    spans = tokenize_spans(content)
     if (
         len({span.normalized for span in spans}) >= 2
         and _average_token_length(spans) >= _average_token_length(fallback_spans)
@@ -869,3 +871,10 @@ def _average_token_length(spans: list[TokenSpan]) -> float:
     if not spans:
         return 0.0
     return sum(len(span.normalized) for span in spans) / len(spans)
+
+
+def _truncate_file_activation_text(content: str) -> str:
+    max_chars = max(0, config.FILE_TEXT_ACTIVATION_MAX_CHARS)
+    if not max_chars or len(content) <= max_chars:
+        return content
+    return content[:max_chars]
