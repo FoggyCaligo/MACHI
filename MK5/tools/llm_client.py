@@ -2,11 +2,21 @@
 
 import json
 from copy import deepcopy
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .. import config
 from .ollama_client import chat as ollama_chat
 from .tool_runtime import ToolCall, ToolDefinition
+
+
+class ModelOutputParseError(RuntimeError):
+    pass
+
+
+class ModelRequestError(RuntimeError):
+    pass
 
 
 @dataclass(slots=True)
@@ -69,38 +79,38 @@ def _parse_model_turn(raw: str) -> ModelTurn:
             try:
                 data = json.loads(extracted)
             except json.JSONDecodeError as exc:
-                raise RuntimeError(
+                raise ModelOutputParseError(
                     f"Model response must be valid JSON with final_answer and tool_calls: {exc}"
                 ) from exc
         else:
-            raise RuntimeError("Model response must be JSON with final_answer and tool_calls.")
+            raise ModelOutputParseError("Model response must be JSON with final_answer and tool_calls.")
     if not isinstance(data, dict):
-        raise RuntimeError("Model response must be a JSON object.")
+        raise ModelOutputParseError("Model response must be a JSON object.")
     final_answer = data.get("final_answer")
     if final_answer is not None and not isinstance(final_answer, str):
-        raise RuntimeError("final_answer must be string or null.")
+        raise ModelOutputParseError("final_answer must be string or null.")
     tool_calls_raw = data.get("tool_calls")
     if not isinstance(tool_calls_raw, list):
-        raise RuntimeError("tool_calls must be a list.")
+        raise ModelOutputParseError("tool_calls must be a list.")
     final_answer_kind = data.get("final_answer_kind", "answer")
     if final_answer_kind not in {"answer", "tool_completion", "blocked"}:
-        raise RuntimeError("final_answer_kind must be answer, tool_completion, or blocked.")
+        raise ModelOutputParseError("final_answer_kind must be answer, tool_completion, or blocked.")
     completion_tools_raw = data.get("completion_tools", [])
     if not isinstance(completion_tools_raw, list) or not all(
         isinstance(item, str) for item in completion_tools_raw
     ):
-        raise RuntimeError("completion_tools must be a list of strings.")
+        raise ModelOutputParseError("completion_tools must be a list of strings.")
 
     tool_calls: list[ToolCall] = []
     for idx, item in enumerate(tool_calls_raw):
         if not isinstance(item, dict):
-            raise RuntimeError(f"tool_calls[{idx}] must be an object.")
+            raise ModelOutputParseError(f"tool_calls[{idx}] must be an object.")
         tool = item.get("tool")
         arguments = item.get("arguments")
         if not isinstance(tool, str) or not tool.strip():
-            raise RuntimeError(f"tool_calls[{idx}].tool must be a non-empty string.")
+            raise ModelOutputParseError(f"tool_calls[{idx}].tool must be a non-empty string.")
         if not isinstance(arguments, dict):
-            raise RuntimeError(f"tool_calls[{idx}].arguments must be an object.")
+            raise ModelOutputParseError(f"tool_calls[{idx}].arguments must be an object.")
         tool_calls.append(ToolCall(tool=tool.strip(), arguments=arguments))
     return ModelTurn(
         final_answer=final_answer.strip() if isinstance(final_answer, str) else None,
@@ -135,18 +145,37 @@ class OllamaToolChatModel:
             "tools": [tool.name for tool in tool_definitions],
             "tool_history": [_compact_tool_history_event(event) for event in tool_history],
         }
-        raw = await ollama_chat(
-            system=system,
-            user=json.dumps(user_payload, ensure_ascii=False),
-            model=model,
-            response_format=_response_schema_for_tools([tool.name for tool in tool_definitions]),
-        )
-        turn = _parse_model_turn(raw)
+        try:
+            raw = await ollama_chat(
+                system=system,
+                user=json.dumps(user_payload, ensure_ascii=False),
+                model=model,
+                response_format=_response_schema_for_tools([tool.name for tool in tool_definitions]),
+            )
+        except ValueError as exc:
+            raise ModelRequestError(str(exc)) from exc
+        try:
+            turn = _parse_model_turn(raw)
+        except ModelOutputParseError as exc:
+            _log_model_output_failure(raw=raw, error=exc)
+            raise
         return _require_tool_manuals(
             turn,
             tool_definitions=tool_definitions,
             tool_history=tool_history,
         )
+
+
+def _log_model_output_failure(*, raw: str, error: Exception) -> None:
+    if not config.AGENT_DEBUG_LOG:
+        return
+    limit = max(0, config.MODEL_FAILURE_PREVIEW_CHARS)
+    preview = raw[:limit] if limit else "<disabled>"
+    print(
+        f"[MK5 model] output_parse_failed error={error!r} raw_chars={len(raw)} raw_preview={preview!r}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 class StubChatModel:

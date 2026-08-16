@@ -9,7 +9,7 @@ import time
 
 from ... import config
 from ...tools.graph_tools import GraphToolSuite
-from ...tools.llm_client import ChatModel, ModelTurn
+from ...tools.llm_client import ChatModel, ModelRequestError, ModelTurn
 from ...tools.tool_runtime import ToolCall, ToolRegistry
 from ...tools.web_search import WebSearchTool
 from ..graph.service import GraphMemoryService
@@ -172,6 +172,20 @@ class AgentOrchestrator:
                     memory_summary=memory_summary,
                     tool_definitions=self._tool_registry.definitions(),
                     tool_history=tool_history,
+                )
+            except ModelRequestError as exc:
+                fallback_answer = f"Ollama가 모델 요청을 거부했습니다: {_truncate(str(exc), 500)}"
+                _debug_log(f"model_request_error round={round_index} error={exc!r}")
+                self._remember_dialogue_messages(
+                    conversation_key=conversation_key,
+                    user_message=message,
+                    assistant_message=fallback_answer,
+                )
+                return AgentResponse(
+                    text=fallback_answer,
+                    used_tools=used_tools,
+                    memory_writes=memory_writes,
+                    tool_events=tool_events,
                 )
             except (RuntimeError, ValueError) as exc:
                 model_parse_failures += 1

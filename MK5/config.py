@@ -32,6 +32,7 @@ FILE_TEXT_ACTIVATION_MAX_CHARS = int(os.getenv("MK5_FILE_TEXT_ACTIVATION_MAX_CHA
 TERMINAL_TIMEOUT_SECONDS = float(os.getenv("MK5_TERMINAL_TIMEOUT_SECONDS", "20"))
 WEB_SEARCH_TIMEOUT_SECONDS = float(os.getenv("MK5_WEB_SEARCH_TIMEOUT_SECONDS", "12"))
 AGENT_DEBUG_LOG = os.getenv("MK5_AGENT_DEBUG_LOG", "true").strip().lower() in {"1", "true", "yes", "on"}
+MODEL_FAILURE_PREVIEW_CHARS = int(os.getenv("MK5_MODEL_FAILURE_PREVIEW_CHARS", "2000"))
 
 OLLAMA_EXCLUDED_MODELS: frozenset[str] = frozenset(
     name.strip()

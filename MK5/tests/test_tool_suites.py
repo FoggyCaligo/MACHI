@@ -10,7 +10,7 @@ from MK5.tools.terminal_tools import TerminalToolSuite
 from MK5.tools.code_index_tools import CodeIndexToolSuite
 from MK5.tools.document_tools import DocumentReadToolSuite, _looks_garbled
 from MK5.tools.image_tools import ImageAnalyzeToolSuite
-from MK5.tools.llm_client import ModelTurn, _parse_model_turn, _require_tool_manuals, _response_schema_for_tools
+from MK5.tools.llm_client import ModelOutputParseError, ModelTurn, _parse_model_turn, _require_tool_manuals, _response_schema_for_tools
 from MK5.tools.tool_runtime import ToolCall, ToolDefinition
 from MK5.tools.workspace_tools import WorkspaceFileToolSuite
 from MK5.tools import web_search
@@ -55,6 +55,11 @@ def test_response_schema_restricts_tool_names_to_registry_list() -> None:
 
     tool_schema = schema["properties"]["tool_calls"]["items"]["properties"]["tool"]
     assert tool_schema["enum"] == ["code_index", "code_search", "file_search"]
+
+
+def test_invalid_model_json_raises_specific_parse_error() -> None:
+    with pytest.raises(ModelOutputParseError):
+        _parse_model_turn("일반 텍스트 응답")
 
 
 @pytest.mark.asyncio
