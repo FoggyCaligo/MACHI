@@ -16,7 +16,11 @@ class TerminalToolSuite:
         registry.register(
             ToolDefinition(
                 name="terminal_command",
-                description="Run a shell command from the workspace root and return stdout/stderr.",
+                description=(
+                    "Run a shell command from the workspace root and return stdout/stderr. "
+                    "Use this to list directories, find files, inspect project structure, run scripts, "
+                    "and perform local shell work."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {

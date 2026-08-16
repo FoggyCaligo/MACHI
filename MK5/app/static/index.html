@@ -307,7 +307,7 @@
   <div id="messages">
     <div id="empty-state">
       <div style="font-size:36px;color:var(--accent);font-weight:700;">MK5</div>
-      <div>USER_ID를 넣고 메시지를 보내면, 선택한 sLLM이 4개 툴을 사용할 수 있습니다.</div>
+      <div>USER_ID를 넣고 메시지를 보내면, 선택한 sLLM이 기억, 검색, 파일, 터미널, 시장 스냅샷 도구를 사용할 수 있습니다.</div>
     </div>
   </div>
 
@@ -408,7 +408,7 @@
       }
       if (!res.ok) throw new Error(data.detail || res.statusText);
       loaderRow.remove();
-      appendMk7Bubble(data);
+      appendMk5Bubble(data);
     } catch (err) {
       loaderRow.remove();
       appendErrorBubble(err.message || String(err));
@@ -433,7 +433,7 @@
     scrollBottom();
   }
 
-  function appendMk7Bubble(data) {
+  function appendMk5Bubble(data) {
     const row = document.createElement("div");
     row.className = "msg-row MK5";
     const toolEvents = Array.isArray(data.tool_events) ? data.tool_events : [];
@@ -452,7 +452,7 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
     ` : "";
 
     row.innerHTML = `
-      <div class="avatar MK5">M6</div>
+      <div class="avatar MK5">M5</div>
       <div class="bubble">
         <div class="bubble-text">${escapeHtml(data.text || "(응답 없음)")}</div>
         <div class="meta">
@@ -480,7 +480,7 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
     const row = document.createElement("div");
     row.className = "msg-row MK5";
     row.innerHTML = `
-      <div class="avatar MK5">M6</div>
+      <div class="avatar MK5">M5</div>
       <div class="bubble" style="color:var(--danger)">[오류] ${escapeHtml(message)}</div>
     `;
     $messages.appendChild(row);
@@ -491,7 +491,7 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
     const row = document.createElement("div");
     row.className = "msg-row MK5 loader-row";
     row.innerHTML = `
-      <div class="avatar MK5">M6</div>
+      <div class="avatar MK5">M5</div>
       <div class="loader"><span></span><span></span><span></span></div>
     `;
     $messages.appendChild(row);
