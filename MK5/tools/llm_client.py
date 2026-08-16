@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -138,7 +139,7 @@ class OllamaToolChatModel:
             system=system,
             user=json.dumps(user_payload, ensure_ascii=False),
             model=model,
-            response_format=_RESPONSE_SCHEMA,
+            response_format=_response_schema_for_tools([tool.name for tool in tool_definitions]),
         )
         turn = _parse_model_turn(raw)
         return _require_tool_manuals(
@@ -218,6 +219,15 @@ def _compact_tool_history_event(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _response_schema_for_tools(tool_names: list[str]) -> dict[str, Any]:
+    schema = deepcopy(_RESPONSE_SCHEMA)
+    if not tool_names:
+        return schema
+    tool_schema = schema["properties"]["tool_calls"]["items"]["properties"]["tool"]
+    tool_schema["enum"] = sorted(set(tool_names))
+    return schema
+
+
 def _compact_memory_item(item: object) -> object:
     if not isinstance(item, dict):
         return _compact_value(item, limit=500)
@@ -273,7 +283,21 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
         compact["tool"] = result.get("tool")
         compact["message"] = _shorten(str(result.get("message") or ""), 500)
         return compact
-    if tool == "file_search":
+    if tool == "code_index":
+        for key in ("workspace_root", "indexed_root", "files_indexed", "classes", "functions", "routes"):
+            if key in result:
+                compact[key] = result.get(key)
+        for key, limit in (("tools", 30), ("packages", 40), ("key_files", 20), ("parse_errors", 10)):
+            value = result.get(key)
+            if isinstance(value, list):
+                compact[key] = [_compact_value(item, limit=300) for item in value[:limit]]
+    elif tool == "code_search":
+        compact["query"] = result.get("query")
+        compact["indexed_root"] = result.get("indexed_root")
+        results = result.get("results")
+        if isinstance(results, list):
+            compact["results"] = [_compact_value(item, limit=500) for item in results[:20]]
+    elif tool == "file_search":
         compact["workspace_root"] = result.get("workspace_root")
         compact["root"] = result.get("root")
         compact["pattern"] = result.get("pattern")

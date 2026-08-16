@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+import json
 import re
 import sys
 import time
@@ -152,10 +153,14 @@ class AgentOrchestrator:
 
         model_parse_failures = 0
         unknown_tool_guards = 0
+        identical_tool_call_counts: dict[str, int] = {}
+        round_index = 0
+        stagnated = False
 
-        for round_index in range(1, config.AGENT_MAX_TOOL_ROUNDS + 1):
+        while True:
+            round_index += 1
             _debug_log(
-                f"model_round_start round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                f"model_round_start round={round_index} "
                 f"tool_history={len(tool_history)}"
             )
             started = time.perf_counter()
@@ -172,7 +177,7 @@ class AgentOrchestrator:
                 model_parse_failures += 1
                 guard_result = _model_output_guard_result(exc)
                 _debug_log(
-                    f"model_round_error round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                    f"model_round_error round={round_index} "
                     f"elapsed={time.perf_counter() - started:.2f}s "
                     f"error={guard_result.get('error')}"
                 )
@@ -213,7 +218,7 @@ class AgentOrchestrator:
                 continue
             model_parse_failures = 0
             _debug_log(
-                f"model_round_end round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                f"model_round_end round={round_index} "
                 f"elapsed={time.perf_counter() - started:.2f}s "
                 f"final={bool(turn.final_answer)} tool_calls={len(turn.tool_calls)}"
             )
@@ -223,12 +228,12 @@ class AgentOrchestrator:
                     for call in turn.tool_calls
                 ):
                     _debug_log(
-                        f"mixed_model_turn round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                        f"mixed_model_turn round={round_index} "
                         "action=use_final_ignore_duplicate_tool_calls"
                     )
                 else:
                     _debug_log(
-                        f"mixed_model_turn round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                        f"mixed_model_turn round={round_index} "
                         "action=run_tool_calls_ignore_final"
                     )
                     turn = ModelTurn(tool_calls=turn.tool_calls)
@@ -248,7 +253,7 @@ class AgentOrchestrator:
                 )
                 if guard_result is not None:
                     _debug_log(
-                        f"execution_guard round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                        f"execution_guard round={round_index} "
                         f"error={guard_result.get('error')}"
                     )
                     tool_history.append({
@@ -284,7 +289,7 @@ class AgentOrchestrator:
             if not turn.tool_calls:
                 guard_result = _empty_turn_after_tool_guard_result(tool_history=tool_history)
                 _debug_log(
-                    f"execution_guard round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                    f"execution_guard round={round_index} "
                     f"error={guard_result.get('error')}"
                 )
                 tool_history.append({
@@ -304,7 +309,7 @@ class AgentOrchestrator:
                     available_tools=[definition.name for definition in self._tool_registry.definitions()],
                 )
                 _debug_log(
-                    f"execution_guard round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                    f"execution_guard round={round_index} "
                     f"error={guard_result.get('error')} unknown_tool={unknown_tool_call.tool}"
                 )
                 tool_history.append({
@@ -345,7 +350,30 @@ class AgentOrchestrator:
             unknown_tool_guards = 0
             for call in turn.tool_calls:
                 call = _redirect_text_document_read_call(call)
-                _debug_log(f"tool_start round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} tool={call.tool}")
+                call_signature = json.dumps(
+                    {"tool": call.tool, "arguments": call.arguments},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                identical_tool_call_counts[call_signature] = identical_tool_call_counts.get(call_signature, 0) + 1
+                if identical_tool_call_counts[call_signature] > config.AGENT_MAX_IDENTICAL_TOOL_CALLS:
+                    tool_history.append({
+                        "tool": "execution_guard",
+                        "arguments": {},
+                        "result": {
+                            "ok": False,
+                            "error": "repeated_identical_tool_call",
+                            "message": (
+                                f"{call.tool} was requested repeatedly with identical arguments. "
+                                "Stop calling tools and synthesize the available results."
+                            ),
+                        },
+                    })
+                    _debug_log(f"execution_guard round={round_index} error=repeated_identical_tool_call")
+                    stagnated = True
+                    break
+                _debug_log(f"tool_start round={round_index} tool={call.tool}")
                 started = time.perf_counter()
                 result = await self._run_tool_call(
                     call,
@@ -354,7 +382,7 @@ class AgentOrchestrator:
                     image_model=image_model,
                 )
                 _debug_log(
-                    f"tool_end round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                    f"tool_end round={round_index} "
                     f"tool={call.tool} elapsed={time.perf_counter() - started:.2f}s "
                     f"ok={_tool_ok(result.get('result'))}"
                 )
@@ -384,8 +412,53 @@ class AgentOrchestrator:
                     file_activation_node_ids.update(event_node_ids)
                     file_activation_node_weights.update({node_id: 0.25 for node_id in event_node_ids})
                     tool_history.append(file_activation_event)
+            if stagnated:
+                break
 
-        fallback_answer = "도구 실행 이후에도 최종 답변을 만들지 못했습니다."
+        _debug_log("final_synthesis_start tools=disabled")
+        try:
+            synthesis_turn = await self._chat_model.next_turn(
+                system=(
+                    SYSTEM_PROMPT
+                    + "\nTool execution is finished. Do not call tools or ask the user to choose routine next steps. "
+                    "Synthesize the available evidence into the best final answer now."
+                ),
+                user_message=model_user_message,
+                model=model,
+                memory_summary=memory_summary,
+                tool_definitions=[],
+                tool_history=tool_history,
+            )
+        except (RuntimeError, ValueError):
+            synthesis_turn = ModelTurn()
+        if synthesis_turn.final_answer:
+            final_answer = synthesis_turn.final_answer
+            self._remember_dialogue_messages(
+                conversation_key=conversation_key,
+                user_message=message,
+                assistant_message=final_answer,
+            )
+            self._remember_activation_node_ids(
+                conversation_key=conversation_key,
+                node_ids=current_activation_node_ids | file_activation_node_ids,
+                node_weights={
+                    **{node_id: 1.0 for node_id in current_activation_node_ids},
+                    **file_activation_node_weights,
+                },
+            )
+            self._remember_tool_operations(
+                conversation_key=conversation_key,
+                tool_events=tool_events,
+                tool_history=tool_history,
+            )
+            return AgentResponse(
+                text=final_answer,
+                used_tools=used_tools,
+                memory_writes=memory_writes,
+                tool_events=tool_events,
+            )
+
+        fallback_answer = "수집한 결과를 바탕으로 최종 답변을 구성하지 못했습니다."
         self._remember_dialogue_messages(
             conversation_key=conversation_key,
             user_message=message,

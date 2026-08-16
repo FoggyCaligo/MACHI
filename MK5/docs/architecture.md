@@ -180,7 +180,7 @@ file text activation nodes: 0.25
 
 파일 수정, 터미널 실행, 이미지 분석처럼 사용자가 실제 도구 수행을 요구한 턴에서는 도구가 성공하기 전의 “했습니다”류 답변을 완료로 보지 않는다. 최종 문장 자체는 LLM이 만들지만, 오케스트레이터가 도구 실행 여부와 성공 여부를 구조적으로 검증한다.
 
-반대로 모델이 JSON 출력 계약을 반복해서 깨거나, 존재하지 않는 도구를 반복 호출하는 경우에는 전체 10라운드를 모두 쓰지 않는다. 기본값은 parse 실패 3회, unknown tool guard 2회이며 각각 `MK5_AGENT_MAX_PARSE_FAILURES`, `MK5_AGENT_MAX_UNKNOWN_TOOL_GUARDS`로 조정할 수 있다.
+도구 라운드 수에는 고정 상한이 없다. 모델이 JSON 출력 계약을 반복해서 깨거나 존재하지 않는 도구를 반복 호출하면 회로차단기가 응답을 멈춘다. 같은 도구와 같은 인자의 반복 허용 횟수는 기본 3회이며 `MK5_AGENT_MAX_IDENTICAL_TOOL_CALLS`로 조정할 수 있다.
 
 ## Tooling
 
@@ -189,6 +189,7 @@ file text activation nodes: 0.25
 - graph memory: `graph_search`, `record_memory_correction`
 - search: `internet_search`, `latest_search`, `market_snapshot`
 - file discovery: `file_search`
+- code structure: `code_index`, `code_search`
 - file CRUD: `file_create`, `file_read`, `file_update`, `file_delete`
 - document: `document_read`
 - image: `image_analyze`
@@ -218,6 +219,9 @@ UI에서도 대화 모델과 이미지 모델을 별도로 선택할 수 있다.
 - graph-to-language 계층을 기본값으로 두지 않는다.
 - LLM이 planner 역할을 하고 그래프는 memory substrate가 된다.
 - 그래프는 장기 기억 저장소이면서, 턴 단위로 활성화되는 working context를 제공한다.
+- 안전한 조사, 구현, 검증 단계는 사용자에게 선택을 요청하지 않고 목표가 충족될 때까지 이어서 수행한다.
+- 결과를 크게 바꾸는 결정이나 파괴적·외부 영향 작업이 아니라면 중간 승인을 요구하지 않는다.
+- 동일 도구 호출의 반복으로 정체가 감지되면 도구를 차단한 마지막 합성 라운드에서 수집한 근거로 최종 답변을 만든다.
 - 프롬프트는 규칙을 계속 덧붙이는 방식보다, 짧은 기본 원칙과 구조적 guard로 유지한다.
 - 문자열 신호나 임시 단어 목록으로 모델 행동을 틀어막기보다, JSON contract, tool schema, completion guard 같은 구조로 제어한다.
 

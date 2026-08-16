@@ -6,6 +6,7 @@ from ..core.agent.orchestrator import AgentOrchestrator
 from ..core.graph.repository import GraphRepository
 from ..core.graph.service import GraphMemoryService
 from ..tools.graph_tools import GraphToolSuite
+from ..tools.code_index_tools import CodeIndexToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
@@ -43,6 +44,7 @@ class Pipeline:
             web_search=self._web_search,
         )
         self._orchestrator.register_tool_registry(WorkspaceFileToolSuite().build_registry())
+        self._orchestrator.register_tool_registry(CodeIndexToolSuite().build_registry())
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
         self._orchestrator.register_tool_registry(TerminalToolSuite().build_registry())

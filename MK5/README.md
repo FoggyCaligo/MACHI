@@ -127,7 +127,7 @@
 
 텍스트 파일에서 만들어지는 노드는 기본적으로 상위 70%, 최대 24개만 유지한다. 이 값은 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`로 조정할 수 있다. 후처리 입력은 기본 8,000자로 제한되며 `MK5_FILE_TEXT_ACTIVATION_MAX_CHARS`로 조정한다. 이 노드들은 파일을 읽은 작업 문맥을 보조하기 위한 임시 활성화이며, 사용자 장기 기억 summary 후보로 직접 고정되지는 않는다.
 
-모델이 JSON 출력 계약을 반복해서 깨거나 존재하지 않는 도구를 반복 호출하면, 전체 10라운드를 다 쓰기 전에 회로차단기가 응답을 멈춘다. 기본값은 parse 실패 3회, unknown tool guard 2회다.
+도구 라운드 수에는 고정 상한이 없다. 모델이 JSON 출력 계약을 반복해서 깨거나 존재하지 않는 도구를 반복 호출하면 회로차단기가 응답을 멈춘다. 같은 도구와 인자를 기본 3회보다 많이 반복해도 정체로 판단하고 최종 합성으로 전환한다.
 
 ## 주요 도구
 
@@ -139,6 +139,8 @@
 - `latest_search`: 최신성 정보가 필요한 질문용 검색
 - `market_snapshot`: 시장 지표 스냅샷
 - `file_search`: 작업공간에서 정확한 파일 경로 검색
+- `code_index`: Python 코드의 import, 클래스, 함수, route, 도구, 설정, 테스트 구조를 압축 인덱싱
+- `code_search`: 압축 코드 인덱스에서 관련 파일과 symbol 검색
 - `file_create`, `file_read`, `file_update`, `file_delete`: 파일 CRUD
 - `document_read`: PDF/DOCX 텍스트 추출
 - `image_analyze`: 이미지 분석

@@ -1818,3 +1818,47 @@ async def test_orchestrator_stops_after_repeated_unknown_tool_calls() -> None:
     repo.close()
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_runs_final_synthesis_after_identical_tool_loop_stagnates() -> None:
+    class ToolLoopThenSynthesisModel:
+        def __init__(self) -> None:
+            self.synthesis_called = False
+
+        async def next_turn(
+            self,
+            *,
+            system: str,
+            user_message: str,
+            model: str | None,
+            memory_summary: list[Any],
+            tool_definitions: list[ToolDefinition],
+            tool_history: list[dict[str, Any]],
+        ) -> ModelTurn:
+            if not tool_definitions:
+                self.synthesis_called = True
+                return ModelTurn(final_answer="수집한 결과를 종합했습니다.")
+            return ModelTurn(tool_calls=[
+                ToolCall(tool="graph_search", arguments={"query": "Machi", "limit": 1})
+            ])
+
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    chat_model = ToolLoopThenSynthesisModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=service,
+        graph_tools=GraphToolSuite(service),
+        chat_model=chat_model,
+        web_search=StubWebSearchTool(),
+    )
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        session_id="s1",
+        message="Machi 코드를 전체적으로 이해해줘.",
+    )
+
+    assert chat_model.synthesis_called is True
+    assert result.text == "수집한 결과를 종합했습니다."
+    repo.close()
+
+

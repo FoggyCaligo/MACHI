@@ -7,9 +7,10 @@ import zipfile
 import pytest
 
 from MK5.tools.terminal_tools import TerminalToolSuite
+from MK5.tools.code_index_tools import CodeIndexToolSuite
 from MK5.tools.document_tools import DocumentReadToolSuite, _looks_garbled
 from MK5.tools.image_tools import ImageAnalyzeToolSuite
-from MK5.tools.llm_client import ModelTurn, _parse_model_turn, _require_tool_manuals
+from MK5.tools.llm_client import ModelTurn, _parse_model_turn, _require_tool_manuals, _response_schema_for_tools
 from MK5.tools.tool_runtime import ToolCall, ToolDefinition
 from MK5.tools.workspace_tools import WorkspaceFileToolSuite
 from MK5.tools import web_search
@@ -47,6 +48,13 @@ def test_consulted_tool_call_is_preserved() -> None:
     guarded = _require_tool_manuals(turn, tool_definitions=definitions, tool_history=history)
 
     assert guarded is turn
+
+
+def test_response_schema_restricts_tool_names_to_registry_list() -> None:
+    schema = _response_schema_for_tools(["file_search", "code_index", "code_search"])
+
+    tool_schema = schema["properties"]["tool_calls"]["items"]["properties"]["tool"]
+    assert tool_schema["enum"] == ["code_index", "code_search", "file_search"]
 
 
 @pytest.mark.asyncio
@@ -101,6 +109,58 @@ async def test_file_search_respects_limit_and_reports_truncation(tmp_path: Path)
     assert result["files"] == ["a.py", "b.py"]
     assert result["count"] == 2
     assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_code_index_extracts_python_structure(tmp_path: Path) -> None:
+    package = tmp_path / "app"
+    package.mkdir()
+    (package / "server.py").write_text(
+        '"""HTTP server."""\n'
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "@app.get('/health')\n"
+        "async def health():\n"
+        "    return {'ok': True}\n"
+        "class Service:\n"
+        "    def run(self, value):\n"
+        "        return value\n",
+        encoding="utf-8",
+    )
+    registry = CodeIndexToolSuite(tmp_path).build_registry()
+
+    result = await registry.run(ToolCall(tool="code_index", arguments={"root": "app"}))
+
+    assert result["ok"] is True
+    assert result["files_indexed"] == 1
+    assert result["classes"] == 1
+    assert result["routes"] == 1
+    assert result["key_files"] == ["app/server.py"]
+
+
+@pytest.mark.asyncio
+async def test_code_search_returns_relevant_symbols_without_source_body(tmp_path: Path) -> None:
+    package = tmp_path / "core"
+    package.mkdir()
+    (package / "agent.py").write_text(
+        "class AgentOrchestrator:\n"
+        "    async def respond(self, user_id, message):\n"
+        "        secret_body_value = 'not returned as source'\n"
+        "        return secret_body_value\n",
+        encoding="utf-8",
+    )
+    suite = CodeIndexToolSuite(tmp_path)
+    registry = suite.build_registry()
+
+    result = await registry.run(ToolCall(tool="code_search", arguments={
+        "root": ".",
+        "query": "AgentOrchestrator respond",
+    }))
+
+    assert result["ok"] is True
+    assert result["results"][0]["path"] == "core/agent.py"
+    assert result["results"][0]["classes"][0]["name"] == "AgentOrchestrator"
+    assert "secret_body_value" not in str(result["results"][0])
 
 
 @pytest.mark.asyncio
