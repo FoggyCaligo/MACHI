@@ -128,24 +128,17 @@ class OllamaToolChatModel:
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
-        tool_spec_payload = [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.input_schema,
-            }
-            for tool in tool_definitions
-        ]
+        tool_spec_payload = [_compact_tool_definition(tool) for tool in tool_definitions]
         user_payload = {
             "user_message": user_message,
             "memory_summary": memory_summary,
             "tools": tool_spec_payload,
-            "tool_history": tool_history,
+            "tool_history": [_compact_tool_history_event(event) for event in tool_history],
             "output_contract": {
-                "final_answer": "string or null",
-                "tool_calls": [{"tool": "tool name", "arguments": {"...": "..."}}],
+                "final_answer": "string|null",
+                "tool_calls": [{"tool": "name", "arguments": {}}],
                 "final_answer_kind": "answer | tool_completion | blocked",
-                "completion_tools": ["tool names that support a tool_completion final answer"],
+                "completion_tools": ["required when final_answer_kind=tool_completion"],
             },
         }
         raw = await ollama_chat(
@@ -175,5 +168,137 @@ class StubChatModel:
         if memory_summary:
             return ModelTurn(final_answer=f"MK5 stub reply.\nmessage={user_message}\nmemory={memory_summary}")
         return ModelTurn(final_answer=f"MK5 stub reply.\nmessage={user_message}")
+
+
+def _compact_tool_definition(tool: ToolDefinition) -> dict[str, Any]:
+    schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
+    properties = schema.get("properties")
+    required = schema.get("required")
+    argument_keys = sorted(properties) if isinstance(properties, dict) else _argument_keys_from_variants(schema)
+    compact = {
+        "name": tool.name,
+        "description": _shorten(tool.description, 120),
+        "arguments": argument_keys,
+        "required": required if isinstance(required, list) else [],
+    }
+    if tool.name != "tool_manual":
+        compact["manual"] = f"tool_manual:{tool.name}"
+    variants = _argument_variants(schema)
+    if variants:
+        compact["argument_shapes"] = variants
+    return compact
+
+
+def _argument_keys_from_variants(schema: dict[str, Any]) -> list[str]:
+    keys: set[str] = set()
+    for variant in schema.get("oneOf") or schema.get("anyOf") or []:
+        if not isinstance(variant, dict):
+            continue
+        properties = variant.get("properties")
+        if isinstance(properties, dict):
+            keys.update(str(key) for key in properties)
+    return sorted(keys)
+
+
+def _argument_variants(schema: dict[str, Any]) -> list[list[str]]:
+    variants: list[list[str]] = []
+    for variant in schema.get("oneOf") or schema.get("anyOf") or []:
+        if not isinstance(variant, dict):
+            continue
+        required = variant.get("required")
+        if isinstance(required, list):
+            variants.append([str(item) for item in required])
+    return variants
+
+
+def _compact_tool_history_event(event: dict[str, Any]) -> dict[str, Any]:
+    tool = event.get("tool")
+    arguments = event.get("arguments")
+    result = event.get("result")
+    return {
+        "tool": tool,
+        "arguments": _compact_value(arguments, limit=180),
+        "result": _compact_tool_result(tool=tool, result=result),
+    }
+
+
+def _compact_tool_result(*, tool: object, result: object) -> object:
+    if not isinstance(result, dict):
+        return _compact_value(result, limit=240)
+    compact: dict[str, Any] = {}
+    for key in ("ok", "error", "status", "mode", "path", "returncode", "freshness", "query"):
+        if key in result:
+            compact[key] = result.get(key)
+    if tool == "terminal_command":
+        _add_tail(compact, "stdout", result.get("stdout"), 320)
+        _add_tail(compact, "stderr", result.get("stderr"), 320)
+        if result.get("changed_paths"):
+            compact["changed_paths"] = _compact_value(result.get("changed_paths"), limit=240)
+    elif tool in {"file_read", "document_read"}:
+        _add_tail(compact, "content", result.get("content"), 500)
+    elif tool == "image_analyze":
+        if "image" in result:
+            compact["image"] = result.get("image")
+        _add_tail(compact, "description", result.get("description") or result.get("message"), 500)
+        if result.get("vision_model_used"):
+            compact["vision_model_used"] = result.get("vision_model_used")
+    elif tool in {"internet_search", "latest_search"}:
+        results = result.get("results")
+        if isinstance(results, list):
+            compact["result_count"] = len(results)
+            compact["results"] = [_compact_search_result(item) for item in results[:5]]
+        source_errors = result.get("source_errors")
+        if source_errors:
+            compact["source_errors"] = _compact_value(source_errors, limit=300)
+    elif tool == "market_snapshot":
+        compact["snapshot"] = _compact_value(result, limit=700)
+    elif tool == "execution_guard":
+        compact["message"] = _shorten(str(result.get("message") or ""), 240)
+        if result.get("missing_tools"):
+            compact["missing_tools"] = result.get("missing_tools")
+        if result.get("unknown_tool"):
+            compact["unknown_tool"] = result.get("unknown_tool")
+    elif tool == "tool_manual":
+        compact["tool"] = result.get("tool")
+        compact["description"] = _shorten(str(result.get("description") or ""), 300)
+        input_schema = result.get("input_schema")
+        if isinstance(input_schema, dict):
+            compact["input_schema"] = input_schema
+    else:
+        compact["summary"] = _compact_value(result, limit=500)
+    return compact
+
+
+def _compact_search_result(item: object) -> object:
+    if not isinstance(item, dict):
+        return _compact_value(item, limit=160)
+    return {
+        key: _shorten(str(item.get(key) or ""), 180)
+        for key in ("title", "url", "snippet", "source", "query_node")
+        if item.get(key) is not None
+    }
+
+
+def _add_tail(target: dict[str, Any], key: str, value: object, limit: int) -> None:
+    if value is None:
+        return
+    text = str(value)
+    if not text:
+        return
+    target[f"{key}_tail"] = _shorten(text[-limit:], limit)
+
+
+def _compact_value(value: object, *, limit: int) -> object:
+    if isinstance(value, dict):
+        return {str(key): _compact_value(item, limit=limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_compact_value(item, limit=limit) for item in value[:10]]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return _shorten(str(value), limit) if isinstance(value, str) else value
+    return _shorten(str(value), limit)
+
+
+def _shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
 
 

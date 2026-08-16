@@ -76,6 +76,7 @@ async def get_tools() -> dict:
             "file_update",
             "file_delete",
             "terminal_command",
+            "tool_manual",
         ]
     }
 

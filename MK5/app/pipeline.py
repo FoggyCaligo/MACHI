@@ -9,6 +9,7 @@ from ..tools.graph_tools import GraphToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
+from ..tools.manual_tools import ToolManualSuite
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.web_search import HttpWebSearchTool, WebSearchTool
 from ..tools.workspace_tools import WorkspaceFileToolSuite
@@ -45,6 +46,9 @@ class Pipeline:
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
         self._orchestrator.register_tool_registry(TerminalToolSuite().build_registry())
+        self._orchestrator.register_tool_registry(
+            ToolManualSuite(self._orchestrator.tool_registry).build_registry()
+        )
 
     async def run(
         self,

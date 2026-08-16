@@ -32,6 +32,9 @@ class ToolRegistry:
     def definitions(self) -> list[ToolDefinition]:
         return [self._definitions[name] for name in sorted(self._definitions)]
 
+    def definition(self, name: str) -> ToolDefinition | None:
+        return self._definitions.get(name)
+
     def has_tool(self, name: str) -> bool:
         return name in self._handlers
 

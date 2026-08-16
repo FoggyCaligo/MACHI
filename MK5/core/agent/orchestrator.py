@@ -383,6 +383,10 @@ class AgentOrchestrator:
     def register_tool_registry(self, registry: ToolRegistry) -> None:
         self._tool_registry.merge(registry)
 
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        return self._tool_registry
+
     async def _run_tool_call(
         self,
         call: ToolCall,
@@ -702,22 +706,14 @@ def _file_execution_guard_result(
         return {
             "ok": False,
             "error": "file_mutation_failed",
-            "message": (
-                "A file mutation tool was called, but it did not return ok=true. "
-                "Do not report completion until a file_create, file_update, or file_delete "
-                "tool succeeds, or explain the blocker."
-            ),
+            "message": "Last file mutation failed. Retry with corrected args or return blocked.",
             "rejected_final_answer": rejected_final_answer,
         }
     if _has_terminal_filesystem_change_without_verification(tool_history):
         return {
             "ok": False,
             "error": "terminal_filesystem_change_not_verified",
-            "message": (
-                "A terminal_command changed the filesystem. Verify the affected file with "
-                "file_read, or use a successful file_create, file_update, or file_delete "
-                "before reporting completion."
-            ),
+            "message": "terminal_command changed files. Verify with file_read or a file_* tool before completion.",
             "rejected_final_answer": rejected_final_answer,
         }
     return None
@@ -730,10 +726,7 @@ def _empty_turn_after_tool_guard_result(*, tool_history: list[dict]) -> dict:
         return {
             "ok": False,
             "error": "empty_initial_turn",
-            "message": (
-                "The model returned neither final_answer nor tool_calls on the first round. "
-                "Continue by returning the needed tool_calls, a final_answer, or a blocker explanation."
-            ),
+            "message": "Return tool_calls, final_answer, or blocked.",
         }
     if (
         latest_tool in {"file_create", "file_update", "file_delete"}
@@ -743,45 +736,26 @@ def _empty_turn_after_tool_guard_result(*, tool_history: list[dict]) -> dict:
         return {
             "ok": False,
             "error": "empty_turn_after_failed_file_mutation",
-            "message": (
-                "The last file mutation failed. Read the error message in tool_history, "
-                "retry with corrected arguments when possible, or return a blocker explanation. "
-                "For file_update exact replacement, use only path, old, and new. For append, "
-                "use only path, mode='append', and content. For full overwrite, use only path and content."
-            ),
+            "message": "Last file mutation failed. Use corrected args or return blocked.",
         }
     if latest_tool in {"file_read", "document_read", "image_analyze"}:
         return {
             "ok": False,
             "error": f"empty_turn_after_{latest_tool}",
-            "message": (
-                f"A {latest_tool} result is available, but the model returned neither "
-                "final_answer nor tool_calls. Use the available content to continue with "
-                "the requested operation, or return a blocker explanation."
-            ),
+            "message": f"{latest_tool} result is available. Answer from it, call next tool, or return blocked.",
         }
     return {
         "ok": False,
         "error": "empty_turn_after_tool",
-        "message": (
-            "A tool result is available, but the model returned neither final_answer nor "
-            "tool_calls. Continue from tool_history with the next needed tool call, final "
-            "answer, or blocker explanation."
-        ),
+        "message": "Tool result is available. Answer, call next tool, or return blocked.",
     }
 
 
 def _unknown_tool_guard_result(*, unknown_tool: str, available_tools: list[str]) -> dict:
     if unknown_tool == "final_answer":
-        message = (
-            "final_answer is not a tool. Put the answer in the top-level final_answer "
-            "field with tool_calls=[], or call one of the available tools if more work is needed."
-        )
+        message = "final_answer is a top-level field, not a tool."
     else:
-        message = (
-            f"{unknown_tool} is not an available tool. Use one of the available tools, "
-            "or return a top-level final_answer if no tool is needed."
-        )
+        message = f"{unknown_tool} is unavailable. Use available_tools or final_answer."
     return {
         "ok": False,
         "error": "unknown_tool_call",
@@ -803,11 +777,7 @@ def _final_answer_evidence_guard_result(
         return {
             "ok": False,
             "error": "missing_completion_tools",
-            "message": (
-                "The final answer claims a completed tool-backed action, but completion_tools "
-                "is empty. List the tool names that support the completion, or call the needed "
-                "tool before reporting completion."
-            ),
+            "message": "tool_completion requires completion_tools.",
             "rejected_final_answer": rejected_final_answer,
         }
     missing_tools = [
@@ -819,11 +789,7 @@ def _final_answer_evidence_guard_result(
         return {
             "ok": False,
             "error": "completion_tool_not_run",
-            "message": (
-                "The final answer claims a completed tool-backed action, but these supporting "
-                f"tools have not succeeded in tool_history: {missing_tools}. Call the needed "
-                "tool first, or explain the blocker."
-            ),
+            "message": f"completion_tools not yet successful: {missing_tools}. Call them or return blocked.",
             "missing_tools": missing_tools,
             "rejected_final_answer": rejected_final_answer,
         }
@@ -847,10 +813,6 @@ def _local_tool_blocked_guard_result(
     return {
         "ok": False,
         "error": "local_tool_blocked_without_attempt",
-        "message": (
-            "terminal_command is available, but the model returned a blocked final answer "
-            "before attempting it. Call terminal_command first, or explain a specific blocker "
-            "only after a tool call fails."
-        ),
+        "message": "terminal_command is available. Try it before returning blocked.",
         "rejected_final_answer": rejected_final_answer,
     }
