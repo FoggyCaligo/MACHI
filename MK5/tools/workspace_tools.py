@@ -31,7 +31,7 @@ class WorkspaceFileToolSuite:
         registry.register(
             ToolDefinition(
                 name="file_read",
-                description="Read a UTF-8 text file. Paths resolve from the workspace root; parent and absolute paths are allowed.",
+                description="Read a UTF-8 text file, including .txt, .md, .markdown, .py, and README.md. Use document_read only for PDF/DOCX. Paths resolve from the workspace root; parent and absolute paths are allowed.",
                 input_schema={
                     "type": "object",
                     "properties": {

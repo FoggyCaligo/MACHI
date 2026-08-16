@@ -155,6 +155,7 @@ class AgentOrchestrator:
 
         if (
             not memory_summary
+            and not tool_history
             and self._memory_service.should_search_without_slots(user_id=user_id, utterance_id=utterance_id)
         ):
             _debug_log("auto_tool_start tool=internet_search")
@@ -309,6 +310,7 @@ class AgentOrchestrator:
                 })
                 continue
             for call in turn.tool_calls:
+                call = _redirect_text_document_read_call(call)
                 _debug_log(f"tool_start round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} tool={call.tool}")
                 started = time.perf_counter()
                 result = await self._run_tool_call(
@@ -525,7 +527,7 @@ class AgentOrchestrator:
 
 
 def _auto_file_tool_calls(message: str) -> list[ToolCall]:
-    calls = [*_attachment_tool_calls(message), *_mentioned_image_tool_calls(message)]
+    calls = [*_attachment_tool_calls(message), *_mentioned_path_tool_calls(message)]
     deduped: list[ToolCall] = []
     seen: set[tuple[str, str]] = set()
     for call in calls:
@@ -568,13 +570,36 @@ def _attachment_tool_calls(message: str) -> list[ToolCall]:
     return calls
 
 
-def _mentioned_image_tool_calls(message: str) -> list[ToolCall]:
+def _mentioned_path_tool_calls(message: str) -> list[ToolCall]:
     if "[첨부 파일]" in message:
         head = message.split("[첨부 파일]", 1)[0]
     else:
         head = message
-    paths = re.findall(r"([^\s`'\"<>:]+?\.(?:png|jpg|jpeg|webp|bmp|gif))", head, re.IGNORECASE)
-    return [ToolCall(tool="image_analyze", arguments={"path": path}) for path in paths]
+    paths = re.findall(
+        r"((?:\.{1,2}/|\.{1,2}\\|[^\s`'\"<>:]+[/\\])?[^\s`'\"<>:]+?\."
+        r"(?:txt|md|markdown|pdf|docx|png|jpg|jpeg|webp|bmp|gif))",
+        head,
+        re.IGNORECASE,
+    )
+    calls: list[ToolCall] = []
+    for path in paths:
+        suffix = PurePosixPath(path.replace("\\", "/")).suffix.lower()
+        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+            calls.append(ToolCall(tool="image_analyze", arguments={"path": path}))
+        elif suffix in {".pdf", ".docx"}:
+            calls.append(ToolCall(tool="document_read", arguments={"path": path}))
+        else:
+            calls.append(ToolCall(tool="file_read", arguments={"path": path}))
+    return calls
+
+
+def _redirect_text_document_read_call(call: ToolCall) -> ToolCall:
+    if call.tool != "document_read":
+        return call
+    path = str(call.arguments.get("path") or "").strip()
+    if PurePosixPath(path).suffix.lower() not in {".txt", ".md", ".markdown"}:
+        return call
+    return ToolCall(tool="file_read", arguments={"path": path})
 
 
 def _compose_user_message(

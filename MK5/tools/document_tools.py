@@ -20,7 +20,8 @@ class DocumentReadToolSuite:
             ToolDefinition(
                 name="document_read",
                 description=(
-                    "Extract text from document files such as PDF and DOCX. Paths resolve "
+                    "Extract text from PDF or DOCX files only. Use file_read for UTF-8 text "
+                    "files such as .txt, .md, .markdown, .py, or README.md. Paths resolve "
                     "from the workspace root; parent and absolute paths are allowed."
                 ),
                 input_schema={
@@ -75,7 +76,7 @@ class DocumentReadToolSuite:
                 "ok": False,
                 "path": relative_path,
                 "error": "unsupported_document_type",
-                "message": "document_read supports .pdf and .docx files.",
+                "message": "document_read supports .pdf and .docx files. Use file_read for UTF-8 text files such as .txt, .md, .markdown, .py, or README.md.",
             }
         if not result["ok"]:
             return {"path": relative_path, **result}

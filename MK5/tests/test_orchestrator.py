@@ -8,6 +8,7 @@ from MK5.core.agent.orchestrator import AgentOrchestrator
 from MK5.core.graph.repository import GraphRepository
 from MK5.core.graph.service import GraphMemoryService
 from MK5.tools.graph_tools import GraphToolSuite
+from MK5.tools.document_tools import DocumentReadToolSuite
 from MK5.tools.llm_client import ModelTurn
 from MK5.tools.terminal_tools import TerminalToolSuite
 from MK5.tools.tool_runtime import ToolCall, ToolDefinition
@@ -160,6 +161,28 @@ class ContextAwareFileReadModel:
             return ModelTurn(tool_calls=[
                 ToolCall(tool="file_read", arguments={"path": "README.md"}),
                 ToolCall(tool="file_read", arguments={"path": "MK5/README.md"}),
+            ])
+        return ModelTurn(final_answer="done")
+
+
+class WrongDocumentReadForMarkdownModel:
+    def __init__(self) -> None:
+        self._turn = 0
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        self._turn += 1
+        if self._turn == 1:
+            return ModelTurn(tool_calls=[
+                ToolCall(tool="document_read", arguments={"path": "README.md"})
             ])
         return ModelTurn(final_answer="done")
 
@@ -1672,6 +1695,48 @@ def test_memory_activation_weights_decay_previous_non_overlapping_nodes() -> Non
     assert previous_only
     assert all(weights[node_id] == 1.0 for node_id in second_current)
     assert all(weights[node_id] == 0.5 for node_id in previous_only)
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_redirects_markdown_document_read_to_file_read(tmp_path) -> None:
+    (tmp_path / "README.md").write_text("# Hello\n\n내용 테스트", encoding="utf-8")
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    model = WrongDocumentReadForMarkdownModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=service,
+        graph_tools=GraphToolSuite(service),
+        chat_model=model,
+        web_search=StubWebSearchTool(),
+    )
+    orchestrator.register_tool_registry(WorkspaceFileToolSuite(tmp_path).build_registry())
+    orchestrator.register_tool_registry(DocumentReadToolSuite(tmp_path).build_registry())
+
+    result = await orchestrator.respond(user_id="alice", session_id="s1", message="README.md 읽어줘")
+
+    assert any(event["tool"] == "file_read" and event["result"]["ok"] for event in result.tool_events)
+    assert not any(event["tool"] == "document_read" for event in result.tool_events)
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_auto_reads_mentioned_markdown_path(tmp_path) -> None:
+    (tmp_path / "README.md").write_text("# Hello\n\n내용 테스트", encoding="utf-8")
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    model = FinalOnlyModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=service,
+        graph_tools=GraphToolSuite(service),
+        chat_model=model,
+        web_search=StubWebSearchTool(),
+    )
+    orchestrator.register_tool_registry(WorkspaceFileToolSuite(tmp_path).build_registry())
+
+    result = await orchestrator.respond(user_id="alice", session_id="s1", message="./README.md")
+
+    assert any(event["tool"] == "file_read" and event["result"]["ok"] for event in result.tool_events)
     repo.close()
 
 
