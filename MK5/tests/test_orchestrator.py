@@ -633,6 +633,37 @@ class MixedFinalAndToolCallModel:
         )
 
 
+class LocalToolBlockedThenTerminalModel:
+    def __init__(self) -> None:
+        self.saw_blocked_guard = False
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        if any(event.get("tool") == "terminal_command" for event in tool_history):
+            return ModelTurn(final_answer="커밋 목록을 확인했습니다.")
+        if any(
+            event.get("tool") == "execution_guard"
+            and event.get("result", {}).get("error") == "local_tool_blocked_without_attempt"
+            for event in tool_history
+        ):
+            self.saw_blocked_guard = True
+            return ModelTurn(tool_calls=[
+                ToolCall(tool="terminal_command", arguments={"command": "git log --oneline -5"})
+            ])
+        return ModelTurn(
+            final_answer="로컬 작업을 진행할 수 없습니다.",
+            final_answer_kind="blocked",
+        )
+
+
 class FinalAnswerAsToolModel:
     def __init__(self) -> None:
         self.saw_unknown_tool_guard = False
@@ -1281,6 +1312,33 @@ async def test_orchestrator_recovers_from_empty_initial_model_turn(tmp_path) -> 
 
     assert result.text == "실행했습니다."
     assert chat_model.saw_empty_initial_guard is True
+    assert any(event["tool"] == "terminal_command" for event in result.tool_events)
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_rejects_local_tool_blocked_before_terminal_attempt(tmp_path) -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    chat_model = LocalToolBlockedThenTerminalModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=chat_model,
+        web_search=CapturingWebSearchTool(),
+    )
+    orchestrator.register_tool_registry(TerminalToolSuite(tmp_path).build_registry())
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        message="git 커밋 목록을 터미널로 확인해줘.",
+        model=None,
+        session_id="s1",
+    )
+
+    assert result.text == "커밋 목록을 확인했습니다."
+    assert chat_model.saw_blocked_guard is True
     assert any(event["tool"] == "terminal_command" for event in result.tool_events)
     repo.close()
 

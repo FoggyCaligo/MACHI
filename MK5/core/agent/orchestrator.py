@@ -204,6 +204,11 @@ class AgentOrchestrator:
                     turn=turn,
                     tool_history=tool_history,
                     rejected_final_answer=turn.final_answer,
+                ) or _local_tool_blocked_guard_result(
+                    turn=turn,
+                    available_tools=self._tool_registry.definitions(),
+                    tool_history=tool_history,
+                    rejected_final_answer=turn.final_answer,
                 ) or _file_execution_guard_result(
                     tool_history=tool_history,
                     rejected_final_answer=turn.final_answer,
@@ -824,3 +829,28 @@ def _final_answer_evidence_guard_result(
         }
     return None
 
+
+def _local_tool_blocked_guard_result(
+    *,
+    turn: ModelTurn,
+    available_tools: list[ToolDefinition],
+    tool_history: list[dict],
+    rejected_final_answer: str,
+) -> dict | None:
+    available_tool_names = {tool.name for tool in available_tools}
+    if "terminal_command" not in available_tool_names:
+        return None
+    if any(event.get("tool") == "terminal_command" for event in tool_history):
+        return None
+    if turn.final_answer_kind != "blocked":
+        return None
+    return {
+        "ok": False,
+        "error": "local_tool_blocked_without_attempt",
+        "message": (
+            "terminal_command is available, but the model returned a blocked final answer "
+            "before attempting it. Call terminal_command first, or explain a specific blocker "
+            "only after a tool call fails."
+        ),
+        "rejected_final_answer": rejected_final_answer,
+    }
