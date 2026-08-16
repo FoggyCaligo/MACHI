@@ -95,7 +95,7 @@ When `MK5` is embedded into another project, the same tool system is available.
 - Shell work should use `terminal_command`.
 - If the model is unsure about arguments, it can call `tool_manual` for the specific tool instead of guessing.
 
-The model receives a short list of all tools by default, not only file tools. This is intentional: a request can start as a file task and then need search, terminal inspection, or image/document analysis in the same turn.
+The model receives the names of model-visible tools, not only file tools. Internal low-level tools remain hidden. A request can still start as a file task and then use `web_research`, terminal inspection, or image/document analysis in the same turn.
 
 ## Uploads and remote browsers
 
@@ -108,10 +108,10 @@ For browser usage from another PC, path strings can be ambiguous because the bro
 Common environment variables:
 
 ```powershell
-$env:MK5_OLLAMA_MODEL_NAME="gemma3:4b"
+$env:MK5_OLLAMA_MODEL_NAME="gemma4:e4b"
 $env:MK5_OLLAMA_IMAGE_MODEL_NAME="gemma4:12b"
 $env:MK5_OLLAMA_IMAGE_FALLBACK_MODEL_NAME="gemma4:12b"
-$env:MK5_RECENT_MESSAGE_LIMIT="6"
+$env:MK5_RECENT_MESSAGE_LIMIT="10"
 $env:MK5_FILE_TEXT_NODE_KEEP_RATIO="0.7"
 $env:MK5_FILE_TEXT_NODE_MAX_ITEMS="24"
 $env:MK5_FILE_TEXT_ACTIVATION_MAX_CHARS="8000"
@@ -119,7 +119,7 @@ $env:MK5_AGENT_MAX_PARSE_FAILURES="3"
 $env:MK5_AGENT_MAX_UNKNOWN_TOOL_GUARDS="2"
 ```
 
-`MK5_RECENT_MESSAGE_LIMIT` controls how many recent dialogue messages are included in the model input. Longer histories can improve continuity, but too much raw context can make a small local model overfit to irrelevant past turns. MK5 therefore combines a short recent dialogue window with graph memory and active graph context.
+`MK5_RECENT_MESSAGE_LIMIT` controls how many recent dialogue messages are included in the model input. The default 10 messages correspond to roughly five user/assistant turns. MK5 combines this short window with an activation-weighted graph memory summary.
 
 ## Notes
 

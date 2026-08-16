@@ -19,6 +19,9 @@ from .repository import GraphRepository
 from .text_graph import TokenSpan, normalize_token, tokenize_spans
 
 
+_TEXT_GRAPH_VERSION = 2
+
+
 class GraphMemoryService:
     def __init__(self, repo: GraphRepository) -> None:
         self._repo = repo
@@ -58,14 +61,19 @@ class GraphMemoryService:
     def record_user_utterance(self, *, user_id: str, text: str, session_id: str | None) -> str:
         anchor_id = self.ensure_user_anchor(user_id)
         utterance_id = utterance_node_id(user_id, text, session_id)
-        is_new_utterance = self._repo.get_node(utterance_id) is None
+        existing_utterance = self._repo.get_node(utterance_id)
+        is_new_utterance = existing_utterance is None
         if is_new_utterance:
             self._repo.upsert_node(
                 GraphNode(
                     node_id=utterance_id,
                     labels=[text],
                     node_type="utterance",
-                    payload={"user_id": user_id, "session_id": session_id},
+                    payload={
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "text_graph_version": _TEXT_GRAPH_VERSION,
+                    },
                     provenance="user_utterance",
                     trust_score=1.0,
                     stability_score=0.8,
@@ -81,13 +89,26 @@ class GraphMemoryService:
                     trust_score=1.0,
                 )
             )
+        needs_graph_refresh = (
+            is_new_utterance
+            or int((existing_utterance.payload if existing_utterance else {}).get("text_graph_version") or 0)
+            < _TEXT_GRAPH_VERSION
+        )
+        if needs_graph_refresh:
             self._graphize_text(
                 owner_anchor_id=anchor_id,
                 carrier_node_id=utterance_id,
                 text=text,
                 edge_prefix="user",
-                payload={"user_id": user_id, "session_id": session_id},
+                payload={
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "text_graph_version": _TEXT_GRAPH_VERSION,
+                },
             )
+            if existing_utterance is not None:
+                existing_utterance.payload["text_graph_version"] = _TEXT_GRAPH_VERSION
+                self._repo.upsert_node(existing_utterance)
         self.record_user_facts(
             user_id=user_id,
             text=text,
@@ -174,6 +195,18 @@ class GraphMemoryService:
                 trust_score=0.8,
             )
         )
+        for span in tokenize_spans(query_text):
+            query_concept_id = self._ensure_normalized_concept(span.normalized)
+            self._repo.add_edge(
+                GraphEdge(
+                    source_id=query_node_id,
+                    target_id=query_concept_id,
+                    relation="search_query_term",
+                    payload={"query": query_text, "token_index": span.token_index},
+                    provenance="search",
+                    trust_score=0.7,
+                )
+            )
 
         recorded: list[str] = []
         for item in results:
@@ -454,73 +487,6 @@ class GraphMemoryService:
             f'사용자({user_id})가 이전에 말한 발화: "{label}" '
             "이 발화의 speaker는 사용자이며 assistant의 자기소개가 아닙니다."
         )
-
-    def search_concept_nodes_for_utterance(
-        self,
-        *,
-        user_id: str,
-        utterance_id: str,
-        limit: int = 4,
-    ) -> list[str]:
-        _ = self.ensure_user_anchor(user_id)
-        utterance = self._repo.get_node(utterance_id)
-        if utterance is None or utterance.node_type != "utterance":
-            return []
-        if str(utterance.payload.get("user_id") or "") != user_id:
-            return []
-
-        candidates: list[tuple[float, str]] = []
-        seen: set[str] = set()
-        for edge in self._repo.edges_for_node(utterance_id):
-            if not edge.is_active or edge.relation != "user_mentions_concept":
-                continue
-            concept_id = edge.target_id if edge.source_id == utterance_id else edge.source_id
-            concept = self._repo.get_node(concept_id)
-            if concept is None or concept.node_type != "concept" or not concept.is_active:
-                continue
-            label = str(concept.payload.get("normalized") or (concept.labels[0] if concept.labels else "")).strip()
-            if len(label) < 2 or label in seen:
-                continue
-            seen.add(label)
-            support = sum(
-                linked.support_count
-                for linked in self._repo.edges_for_node(concept.node_id)
-                if linked.is_active and linked.relation.endswith("_references_concept")
-            )
-            token_index = edge.payload.get("token_index")
-            position_bonus = 1.0 / (1.0 + float(token_index)) if isinstance(token_index, int) else 0.0
-            score = concept.trust_score + concept.stability_score + support * 0.1 + position_bonus
-            candidates.append((score, label))
-
-        candidates.sort(key=lambda item: (-item[0], item[1]))
-        return [label for _, label in candidates[:limit]]
-
-    def should_search_without_slots(self, *, user_id: str, utterance_id: str) -> bool:
-        search_nodes = self.search_concept_nodes_for_utterance(
-            user_id=user_id,
-            utterance_id=utterance_id,
-        )
-        if not search_nodes:
-            return False
-        for label in search_nodes:
-            concept = self._repo.get_node(concept_node_id(label))
-            if concept is not None and self._has_search_support(concept.node_id):
-                return False
-        return True
-
-    def _has_search_support(self, node_id: str) -> bool:
-        for edge in self._repo.edges_for_node(node_id):
-            if not edge.is_active:
-                continue
-            if edge.provenance == "search" or edge.relation.startswith("search_"):
-                return True
-            other_id = edge.target_id if edge.source_id == node_id else edge.source_id
-            other = self._repo.get_node(other_id)
-            if other is None:
-                continue
-            if other.provenance == "search" or other.node_type.startswith("search_"):
-                return True
-        return False
 
     def record_fact_correction(
         self,

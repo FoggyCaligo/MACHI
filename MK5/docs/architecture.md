@@ -9,9 +9,8 @@
 - 하나의 대화 LLM이 응답 계획을 맡는다.
 - 그래프는 사용자와 세계에 대한 장기 기억을 저장한다.
 - 필요할 때 graph/search/file/document/image/terminal tool을 호출한다.
-- 이전 턴에서 활성화된 그래프 문맥을 다음 턴으로 넘긴다.
-- 매 턴 현재 질문 기준으로 그래프를 새로 활성화한다.
-- 전체 도구 schema와 긴 tool history를 매 턴 밀어 넣지 않고, 압축된 도구 목록과 필요한 경우의 `tool_manual` 조회로 입력을 줄인다.
+- 이전 턴의 그래프 활성도는 다음 턴의 기억 회수 점수에 반영한다.
+- 전체 도구 schema 대신 모델에 공개된 도구 이름만 보내고, 필요한 경우 `tool_manual`로 상세 명세를 조회한다.
 
 ## Why This Architecture
 
@@ -32,11 +31,11 @@ LLM은 planner이자 최종 문장 생성자다. 오케스트레이터는 모델
 2. `user_anchor::<user_id>`가 없으면 만든다.
 3. 사용자 발화를 해당 anchor 아래에 저장한다.
 4. anchor 주변에서 작은 기억 요약을 읽어 온다.
-5. 같은 세션의 이전 active graph context를 가져온다.
-6. 현재 메시지와 이전 active graph context 일부를 기준으로 그래프를 새로 활성화한다.
-7. LLM이 현재 메시지, 기억 요약, 이전 active graph context, 현재 graph activation을 바탕으로 답변을 계획한다.
-8. 필요하면 그래프 조회, 검색, 시장 스냅샷, 파일 CRUD, 문서 읽기, 이미지 분석, 터미널 명령을 호출한다.
-9. 도구 결과와 이번 턴의 발화/개념/검색 결과를 active graph context로 정리한다.
+5. 같은 세션의 이전 활성도 가중치를 가져와 현재 기억 요약의 순위에 반영한다.
+6. 현재 메시지 기준으로 관련 기억 요약을 만든다.
+7. 필요한 경우 자연어 목적을 `web_research`에 전달해 서버 측 웹 조사를 먼저 수행한다.
+8. LLM이 현재 메시지, 최근 대화, 기억 요약, 공개 도구 이름과 현재 턴 도구 결과를 바탕으로 답변을 계획한다.
+9. 필요에 따라 그래프 조회, 최신 검색, 시장 스냅샷, 파일 CRUD, 문서 읽기, 이미지 분석, 터미널 명령을 호출한다.
 10. 유용한 새 사실은 다시 그래프에 저장한다.
 11. 이번 턴의 active graph context를 다음 턴을 위해 세션별로 보관한다.
 
@@ -65,38 +64,15 @@ active graph context는 다음과 같은 항목에서 만들어진다.
 
 - 현재 사용자 발화 노드
 - 현재 발화에서 추출된 concept 노드
-- memory summary에 들어간 사용자 기억
-- graph search 결과 노드
-- internet/latest search에 사용된 search node와 검색 결과
-- file/document/image/terminal command 같은 도구 결과
 - `.txt`, `.md`, `.markdown` 파일 읽기에서 추출된 file text activation 노드
 
-이 context는 장기 기억 그 자체가 아니라, **이전 턴에서 실제로 활성화됐던 작업 문맥**이다. 따라서 모델에게는 `Previous active graph context`로 전달되지만, 항상 답변 근거로 쓰라는 의미는 아니다. 현재 질문과 관련 있을 때만 참고해야 한다.
+이 context는 장기 기억 그 자체가 아니라, **다음 턴의 기억 회수 순위를 보조하는 가중치 상태**다. 모델에 별도의 `Previous active graph context` 필드로 전달하지 않는다.
 
 현재 구현에서는 active graph context를 인메모리로 보관한다. 서버를 재시작하면 이 작업 문맥은 사라지지만, 장기 그래프 기억은 SQLite 저장소에 남는다.
 
-### 5. Fresh graph activation
+### 5. Current memory activation
 
-이전 active graph context를 들고 가는 것과 별개로, `MK5`는 매 턴 현재 질문 기준의 그래프 활성화를 새로 수행한다.
-
-현재 구현에서는 아래 정보를 묶어 graph search query로 사용한다.
-
-- 현재 사용자 메시지
-- 이전 active graph context 일부
-
-그 결과는 `Current graph activation`으로 모델 입력에 들어간다.
-
-즉 한 턴의 모델 입력에는 서로 다른 두 그래프 문맥이 함께 들어간다.
-
-```text
-Previous active graph context
--> 이전 턴에서 실제로 활성화됐던 작업 문맥
-
-Current graph activation
--> 현재 질문을 기준으로 새로 회수한 그래프 문맥
-```
-
-이 둘을 나누는 이유는, 단순히 이전 맥락을 들고 가는 것과 현재 질문에 맞춰 그래프를 다시 여는 일이 서로 다른 역할을 하기 때문이다.
+매 턴 현재 발화의 로컬 노드와 이전 턴 가중치를 결합해 기억 회수 점수를 계산한다. 그 결과 중 관련성이 높은 기억만 `memory_summary`로 압축해 모델에 제공한다.
 
 ## LLM Input Contract
 
@@ -105,16 +81,14 @@ Current graph activation
 ```text
 system prompt
 user_payload
-  - user_id / session_id
   - current message
-  - recent dialogue, 기본 6개
-  - memory summary
-  - previous active graph context
-  - current graph activation
-  - weak file text activation from text file reads
-  - compact tool definitions
-  - compact tool history
-  - output contract
+  - recent dialogue, 기본 10개 메시지(약 5턴)
+  - recent tool operation summary
+  - activation-weighted memory summary
+  - visible tool names
+  - compact current-turn tool history
+response format
+  - JSON output contract
 ```
 
 ### File text activation
@@ -133,18 +107,9 @@ file text activation nodes: 0.25
 
 긴 파일에서 후처리가 멈추지 않도록 파일 text activation 입력은 기본 8,000자로 제한한다. 또한 2,000자를 넘는 파일은 Sentence_Breaker 대신 더 가벼운 token fallback으로 후보를 만든다. 현재 기본값은 상위 70%, 최대 24개이며, 각각 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`, `MK5_FILE_TEXT_ACTIVATION_MAX_CHARS`로 조정할 수 있다.
 
-### Compact tool definitions
+### Tool names and visibility
 
-모든 도구는 기본적으로 모델에게 보인다. 대신 각 도구는 아래 정도만 짧게 전달된다.
-
-- name
-- short description
-- argument key list
-- required argument list
-- optional argument shape hint
-- manual address, 예: `tool_manual:file_update`
-
-이 방식을 택한 이유는 도구를 숨기면 파일 작업 중 검색이 필요하거나, 검색 중 파일 확인이 필요한 복합 턴을 놓칠 수 있기 때문이다. 따라서 도구 선택지는 유지하고, 긴 schema만 늦게 읽는다.
+기본 모델 입력에는 가시성 정책을 통과한 도구 이름만 전달된다. 설명, 인자 목록, 전체 schema는 기본 입력에 포함하지 않는다. `internet_search`와 `web_page_read` 같은 저수준 내부 도구는 모델 목록에서도 제외된다.
 
 ### `tool_manual`
 
@@ -182,12 +147,16 @@ file text activation nodes: 0.25
 
 도구 라운드 수에는 고정 상한이 없다. 모델이 JSON 출력 계약을 반복해서 깨거나 존재하지 않는 도구를 반복 호출하면 회로차단기가 응답을 멈춘다. 같은 도구와 같은 인자의 반복 허용 횟수는 기본 3회이며 `MK5_AGENT_MAX_IDENTICAL_TOOL_CALLS`로 조정할 수 있다.
 
+웹 조사가 필요하면 모델이 사용자 입력을 간결한 조사 목적으로 정리해 `web_research`를 호출한다. 그래프 노드나 노드 조합으로 자동 검색을 시작하거나 검색어를 만들지는 않는다. 복수 검색 소스 조회부터 페이지 본문 근거 추출까지는 서버 측에서 수행한다.
+
+모델에는 `web_research`만 상위 일반 검색 도구로 노출한다. `internet_search`와 `web_page_read`는 모델 도구 목록과 매뉴얼에서 숨기고, `web_research` 내부의 복수 검색 및 페이지 본문 추출 단계로만 사용한다.
+
 ## Tooling
 
 현재 `MK5`의 주요 도구군은 아래와 같다.
 
 - graph memory: `graph_search`, `record_memory_correction`
-- search: `internet_search`, `latest_search`, `market_snapshot`
+- search: `web_research`, `latest_search`, `market_snapshot`
 - file discovery: `file_search`
 - code structure: `code_index`, `code_search`
 - file CRUD: `file_create`, `file_read`, `file_update`, `file_delete`
@@ -258,6 +227,6 @@ UI에서도 대화 모델과 이미지 모델을 별도로 선택할 수 있다.
 - PDF/DOCX 문서 읽기
 - 이미지 분석 도구와 UI 첨부
 - 대화 모델/이미지 모델 선택 분리
-- compact tool definitions + `tool_manual`
+- model-visible tool names + on-demand `tool_manual`
 - compact tool history
 - `.txt`/`.md` 파일 읽기 결과의 약한 local graph activation

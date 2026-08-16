@@ -141,12 +141,10 @@ def _coalesce_word_segments(segments: list[str]) -> list[str]:
         if not word_run:
             return
         joined = "".join(word_text)
-        if re.match(r"^[0-9A-Za-z_]+$", joined):
-            coalesced.append(joined)
-        elif any(len(piece) > 1 for piece in word_run):
-            coalesced.extend(word_run)
-        else:
-            coalesced.append(joined)
+        # sentence_breaker may split a single surface word into adjacent pieces
+        # (for example, "스트" + "리머"). Whitespace and punctuation already
+        # flush the run, so joining here restores the original contiguous word.
+        coalesced.append(joined)
         word_run.clear()
         word_text.clear()
 

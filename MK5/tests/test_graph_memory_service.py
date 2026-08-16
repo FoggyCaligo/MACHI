@@ -3,6 +3,7 @@
 from MK5.core.graph.anchors import user_anchor_id
 from MK5.core.graph.repository import GraphRepository
 from MK5.core.graph.service import GraphMemoryService
+from MK5.core.graph.text_graph import tokenize_spans
 
 
 def test_user_anchor_is_persistent_key() -> None:
@@ -90,57 +91,12 @@ def test_korean_concept_labels_are_not_suffix_stripped_by_text_graph() -> None:
     repo.close()
 
 
-def test_search_concept_nodes_come_from_recorded_utterance_graph() -> None:
-    repo = GraphRepository(":memory:")
-    service = GraphMemoryService(repo)
+def test_contiguous_sentence_breaker_fragments_are_rejoined() -> None:
+    labels = [span.normalized for span in tokenize_spans("강지라는 스트리머의 활동기간을 찾아줄래?")]
 
-    utterance_id = service.record_user_utterance(
-        user_id="alice",
-        text="Glock features and market significance",
-        session_id="s1",
-    )
-
-    search_nodes = service.search_concept_nodes_for_utterance(
-        user_id="alice",
-        utterance_id=utterance_id,
-    )
-
-    assert "glock" in search_nodes
-    assert all(node.node_type == "concept" for node in repo.all_nodes() if node.labels and node.labels[0].lower() in search_nodes)
-    repo.close()
-
-
-def test_no_slot_search_need_depends_on_search_support_not_node_existence() -> None:
-    repo = GraphRepository(":memory:")
-    service = GraphMemoryService(repo)
-
-    first_utterance = service.record_user_utterance(
-        user_id="alice",
-        text="글록",
-        session_id="s1",
-    )
-    second_utterance = service.record_user_utterance(
-        user_id="alice",
-        text="글록의 특징과 총기시장에서의 의의에 대해 말해줘.",
-        session_id="s1",
-    )
-
-    assert service.should_search_without_slots(user_id="alice", utterance_id=second_utterance)
-
-    service.record_search_results(
-        query="글록",
-        results=[{
-            "title": "글록",
-            "url": "https://example.com/glock",
-            "snippet": "글록은 오스트리아 총기 제조사와 그 권총 제품군을 가리킨다.",
-            "source": "stub",
-            "query_node": "글록",
-        }],
-    )
-
-    assert not service.should_search_without_slots(user_id="alice", utterance_id=second_utterance)
-    assert service.search_concept_nodes_for_utterance(user_id="alice", utterance_id=first_utterance)
-    repo.close()
+    assert "스트리머의" in labels
+    assert "스트" not in labels
+    assert "리머" not in labels
 
 
 def test_graph_search_expands_neighbors() -> None:

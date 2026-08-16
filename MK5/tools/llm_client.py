@@ -191,52 +191,11 @@ class StubChatModel:
     ) -> ModelTurn:
         if not tool_history and "search" in user_message.lower():
             return ModelTurn(
-                tool_calls=[ToolCall(tool="internet_search", arguments={"query": user_message})]
+                tool_calls=[ToolCall(tool="web_research", arguments={"objective": user_message})]
             )
         if memory_summary:
             return ModelTurn(final_answer=f"MK5 stub reply.\nmessage={user_message}\nmemory={memory_summary}")
         return ModelTurn(final_answer=f"MK5 stub reply.\nmessage={user_message}")
-
-
-def _compact_tool_definition(tool: ToolDefinition) -> dict[str, Any]:
-    schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
-    properties = schema.get("properties")
-    required = schema.get("required")
-    argument_keys = sorted(properties) if isinstance(properties, dict) else _argument_keys_from_variants(schema)
-    compact = {
-        "name": tool.name,
-        "description": _shorten(tool.description, 120),
-        "arguments": argument_keys,
-        "required": required if isinstance(required, list) else [],
-    }
-    if tool.name != "tool_manual":
-        compact["manual"] = f"tool_manual:{tool.name}"
-    variants = _argument_variants(schema)
-    if variants:
-        compact["argument_shapes"] = variants
-    return compact
-
-
-def _argument_keys_from_variants(schema: dict[str, Any]) -> list[str]:
-    keys: set[str] = set()
-    for variant in schema.get("oneOf") or schema.get("anyOf") or []:
-        if not isinstance(variant, dict):
-            continue
-        properties = variant.get("properties")
-        if isinstance(properties, dict):
-            keys.update(str(key) for key in properties)
-    return sorted(keys)
-
-
-def _argument_variants(schema: dict[str, Any]) -> list[list[str]]:
-    variants: list[list[str]] = []
-    for variant in schema.get("oneOf") or schema.get("anyOf") or []:
-        if not isinstance(variant, dict):
-            continue
-        required = variant.get("required")
-        if isinstance(required, list):
-            variants.append([str(item) for item in required])
-    return variants
 
 
 def _compact_tool_history_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -356,6 +315,26 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
         source_errors = result.get("source_errors")
         if source_errors:
             compact["source_errors"] = _compact_value(source_errors, limit=300)
+    elif tool == "web_page_read":
+        compact["url"] = result.get("url")
+        compact["title"] = _shorten(str(result.get("title") or ""), 300)
+        compact["focus"] = _compact_value(result.get("focus"), limit=300)
+        compact["matched_sections"] = _compact_value(result.get("matched_sections"), limit=3000)
+        _add_excerpt(compact, "content", result.get("content"), 3000)
+        compact["truncated"] = result.get("truncated")
+    elif tool == "web_research":
+        compact["objective"] = result.get("objective")
+        compact["status"] = result.get("status")
+        compact["queries"] = _compact_value(result.get("queries"), limit=600)
+        compact["evidence"] = _compact_value(result.get("evidence"), limit=5000)
+        results = result.get("results")
+        if isinstance(results, list):
+            compact["result_count"] = len(results)
+            compact["results"] = [_compact_search_result(item) for item in results[:5]]
+        if result.get("page_errors"):
+            compact["page_errors"] = _compact_value(result.get("page_errors"), limit=500)
+        if result.get("source_errors"):
+            compact["source_errors"] = _compact_value(result.get("source_errors"), limit=800)
     elif tool == "market_snapshot":
         compact["snapshot"] = _compact_value(result, limit=700)
     elif tool == "file_text_activation":

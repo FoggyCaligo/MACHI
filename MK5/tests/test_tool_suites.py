@@ -17,6 +17,16 @@ from MK5.tools import web_search
 from MK5.tools.web_search import HttpWebSearchTool, SearchHit
 
 
+def test_low_level_web_tools_are_hidden_from_model() -> None:
+    registry = HttpWebSearchTool().build_registry()
+    visible_definitions = {definition.name: definition for definition in registry.model_definitions()}
+
+    assert "web_research" in visible_definitions
+    assert "internet_search" not in visible_definitions
+    assert "web_page_read" not in visible_definitions
+    assert set(visible_definitions["latest_search"].input_schema["properties"]) == {"query"}
+
+
 def test_unconsulted_tool_call_is_replaced_with_manual_lookup() -> None:
     definitions = [
         ToolDefinition(name="terminal_command", description="terminal", input_schema={}),
@@ -615,6 +625,94 @@ async def test_internet_search_falls_back_to_whole_query_without_node_heuristics
 
     assert result["search_nodes"] == [query]
     assert query in searched
+
+
+@pytest.mark.asyncio
+async def test_internet_search_keeps_up_to_eight_node_combinations(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_ddg(query: str) -> list[SearchHit]:
+        return [SearchHit(title=query, url=f"https://example.com/{query}", snippet="result", source="duckduckgo")]
+
+    async def fake_wiki(query: str, lang: str) -> list[SearchHit]:
+        return []
+
+    monkeypatch.setattr("MK5.tools.web_search._ddg_search", fake_ddg)
+    monkeypatch.setattr("MK5.tools.web_search._wiki_search", fake_wiki)
+    nodes = [f"node-{index}" for index in range(8)]
+
+    result = await HttpWebSearchTool()._run({"query": "context", "search_nodes": nodes})
+
+    assert result["search_nodes"] == nodes
+    assert {item["query_node"] for item in result["results"]} == set(nodes)
+
+
+@pytest.mark.asyncio
+async def test_web_page_read_extracts_focus_passages(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_fetch(url: str) -> tuple[str, str, str]:
+        return (
+            url,
+            "text/html; charset=utf-8",
+            "<html><head><title>강지</title></head><body>"
+            "<p>일반 소개입니다.</p><p>방송 시작일은 2012년 5월 10일입니다.</p>"
+            "<script>ignore me</script></body></html>",
+        )
+
+    monkeypatch.setattr(web_search, "_fetch_public_page", fake_fetch)
+    registry = HttpWebSearchTool().build_registry()
+
+    result = await registry.run(ToolCall(
+        tool="web_page_read",
+        arguments={"url": "https://example.com/kangji", "focus": ["방송 시작일"]},
+    ))
+
+    assert result["ok"] is True
+    assert result["title"] == "강지"
+    assert result["matched_sections"] == ["방송 시작일은 2012년 5월 10일입니다."]
+    assert "ignore me" not in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_web_research_searches_ranks_and_reads_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = HttpWebSearchTool()
+
+    async def fake_search(query: str, *, search_nodes: list[str] | None = None):
+        return ([
+            SearchHit(
+                title="unrelated",
+                url="https://example.com/other",
+                snippet="other",
+                source="stub",
+                query_node="broad",
+            ),
+            SearchHit(
+                title="강지 - 나무위키",
+                url="https://namu.wiki/w/강지",
+                snippet="대한민국의 인터넷 방송인",
+                source="stub",
+                query_node="focused",
+            ),
+        ], [])
+
+    async def fake_page(arguments: dict):
+        return {
+            "ok": True,
+            "url": arguments["url"],
+            "title": "강지 - 나무위키",
+            "matched_sections": ["방송 시작일은 2012년 5월 10일이다."],
+            "content": "방송 시작일은 2012년 5월 10일이다.",
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(tool, "_search_with_diagnostics", fake_search)
+    monkeypatch.setattr(tool, "_run_page_read", fake_page)
+
+    result = await tool._run_research({
+        "objective": "스트리머 강지 방송 시작일 활동 연차",
+        "preferred_domains": ["namu.wiki"],
+    })
+
+    assert result["status"] == "evidence_found"
+    assert result["results"][0]["url"] == "https://namu.wiki/w/강지"
+    assert result["evidence"][0]["matched_sections"]
 
 
 @pytest.mark.asyncio

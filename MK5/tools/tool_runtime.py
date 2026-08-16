@@ -12,6 +12,7 @@ class ToolDefinition:
     name: str
     description: str
     input_schema: dict[str, Any]
+    model_visible: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,9 @@ class ToolRegistry:
 
     def definitions(self) -> list[ToolDefinition]:
         return [self._definitions[name] for name in sorted(self._definitions)]
+
+    def model_definitions(self) -> list[ToolDefinition]:
+        return [definition for definition in self.definitions() if definition.model_visible]
 
     def definition(self, name: str) -> ToolDefinition | None:
         return self._definitions.get(name)

@@ -37,12 +37,12 @@ class ToolManualSuite:
                 "message": "tool_manual requires tool.",
             }
         definition = self._source_registry.definition(tool_name)
-        if definition is None:
+        if definition is None or not definition.model_visible:
             return {
                 "ok": False,
                 "error": "unknown_tool",
                 "tool": tool_name,
-                "available_tools": [item.name for item in self._source_registry.definitions()],
+                "available_tools": [item.name for item in self._source_registry.model_definitions()],
             }
         return {
             "ok": True,

@@ -170,7 +170,7 @@ class AgentOrchestrator:
                     user_message=model_user_message,
                     model=model,
                     memory_summary=memory_summary,
-                    tool_definitions=self._tool_registry.definitions(),
+                    tool_definitions=self._tool_registry.model_definitions(),
                     tool_history=tool_history,
                 )
             except ModelRequestError as exc:
@@ -256,9 +256,13 @@ class AgentOrchestrator:
                     turn=turn,
                     tool_history=tool_history,
                     rejected_final_answer=turn.final_answer,
+                ) or _failed_web_research_guard_result(
+                    turn=turn,
+                    tool_history=tool_history,
+                    rejected_final_answer=turn.final_answer,
                 ) or _local_tool_blocked_guard_result(
                     turn=turn,
-                    available_tools=self._tool_registry.definitions(),
+                    available_tools=self._tool_registry.model_definitions(),
                     tool_history=tool_history,
                     rejected_final_answer=turn.final_answer,
                 ) or _file_execution_guard_result(
@@ -320,7 +324,7 @@ class AgentOrchestrator:
                 unknown_tool_guards += 1
                 guard_result = _unknown_tool_guard_result(
                     unknown_tool=unknown_tool_call.tool,
-                    available_tools=[definition.name for definition in self._tool_registry.definitions()],
+                    available_tools=[definition.name for definition in self._tool_registry.model_definitions()],
                 )
                 _debug_log(
                     f"execution_guard round={round_index} "
@@ -399,9 +403,10 @@ class AgentOrchestrator:
                     f"tool_end round={round_index} "
                     f"tool={call.tool} elapsed={time.perf_counter() - started:.2f}s "
                     f"ok={_tool_ok(result.get('result'))}"
+                    f"{_tool_failure_debug(result.get('result'))}"
                 )
                 used_tools.append(call.tool)
-                if call.tool in {"internet_search", "latest_search"}:
+                if call.tool in {"internet_search", "latest_search", "web_research"}:
                     memory_writes.extend(["search_result", "search_fact"])
                 elif call.tool == "market_snapshot":
                     memory_writes.append("market_snapshot")
@@ -571,13 +576,6 @@ class AgentOrchestrator:
             arguments["user_id"] = user_id
         if call.tool == "image_analyze" and image_model and not str(arguments.get("model") or "").strip():
             arguments["model"] = image_model
-        if call.tool in {"internet_search", "latest_search"} and "search_nodes" not in arguments:
-            search_nodes = self._memory_service.search_concept_nodes_for_utterance(
-                user_id=user_id,
-                utterance_id=utterance_id,
-            )
-            if search_nodes:
-                arguments["search_nodes"] = search_nodes
         definition = self._tool_registry.definition(call.tool)
         schema = definition.input_schema if definition is not None else {}
         required = schema.get("required") if isinstance(schema, dict) else []
@@ -607,7 +605,7 @@ class AgentOrchestrator:
                 "tool": call.tool,
                 "message": _truncate(str(exc), 500),
             }
-        if call.tool in {"internet_search", "latest_search"}:
+        if call.tool in {"internet_search", "latest_search", "web_research"}:
             self._persist_search_results(arguments=arguments, result=result)
         return {"arguments": arguments, "result": result}
 
@@ -659,7 +657,7 @@ class AgentOrchestrator:
         }
 
     def _persist_search_results(self, *, arguments: dict, result: dict) -> None:
-        query = str(arguments.get("query") or "").strip()
+        query = str(arguments.get("query") or arguments.get("objective") or "").strip()
         hits = result.get("results")
         if not query or not isinstance(hits, list):
             return
@@ -875,6 +873,17 @@ def _tool_ok(result: object) -> object:
     return None
 
 
+def _tool_failure_debug(result: object) -> str:
+    if not isinstance(result, dict) or _tool_ok(result) is not False:
+        return ""
+    details: list[str] = []
+    for key in ("error", "message", "status", "source_errors", "page_errors"):
+        value = result.get(key)
+        if value:
+            details.append(f"{key}={_truncate(str(value), 800)}")
+    return f" details={' | '.join(details)}" if details else ""
+
+
 def _debug_log(message: str) -> None:
     if not config.AGENT_DEBUG_LOG:
         return
@@ -1066,6 +1075,25 @@ def _final_answer_evidence_guard_result(
             "rejected_final_answer": rejected_final_answer,
         }
     return None
+
+
+def _failed_web_research_guard_result(
+    *,
+    turn: ModelTurn,
+    tool_history: list[dict],
+    rejected_final_answer: str,
+) -> dict | None:
+    if turn.final_answer_kind == "blocked":
+        return None
+    research_events = [event for event in tool_history if event.get("tool") == "web_research"]
+    if not research_events or _tool_ok(research_events[-1].get("result")) is not False:
+        return None
+    return {
+        "ok": False,
+        "error": "web_research_failed",
+        "message": "The latest web_research failed. Retry with a better concise objective or return blocked.",
+        "rejected_final_answer": rejected_final_answer,
+    }
 
 
 def _local_tool_blocked_guard_result(

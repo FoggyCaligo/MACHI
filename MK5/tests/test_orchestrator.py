@@ -38,7 +38,7 @@ class FakeToolCallingModel:
         return ModelTurn(final_answer="done")
 
 
-class FakeInternetSearchModel:
+class FakeWebResearchModel:
     def __init__(self) -> None:
         self._turn = 0
 
@@ -54,7 +54,10 @@ class FakeInternetSearchModel:
     ) -> ModelTurn:
         self._turn += 1
         if self._turn == 1:
-            return ModelTurn(tool_calls=[ToolCall(tool="internet_search", arguments={"query": "graph memory"})])
+            return ModelTurn(tool_calls=[ToolCall(
+                tool="web_research",
+                arguments={"objective": "graph memory architecture"},
+            )])
         assert tool_history
         return ModelTurn(final_answer="search done")
 
@@ -272,7 +275,7 @@ class FollowupFileCorrectionModel:
         self._turn += 1
         if self._turn == 1 or (
             tool_history
-            and all(event.get("tool") == "internet_search" for event in tool_history)
+            and all(event.get("tool") in {"internet_search", "web_research"} for event in tool_history)
         ):
             return ModelTurn(tool_calls=[
                 ToolCall(
@@ -732,8 +735,24 @@ class CapturingWebSearchTool:
                     "required": ["query"],
                     "additionalProperties": False,
                 },
+                model_visible=False,
             ),
             self._run,
+        )
+        registry.register(
+            ToolDefinition(
+                name="web_research",
+                description="capture research arguments",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "objective": {"type": "string"},
+                    },
+                    "required": ["objective"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._run_research,
         )
         return registry
 
@@ -753,6 +772,28 @@ class CapturingWebSearchTool:
                 for node in nodes
             ],
             "source_errors": [],
+        }
+
+    async def _run_research(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        objective = str(arguments.get("objective") or "")
+        results = [
+            {
+                "title": f"{objective} result",
+                "url": "https://example.com/research",
+                "snippet": "result",
+                "source": "stub",
+                "query_node": objective,
+            }
+        ] if objective else []
+        return {
+            "ok": bool(results),
+            "objective": objective,
+            "queries": [objective],
+            "status": "snippets_only" if results else "no_results",
+            "results": results,
+            "evidence": [],
+            "source_errors": [],
+            "page_errors": [],
         }
 
 
@@ -785,46 +826,21 @@ async def test_orchestrator_persists_search_results_after_tool_call() -> None:
     orchestrator = AgentOrchestrator(
         memory_service=memory,
         graph_tools=graph_tools,
-        chat_model=FakeInternetSearchModel(),
+        chat_model=FakeWebResearchModel(),
         web_search=StubWebSearchTool(),
     )
 
     result = await orchestrator.respond(user_id="alice", message="search graph memory", model=None, session_id="s1")
 
     assert result.text == "search done"
-    assert "internet_search" in result.used_tools
+    assert "web_research" in result.used_tools
     persisted = memory.graph_search(user_id="alice", query="stub-result", limit=8)
     assert any(item["node_type"] == "search_result" for item in persisted)
     repo.close()
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_passes_recorded_concept_nodes_to_internet_search() -> None:
-    repo = GraphRepository(":memory:")
-    memory = GraphMemoryService(repo)
-    graph_tools = GraphToolSuite(memory)
-    orchestrator = AgentOrchestrator(
-        memory_service=memory,
-        graph_tools=graph_tools,
-        chat_model=FakeInternetSearchModel(),
-        web_search=CapturingWebSearchTool(),
-    )
-
-    result = await orchestrator.respond(
-        user_id="alice",
-        message="Glock features and market significance",
-        model=None,
-        session_id="s1",
-    )
-
-    search_event = next(event for event in result.tool_events if event["tool"] == "internet_search")
-    assert "glock" in search_event["arguments"]["search_nodes"]
-    assert search_event["result"]["search_nodes"] == search_event["arguments"]["search_nodes"]
-    repo.close()
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_does_not_auto_search_without_model_request() -> None:
+async def test_orchestrator_does_not_auto_search_from_graph_nodes() -> None:
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
     graph_tools = GraphToolSuite(memory)
@@ -843,32 +859,7 @@ async def test_orchestrator_does_not_auto_search_without_model_request() -> None
     )
 
     assert result.text == "done"
-    assert not any(event["tool"] == "internet_search" for event in result.tool_events)
-    repo.close()
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_does_not_no_slot_search_when_memory_summary_exists() -> None:
-    repo = GraphRepository(":memory:")
-    memory = GraphMemoryService(repo)
-    memory.record_user_utterance(user_id="alice", text="나는 Alice야.", session_id="s1")
-    graph_tools = GraphToolSuite(memory)
-    orchestrator = AgentOrchestrator(
-        memory_service=memory,
-        graph_tools=graph_tools,
-        chat_model=FinalOnlyModel(),
-        web_search=CapturingWebSearchTool(),
-    )
-
-    result = await orchestrator.respond(
-        user_id="alice",
-        message="나에 대해 기억하니?",
-        model=None,
-        session_id="s1",
-    )
-
-    assert result.text == "done"
-    assert not any(event["tool"] == "internet_search" for event in result.tool_events)
+    assert not any(event["tool"] == "web_research" for event in result.tool_events)
     repo.close()
 
 
@@ -1304,7 +1295,7 @@ async def test_orchestrator_recovers_from_malformed_model_json_for_script_task(t
     assert result.text == "스크립트를 실행했습니다."
     assert chat_model.saw_parse_guard is True
     assert (tmp_path / "artists.py").read_text(encoding="utf-8") == "print('artist')\n"
-    assert [event["tool"] for event in result.tool_events if event["tool"] != "internet_search"] == [
+    assert [event["tool"] for event in result.tool_events if event["tool"] != "web_research"] == [
         "file_create",
         "terminal_command",
     ]
