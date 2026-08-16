@@ -264,7 +264,7 @@ class GraphMemoryService:
         exclude_node_ids: set[str] | None = None,
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
-    ) -> list[str]:
+    ) -> list[dict]:
         anchor_id = self.ensure_user_anchor(user_id)
         terms = {term.lower() for term in re.findall(r"\w+", query) if len(term) >= 2}
         excluded = exclude_node_ids or set()
@@ -273,7 +273,7 @@ class GraphMemoryService:
             if activation_node_weights is not None
             else {node_id: 1.0 for node_id in (activation_node_ids or set())}
         )
-        ranked: list[tuple[float, str]] = []
+        ranked: list[tuple[float, dict]] = []
         for node in self._repo.neighbors(anchor_id):
             if node.node_id in excluded:
                 continue
@@ -291,9 +291,25 @@ class GraphMemoryService:
             type_bonus = 1.0 if node.node_type == "fact" else 0.25
             activation_bonus = 1.5 * activation_weights.get(node.node_id, 0.0)
             score = relevance * 4.0 + activation_bonus + type_bonus + node.trust_score + node.stability_score
-            ranked.append((score, self._format_user_memory_for_model(user_id=user_id, node=node, label=label)))
-        ranked.sort(key=lambda item: (-item[0], item[1]))
-        return [label for _, label in ranked[:limit]]
+            ranked.append((score, {
+                "node_id": node.node_id,
+                "node_type": node.node_type,
+                "label": self._format_user_memory_for_model(user_id=user_id, node=node, label=label),
+                "raw_label": label,
+                "score": round(score, 4),
+                "score_components": {
+                    "relevance": round(relevance, 4),
+                    "relevance_weighted": round(relevance * 4.0, 4),
+                    "activation": round(activation_weights.get(node.node_id, 0.0), 4),
+                    "activation_bonus": round(activation_bonus, 4),
+                    "type_bonus": round(type_bonus, 4),
+                    "trust_score": round(node.trust_score, 4),
+                    "stability_score": round(node.stability_score, 4),
+                },
+            }))
+        ranked.sort(key=lambda item: (-item[0], str(item[1].get("label") or "")))
+        items = [item for _, item in ranked]
+        return items if limit <= 0 else items[:limit]
 
     def _activation_related_node_weights(self, activation_node_weights: dict[str, float]) -> dict[str, float]:
         related = {

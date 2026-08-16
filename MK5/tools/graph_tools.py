@@ -17,7 +17,7 @@ class GraphToolSuite:
         exclude_node_ids: set[str] | None = None,
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
-    ) -> list[str]:
+    ) -> list[dict]:
         return self._memory_service.user_memory_summary(
             user_id,
             query=query,

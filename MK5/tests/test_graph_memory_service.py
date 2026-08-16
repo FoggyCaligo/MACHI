@@ -20,8 +20,8 @@ def test_record_user_utterance_exposes_memory_summary() -> None:
     )
 
     summary = service.user_memory_summary("alice")
-    assert any("I build user interfaces." in item for item in summary)
-    assert any("I enjoy TypeScript." in item for item in summary)
+    assert any("I build user interfaces." in item["label"] for item in summary)
+    assert any("I enjoy TypeScript." in item["label"] for item in summary)
     repo.close()
 
 
@@ -175,7 +175,7 @@ def test_graph_repository_persists_across_reopen(tmp_path: Path) -> None:
     service_b = GraphMemoryService(repo_b)
     summary = service_b.user_memory_summary("alice")
 
-    assert any("persist me" in item for item in summary)
+    assert any("persist me" in item["label"] for item in summary)
     repo_b.close()
 
 
@@ -227,8 +227,43 @@ def test_memory_summary_ranks_current_query_context() -> None:
     summary = service.user_memory_summary("alice", query="TypeScript project", limit=1)
 
     assert len(summary) == 1
-    assert "I enjoy TypeScript." in summary[0]
-    assert "사용자(alice)" in summary[0]
+    assert "I enjoy TypeScript." in summary[0]["label"]
+    assert "사용자(alice)" in summary[0]["label"]
+    repo.close()
+
+
+def test_memory_summary_items_include_scores_and_components() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    service.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
+    service.record_user_utterance(user_id="alice", text="I grow tomatoes.", session_id="s1")
+
+    items = service.user_memory_summary("alice", query="TypeScript project", limit=1)
+
+    assert len(items) == 1
+    assert "I enjoy TypeScript." in items[0]["label"]
+    assert isinstance(items[0]["score"], float)
+    assert items[0]["score_components"]["relevance"] > 0
+    assert "activation_bonus" in items[0]["score_components"]
+    assert "trust_score" in items[0]["score_components"]
+    repo.close()
+
+
+def test_memory_summary_limit_zero_returns_all_ranked_items() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    service.record_user_utterance(user_id="alice", text="첫 번째 기억", session_id="s1")
+    service.record_user_utterance(user_id="alice", text="두 번째 기억", session_id="s1")
+    service.record_user_utterance(user_id="alice", text="세 번째 기억", session_id="s1")
+
+    limited = service.user_memory_summary("alice", limit=1)
+    unlimited = service.user_memory_summary("alice", limit=0)
+
+    assert len(limited) == 1
+    assert len(unlimited) > len(limited)
+    assert any("첫 번째 기억" in item["label"] for item in unlimited)
+    assert any("두 번째 기억" in item["label"] for item in unlimited)
+    assert any("세 번째 기억" in item["label"] for item in unlimited)
     repo.close()
 
 
@@ -240,8 +275,8 @@ def test_memory_summary_preserves_user_speaker_attribution() -> None:
     summary = service.user_memory_summary("신재용", query="나에 대해 기억하니", limit=3)
 
     assert summary
-    assert any("사용자(신재용)" in item for item in summary)
-    assert any("assistant가 아니라 사용자" in item or "speaker는 사용자" in item for item in summary)
+    assert any("사용자(신재용)" in item["label"] for item in summary)
+    assert any("assistant가 아니라 사용자" in item["label"] or "speaker는 사용자" in item["label"] for item in summary)
     repo.close()
 
 
@@ -264,8 +299,8 @@ def test_fact_correction_preserves_history_and_hides_superseded_fact() -> None:
     assert old.payload["superseded_by"] == replacement_id
     assert replacement is not None and replacement.provenance == "user_correction"
     corrected_summary = service.user_memory_summary("alice")
-    assert not any("I use JavaScript." in item for item in corrected_summary)
-    assert any("I use TypeScript." in item for item in corrected_summary)
+    assert not any("I use JavaScript." in item["label"] for item in corrected_summary)
+    assert any("I use TypeScript." in item["label"] for item in corrected_summary)
     assert any(edge.relation == "replaces" for edge in repo.all_edges())
     repo.close()
 

@@ -32,6 +32,9 @@ class ToolRegistry:
     def definitions(self) -> list[ToolDefinition]:
         return [self._definitions[name] for name in sorted(self._definitions)]
 
+    def has_tool(self, name: str) -> bool:
+        return name in self._handlers
+
     async def run(self, call: ToolCall) -> dict[str, Any]:
         handler = self._handlers.get(call.tool)
         if handler is None:

@@ -26,7 +26,7 @@ class FakeToolCallingModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -47,7 +47,7 @@ class FakeInternetSearchModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -59,16 +59,20 @@ class FakeInternetSearchModel:
 
 
 class FinalOnlyModel:
+    def __init__(self) -> None:
+        self.memory_summaries: list[list[Any]] = []
+
     async def next_turn(
         self,
         *,
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
+        self.memory_summaries.append(memory_summary)
         return ModelTurn(final_answer="done")
 
 
@@ -83,7 +87,7 @@ class ContextAwareFileReadModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -110,7 +114,7 @@ class PreviousDialogueModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -131,7 +135,7 @@ class TerminalOnlyFileMutationModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -176,7 +180,7 @@ class FollowupFileCorrectionModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -222,7 +226,7 @@ class PrematureToolCompletionClaimModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -265,7 +269,7 @@ class EmptyAfterFileReadModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -311,7 +315,7 @@ class EmptyAfterVerifiedFileUpdateModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -366,7 +370,7 @@ class InvalidFileUpdateThenRetryModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -432,7 +436,7 @@ class PreviousToolContextModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -472,7 +476,7 @@ class MalformedThenScriptModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -513,7 +517,7 @@ class EmptyInitialThenToolModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -541,7 +545,7 @@ class MixedFinalAndToolCallModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -565,6 +569,38 @@ class MixedFinalAndToolCallModel:
             ],
             final_answer_kind="tool_completion",
             completion_tools=["file_update"],
+        )
+
+
+class FinalAnswerAsToolModel:
+    def __init__(self) -> None:
+        self.saw_unknown_tool_guard = False
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        if any(
+            event.get("tool") == "execution_guard"
+            and event.get("result", {}).get("error") == "unknown_tool_call"
+            and event.get("result", {}).get("unknown_tool") == "final_answer"
+            for event in tool_history
+        ):
+            self.saw_unknown_tool_guard = True
+            return ModelTurn(final_answer="다시 설명드립니다.")
+        return ModelTurn(
+            tool_calls=[
+                ToolCall(
+                    tool="final_answer",
+                    arguments={"text": "요약은 다음과 같습니다."},
+                )
+            ]
         )
 
 
@@ -723,6 +759,35 @@ async def test_orchestrator_does_not_no_slot_search_when_memory_summary_exists()
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_passes_scored_memory_summary_items_to_model() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    memory.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
+    graph_tools = GraphToolSuite(memory)
+    chat_model = FinalOnlyModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=chat_model,
+        web_search=CapturingWebSearchTool(),
+    )
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        message="TypeScript 기억 있어?",
+        model=None,
+        session_id="s1",
+    )
+
+    assert result.text == "done"
+    assert chat_model.memory_summaries
+    assert isinstance(chat_model.memory_summaries[-1][0], dict)
+    assert "score" in chat_model.memory_summaries[-1][0]
+    assert "score_components" in chat_model.memory_summaries[-1][0]
+    repo.close()
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_passes_previous_dialogue_so_model_can_read_files(tmp_path) -> None:
     (tmp_path / "README.md").write_text("Root project", encoding="utf-8")
     (tmp_path / "MK5").mkdir()
@@ -791,6 +856,46 @@ async def test_orchestrator_passes_previous_dialogue_turn_for_confirmation() -> 
     assert "Previous dialogue turn" in chat_model.messages[-1]
     assert "Assistant: graph_search 도구로 확인해보겠습니다." in chat_model.messages[-1]
     assert "응. 그 도구로 한번 진행해봐." in chat_model.messages[-1]
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_accumulates_recent_dialogue_like_mk1_history() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    chat_model = PreviousDialogueModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=chat_model,
+        web_search=CapturingWebSearchTool(),
+    )
+
+    await orchestrator.respond(
+        user_id="alice",
+        message="첫 번째 문맥: playlist2 폴더를 봤어.",
+        model=None,
+        session_id="s1",
+    )
+    await orchestrator.respond(
+        user_id="alice",
+        message="두 번째 문맥: 파일은 opus였어.",
+        model=None,
+        session_id="s1",
+    )
+    await orchestrator.respond(
+        user_id="alice",
+        message="응. 진행해줘.",
+        model=None,
+        session_id="s1",
+    )
+
+    latest = chat_model.messages[-1]
+    assert "Previous dialogue turn" in latest
+    assert "첫 번째 문맥: playlist2 폴더를 봤어." in latest
+    assert "두 번째 문맥: 파일은 opus였어." in latest
+    assert "응. 진행해줘." in latest
     repo.close()
 
 
@@ -1152,6 +1257,32 @@ async def test_orchestrator_runs_tool_calls_before_mixed_final_answer(tmp_path) 
     repo.close()
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_recovers_when_model_calls_final_answer_as_tool() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    chat_model = FinalAnswerAsToolModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=chat_model,
+        web_search=CapturingWebSearchTool(),
+    )
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        message="각 MK 안의 readme를 보고 요약해줘.",
+        model=None,
+        session_id="s1",
+    )
+
+    assert result.text == "다시 설명드립니다."
+    assert chat_model.saw_unknown_tool_guard is True
+    assert not any(event["tool"] == "final_answer" for event in result.tool_events)
+    repo.close()
+
+
 def test_memory_local_activation_carries_previous_non_overlapping_nodes() -> None:
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
@@ -1216,4 +1347,5 @@ def test_memory_activation_weights_decay_previous_non_overlapping_nodes() -> Non
     assert all(weights[node_id] == 1.0 for node_id in second_current)
     assert all(weights[node_id] == 0.5 for node_id in previous_only)
     repo.close()
+
 

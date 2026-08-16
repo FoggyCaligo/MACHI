@@ -77,7 +77,7 @@ class AgentOrchestrator:
         memory_summary = self._graph_tools.get_user_memory_summary(
             user_id=user_id,
             query=message,
-            limit=10,
+            limit=config.MEMORY_SUMMARY_LIMIT,
             exclude_node_ids={utterance_id},
             activation_node_weights=local_activation_node_weights,
         )
@@ -208,6 +208,25 @@ class AgentOrchestrator:
                     "result": guard_result,
                 })
                 continue
+            unknown_tool_call = next(
+                (call for call in turn.tool_calls if not self._tool_registry.has_tool(call.tool)),
+                None,
+            )
+            if unknown_tool_call is not None:
+                guard_result = _unknown_tool_guard_result(
+                    unknown_tool=unknown_tool_call.tool,
+                    available_tools=[definition.name for definition in self._tool_registry.definitions()],
+                )
+                _debug_log(
+                    f"execution_guard round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                    f"error={guard_result.get('error')} unknown_tool={unknown_tool_call.tool}"
+                )
+                tool_history.append({
+                    "tool": "execution_guard",
+                    "arguments": {},
+                    "result": guard_result,
+                })
+                continue
             for call in turn.tool_calls:
                 _debug_log(f"tool_start round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} tool={call.tool}")
                 started = time.perf_counter()
@@ -267,10 +286,14 @@ class AgentOrchestrator:
         user_message: str,
         assistant_message: str,
     ) -> None:
-        self._recent_dialogue_messages[conversation_key] = [
+        existing = list(self._recent_dialogue_messages.get(conversation_key, []))
+        updated = [
+            *existing,
             f"User: {user_message}",
             f"Assistant: {assistant_message}",
         ]
+        limit = max(0, config.RECENT_MESSAGE_LIMIT)
+        self._recent_dialogue_messages[conversation_key] = updated[-limit:] if limit else []
 
     def _remember_activation_node_ids(self, *, conversation_key: str, node_ids: set[str]) -> None:
         self._previous_activation_node_ids[conversation_key] = set(node_ids)
@@ -610,6 +633,26 @@ def _empty_turn_after_tool_guard_result(*, tool_history: list[dict]) -> dict:
             "tool_calls. Continue from tool_history with the next needed tool call, final "
             "answer, or blocker explanation."
         ),
+    }
+
+
+def _unknown_tool_guard_result(*, unknown_tool: str, available_tools: list[str]) -> dict:
+    if unknown_tool == "final_answer":
+        message = (
+            "final_answer is not a tool. Put the answer in the top-level final_answer "
+            "field with tool_calls=[], or call one of the available tools if more work is needed."
+        )
+    else:
+        message = (
+            f"{unknown_tool} is not an available tool. Use one of the available tools, "
+            "or return a top-level final_answer if no tool is needed."
+        )
+    return {
+        "ok": False,
+        "error": "unknown_tool_call",
+        "unknown_tool": unknown_tool,
+        "available_tools": available_tools,
+        "message": message,
     }
 
 

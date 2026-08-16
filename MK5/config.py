@@ -19,6 +19,8 @@ OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "768"))
 OLLAMA_THINK = os.getenv("OLLAMA_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 AGENT_MAX_TOOL_ROUNDS = int(os.getenv("MK5_AGENT_MAX_TOOL_ROUNDS", "10"))
+MEMORY_SUMMARY_LIMIT = int(os.getenv("MK5_MEMORY_SUMMARY_LIMIT", "10"))
+RECENT_MESSAGE_LIMIT = int(os.getenv("MK5_RECENT_MESSAGE_LIMIT", "12"))
 TERMINAL_TIMEOUT_SECONDS = float(os.getenv("MK5_TERMINAL_TIMEOUT_SECONDS", "20"))
 WEB_SEARCH_TIMEOUT_SECONDS = float(os.getenv("MK5_WEB_SEARCH_TIMEOUT_SECONDS", "12"))
 AGENT_DEBUG_LOG = os.getenv("MK5_AGENT_DEBUG_LOG", "true").strip().lower() in {"1", "true", "yes", "on"}

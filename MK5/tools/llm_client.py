@@ -23,7 +23,7 @@ class ChatModel(Protocol):
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn: ...
@@ -124,7 +124,7 @@ class OllamaToolChatModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -164,7 +164,7 @@ class StubChatModel:
         system: str,
         user_message: str,
         model: str | None,
-        memory_summary: list[str],
+        memory_summary: list[Any],
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
@@ -175,4 +175,5 @@ class StubChatModel:
         if memory_summary:
             return ModelTurn(final_answer=f"MK5 stub reply.\nmessage={user_message}\nmemory={memory_summary}")
         return ModelTurn(final_answer=f"MK5 stub reply.\nmessage={user_message}")
+
 
