@@ -140,7 +140,12 @@ class OllamaToolChatModel:
             model=model,
             response_format=_RESPONSE_SCHEMA,
         )
-        return _parse_model_turn(raw)
+        turn = _parse_model_turn(raw)
+        return _require_tool_manuals(
+            turn,
+            tool_definitions=tool_definitions,
+            tool_history=tool_history,
+        )
 
 
 class StubChatModel:
@@ -222,6 +227,35 @@ def _compact_memory_item(item: object) -> object:
     }
 
 
+def _require_tool_manuals(
+    turn: ModelTurn,
+    *,
+    tool_definitions: list[ToolDefinition],
+    tool_history: list[dict[str, Any]],
+) -> ModelTurn:
+    available = {definition.name for definition in tool_definitions}
+    if "tool_manual" not in available or not turn.tool_calls:
+        return turn
+    consulted = {
+        str(event.get("result", {}).get("tool") or "")
+        for event in tool_history
+        if event.get("tool") == "tool_manual"
+        and isinstance(event.get("result"), dict)
+        and event["result"].get("ok") is True
+    }
+    missing: list[str] = []
+    for call in turn.tool_calls:
+        if call.tool == "tool_manual" or call.tool in consulted or call.tool in missing:
+            continue
+        missing.append(call.tool)
+    if not missing:
+        return turn
+    return ModelTurn(
+        tool_calls=[ToolCall(tool="tool_manual", arguments={"tool": name}) for name in missing],
+        final_answer_kind="answer",
+    )
+
+
 def _compact_tool_result(*, tool: object, result: object) -> object:
     if not isinstance(result, dict):
         return _compact_value(result, limit=240)
@@ -239,7 +273,16 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
         compact["tool"] = result.get("tool")
         compact["message"] = _shorten(str(result.get("message") or ""), 500)
         return compact
-    if tool == "terminal_command":
+    if tool == "file_search":
+        compact["workspace_root"] = result.get("workspace_root")
+        compact["root"] = result.get("root")
+        compact["pattern"] = result.get("pattern")
+        compact["count"] = result.get("count")
+        compact["truncated"] = result.get("truncated")
+        files = result.get("files")
+        if isinstance(files, list):
+            compact["files"] = [_shorten(str(path), 300) for path in files[:80]]
+    elif tool == "terminal_command":
         _add_tail(compact, "stdout", result.get("stdout"), 320)
         _add_tail(compact, "stderr", result.get("stderr"), 320)
         if result.get("changed_paths"):

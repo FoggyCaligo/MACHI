@@ -9,11 +9,44 @@ import pytest
 from MK5.tools.terminal_tools import TerminalToolSuite
 from MK5.tools.document_tools import DocumentReadToolSuite, _looks_garbled
 from MK5.tools.image_tools import ImageAnalyzeToolSuite
-from MK5.tools.llm_client import _parse_model_turn
-from MK5.tools.tool_runtime import ToolCall
+from MK5.tools.llm_client import ModelTurn, _parse_model_turn, _require_tool_manuals
+from MK5.tools.tool_runtime import ToolCall, ToolDefinition
 from MK5.tools.workspace_tools import WorkspaceFileToolSuite
 from MK5.tools import web_search
 from MK5.tools.web_search import HttpWebSearchTool, SearchHit
+
+
+def test_unconsulted_tool_call_is_replaced_with_manual_lookup() -> None:
+    definitions = [
+        ToolDefinition(name="terminal_command", description="terminal", input_schema={}),
+        ToolDefinition(name="tool_manual", description="manual", input_schema={}),
+    ]
+    turn = ModelTurn(tool_calls=[
+        ToolCall(tool="terminal_command", arguments={"command": "tree -L 2 MK5"}),
+    ])
+
+    guarded = _require_tool_manuals(turn, tool_definitions=definitions, tool_history=[])
+
+    assert guarded.tool_calls == [ToolCall(tool="tool_manual", arguments={"tool": "terminal_command"})]
+
+
+def test_consulted_tool_call_is_preserved() -> None:
+    definitions = [
+        ToolDefinition(name="terminal_command", description="terminal", input_schema={}),
+        ToolDefinition(name="tool_manual", description="manual", input_schema={}),
+    ]
+    turn = ModelTurn(tool_calls=[
+        ToolCall(tool="terminal_command", arguments={"command": "dir MK5"}),
+    ])
+    history = [{
+        "tool": "tool_manual",
+        "arguments": {"tool": "terminal_command"},
+        "result": {"ok": True, "tool": "terminal_command", "input_schema": {}},
+    }]
+
+    guarded = _require_tool_manuals(turn, tool_definitions=definitions, tool_history=history)
+
+    assert guarded is turn
 
 
 @pytest.mark.asyncio
@@ -34,6 +67,40 @@ async def test_file_tools_can_create_update_and_read(tmp_path: Path) -> None:
     }))
 
     assert result["content"] == "goodbye"
+
+
+@pytest.mark.asyncio
+async def test_file_search_returns_workspace_relative_recursive_paths(tmp_path: Path) -> None:
+    (tmp_path / "MK5" / "core").mkdir(parents=True)
+    (tmp_path / "MK5" / "core" / "agent.py").write_text("# agent", encoding="utf-8")
+    (tmp_path / "MK5" / "README.md").write_text("# MK5", encoding="utf-8")
+    registry = WorkspaceFileToolSuite(tmp_path).build_registry()
+
+    result = await registry.run(ToolCall(tool="file_search", arguments={
+        "root": "MK5",
+        "pattern": "*.py",
+        "recursive": True,
+    }))
+
+    assert result["ok"] is True
+    assert result["workspace_root"] == str(tmp_path.resolve())
+    assert result["files"] == ["MK5/core/agent.py"]
+
+
+@pytest.mark.asyncio
+async def test_file_search_respects_limit_and_reports_truncation(tmp_path: Path) -> None:
+    for name in ("a.py", "b.py", "c.py"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    registry = WorkspaceFileToolSuite(tmp_path).build_registry()
+
+    result = await registry.run(ToolCall(tool="file_search", arguments={
+        "pattern": "*.py",
+        "limit": 2,
+    }))
+
+    assert result["files"] == ["a.py", "b.py"]
+    assert result["count"] == 2
+    assert result["truncated"] is True
 
 
 @pytest.mark.asyncio

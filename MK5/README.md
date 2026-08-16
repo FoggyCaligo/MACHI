@@ -54,7 +54,7 @@
 
 ### 6. 파일, 문서, 이미지 입력
 
-- 텍스트 파일은 `file_read`, `file_create`, `file_update`, `file_delete`로 다룬다.
+- 파일 경로 탐색은 `file_search`, 텍스트 파일 작업은 `file_read`, `file_create`, `file_update`, `file_delete`로 다룬다.
 - `.txt`, `.md`, `.markdown` 파일을 `file_read`로 읽으면 파일 본문에서 핵심 노드 후보를 뽑아 국소활성화 그래프에 임시 편입한다.
 - 파일에서 온 노드는 사용자 발화 노드보다 약한 `0.25` 활성 강도로 들어가며, 장기 기억 점수로 고정되지 않는다.
 - PDF/DOCX는 `document_read`로 텍스트를 추출한다.
@@ -138,6 +138,7 @@
 - `internet_search`: 노드 후보를 포함한 일반 검색
 - `latest_search`: 최신성 정보가 필요한 질문용 검색
 - `market_snapshot`: 시장 지표 스냅샷
+- `file_search`: 작업공간에서 정확한 파일 경로 검색
 - `file_create`, `file_read`, `file_update`, `file_delete`: 파일 CRUD
 - `document_read`: PDF/DOCX 텍스트 추출
 - `image_analyze`: 이미지 분석

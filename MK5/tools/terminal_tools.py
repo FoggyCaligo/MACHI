@@ -19,7 +19,9 @@ class TerminalToolSuite:
                 description=(
                     "Run a shell command from the workspace root and return stdout/stderr. "
                     "Use this to list directories, find files, inspect project structure, run scripts, "
-                    "and perform local shell work."
+                    "and perform local shell work. This project runs on Windows: use Windows-compatible "
+                    "commands and do not use Unix-only options such as 'tree -L'. Prefer 'dir', "
+                    "'tree /F', or PowerShell invoked explicitly when needed."
                 ),
                 input_schema={
                     "type": "object",

@@ -14,6 +14,28 @@ class WorkspaceFileToolSuite:
         registry = ToolRegistry()
         registry.register(
             ToolDefinition(
+                name="file_search",
+                description=(
+                    "Find files and return exact paths. Search starts at the workspace root unless "
+                    "root is provided. pattern is a glob such as '*.py', 'README*', or '*'. "
+                    "Use recursive=true to search subdirectories. Results use workspace-relative paths."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "root": {"type": "string"},
+                        "pattern": {"type": "string"},
+                        "recursive": {"type": "boolean"},
+                        "limit": {"type": "integer"},
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            ),
+            self._search,
+        )
+        registry.register(
+            ToolDefinition(
                 name="file_create",
                 description="Create a UTF-8 text file. Paths resolve from the workspace root; parent and absolute paths are allowed.",
                 input_schema={
@@ -114,6 +136,72 @@ class WorkspaceFileToolSuite:
         if not relative_path:
             raise ValueError("file tool requires path")
         return relative_path
+
+    async def _search(self, arguments: dict) -> dict:
+        root_text = str(arguments.get("root") or ".").strip() or "."
+        pattern = str(arguments.get("pattern") or "*").strip() or "*"
+        recursive = arguments.get("recursive", True) is not False
+        limit_raw = arguments.get("limit", 80)
+        try:
+            limit = max(1, min(int(limit_raw), 200))
+        except (TypeError, ValueError):
+            limit = 80
+        search_root = self._resolve(root_text)
+        if not search_root.exists():
+            return {
+                "ok": False,
+                "root": root_text,
+                "pattern": pattern,
+                "error": "not_found",
+                "message": f"Search root not found: {root_text}",
+                "files": [],
+            }
+        if not search_root.is_dir():
+            return {
+                "ok": False,
+                "root": root_text,
+                "pattern": pattern,
+                "error": "not_directory",
+                "message": f"Search root is not a directory: {root_text}",
+                "files": [],
+            }
+        ignored = {".git", ".uv-cache", ".uv-python", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
+        try:
+            candidates = search_root.rglob(pattern) if recursive else search_root.glob(pattern)
+            matched = sorted(
+                (
+                    path
+                    for path in candidates
+                    if path.is_file() and not any(part in ignored for part in path.parts)
+                ),
+                key=lambda path: str(path).lower(),
+            )
+        except (OSError, ValueError) as exc:
+            return {
+                "ok": False,
+                "root": root_text,
+                "pattern": pattern,
+                "error": "invalid_search",
+                "message": str(exc),
+                "files": [],
+            }
+        files = [self._display_path(path) for path in matched[:limit]]
+        return {
+            "ok": True,
+            "workspace_root": str(self._workspace_root),
+            "root": root_text,
+            "pattern": pattern,
+            "recursive": recursive,
+            "files": files,
+            "count": len(files),
+            "truncated": len(matched) > limit,
+        }
+
+    def _display_path(self, path: Path) -> str:
+        try:
+            return path.relative_to(self._workspace_root).as_posix()
+        except ValueError:
+            return str(path)
 
     async def _read(self, arguments: dict) -> dict:
         relative_path = self._path_argument(arguments)

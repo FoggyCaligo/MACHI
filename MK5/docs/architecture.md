@@ -188,6 +188,7 @@ file text activation nodes: 0.25
 
 - graph memory: `graph_search`, `record_memory_correction`
 - search: `internet_search`, `latest_search`, `market_snapshot`
+- file discovery: `file_search`
 - file CRUD: `file_create`, `file_read`, `file_update`, `file_delete`
 - document: `document_read`
 - image: `image_analyze`

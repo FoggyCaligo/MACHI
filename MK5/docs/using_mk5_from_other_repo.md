@@ -48,7 +48,7 @@ $env:MK5_SENTENCE_BREAKER_DB_PATH="C:\Users\bigla\Documents\Git\playlist2\.machi
 
 ### What each path means
 
-- `MK5_WORKSPACE_ROOT`: the root that `file_create`, `file_read`, `file_update`, `file_delete`, and `terminal_command` use as their starting point.
+- `MK5_WORKSPACE_ROOT`: the root that `file_search`, `file_create`, `file_read`, `file_update`, `file_delete`, and `terminal_command` use as their starting point.
 - `MK5_DB_PATH`: the graph-memory SQLite database for this host project.
 - `MK5_SENTENCE_BREAKER_DB_PATH`: the Sentence_Breaker database for this host project.
 
@@ -88,7 +88,7 @@ async def ask_mk5(user_id: str, message: str):
 
 When `MK5` is embedded into another project, the same tool system is available.
 
-- File work should use `file_create`, `file_read`, `file_update`, and `file_delete`.
+- File discovery should use `file_search`; file work should use `file_create`, `file_read`, `file_update`, and `file_delete`.
 - Reading `.txt`, `.md`, or `.markdown` files creates weak, temporary file text activation nodes for the local graph context. They are not fixed as long-term user memory.
 - PDF/DOCX files should use `document_read`.
 - Images should use `image_analyze`.
@@ -126,5 +126,5 @@ $env:MK5_AGENT_MAX_UNKNOWN_TOOL_GUARDS="2"
 - Create or set the environment variables before importing modules that read `MK5.config`.
 - Use a stable `user_id` if the host app wants long-term user memory.
 - Use a stable `session_id` when a host app wants short-term conversational continuity.
-- `file_create`, `file_read`, `file_update`, and `file_delete` resolve relative paths from `MK5_WORKSPACE_ROOT`, but parent and absolute paths are allowed when the user intentionally works outside the root.
+- `file_search`, `file_create`, `file_read`, `file_update`, and `file_delete` resolve relative paths from `MK5_WORKSPACE_ROOT`, but parent and absolute paths are allowed when the user intentionally works outside the root.
 - `terminal_command` starts in `MK5_WORKSPACE_ROOT`, but the command itself may use normal shell navigation such as `..`, absolute paths, or sibling repository paths.
