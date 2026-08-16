@@ -124,14 +124,18 @@ class WorkspaceFileToolSuite:
         try:
             content = target.read_text(encoding="utf-8")
         except UnicodeDecodeError:
+            suffix = target.suffix.lower()
+            if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+                reader_hint = "Use image_analyze for image files."
+            elif suffix in {".pdf", ".docx"}:
+                reader_hint = "Use document_read for PDF or DOCX documents."
+            else:
+                reader_hint = "Use a format-specific tool for binary files."
             return {
                 "ok": False,
                 "path": relative_path,
                 "error": "unsupported_binary_document",
-                "message": (
-                    "file_read only supports UTF-8 text files. Use document_read for "
-                    "PDF or DOCX documents."
-                ),
+                "message": f"file_read only supports UTF-8 text files. {reader_hint}",
             }
         return {"ok": True, "path": relative_path, "content": content}
 

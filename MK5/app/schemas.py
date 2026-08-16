@@ -7,6 +7,7 @@ class ChatRequest(BaseModel):
     user_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
     model: str | None = None
+    image_model: str | None = None
     session_id: str | None = None
 
 

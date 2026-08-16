@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
+import re
 import sys
 import time
 
@@ -42,6 +44,7 @@ class AgentOrchestrator:
         self._previous_activation_node_ids: dict[str, set[str]] = {}
         self._recent_file_operations: dict[str, list[dict]] = {}
         self._recent_tool_operations: dict[str, list[dict]] = {}
+        self._auto_read_attachment_paths: dict[str, set[str]] = {}
 
     async def respond(
         self,
@@ -49,6 +52,7 @@ class AgentOrchestrator:
         user_id: str,
         message: str,
         model: str | None = None,
+        image_model: str | None = None,
         session_id: str | None = None,
     ) -> AgentResponse:
         self._memory_service.ensure_user_anchor(user_id)
@@ -85,6 +89,38 @@ class AgentOrchestrator:
         used_tools = ["memory.record_user_utterance", "graph.get_user_memory_summary"]
         memory_writes = ["user_utterance", "user_fact"]
         tool_events: list[dict] = []
+        auto_read_attachment_paths = self._auto_read_attachment_paths.setdefault(conversation_key, set())
+        auto_attachment_calls = [
+            call
+            for call in _auto_file_tool_calls(message)
+            if str(call.arguments.get("path") or "") not in auto_read_attachment_paths
+        ][: max(0, config.AUTO_ATTACHMENT_TOOL_LIMIT)]
+        for attachment_call in auto_attachment_calls:
+            if not self._tool_registry.has_tool(attachment_call.tool):
+                continue
+            _debug_log(f"auto_tool_start tool={attachment_call.tool} reason=attachment")
+            started = time.perf_counter()
+            result = await self._run_tool_call(
+                attachment_call,
+                user_id=user_id,
+                utterance_id=utterance_id,
+                image_model=image_model,
+            )
+            _debug_log(
+                f"auto_tool_end tool={attachment_call.tool} reason=attachment "
+                f"elapsed={time.perf_counter() - started:.2f}s ok={_tool_ok(result.get('result'))}"
+            )
+            used_tools.append(attachment_call.tool)
+            event = {
+                "tool": attachment_call.tool,
+                "arguments": result["arguments"],
+                "result": result["result"],
+            }
+            tool_events.append(event)
+            tool_history.append(event)
+            path = str(result["arguments"].get("path") or "")
+            if path:
+                auto_read_attachment_paths.add(path)
         model_user_message = _compose_user_message(
             message=message,
             recent_dialogue_messages=recent_dialogue_messages,
@@ -102,6 +138,7 @@ class AgentOrchestrator:
                 ToolCall(tool="internet_search", arguments={"query": message}),
                 user_id=user_id,
                 utterance_id=utterance_id,
+                image_model=image_model,
             )
             _debug_log(f"auto_tool_end tool=internet_search elapsed={time.perf_counter() - started:.2f}s")
             used_tools.append("internet_search")
@@ -148,11 +185,21 @@ class AgentOrchestrator:
                 f"final={bool(turn.final_answer)} tool_calls={len(turn.tool_calls)}"
             )
             if turn.final_answer and turn.tool_calls:
-                _debug_log(
-                    f"mixed_model_turn round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
-                    "action=run_tool_calls_ignore_final"
-                )
-            elif turn.final_answer:
+                if all(
+                    _has_successful_tool_event(tool_history, call.tool, arguments=call.arguments)
+                    for call in turn.tool_calls
+                ):
+                    _debug_log(
+                        f"mixed_model_turn round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                        "action=use_final_ignore_duplicate_tool_calls"
+                    )
+                else:
+                    _debug_log(
+                        f"mixed_model_turn round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
+                        "action=run_tool_calls_ignore_final"
+                    )
+                    turn = ModelTurn(tool_calls=turn.tool_calls)
+            if turn.final_answer:
                 guard_result = _final_answer_evidence_guard_result(
                     turn=turn,
                     tool_history=tool_history,
@@ -230,7 +277,12 @@ class AgentOrchestrator:
             for call in turn.tool_calls:
                 _debug_log(f"tool_start round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} tool={call.tool}")
                 started = time.perf_counter()
-                result = await self._run_tool_call(call, user_id=user_id, utterance_id=utterance_id)
+                result = await self._run_tool_call(
+                    call,
+                    user_id=user_id,
+                    utterance_id=utterance_id,
+                    image_model=image_model,
+                )
                 _debug_log(
                     f"tool_end round={round_index}/{config.AGENT_MAX_TOOL_ROUNDS} "
                     f"tool={call.tool} elapsed={time.perf_counter() - started:.2f}s "
@@ -326,10 +378,19 @@ class AgentOrchestrator:
     def register_tool_registry(self, registry: ToolRegistry) -> None:
         self._tool_registry.merge(registry)
 
-    async def _run_tool_call(self, call: ToolCall, *, user_id: str, utterance_id: str) -> dict:
+    async def _run_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        user_id: str,
+        utterance_id: str,
+        image_model: str | None = None,
+    ) -> dict:
         arguments = dict(call.arguments)
         if call.tool in {"graph_search", "record_memory_correction"} and "user_id" not in arguments:
             arguments["user_id"] = user_id
+        if call.tool == "image_analyze" and image_model and not str(arguments.get("model") or "").strip():
+            arguments["model"] = image_model
         if call.tool in {"internet_search", "latest_search"} and "search_nodes" not in arguments:
             search_nodes = self._memory_service.search_concept_nodes_for_utterance(
                 user_id=user_id,
@@ -356,6 +417,59 @@ class AgentOrchestrator:
             grouped.setdefault(query_node, []).append(item)
         for query_node, node_hits in grouped.items():
             self._memory_service.record_search_results(query=query_node, results=node_hits)
+
+
+def _auto_file_tool_calls(message: str) -> list[ToolCall]:
+    calls = [*_attachment_tool_calls(message), *_mentioned_image_tool_calls(message)]
+    deduped: list[ToolCall] = []
+    seen: set[tuple[str, str]] = set()
+    for call in calls:
+        path = str(call.arguments.get("path") or "")
+        key = (call.tool, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(call)
+    return deduped
+
+
+def _attachment_tool_calls(message: str) -> list[ToolCall]:
+    if "[첨부 파일]" not in message:
+        return []
+    paths: list[str] = []
+    in_attachment_section = False
+    for line in message.splitlines():
+        stripped = line.strip()
+        if stripped == "[첨부 파일]":
+            in_attachment_section = True
+            continue
+        if in_attachment_section and stripped.startswith("[") and stripped.endswith("]"):
+            break
+        if not in_attachment_section or not stripped.startswith("- "):
+            continue
+        match = re.match(r"-\s+.*?:\s+(.+)$", stripped)
+        if match:
+            paths.append(match.group(1).strip())
+
+    calls: list[ToolCall] = []
+    for path in paths:
+        suffix = PurePosixPath(path).suffix.lower()
+        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+            calls.append(ToolCall(tool="image_analyze", arguments={"path": path}))
+        elif suffix in {".pdf", ".docx"}:
+            calls.append(ToolCall(tool="document_read", arguments={"path": path}))
+        else:
+            calls.append(ToolCall(tool="file_read", arguments={"path": path}))
+    return calls
+
+
+def _mentioned_image_tool_calls(message: str) -> list[ToolCall]:
+    if "[첨부 파일]" in message:
+        head = message.split("[첨부 파일]", 1)[0]
+    else:
+        head = message
+    paths = re.findall(r"([^\s`'\"<>:]+?\.(?:png|jpg|jpeg|webp|bmp|gif))", head, re.IGNORECASE)
+    return [ToolCall(tool="image_analyze", arguments={"path": path}) for path in paths]
 
 
 def _compose_user_message(
@@ -460,6 +574,9 @@ def _tool_result_summary(*, tool: str, result: dict) -> str:
     if tool in {"file_read", "document_read"}:
         content = str(result.get("content") or "")
         return f"path={result.get('path')!r} content_tail={_truncate(content[-240:], 240)!r}"
+    if tool == "image_analyze":
+        description = str(result.get("description") or result.get("message") or "")
+        return f"path={result.get('path')!r} image={result.get('image')!r} description={_truncate(description, 240)!r}"
     return _truncate(str(result), 240)
 
 
@@ -504,9 +621,16 @@ def _has_file_execution_event(tool_history: list[dict]) -> bool:
     )
 
 
-def _has_successful_tool_event(tool_history: list[dict], tool_name: str) -> bool:
+def _has_successful_tool_event(
+    tool_history: list[dict],
+    tool_name: str,
+    *,
+    arguments: dict | None = None,
+) -> bool:
     for event in tool_history:
         if event.get("tool") != tool_name:
+            continue
+        if arguments is not None and not _arguments_include(event.get("arguments"), arguments):
             continue
         result = event.get("result")
         if isinstance(result, dict):
@@ -516,6 +640,12 @@ def _has_successful_tool_event(tool_history: list[dict], tool_name: str) -> bool
                 continue
         return True
     return False
+
+
+def _arguments_include(actual: object, expected_subset: dict) -> bool:
+    if not isinstance(actual, dict):
+        return False
+    return all(actual.get(key) == value for key, value in expected_subset.items())
 
 
 def _has_successful_file_mutation_event(tool_history: list[dict]) -> bool:
@@ -615,7 +745,7 @@ def _empty_turn_after_tool_guard_result(*, tool_history: list[dict]) -> dict:
                 "use only path, mode='append', and content. For full overwrite, use only path and content."
             ),
         }
-    if latest_tool in {"file_read", "document_read"}:
+    if latest_tool in {"file_read", "document_read", "image_analyze"}:
         return {
             "ok": False,
             "error": f"empty_turn_after_{latest_tool}",

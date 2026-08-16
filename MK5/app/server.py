@@ -1,9 +1,12 @@
 ﻿from __future__ import annotations
 
 import os
+import re
+import shutil
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +19,7 @@ from ..tools.ollama_client import list_models
 
 pipeline: Pipeline | None = None
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_UPLOAD_DIR = config.WORKSPACE_ROOT / ".mk5_uploads"
 
 
 @asynccontextmanager
@@ -53,6 +57,7 @@ async def get_models() -> dict:
     return {
         "models": await list_models(),
         "current": config.OLLAMA_MODEL_NAME or None,
+        "current_image": config.OLLAMA_IMAGE_MODEL_NAME or None,
     }
 
 
@@ -67,10 +72,49 @@ async def get_tools() -> dict:
             "file_create",
             "file_read",
             "document_read",
+            "image_analyze",
             "file_update",
             "file_delete",
             "terminal_command",
         ]
+    }
+
+
+@app.post("/upload")
+async def upload_file(request: Request):
+    try:
+        form = await request.form()
+    except (RuntimeError, AssertionError) as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "missing_dependency",
+                "message": (
+                    "File upload requires python-multipart. Install MK5 requirements "
+                    "or run: pip install python-multipart"
+                ),
+                "detail": str(exc),
+            },
+        )
+    file = form.get("file")
+    if file is None or not hasattr(file, "filename") or not hasattr(file, "file"):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "missing_file", "message": "Upload field 'file' is required."},
+        )
+    original_name = Path(file.filename or "attachment").name
+    safe_name = _safe_upload_name(original_name)
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    target = _unique_upload_path(_UPLOAD_DIR / safe_name)
+    with target.open("wb") as handle:
+        shutil.copyfileobj(file.file, handle)
+    relative_path = target.resolve().relative_to(config.WORKSPACE_ROOT)
+    return {
+        "ok": True,
+        "filename": original_name,
+        "path": relative_path.as_posix(),
+        "bytes": target.stat().st_size,
     }
 
 
@@ -81,6 +125,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             user_id=req.user_id,
             message=req.message,
             model=req.model,
+            image_model=req.image_model,
             session_id=req.session_id,
         )
     except Exception as exc:
@@ -100,6 +145,23 @@ async def chat(req: ChatRequest) -> ChatResponse:
         memory_writes=result.memory_writes,
         tool_events=result.tool_events,
     )
+
+
+def _safe_upload_name(filename: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(" .")
+    return cleaned or "attachment"
+
+
+def _unique_upload_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for index in range(1, 10000):
+        candidate = path.with_name(f"{stem}_{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("Could not allocate upload filename")
 
 
 def run() -> None:

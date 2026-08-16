@@ -7,6 +7,7 @@ from ..core.graph.repository import GraphRepository
 from ..core.graph.service import GraphMemoryService
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
+from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.web_search import HttpWebSearchTool, WebSearchTool
@@ -42,6 +43,7 @@ class Pipeline:
         )
         self._orchestrator.register_tool_registry(WorkspaceFileToolSuite().build_registry())
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
+        self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
         self._orchestrator.register_tool_registry(TerminalToolSuite().build_registry())
 
     async def run(
@@ -50,12 +52,14 @@ class Pipeline:
         user_id: str,
         message: str,
         model: str | None = None,
+        image_model: str | None = None,
         session_id: str | None = None,
     ) -> PipelineResult:
         result = await self._orchestrator.respond(
             user_id=user_id,
             message=message,
             model=model,
+            image_model=image_model,
             session_id=session_id,
         )
         return PipelineResult(

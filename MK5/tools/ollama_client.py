@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import base64
 
 import httpx
 
@@ -63,6 +64,43 @@ async def chat(
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError(f"Ollama returned an empty response for model '{model_name}'.")
+    return content
+
+
+async def image_chat(
+    *,
+    image_bytes: bytes,
+    prompt: str,
+    model: str | None = None,
+) -> str:
+    model_name = model or config.OLLAMA_IMAGE_MODEL_NAME
+    if not model_name:
+        raise ValueError("No Ollama image model configured.")
+
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "stream": False,
+        "think": config.OLLAMA_THINK,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": [base64.b64encode(image_bytes).decode("ascii")],
+            }
+        ],
+        "options": {"num_predict": config.OLLAMA_NUM_PREDICT},
+    }
+    async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_SECONDS) as client:
+        response = await client.post(f"{config.OLLAMA_HOST}/api/chat", json=payload)
+
+    if response.status_code == 400:
+        raise ValueError(f"Ollama rejected image request for model '{model_name}'.")
+    response.raise_for_status()
+    data = response.json()
+    message = data.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError(f"Ollama returned an empty image response for model '{model_name}'.")
     return content
 
 

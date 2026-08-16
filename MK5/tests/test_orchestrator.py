@@ -58,6 +58,67 @@ class FakeInternetSearchModel:
         return ModelTurn(final_answer="search done")
 
 
+class FakeImageAnalyzeModel:
+    def __init__(self) -> None:
+        self._turn = 0
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        self._turn += 1
+        if self._turn == 1:
+            return ModelTurn(tool_calls=[
+                ToolCall(tool="image_analyze", arguments={"path": "chart.jpg"})
+            ])
+        return ModelTurn(final_answer="이미지를 확인했습니다.")
+
+
+class RepeatingImageAnalyzeWithFinalModel:
+    def __init__(self) -> None:
+        self._turn = 0
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        self._turn += 1
+        if self._turn == 1:
+            return ModelTurn(tool_calls=[
+                ToolCall(tool="image_analyze", arguments={"path": "chart.jpg"})
+            ])
+        return ModelTurn(
+            final_answer="이미지를 읽었습니다.",
+            tool_calls=[ToolCall(tool="image_analyze", arguments={"path": "chart.jpg"})],
+        )
+
+
+class ShouldNotBeCalledModel:
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        raise AssertionError("model should not be called")
+
+
 class FinalOnlyModel:
     def __init__(self) -> None:
         self.memory_summaries: list[list[Any]] = []
@@ -1254,6 +1315,213 @@ async def test_orchestrator_runs_tool_calls_before_mixed_final_answer(tmp_path) 
     assert result.text == "수정했습니다."
     assert any(event["tool"] == "file_update" for event in result.tool_events)
     assert target_file.read_text(encoding="utf-8") == "감성 샤워"
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_selected_image_model_to_image_analyze() -> None:
+    captured_arguments: list[dict[str, Any]] = []
+
+    async def fake_image_analyze(arguments: dict[str, Any]) -> dict[str, Any]:
+        captured_arguments.append(dict(arguments))
+        return {
+            "ok": True,
+            "path": arguments.get("path"),
+            "image": {"format": "JPEG", "width": 1, "height": 1, "mode": "RGB", "frames": 1},
+            "vision_model_used": arguments.get("model"),
+            "description": "이미지 설명",
+        }
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="image_analyze",
+            description="fake image analyzer",
+            input_schema={"type": "object"},
+        ),
+        fake_image_analyze,
+    )
+
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=FakeImageAnalyzeModel(),
+        web_search=CapturingWebSearchTool(),
+    )
+    orchestrator.register_tool_registry(registry)
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        message="chart.jpg를 봐줘.",
+        model="gemma4:e4b",
+        image_model="gemma4:12b",
+        session_id="s1",
+    )
+
+    assert result.text == "이미지를 확인했습니다."
+    assert captured_arguments == [
+        {"path": "chart.jpg", "model": "gemma4:12b"},
+        {"path": "chart.jpg", "model": "gemma4:12b"},
+    ]
+    image_event = next(event for event in result.tool_events if event["tool"] == "image_analyze")
+    assert image_event["arguments"]["model"] == "gemma4:12b"
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_uses_final_when_mixed_turn_repeats_successful_image_tool() -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_image_analyze(arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(arguments))
+        return {
+            "ok": True,
+            "path": arguments.get("path"),
+            "image": {"format": "JPEG", "width": 1, "height": 1, "mode": "RGB", "frames": 1},
+            "vision_model_used": arguments.get("model"),
+            "description": "이미지 설명",
+        }
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="image_analyze",
+            description="fake image analyzer",
+            input_schema={"type": "object"},
+        ),
+        fake_image_analyze,
+    )
+
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=RepeatingImageAnalyzeWithFinalModel(),
+        web_search=CapturingWebSearchTool(),
+    )
+    orchestrator.register_tool_registry(registry)
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        message="chart.jpg를 봐줘.",
+        model="gemma4:e4b",
+        session_id="s1",
+    )
+
+    assert result.text == "이미지를 읽었습니다."
+    assert len(calls) == 2
+    assert [event["tool"] for event in result.tool_events if event["tool"] == "image_analyze"] == [
+        "image_analyze",
+        "image_analyze",
+    ]
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_auto_analyzes_mentioned_image_path_and_returns_description() -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_image_analyze(arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(arguments))
+        return {
+            "ok": True,
+            "path": arguments.get("path"),
+            "image": {"format": "JPEG", "width": 1080, "height": 2340, "mode": "RGB", "frames": 1},
+            "vision_model_used": arguments.get("model"),
+            "description": "실현손익 +139,546원, 수익률 +2.88%입니다.",
+        }
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="image_analyze",
+            description="fake image analyzer",
+            input_schema={"type": "object"},
+        ),
+        fake_image_analyze,
+    )
+
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=FinalOnlyModel(),
+        web_search=CapturingWebSearchTool(),
+    )
+    orchestrator.register_tool_registry(registry)
+
+    result = await orchestrator.respond(
+        user_id="alice",
+        message="8월_수익.jpg를 한번 봐줘.",
+        model="qwen3:8b",
+        image_model="gemma4:12b",
+        session_id="s1",
+    )
+
+    assert result.text == "done"
+    assert calls == [{"path": "8월_수익.jpg", "model": "gemma4:12b"}]
+    assert result.tool_events[0]["tool"] == "image_analyze"
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_limits_and_deduplicates_auto_attachment_analysis() -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_image_analyze(arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(arguments))
+        return {
+            "ok": True,
+            "path": arguments.get("path"),
+            "image": {"format": "JPEG", "width": 1, "height": 1, "mode": "RGB", "frames": 1},
+            "vision_model_used": arguments.get("model"),
+            "description": "이미지 설명",
+        }
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="image_analyze",
+            description="fake image analyzer",
+            input_schema={"type": "object"},
+        ),
+        fake_image_analyze,
+    )
+
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    graph_tools = GraphToolSuite(memory)
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=graph_tools,
+        chat_model=FinalOnlyModel(),
+        web_search=CapturingWebSearchTool(),
+    )
+    orchestrator.register_tool_registry(registry)
+    message = (
+        "첨부를 봐줘.\n\n[첨부 파일]\n"
+        "- a.jpg: .mk5_uploads/a.jpg\n"
+        "- b.jpg: .mk5_uploads/b.jpg\n"
+        "- c.jpg: .mk5_uploads/c.jpg\n"
+        "- d.jpg: .mk5_uploads/d.jpg"
+    )
+
+    await orchestrator.respond(user_id="alice", message=message, model="gemma4:e4b", session_id="s1")
+    await orchestrator.respond(user_id="alice", message=message, model="gemma4:e4b", session_id="s1")
+
+    assert [call["path"] for call in calls] == [
+        ".mk5_uploads/a.jpg",
+        ".mk5_uploads/b.jpg",
+        ".mk5_uploads/c.jpg",
+        ".mk5_uploads/d.jpg",
+    ]
     repo.close()
 
 

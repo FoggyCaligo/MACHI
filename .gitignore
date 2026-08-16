@@ -11,3 +11,4 @@ MK4/data/*.db
 MK4/data/*.db-*
 MK5/data/*.db
 MK5/data/*.db-*
+.mk5_uploads/

@@ -8,6 +8,7 @@ import pytest
 
 from MK5.tools.terminal_tools import TerminalToolSuite
 from MK5.tools.document_tools import DocumentReadToolSuite, _looks_garbled
+from MK5.tools.image_tools import ImageAnalyzeToolSuite
 from MK5.tools.llm_client import _parse_model_turn
 from MK5.tools.tool_runtime import ToolCall
 from MK5.tools.workspace_tools import WorkspaceFileToolSuite
@@ -156,6 +157,21 @@ async def test_file_read_rejects_binary_document_instead_of_decoding(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_file_read_points_images_to_image_analyze(tmp_path: Path) -> None:
+    suite = WorkspaceFileToolSuite(tmp_path)
+    registry = suite.build_registry()
+    (tmp_path / "chart.jpg").write_bytes(b"\xff\xd8\xff\xe0binary")
+
+    result = await registry.run(ToolCall(tool="file_read", arguments={
+        "path": "chart.jpg",
+    }))
+
+    assert result["ok"] is False
+    assert result["error"] == "unsupported_binary_document"
+    assert "image_analyze" in result["message"]
+
+
+@pytest.mark.asyncio
 async def test_document_read_extracts_docx_text(tmp_path: Path) -> None:
     suite = DocumentReadToolSuite(tmp_path)
     registry = suite.build_registry()
@@ -196,10 +212,145 @@ async def test_document_read_rejects_unsupported_extension(tmp_path: Path) -> No
     assert result["error"] == "unsupported_document_type"
 
 
+@pytest.mark.asyncio
+async def test_image_analyze_returns_metadata_without_vision_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("MK5.config.OLLAMA_IMAGE_MODEL_NAME", "")
+    monkeypatch.setattr("MK5.config.OLLAMA_MODEL_NAME", "")
+    suite = ImageAnalyzeToolSuite(tmp_path)
+    registry = suite.build_registry()
+    from PIL import Image
+
+    Image.new("RGB", (32, 16), color="red").save(tmp_path / "sample.png")
+
+    result = await registry.run(ToolCall(tool="image_analyze", arguments={
+        "path": "sample.png",
+    }))
+
+    assert result["ok"] is True
+    assert result["image"]["format"] == "PNG"
+    assert result["image"]["width"] == 32
+    assert result["image"]["height"] == 16
+    assert result["description"] is None
+    assert "Ollama model" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_image_analyze_uses_configured_vision_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("MK5.config.OLLAMA_IMAGE_MODEL_NAME", "vision-model")
+    captured: dict[str, object] = {}
+
+    async def fake_image_chat(*, image_bytes: bytes, prompt: str, model: str | None = None) -> str:
+        captured["bytes"] = len(image_bytes)
+        captured["prompt"] = prompt
+        captured["model"] = model
+        return "빨간 사각형 이미지입니다."
+
+    monkeypatch.setattr("MK5.tools.image_tools.image_chat", fake_image_chat)
+    suite = ImageAnalyzeToolSuite(tmp_path)
+    registry = suite.build_registry()
+    from PIL import Image
+
+    Image.new("RGB", (8, 8), color="red").save(tmp_path / "sample.jpg")
+
+    result = await registry.run(ToolCall(tool="image_analyze", arguments={
+        "path": "sample.jpg",
+        "prompt": "무엇이 보이나요?",
+    }))
+
+    assert result["ok"] is True
+    assert result["vision_model_used"] == "vision-model"
+    assert result["description"] == "빨간 사각형 이미지입니다."
+    assert captured["model"] == "vision-model"
+    assert captured["prompt"] == "무엇이 보이나요?"
+    assert int(captured["bytes"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_image_analyze_falls_back_to_default_ollama_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("MK5.config.OLLAMA_IMAGE_MODEL_NAME", "")
+    monkeypatch.setattr("MK5.config.OLLAMA_MODEL_NAME", "gemma4:e4b")
+    captured: dict[str, object] = {}
+
+    async def fake_image_chat(*, image_bytes: bytes, prompt: str, model: str | None = None) -> str:
+        captured["model"] = model
+        return "이미지 설명"
+
+    monkeypatch.setattr("MK5.tools.image_tools.image_chat", fake_image_chat)
+    suite = ImageAnalyzeToolSuite(tmp_path)
+    registry = suite.build_registry()
+    from PIL import Image
+
+    Image.new("RGB", (4, 4), color="blue").save(tmp_path / "sample.png")
+
+    result = await registry.run(ToolCall(tool="image_analyze", arguments={
+        "path": "sample.png",
+    }))
+
+    assert result["ok"] is True
+    assert result["vision_model_used"] == "gemma4:e4b"
+    assert result["description"] == "이미지 설명"
+    assert captured["model"] == "gemma4:e4b"
+
+
+@pytest.mark.asyncio
+async def test_image_analyze_retries_fallback_when_primary_rejects_image_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("MK5.config.OLLAMA_IMAGE_FALLBACK_MODEL_NAME", "gemma4:12b")
+    used_models: list[str | None] = []
+
+    async def fake_image_chat(*, image_bytes: bytes, prompt: str, model: str | None = None) -> str:
+        used_models.append(model)
+        if model == "qwen3:8b":
+            raise ValueError("Ollama rejected image request for model 'qwen3:8b'.")
+        return "실현손익 +139,546원입니다."
+
+    monkeypatch.setattr("MK5.tools.image_tools.image_chat", fake_image_chat)
+    suite = ImageAnalyzeToolSuite(tmp_path)
+    registry = suite.build_registry()
+    from PIL import Image
+
+    Image.new("RGB", (4, 4), color="blue").save(tmp_path / "sample.png")
+
+    result = await registry.run(ToolCall(tool="image_analyze", arguments={
+        "path": "sample.png",
+        "model": "qwen3:8b",
+    }))
+
+    assert result["ok"] is True
+    assert used_models == ["qwen3:8b", "gemma4:12b"]
+    assert result["vision_model_used"] == "gemma4:12b"
+    assert "+139,546원" in result["description"]
+    assert "qwen3:8b" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_image_analyze_rejects_unsupported_extension(tmp_path: Path) -> None:
+    suite = ImageAnalyzeToolSuite(tmp_path)
+    registry = suite.build_registry()
+    (tmp_path / "notes.txt").write_text("not image", encoding="utf-8")
+
+    result = await registry.run(ToolCall(tool="image_analyze", arguments={
+        "path": "notes.txt",
+    }))
+
+    assert result["ok"] is False
+    assert result["error"] == "unsupported_image_type"
+
+
 def test_document_read_detects_low_quality_extracted_text() -> None:
     assert _looks_garbled("\x00\x00\x00 깨진 \x00\x00 텍스트") is True
     assert _looks_garbled("노이즈 회귀 기반 스윙 트레이딩 전략") is False
-
 
 @pytest.mark.asyncio
 async def test_file_read_can_access_parent_and_absolute_paths(tmp_path: Path) -> None:
