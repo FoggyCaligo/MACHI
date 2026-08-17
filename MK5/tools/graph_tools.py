@@ -14,6 +14,7 @@ class GraphToolSuite:
         user_id: str,
         query: str = "",
         limit: int = 5,
+        min_signal: float = 0.0,
         exclude_node_ids: set[str] | None = None,
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
@@ -22,6 +23,7 @@ class GraphToolSuite:
             user_id,
             query=query,
             limit=limit,
+            min_signal=min_signal,
             exclude_node_ids=exclude_node_ids,
             activation_node_ids=activation_node_ids,
             activation_node_weights=activation_node_weights,
@@ -32,7 +34,10 @@ class GraphToolSuite:
         registry.register(
             ToolDefinition(
                 name="graph_search",
-                description="Search the persistent graph memory for nodes related to the given query and user.",
+                description=(
+                    "Search persistent graph memory for past user statements, preferences, decisions, "
+                    "and project context. Use before concluding that relevant past memory is unavailable."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {

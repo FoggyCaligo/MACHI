@@ -346,6 +346,7 @@ class GraphMemoryService:
         *,
         query: str = "",
         limit: int = 5,
+        min_signal: float = 0.0,
         exclude_node_ids: set[str] | None = None,
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
@@ -374,7 +375,10 @@ class GraphMemoryService:
             label_terms = {term.lower() for term in re.findall(r"\w+", label)}
             relevance = len(terms.intersection(label_terms)) / max(1, len(terms)) if terms else 0.0
             type_bonus = 1.0 if node.node_type == "fact" else 0.25
-            activation_bonus = 1.5 * activation_weights.get(node.node_id, 0.0)
+            activation = activation_weights.get(node.node_id, 0.0)
+            if terms and max(relevance, activation) < max(0.0, min_signal):
+                continue
+            activation_bonus = 1.5 * activation
             score = relevance * 4.0 + activation_bonus + type_bonus + node.trust_score + node.stability_score
             ranked.append((score, {
                 "node_id": node.node_id,
@@ -385,7 +389,7 @@ class GraphMemoryService:
                 "score_components": {
                     "relevance": round(relevance, 4),
                     "relevance_weighted": round(relevance * 4.0, 4),
-                    "activation": round(activation_weights.get(node.node_id, 0.0), 4),
+                    "activation": round(activation, 4),
                     "activation_bonus": round(activation_bonus, 4),
                     "type_bonus": round(type_bonus, 4),
                     "trust_score": round(node.trust_score, 4),
@@ -393,8 +397,17 @@ class GraphMemoryService:
                 },
             }))
         ranked.sort(key=lambda item: (-item[0], str(item[1].get("label") or "")))
-        items = [item for _, item in ranked]
-        return items if limit <= 0 else items[:limit]
+        items: list[dict] = []
+        seen_labels: set[str] = set()
+        for _, item in ranked:
+            label_key = re.sub(r"\s+", " ", str(item.get("raw_label") or "").strip().lower())
+            if not label_key or label_key in seen_labels:
+                continue
+            seen_labels.add(label_key)
+            items.append(item)
+            if limit > 0 and len(items) >= limit:
+                break
+        return items
 
     def _activation_related_node_weights(self, activation_node_weights: dict[str, float]) -> dict[str, float]:
         related = {

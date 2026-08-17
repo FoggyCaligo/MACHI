@@ -94,6 +94,7 @@ class AgentOrchestrator:
             user_id=user_id,
             query=message,
             limit=config.MEMORY_SUMMARY_LIMIT,
+            min_signal=config.MEMORY_SUMMARY_MIN_SIGNAL,
             exclude_node_ids={utterance_id},
             activation_node_weights=local_activation_node_weights,
         )

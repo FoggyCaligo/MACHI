@@ -84,7 +84,7 @@ user_payload
   - current message
   - recent dialogue, 기본 10개 메시지(약 5턴)
   - recent tool operation summary
-  - activation-weighted memory summary
+  - 현재 발화 관련성 또는 활성도 기준을 통과한 memory summary, 기본 최대 5개
   - visible tool names
   - compact current-turn tool history
 response format

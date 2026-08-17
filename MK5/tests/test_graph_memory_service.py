@@ -205,6 +205,64 @@ def test_memory_summary_items_include_scores_and_components() -> None:
     repo.close()
 
 
+def test_memory_summary_min_signal_excludes_unrelated_stable_memories() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    service.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
+    service.record_user_utterance(user_id="alice", text="I grow tomatoes.", session_id="s1")
+
+    items = service.user_memory_summary(
+        "alice",
+        query="TypeScript project",
+        limit=5,
+        min_signal=0.05,
+    )
+
+    assert items
+    assert all("tomatoes" not in item["raw_label"] for item in items)
+    assert any("TypeScript" in item["raw_label"] for item in items)
+    repo.close()
+
+
+def test_memory_summary_deduplicates_fact_and_utterance_with_same_text() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    service.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
+
+    items = service.user_memory_summary(
+        "alice",
+        query="TypeScript",
+        limit=5,
+        min_signal=0.05,
+    )
+
+    assert [item["raw_label"] for item in items] == ["I enjoy TypeScript."]
+    repo.close()
+
+
+def test_memory_summary_min_signal_does_not_force_fill_requested_limit() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    for index in range(8):
+        service.record_user_utterance(
+            user_id="alice",
+            text=f"unrelated memory number {index}",
+            session_id="s1",
+        )
+    service.record_user_utterance(user_id="alice", text="Machi uses graph memory.", session_id="s1")
+
+    items = service.user_memory_summary(
+        "alice",
+        query="Machi graph",
+        limit=5,
+        min_signal=0.05,
+    )
+
+    assert 1 <= len(items) < 5
+    assert all("Machi" in item["raw_label"] or "graph" in item["raw_label"] for item in items)
+    repo.close()
+
+
 def test_memory_summary_limit_zero_returns_all_ranked_items() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)
