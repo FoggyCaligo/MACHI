@@ -91,9 +91,28 @@ class MemoryRecallWithoutSearchModel:
         self.turns += 1
         if self.turns == 1:
             assert memory_summary
-            return ModelTurn(final_answer="관련 키워드는 기억합니다. 더 알려주시겠어요?")
-        assert any(event.get("tool") == "graph_search" for event in tool_history)
-        return ModelTurn(final_answer="검색한 과거 대화의 상세 내용입니다.")
+            return ModelTurn(
+                final_answer="관련 키워드는 기억합니다. 더 알려주시겠어요?",
+                final_answer_kind="tool_completion",
+                completion_tools=["graph_search"],
+            )
+        if not any(event.get("tool") == "graph_search" for event in tool_history):
+            assert any(
+                event.get("tool") == "execution_guard"
+                and event.get("result", {}).get("error") == "completion_tool_not_run"
+                for event in tool_history
+            )
+            return ModelTurn(tool_calls=[
+                ToolCall(
+                    tool="graph_search",
+                    arguments={"query": "스텔라이브 아이리 칸나", "limit": 8},
+                )
+            ])
+        return ModelTurn(
+            final_answer="검색한 과거 대화의 상세 내용입니다.",
+            final_answer_kind="tool_completion",
+            completion_tools=["graph_search"],
+        )
 
 
 class FakeWebResearchModel:
@@ -2002,5 +2021,4 @@ async def test_orchestrator_runs_final_synthesis_after_identical_tool_loop_stagn
     assert chat_model.synthesis_called is True
     assert result.text == "수집한 결과를 종합했습니다."
     repo.close()
-
 
