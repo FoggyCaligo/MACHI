@@ -46,7 +46,7 @@ def test_session_store_uses_opaque_tokens() -> None:
     assert sessions.get(token) is None
 
 
-def test_session_store_rejects_sessions_beyond_capacity() -> None:
+def test_session_store_replaces_existing_session_for_same_user() -> None:
     account = _store().authenticate("ㅇㄱㄷ믇ㄱ")
     assert account is not None
     sessions = SessionStore(ttl_seconds=3600, max_active_sessions=2)
@@ -54,9 +54,24 @@ def test_session_store_rejects_sessions_beyond_capacity() -> None:
     second = sessions.create(account)
 
     assert first is not None and second is not None
-    assert sessions.create(account) is None
+    # First token should have been replaced
+    assert sessions.get(first) is None
+    assert sessions.get(second) == account
+
+
+def test_session_store_rejects_sessions_beyond_capacity() -> None:
+    account1 = _store().authenticate("ㅇㄱㄷ믇ㄱ")
+    account2 = _store().authenticate("family-secret")
+    account3 = _store().authenticate("friend-secret")
+    assert account1 is not None and account2 is not None and account3 is not None
+    sessions = SessionStore(ttl_seconds=3600, max_active_sessions=2)
+    first = sessions.create(account1)
+    second = sessions.create(account2)
+
+    assert first is not None and second is not None
+    assert sessions.create(account3) is None
     sessions.revoke(first)
-    assert sessions.create(account) is not None
+    assert sessions.create(account3) is not None
 
 
 def test_session_survives_store_restart(tmp_path) -> None:

@@ -48,6 +48,14 @@ class SessionStore:
     def create(self, account: Account) -> str | None:
         with self._lock:
             self._remove_expired()
+            # If the same graph_user_id already has active sessions, replace them
+            # so that logging in from a new browser/tab or after cookie reset does not exhaust slots.
+            self._connection.execute(
+                "DELETE FROM auth_sessions WHERE graph_user_id = ?",
+                (account.graph_user_id,),
+            )
+            self._connection.commit()
+
             count = self._connection.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0]
             if count >= self._max_active_sessions:
                 return None
@@ -58,6 +66,29 @@ class SessionStore:
             )
             self._connection.commit()
             return token
+
+    def list_active(self) -> list[dict[str, Any]]:
+        with self._lock:
+            self._remove_expired()
+            rows = self._connection.execute(
+                "SELECT token_hash, role, graph_user_id, expires_at FROM auth_sessions ORDER BY expires_at ASC"
+            ).fetchall()
+            return [
+                {
+                    "token_hash_prefix": str(row[0])[:12],
+                    "role": str(row[1]),
+                    "graph_user_id": str(row[2]),
+                    "expires_at": float(row[3]),
+                }
+                for row in rows
+            ]
+
+    def clear_all(self) -> int:
+        with self._lock:
+            count = self._connection.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0]
+            self._connection.execute("DELETE FROM auth_sessions")
+            self._connection.commit()
+            return int(count)
 
     def get(self, token: str | None) -> Account | None:
         if not token:
