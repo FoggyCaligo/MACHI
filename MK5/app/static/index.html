@@ -120,6 +120,7 @@
       background: var(--bg);
       color: var(--text);
       outline: none;
+      -webkit-text-security: disc;
     }
     #login-submit {
       padding: 11px 16px;
@@ -375,7 +376,7 @@
     <h2>MK5 로그인</h2>
     <p>허용된 접속 ID를 입력해 주세요. 등록되지 않은 ID와 default-user는 사용할 수 없습니다.</p>
     <div class="login-row">
-      <input id="login-id-input" type="password" autocomplete="current-password" placeholder="접속 ID" />
+      <input id="login-id-input" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="접속 ID" />
       <button id="login-submit" type="submit">접속</button>
     </div>
     <div id="login-error"></div>
