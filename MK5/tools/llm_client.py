@@ -225,9 +225,36 @@ def _response_schema_for_tools(tool_names: list[str]) -> dict[str, Any]:
 def _compact_memory_item(item: object) -> object:
     if not isinstance(item, dict):
         return _compact_value(item, limit=500)
+    subgraph = item.get("subgraph") if isinstance(item.get("subgraph"), dict) else {}
+    focus = subgraph.get("focus") if isinstance(subgraph.get("focus"), dict) else {}
+    relations = subgraph.get("relations") if isinstance(subgraph.get("relations"), list) else []
+    compact = {
+        "focus": {
+            "type": focus.get("node_type") or item.get("node_type"),
+            "memory": _shorten(str(item.get("label") or item.get("raw_label") or focus.get("label") or ""), 500),
+            "provenance": focus.get("provenance"),
+        },
+        "relations": [_compact_subgraph_relation(relation) for relation in relations[:4]],
+        "why_recalled": {
+            key: item.get("score_components", {}).get(key)
+            for key in ("relevance", "activation")
+            if isinstance(item.get("score_components"), dict)
+            and item["score_components"].get(key) is not None
+        },
+    }
+    source = subgraph.get("source")
+    if isinstance(source, dict) and source:
+        compact["source"] = _compact_value(source, limit=240)
+    return compact
+
+
+def _compact_subgraph_relation(relation: object) -> object:
+    if not isinstance(relation, dict):
+        return _compact_value(relation, limit=240)
     return {
-        "type": item.get("node_type"),
-        "memory": _shorten(str(item.get("label") or item.get("raw_label") or ""), 500),
+        key: (_shorten(str(relation.get(key) or ""), 240) if key == "label" else relation.get(key))
+        for key in ("relation", "direction", "node_id", "node_type", "label", "support_count", "provenance")
+        if relation.get(key) is not None
     }
 
 
@@ -346,6 +373,11 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
         compact["activation_weight"] = result.get("activation_weight")
         compact["retention"] = result.get("retention")
         compact["nodes"] = _compact_value(result.get("nodes"), limit=500)
+    elif tool == "graph_search":
+        results = result.get("results")
+        if isinstance(results, list):
+            compact["result_count"] = len(results)
+            compact["results"] = [_compact_graph_search_result(item) for item in results[:8]]
     elif tool == "execution_guard":
         compact["message"] = _shorten(str(result.get("message") or ""), 240)
         if result.get("missing_tools"):
@@ -360,6 +392,24 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
             compact["input_schema"] = input_schema
     else:
         compact["summary"] = _compact_value(result, limit=500)
+    return compact
+
+
+def _compact_graph_search_result(item: object) -> object:
+    if not isinstance(item, dict):
+        return _compact_value(item, limit=500)
+    focus = item.get("focus") if isinstance(item.get("focus"), dict) else {}
+    relations = item.get("relations") if isinstance(item.get("relations"), list) else []
+    compact = {
+        "focus": {
+            key: (_shorten(str(focus.get(key) or ""), 300) if key == "label" else focus.get(key))
+            for key in ("node_id", "label", "node_type", "provenance", "trust_score", "stability_score")
+            if focus.get(key) is not None
+        },
+        "relations": [_compact_subgraph_relation(relation) for relation in relations[:6]],
+    }
+    if isinstance(item.get("source"), dict) and item["source"]:
+        compact["source"] = _compact_value(item["source"], limit=300)
     return compact
 
 

@@ -74,6 +74,28 @@ class FakeToolCallingModel:
         return ModelTurn(final_answer="done")
 
 
+class MemoryRecallWithoutSearchModel:
+    def __init__(self) -> None:
+        self.turns = 0
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        self.turns += 1
+        if self.turns == 1:
+            assert memory_summary
+            return ModelTurn(final_answer="관련 키워드는 기억합니다. 더 알려주시겠어요?")
+        assert any(event.get("tool") == "graph_search" for event in tool_history)
+        return ModelTurn(final_answer="검색한 과거 대화의 상세 내용입니다.")
+
+
 class FakeWebResearchModel:
     def __init__(self) -> None:
         self._turn = 0
@@ -855,6 +877,99 @@ async def test_orchestrator_runs_tool_then_returns_answer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_forces_graph_search_before_detailed_memory_recall_answer() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    memory.record_user_utterance(
+        user_id="신재용",
+        text="스텔라이브와 아이리 칸나의 활동에 관해 길게 대화했다.",
+        session_id="s1",
+    )
+    chat_model = MemoryRecallWithoutSearchModel()
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=GraphToolSuite(memory),
+        chat_model=chat_model,
+        web_search=StubWebSearchTool(),
+    )
+
+    result = await orchestrator.respond(
+        user_id="신재용",
+        message="이전에 스텔라이브와 아이리 칸나에 대해 어떤 대화를 했는지 상세히 확인해줘.",
+        session_id="s1",
+    )
+
+    assert result.text == "검색한 과거 대화의 상세 내용입니다."
+    assert "graph_search" in result.used_tools
+    graph_event = next(event for event in result.tool_events if event["tool"] == "graph_search")
+    current_utterance = next(
+        node
+        for node in repo.all_nodes()
+        if node.node_type == "utterance"
+        and node.labels
+        and node.labels[0].startswith("이전에 스텔라이브")
+    )
+    assert current_utterance.node_id in graph_event["arguments"]["exclude_node_ids"]
+    assert all(
+        item["focus"]["node_id"] != current_utterance.node_id
+        for item in graph_event["result"]["results"]
+    )
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_tools_force_the_current_request_user_id() -> None:
+    repo = GraphRepository(":memory:")
+    memory = GraphMemoryService(repo)
+    memory.record_user_utterance(user_id="alice", text="Alice secret memory.", session_id="s1")
+    bob_utterance_id = memory.record_user_utterance(user_id="bob", text="Search memory.", session_id="s1")
+    orchestrator = AgentOrchestrator(
+        memory_service=memory,
+        graph_tools=GraphToolSuite(memory),
+        chat_model=FakeToolCallingModel(),
+        web_search=StubWebSearchTool(),
+    )
+
+    event = await orchestrator._run_tool_call(
+        ToolCall(
+            tool="graph_search",
+            arguments={"user_id": "alice", "query": "Alice secret memory", "limit": 8},
+        ),
+        user_id="bob",
+        utterance_id=bob_utterance_id,
+    )
+
+    assert event["arguments"]["user_id"] == "bob"
+    assert not any(
+        item["focus"]["node_type"] in {"fact", "utterance"}
+        for item in event["result"]["results"]
+    )
+
+    memory.record_user_utterance(user_id="bob", text="I use JavaScript.", session_id="s1")
+    bob_fact = next(
+        node
+        for node in repo.all_nodes()
+        if node.node_type == "fact" and node.payload.get("user_id") == "bob"
+    )
+    correction_event = await orchestrator._run_tool_call(
+        ToolCall(
+            tool="record_memory_correction",
+            arguments={
+                "user_id": "alice",
+                "previous_fact_id": bob_fact.node_id,
+                "replacement_text": "I use TypeScript.",
+            },
+        ),
+        user_id="bob",
+        utterance_id=bob_utterance_id,
+    )
+
+    assert correction_event["arguments"]["user_id"] == "bob"
+    assert correction_event["result"]["replacement_fact_id"]
+    repo.close()
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_persists_search_results_after_tool_call() -> None:
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
@@ -871,7 +986,7 @@ async def test_orchestrator_persists_search_results_after_tool_call() -> None:
     assert result.text == "search done"
     assert "web_research" in result.used_tools
     persisted = memory.graph_search(user_id="alice", query="stub-result", limit=8)
-    assert any(item["node_type"] == "search_result" for item in persisted)
+    assert any(item["focus"]["node_type"] == "search_result" for item in persisted)
     repo.close()
 
 

@@ -385,6 +385,12 @@ class GraphMemoryService:
                 "node_type": node.node_type,
                 "label": self._format_user_memory_for_model(user_id=user_id, node=node, label=label),
                 "raw_label": label,
+                "subgraph": self._small_subgraph_summary(
+                    user_id=user_id,
+                    node=node,
+                    relation_limit=4,
+                    excluded_node_ids=excluded,
+                ),
                 "score": round(score, 4),
                 "score_components": {
                     "relevance": round(relevance, 4),
@@ -408,6 +414,81 @@ class GraphMemoryService:
             if limit > 0 and len(items) >= limit:
                 break
         return items
+
+    def _small_subgraph_summary(
+        self,
+        *,
+        user_id: str,
+        node: GraphNode,
+        relation_limit: int,
+        excluded_node_ids: set[str] | None = None,
+    ) -> dict:
+        excluded = excluded_node_ids or set()
+        ranked_relations: list[tuple[tuple, dict]] = []
+        for edge in self._repo.edges_for_node(node.node_id):
+            if not edge.is_active:
+                continue
+            other_id = edge.target_id if edge.source_id == node.node_id else edge.source_id
+            if other_id in excluded:
+                continue
+            other = self._repo.get_node(other_id)
+            if other is None or not other.is_active or other.node_type == "anchor":
+                continue
+            other_owner = str(other.payload.get("user_id") or "")
+            if other_owner and other_owner != user_id:
+                continue
+            relation = {
+                "relation": edge.relation,
+                "direction": "outgoing" if edge.source_id == node.node_id else "incoming",
+                "node_id": other.node_id,
+                "label": other.labels[0] if other.labels else other.node_id,
+                "node_type": other.node_type,
+                "provenance": edge.provenance,
+                "support_count": edge.support_count,
+                "trust_score": round(edge.trust_score, 4),
+            }
+            ranked_relations.append((self._subgraph_relation_rank(edge=edge, other=other), relation))
+        ranked_relations.sort(key=lambda item: item[0])
+
+        source = {
+            key: node.payload.get(key)
+            for key in ("source", "title", "url", "path", "session_id", "status")
+            if node.payload.get(key) not in (None, "")
+        }
+        summary = {
+            "focus": {
+                "node_id": node.node_id,
+                "label": node.labels[0] if node.labels else node.node_id,
+                "node_type": node.node_type,
+                "provenance": node.provenance,
+                "trust_score": round(node.trust_score, 4),
+                "stability_score": round(node.stability_score, 4),
+            },
+            "relations": [relation for _, relation in ranked_relations[:max(0, relation_limit)]],
+        }
+        if source:
+            summary["source"] = source
+        return summary
+
+    def _subgraph_relation_rank(self, *, edge: GraphEdge, other: GraphNode) -> tuple:
+        if edge.relation in {"replaces", "supports_fact", "derived_fact", "asserted_fact", "returned_result"}:
+            priority = 0
+        elif edge.relation == "spoke" or edge.relation.endswith("_mentions_concept"):
+            priority = 1
+        elif edge.relation.endswith("_references_concept"):
+            priority = 2
+        elif edge.relation.endswith("_adjacent_concept"):
+            priority = 3
+        else:
+            priority = 2
+        return (
+            priority,
+            -edge.support_count,
+            -edge.trust_score,
+            -edge.edge_weight,
+            other.node_type,
+            other.labels[0] if other.labels else other.node_id,
+        )
 
     def _activation_related_node_weights(self, activation_node_weights: dict[str, float]) -> dict[str, float]:
         related = {
@@ -578,19 +659,28 @@ class GraphMemoryService:
         self,
         *,
         user_id: str,
-        query: str,
+        query: str = "",
+        node_id: str = "",
         limit: int = 8,
         exclude_node_ids: set[str] | None = None,
     ) -> list[dict]:
         _ = self.ensure_user_anchor(user_id)
-        if not query.strip():
+        query = query.strip()
+        node_id = node_id.strip()
+        if not query and not node_id:
             return []
         excluded = exclude_node_ids or set()
         results: list[dict] = []
         anchor_id = self.ensure_user_anchor(user_id)
         user_reachable = {node.node_id for node in self._repo.neighbors(anchor_id)} | {anchor_id}
-        candidates = self._repo.search_nodes(query, limit=max(limit * 4, limit))
+        if node_id:
+            selected = self._repo.get_node(node_id)
+            candidates = [selected] if selected is not None else []
+        else:
+            candidates = self._repo.search_nodes(query, limit=max(limit * 4, limit))
         for node in candidates:
+            if node is None or not node.is_active:
+                continue
             if len(results) >= limit:
                 break
             if node.node_id in excluded:
@@ -603,43 +693,12 @@ class GraphMemoryService:
                 continue
             if not is_external and node.node_id not in user_reachable and node.node_type != "concept":
                 continue
-            neighbors = []
-            for edge in self._repo.edges_for_node(node.node_id)[:6]:
-                if not edge.is_active:
-                    continue
-                other_id = edge.target_id if edge.source_id == node.node_id else edge.source_id
-                if other_id in excluded:
-                    continue
-                other_node = self._repo.get_node(other_id)
-                if other_node is None or not other_node.is_active:
-                    continue
-                other_owner = str(other_node.payload.get("user_id") or "")
-                if other_owner and other_owner != user_id:
-                    continue
-                neighbors.append(
-                    {
-                        "node_id": other_node.node_id,
-                        "labels": list(other_node.labels),
-                        "node_type": other_node.node_type,
-                        "relation": edge.relation,
-                        "direction": "outgoing" if edge.source_id == node.node_id else "incoming",
-                        "provenance": edge.provenance,
-                        "support_count": edge.support_count,
-                        "trust_score": edge.trust_score,
-                    }
-                )
-            results.append(
-                {
-                    "node_id": node.node_id,
-                    "labels": list(node.labels),
-                    "node_type": node.node_type,
-                    "payload": dict(node.payload),
-                    "provenance": node.provenance,
-                    "trust_score": node.trust_score,
-                    "stability_score": node.stability_score,
-                    "neighbors": neighbors,
-                }
-            )
+            results.append(self._small_subgraph_summary(
+                user_id=user_id,
+                node=node,
+                relation_limit=6,
+                excluded_node_ids=excluded,
+            ))
         return results
 
     def _extract_fact_candidates(self, text: str) -> list[str]:

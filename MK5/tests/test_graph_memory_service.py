@@ -23,6 +23,8 @@ def test_record_user_utterance_exposes_memory_summary() -> None:
     summary = service.user_memory_summary("alice")
     assert any("I build user interfaces." in item["label"] for item in summary)
     assert any("I enjoy TypeScript." in item["label"] for item in summary)
+    assert all(set(item["subgraph"]) >= {"focus", "relations"} for item in summary)
+    assert all(len(item["subgraph"]["relations"]) <= 4 for item in summary)
     repo.close()
 
 
@@ -37,7 +39,7 @@ def test_record_user_utterance_graphizes_tokens_into_concepts() -> None:
     )
 
     concept_results = service.graph_search(user_id="alice", query="frontend", limit=8)
-    assert any(item["node_type"] == "concept" for item in concept_results)
+    assert any(item["focus"]["node_type"] == "concept" for item in concept_results)
 
     relations = {(edge.source_id, edge.target_id, edge.relation) for edge in repo.all_edges()}
     assert any(relation == "user_mentions_concept" for _, _, relation in relations)
@@ -99,7 +101,7 @@ def test_contiguous_sentence_breaker_fragments_are_rejoined() -> None:
     assert "리머" not in labels
 
 
-def test_graph_search_expands_neighbors() -> None:
+def test_graph_search_returns_small_subgraph_summaries() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)
 
@@ -111,12 +113,48 @@ def test_graph_search_expands_neighbors() -> None:
 
     results = service.graph_search(user_id="alice", query="build", limit=8)
     assert results
-    assert any(item.get("neighbors") for item in results)
+    assert all(set(item) <= {"focus", "relations", "source"} for item in results)
+    assert all(len(item["relations"]) <= 6 for item in results)
+    assert any(item.get("relations") for item in results)
     assert any(
-        neighbor.get("relation") in {"user_mentions_concept", "user_adjacent_concept", "user_references_concept"}
+        relation.get("relation") in {"user_mentions_concept", "user_adjacent_concept", "user_references_concept"}
         for item in results
-        for neighbor in item.get("neighbors", [])
+        for relation in item.get("relations", [])
     )
+    repo.close()
+
+
+def test_graph_search_expands_an_exact_returned_relation_node_id() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    service.record_user_utterance(
+        user_id="alice",
+        text="강지는 스텔라이브를 만들었다.",
+        session_id="s1",
+    )
+
+    initial = service.graph_search(user_id="alice", query="강지는", limit=1)
+    assert initial and initial[0]["relations"]
+    relation_node_id = initial[0]["relations"][0]["node_id"]
+
+    expanded = service.graph_search(user_id="alice", node_id=relation_node_id)
+
+    assert len(expanded) == 1
+    assert expanded[0]["focus"]["node_id"] == relation_node_id
+    assert len(expanded[0]["relations"]) <= 6
+    repo.close()
+
+
+def test_graph_search_node_id_cannot_expand_another_users_private_node() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    utterance_id = service.record_user_utterance(
+        user_id="alice",
+        text="Alice private memory.",
+        session_id="s1",
+    )
+
+    assert service.graph_search(user_id="bob", node_id=utterance_id) == []
     repo.close()
 
 
@@ -153,11 +191,11 @@ def test_search_results_are_persisted_under_search_anchor() -> None:
 
     assert recorded
     search_results = service.graph_search(user_id="alice", query="Graph Memory", limit=8)
-    assert any(item["node_type"] == "search_result" for item in search_results)
+    assert any(item["focus"]["node_type"] == "search_result" for item in search_results)
     durable_results = service.graph_search(user_id="alice", query="durable", limit=8)
-    assert any(item["node_type"] == "search_fact" for item in durable_results)
+    assert any(item["focus"]["node_type"] == "search_fact" for item in durable_results)
     concept_results = service.graph_search(user_id="alice", query="agents", limit=8)
-    assert any(item["node_type"] == "concept" for item in concept_results)
+    assert any(item["focus"]["node_type"] == "concept" for item in concept_results)
     repo.close()
 
 
@@ -326,8 +364,8 @@ def test_user_scoped_search_does_not_return_other_users_fact() -> None:
 
     results = service.graph_search(user_id="bob", query="secret preference", limit=8)
 
-    assert not any(item["node_type"] == "fact" for item in results)
-    assert not any(item["node_type"] == "utterance" for item in results)
+    assert not any(item["focus"]["node_type"] == "fact" for item in results)
+    assert not any(item["focus"]["node_type"] == "utterance" for item in results)
     repo.close()
 
 
