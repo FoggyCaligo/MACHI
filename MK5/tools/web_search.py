@@ -141,6 +141,28 @@ class HttpWebSearchTool:
             ),
             self._run_research,
         )
+        registry.register(
+            ToolDefinition(
+                name="market_snapshot",
+                description=(
+                    "Fetch real-time or delayed market quotes for Korean stocks (e.g. '태광', '삼성전자', '023160'), "
+                    "global stocks (e.g. 'AAPL', 'NVDA'), market indices (KOSPI, KOSDAQ, S&P500, NASDAQ), "
+                    "and exchange rates (USD/KRW). Pass a stock name, stock code/ticker, or market indicator."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Stock name, stock code/symbol, or market indicator (e.g. '태광', '023160', '삼성전자', 'AAPL', 'KOSPI', 'KR', 'USD/KRW').",
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._run_market_snapshot,
+        )
         return registry
 
     async def search(self, query: str) -> list[SearchHit]:
@@ -338,6 +360,91 @@ class HttpWebSearchTool:
                 if len(hits) >= _MAX_RESULTS:
                     return hits, errors
         return hits, errors
+
+    async def _run_market_snapshot(self, arguments: dict) -> dict:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return {
+                "ok": False,
+                "error": "missing_query",
+                "message": "query parameter is required for market_snapshot (e.g. '태광', '023160', '삼성전자', 'AAPL', 'KR').",
+            }
+
+        normalized = query.upper()
+        # 1. Overall market index / macro indicator request
+        if normalized in {"KR", "KOREA", "한국", "한국장", "증시", "지수", "INDEX", "MARKET", "KOSPI", "코스피", "KOSDAQ", "코스닥"}:
+            return await _korea_market_index_snapshot()
+
+        # 2. Check predefined index or FX mapping
+        if query in _INDEX_SYMBOL_MAP or normalized in _INDEX_SYMBOL_MAP:
+            symbol = _INDEX_SYMBOL_MAP.get(query) or _INDEX_SYMBOL_MAP[normalized]
+            yahoo_res = await _yahoo_chart_snapshot(symbol)
+            if yahoo_res is not None:
+                return {
+                    "ok": True,
+                    "type": "index_or_fx",
+                    "query": query,
+                    "quote": yahoo_res,
+                    "disclaimer": "Market data may be delayed and is for reference only.",
+                }
+
+        # 3. If 6-digit Korean stock code (e.g. "023160", "005930")
+        if query.isdigit() and len(query) == 6:
+            naver_quote = await _naver_stock_quote(query)
+            if naver_quote is not None:
+                return {
+                    "ok": True,
+                    "type": "stock",
+                    "query": query,
+                    "quote": naver_quote,
+                    "disclaimer": "Market data provided via Naver Finance.",
+                }
+            for suffix in [".KQ", ".KS"]:
+                y_quote = await _yahoo_chart_snapshot(f"{query}{suffix}")
+                if y_quote is not None:
+                    return {
+                        "ok": True,
+                        "type": "stock",
+                        "query": query,
+                        "quote": y_quote,
+                        "disclaimer": "Market data provided via Yahoo Finance.",
+                    }
+
+        # 4. Korean stock name search (e.g. "태광", "삼성전자", "SK하이닉스")
+        naver_matches = await _naver_stock_search(query)
+        if naver_matches:
+            top_code, top_name = naver_matches[0]
+            naver_quote = await _naver_stock_quote(top_code)
+            if naver_quote is not None:
+                return {
+                    "ok": True,
+                    "type": "stock",
+                    "query": query,
+                    "matched_symbol": top_code,
+                    "matched_name": top_name,
+                    "candidate_matches": [{"code": c, "name": n} for c, n in naver_matches[:5]],
+                    "quote": naver_quote,
+                    "disclaimer": "Market data provided via Naver Finance.",
+                }
+
+        # 5. Global stock / ticker via Yahoo Finance (e.g. "AAPL", "NVDA", "TSLA", "^KS11")
+        yahoo_quote = await _yahoo_chart_snapshot(query)
+        if yahoo_quote is not None:
+            return {
+                "ok": True,
+                "type": "global_stock_or_symbol",
+                "query": query,
+                "quote": yahoo_quote,
+                "disclaimer": "Market data provided via Yahoo Finance.",
+            }
+
+        return {
+            "ok": False,
+            "error": "not_found",
+            "query": query,
+            "message": f"Could not find market quote or stock for query: '{query}'",
+        }
+
 
 def _argument_search_nodes(raw: object) -> list[str]:
     if not isinstance(raw, list):
@@ -678,6 +785,204 @@ def _error_summary(error: Exception) -> str:
     return f"{type(error).__name__}: {message}" if message else type(error).__name__
 
 
+_INDEX_SYMBOL_MAP: dict[str, str] = {
+    "코스피": "^KS11",
+    "KOSPI": "^KS11",
+    "코스닥": "^KQ11",
+    "KOSDAQ": "^KQ11",
+    "나스닥": "^IXIC",
+    "NASDAQ": "^IXIC",
+    "S&P500": "^GSPC",
+    "S&P": "^GSPC",
+    "다우": "^DJI",
+    "DOW": "^DJI",
+    "환율": "KRW=X",
+    "원달러": "KRW=X",
+    "원/달러": "KRW=X",
+    "USD/KRW": "KRW=X",
+    "달러": "KRW=X",
+    "엔화": "JPYKRW=X",
+    "비트코인": "BTC-USD",
+    "이더리움": "ETH-USD",
+}
+
+
+def _float_or_none(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _naver_stock_search(query: str) -> list[tuple[str, str]]:
+    q_cp949 = quote(query.strip(), encoding="cp949")
+    url = f"https://finance.naver.com/search/search.naver?query={q_cp949}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://finance.naver.com/",
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=config.WEB_SEARCH_TIMEOUT_SECONDS,
+            headers=headers,
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                return []
+            html = response.content.decode("cp949", errors="ignore")
+            matches = re.findall(r'<a href="[^"]*code=(\d{6})"[^>]*>([^<]+)</a>', html)
+            seen: set[tuple[str, str]] = set()
+            results: list[tuple[str, str]] = []
+            for code, name in matches:
+                name_clean = name.strip()
+                if (code, name_clean) not in seen:
+                    seen.add((code, name_clean))
+                    results.append((code, name_clean))
+            normalized_q = query.strip().lower()
+            results.sort(key=lambda item: (0 if item[1].lower() == normalized_q else 1, len(item[1])))
+            return results
+    except Exception:
+        return []
+
+
+async def _naver_stock_quote(code: str) -> dict[str, Any] | None:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": "https://m.stock.naver.com/",
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=config.WEB_SEARCH_TIMEOUT_SECONDS,
+            headers=headers,
+            follow_redirects=True,
+        ) as client:
+            res_basic, res_int = await asyncio.gather(
+                client.get(f"https://m.stock.naver.com/api/stock/{code}/basic"),
+                client.get(f"https://m.stock.naver.com/api/stock/{code}/integration"),
+                return_exceptions=True,
+            )
+            if isinstance(res_basic, Exception) or res_basic.status_code != 200:
+                return None
+            basic = res_basic.json()
+            extra: dict[str, Any] = {}
+            if not isinstance(res_int, Exception) and res_int.status_code == 200:
+                integration = res_int.json()
+                for info in integration.get("totalInfos", []):
+                    code_key = info.get("code")
+                    val = info.get("value")
+                    if code_key and val:
+                        extra[code_key] = val
+
+            return {
+                "source": "naver_finance",
+                "name": basic.get("stockName"),
+                "symbol": basic.get("itemCode"),
+                "market": basic.get("stockExchangeName"),
+                "price": basic.get("closePrice"),
+                "change": basic.get("compareToPreviousClosePrice"),
+                "change_direction": (basic.get("compareToPreviousPrice") or {}).get("name"),
+                "change_percent": f"{basic.get('fluctuationsRatio')}%" if basic.get("fluctuationsRatio") else None,
+                "market_status": basic.get("marketStatus"),
+                "traded_at": basic.get("localTradedAt"),
+                "high_52w": extra.get("highPriceOf52Weeks"),
+                "low_52w": extra.get("lowPriceOf52Weeks"),
+                "market_cap": extra.get("marketValue"),
+                "per": extra.get("per"),
+                "pbr": extra.get("pbr"),
+                "volume": extra.get("accumulatedTradingVolume") or basic.get("accumulatedTradingVolume"),
+            }
+    except Exception:
+        return None
+
+
+async def _yahoo_chart_snapshot(symbol: str) -> dict[str, Any] | None:
+    url_symbol = quote(symbol, safe="")
+    try:
+        async with httpx.AsyncClient(
+            timeout=config.WEB_SEARCH_TIMEOUT_SECONDS,
+            headers={**_HEADERS, "Accept": "application/json"},
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{url_symbol}",
+                params={"range": "1d", "interval": "1m"},
+            )
+            if response.status_code != 200:
+                return None
+            payload = response.json()
+
+        chart = payload.get("chart") if isinstance(payload, dict) else None
+        results = chart.get("result") if isinstance(chart, dict) else None
+        if not isinstance(results, list) or not results:
+            return None
+        item = results[0]
+        if not isinstance(item, dict):
+            return None
+        meta = item.get("meta")
+        if not isinstance(meta, dict):
+            return None
+        price = _float_or_none(meta.get("regularMarketPrice"))
+        previous_close = _float_or_none(meta.get("chartPreviousClose") or meta.get("previousClose"))
+        if price is None:
+            return None
+        change = round(price - previous_close, 4) if previous_close is not None else None
+        change_percent = (
+            round((change / previous_close * 100), 2)
+            if change is not None and previous_close
+            else None
+        )
+        return {
+            "source": "yahoo_finance_chart",
+            "symbol": meta.get("symbol") or symbol,
+            "name": meta.get("shortName") or meta.get("symbol") or symbol,
+            "price": price,
+            "previous_close": previous_close,
+            "change": change,
+            "change_percent": f"{change_percent}%" if change_percent is not None else None,
+            "currency": meta.get("currency"),
+            "exchange_name": meta.get("exchangeName"),
+            "market_state": meta.get("marketState"),
+            "regular_market_time": meta.get("regularMarketTime"),
+            "timezone": meta.get("exchangeTimezoneName"),
+        }
+    except Exception:
+        return None
+
+
+async def _korea_market_index_snapshot() -> dict[str, Any]:
+    specs = [
+        ("KOSPI", "^KS11"),
+        ("KOSDAQ", "^KQ11"),
+        ("USD/KRW", "KRW=X"),
+        ("S&P 500", "^GSPC"),
+        ("NASDAQ", "^IXIC"),
+    ]
+    gathered = await asyncio.gather(
+        *[_yahoo_chart_snapshot(symbol) for _name, symbol in specs],
+        return_exceptions=True,
+    )
+    indicators: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for (name, symbol), result in zip(specs, gathered):
+        if isinstance(result, Exception):
+            errors.append(f"{name}/{symbol}: {_error_summary(result)}")
+            continue
+        if result is None:
+            errors.append(f"{name}/{symbol}: no quote data")
+            continue
+        indicators.append({"name": name, "symbol": symbol, **result})
+    return {
+        "ok": bool(indicators),
+        "type": "market_index_summary",
+        "market": "KR_GLOBAL",
+        "freshness": "delayed_quote" if indicators else "unknown",
+        "disclaimer": "Market data may be delayed and is not guaranteed real-time.",
+        "indicators": indicators,
+        "source_errors": errors,
+    }
+
+
 class StubWebSearchTool:
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -710,6 +1015,19 @@ class StubWebSearchTool:
             ),
             self._run_research,
         )
+        registry.register(
+            ToolDefinition(
+                name="market_snapshot",
+                description="Stub market snapshot.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._run_market_snapshot,
+        )
         return registry
 
     async def search(self, query: str) -> list[SearchHit]:
@@ -737,3 +1055,19 @@ class StubWebSearchTool:
             "source_errors": [],
             "page_errors": [],
         }
+
+    async def _run_market_snapshot(self, arguments: dict) -> dict:
+        query = str(arguments.get("query") or "").strip()
+        return {
+            "ok": True,
+            "type": "stub_quote",
+            "query": query,
+            "quote": {
+                "name": query,
+                "symbol": "000000",
+                "price": "50000",
+                "change": "+1000",
+                "change_percent": "+2.0%",
+            },
+        }
+

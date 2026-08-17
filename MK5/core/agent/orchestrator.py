@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -445,7 +445,7 @@ class AgentOrchestrator:
                     f"{_tool_failure_debug(result.get('result'))}"
                 )
                 used_tools.append(call.tool)
-                if call.tool in {"internet_search", "latest_search", "web_research"}:
+                if call.tool in {"internet_search", "latest_search", "web_research", "market_snapshot"}:
                     memory_writes.extend(["search_result", "search_fact"])
                 elif call.tool == "record_memory_correction":
                     memory_writes.append("user_fact_correction")

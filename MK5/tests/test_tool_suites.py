@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 import builtins
@@ -22,9 +22,22 @@ def test_low_level_web_tools_are_hidden_from_model() -> None:
     visible_definitions = {definition.name: definition for definition in registry.model_definitions()}
 
     assert "web_research" in visible_definitions
+    assert "market_snapshot" in visible_definitions
     assert "internet_search" not in visible_definitions
     assert "web_page_read" not in visible_definitions
     assert set(visible_definitions["latest_search"].input_schema["properties"]) == {"query"}
+    assert set(visible_definitions["market_snapshot"].input_schema["properties"]) == {"query"}
+
+
+@pytest.mark.asyncio
+async def test_market_snapshot_stub() -> None:
+    from MK5.tools.web_search import StubWebSearchTool
+
+    registry = StubWebSearchTool().build_registry()
+    result = await registry.run(ToolCall(tool="market_snapshot", arguments={"query": "태광"}))
+    assert result["ok"] is True
+    assert result["type"] == "stub_quote"
+    assert result["quote"]["name"] == "태광"
 
 
 def test_unconsulted_tool_call_is_replaced_with_manual_lookup() -> None:

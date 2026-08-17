@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import re
@@ -161,6 +161,7 @@ async def get_tools(request: Request) -> dict:
             "graph_search",
             "record_memory_correction",
             "latest_search",
+            "market_snapshot",
             "web_research",
             "code_index",
             "code_search",

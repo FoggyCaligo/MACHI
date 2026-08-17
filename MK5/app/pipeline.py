@@ -28,6 +28,7 @@ TRIAL_TOOL_NAMES = {
     "graph_search",
     "record_memory_correction",
     "latest_search",
+    "market_snapshot",
     "web_research",
     "tool_manual",
 }

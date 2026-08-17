@@ -158,6 +158,7 @@ JSON 파싱 실패가 발생하면 서버 콘솔의 `[MK5 model] output_parse_fa
 - `record_memory_correction`: 기억 수정/정정 기록
 - `web_research`: 자연어 검색 목적을 받아 복수 검색, 결과 랭킹, 페이지 읽기, 관련 구간 추출까지 수행
 - `latest_search`: 최신성 정보가 필요한 질문용 검색
+- `market_snapshot`: 한국 주식(종목명/코드), 해외 주식, 주요 지수(KOSPI, KOSDAQ, S&P500, NASDAQ), 환율(USD/KRW) 등의 실시간/지연 시세 조회
 - `file_search`: 작업공간에서 정확한 파일 경로 검색
 - `code_index`: Python 코드의 import, 클래스, 함수, route, 도구, 설정, 테스트 구조를 압축 인덱싱
 - `code_search`: 압축 코드 인덱스에서 관련 파일과 symbol 검색
@@ -176,7 +177,7 @@ JSON 파싱 실패가 발생하면 서버 콘솔의 `[MK5 model] output_parse_fa
 웹 UI와 API는 `MK5/.env`의 `MK5_ALLOWED_LOGIN_IDS` 목록에 등록된 문자열만 허용한다. 값은 JSON 배열 또는 쉼표 구분 문자열로 추가할 수 있다. `default-user`와 목록에 없는 값은 거부되고 UI에는 로그인 모달이 표시된다. 로그인에 성공하면 서버가 `HttpOnly`, `SameSite=Strict` 세션 쿠키를 발급하며, `/chat`의 그래프 사용자 ID는 요청 본문이 아니라 로그인 정보에서 강제한다.
 
 - `owner`: 기존 개인 그래프 기억에 연결할 수 있고 모든 도구와 파일 업로드를 사용할 수 있다.
-- 나머지 허용 ID: 각각 별도 `trial` 그래프 사용자로 격리되며 `graph_search`, `record_memory_correction`, `latest_search`, `web_research`, `tool_manual`만 사용할 수 있다. 파일·문서·이미지·코드·터미널 도구와 업로드는 서버에서 차단한다.
+- 나머지 허용 ID: 각각 별도 `trial` 그래프 사용자로 격리되며 `graph_search`, `record_memory_correction`, `latest_search`, `market_snapshot`, `web_research`, `tool_manual`만 사용할 수 있다. 파일·문서·이미지·코드·터미널 도구와 업로드는 서버에서 차단한다.
 
 `MK5/.env`는 저장소에 커밋되지 않는다. 예시는 다음과 같다.
 
