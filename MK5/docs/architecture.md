@@ -156,7 +156,7 @@ file text activation nodes: 0.25
 현재 `MK5`의 주요 도구군은 아래와 같다.
 
 - graph memory: `graph_search`, `record_memory_correction`
-- search: `web_research`, `latest_search`, `market_snapshot`
+- search: `web_research`, `latest_search`
 - file discovery: `file_search`
 - code structure: `code_index`, `code_search`
 - file CRUD: `file_create`, `file_read`, `file_update`, `file_delete`

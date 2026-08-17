@@ -69,7 +69,6 @@ async def get_tools() -> dict:
             "record_memory_correction",
             "latest_search",
             "web_research",
-            "market_snapshot",
             "code_index",
             "code_search",
             "file_search",

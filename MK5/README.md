@@ -141,7 +141,6 @@ JSON 파싱 실패가 발생하면 서버 콘솔의 `[MK5 model] output_parse_fa
 - `record_memory_correction`: 기억 수정/정정 기록
 - `web_research`: 자연어 검색 목적을 받아 복수 검색, 결과 랭킹, 페이지 읽기, 관련 구간 추출까지 수행
 - `latest_search`: 최신성 정보가 필요한 질문용 검색
-- `market_snapshot`: 시장 지표 스냅샷
 - `file_search`: 작업공간에서 정확한 파일 경로 검색
 - `code_index`: Python 코드의 import, 클래스, 함수, route, 도구, 설정, 테스트 구조를 압축 인덱싱
 - `code_search`: 압축 코드 인덱스에서 관련 파일과 symbol 검색

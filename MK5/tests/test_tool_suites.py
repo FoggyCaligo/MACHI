@@ -780,45 +780,6 @@ async def test_latest_search_reports_unknown_freshness_when_empty(monkeypatch: p
     assert result["results"] == []
 
 
-@pytest.mark.asyncio
-async def test_market_snapshot_returns_korean_market_indicators(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_yahoo_snapshot(symbol: str) -> dict:
-        prices = {
-            "^KS11": 2700.5,
-            "^KQ11": 850.25,
-            "KRW=X": 1360.0,
-        }
-        return {
-            "price": prices[symbol],
-            "previous_close": prices[symbol] - 10,
-            "change": 10.0,
-            "change_percent": 0.5,
-            "currency": "KRW",
-            "market_state": "REGULAR",
-        }
-
-    monkeypatch.setattr("MK5.tools.web_search._yahoo_chart_snapshot", fake_yahoo_snapshot)
-
-    result = await HttpWebSearchTool()._run_market_snapshot({"market": "KR"})
-
-    assert result["ok"] is True
-    assert result["market"] == "KR"
-    assert result["freshness"] == "delayed_quote"
-    assert result["source"] == "yahoo_finance_chart"
-    assert [item["name"] for item in result["indicators"]] == ["KOSPI", "KOSDAQ", "USD/KRW"]
-    assert result["indicators"][0]["price"] == 2700.5
-
-
-@pytest.mark.asyncio
-async def test_market_snapshot_rejects_unsupported_market() -> None:
-    result = await HttpWebSearchTool()._run_market_snapshot({"market": "US"})
-
-    assert result["ok"] is False
-    assert result["freshness"] == "unknown"
-    assert result["indicators"] == []
-    assert result["source_errors"]
-
-
 def test_duckduckgo_missing_dependency_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     real_import = builtins.__import__
 

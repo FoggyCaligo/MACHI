@@ -141,25 +141,6 @@ class HttpWebSearchTool:
             ),
             self._run_research,
         )
-        registry.register(
-            ToolDefinition(
-                name="market_snapshot",
-                description=(
-                    "Fetch a delayed numeric market snapshot for Korean market indicators. "
-                    "Use with latest_search for current Korean stock market situation questions. "
-                    "Returns KOSPI, KOSDAQ, and USD/KRW when available. Not guaranteed real-time."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "market": {"type": "string"},
-                    },
-                    "required": ["market"],
-                    "additionalProperties": False,
-                },
-            ),
-            self._run_market_snapshot,
-        )
         return registry
 
     async def search(self, query: str) -> list[SearchHit]:
@@ -357,48 +338,6 @@ class HttpWebSearchTool:
                 if len(hits) >= _MAX_RESULTS:
                     return hits, errors
         return hits, errors
-
-    async def _run_market_snapshot(self, arguments: dict) -> dict:
-        market = str(arguments.get("market") or "").strip().upper()
-        if market not in {"KR", "KOREA", "한국", "한국장"}:
-            return {
-                "ok": False,
-                "market": market or None,
-                "freshness": "unknown",
-                "source": "yahoo_finance_chart",
-                "indicators": [],
-                "source_errors": [f"Unsupported market: {market or '<empty>'}"],
-            }
-
-        specs = [
-            ("KOSPI", "^KS11"),
-            ("KOSDAQ", "^KQ11"),
-            ("USD/KRW", "KRW=X"),
-        ]
-        gathered = await asyncio.gather(
-            *[_yahoo_chart_snapshot(symbol) for _name, symbol in specs],
-            return_exceptions=True,
-        )
-        indicators: list[dict[str, Any]] = []
-        errors: list[str] = []
-        for (name, symbol), result in zip(specs, gathered):
-            if isinstance(result, Exception):
-                errors.append(f"{name}/{symbol}: {_error_summary(result)}")
-                continue
-            if result is None:
-                errors.append(f"{name}/{symbol}: no quote data")
-                continue
-            indicators.append({"name": name, "symbol": symbol, **result})
-        return {
-            "ok": bool(indicators),
-            "market": "KR",
-            "freshness": "delayed_quote" if indicators else "unknown",
-            "source": "yahoo_finance_chart",
-            "disclaimer": "Market data may be delayed and is not guaranteed real-time.",
-            "indicators": indicators,
-            "source_errors": errors,
-        }
-
 
 def _argument_search_nodes(raw: object) -> list[str]:
     if not isinstance(raw, list):
@@ -701,56 +640,6 @@ async def _google_news_rss_search(query: str) -> list[SearchHit]:
         if title and url and snippet:
             hits.append(SearchHit(title=title, url=url, snippet=snippet, source="google_news_rss"))
     return hits
-
-
-async def _yahoo_chart_snapshot(symbol: str) -> dict[str, Any] | None:
-    url_symbol = quote(symbol, safe="")
-    async with httpx.AsyncClient(
-        timeout=config.WEB_SEARCH_TIMEOUT_SECONDS,
-        headers={**_HEADERS, "Accept": "application/json"},
-        follow_redirects=True,
-    ) as client:
-        response = await client.get(
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{url_symbol}",
-            params={"range": "1d", "interval": "1m"},
-        )
-        response.raise_for_status()
-        payload = response.json()
-
-    chart = payload.get("chart") if isinstance(payload, dict) else None
-    results = chart.get("result") if isinstance(chart, dict) else None
-    if not isinstance(results, list) or not results:
-        return None
-    item = results[0]
-    if not isinstance(item, dict):
-        return None
-    meta = item.get("meta")
-    if not isinstance(meta, dict):
-        return None
-    price = _float_or_none(meta.get("regularMarketPrice"))
-    previous_close = _float_or_none(meta.get("chartPreviousClose") or meta.get("previousClose"))
-    if price is None:
-        return None
-    change = price - previous_close if previous_close is not None else None
-    change_percent = (change / previous_close * 100) if change is not None and previous_close else None
-    return {
-        "price": price,
-        "previous_close": previous_close,
-        "change": change,
-        "change_percent": change_percent,
-        "currency": meta.get("currency"),
-        "exchange_name": meta.get("exchangeName"),
-        "market_state": meta.get("marketState"),
-        "regular_market_time": meta.get("regularMarketTime"),
-        "timezone": meta.get("exchangeTimezoneName"),
-    }
-
-
-def _float_or_none(value: object) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 async def _wiki_search(query: str, lang: str) -> list[SearchHit]:

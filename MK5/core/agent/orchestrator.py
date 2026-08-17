@@ -409,8 +409,6 @@ class AgentOrchestrator:
                 used_tools.append(call.tool)
                 if call.tool in {"internet_search", "latest_search", "web_research"}:
                     memory_writes.extend(["search_result", "search_fact"])
-                elif call.tool == "market_snapshot":
-                    memory_writes.append("market_snapshot")
                 elif call.tool == "record_memory_correction":
                     memory_writes.append("user_fact_correction")
                 elif call.tool in {"file_create", "file_read", "file_update", "file_delete"}:

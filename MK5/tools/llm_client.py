@@ -341,8 +341,6 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
             compact["page_errors"] = _compact_value(result.get("page_errors"), limit=500)
         if result.get("source_errors"):
             compact["source_errors"] = _compact_value(result.get("source_errors"), limit=800)
-    elif tool == "market_snapshot":
-        compact["snapshot"] = _compact_value(result, limit=700)
     elif tool == "file_text_activation":
         compact["context_node_id"] = result.get("context_node_id")
         compact["activation_weight"] = result.get("activation_weight")
