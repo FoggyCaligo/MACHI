@@ -17,6 +17,17 @@ if (-not $tailscaleCommand) {
     throw "tailscale 명령을 찾지 못했습니다. Tailscale을 설치하고 로그인하세요."
 }
 
+$tailscaleExe = $tailscaleCommand.Path
+if (-not $tailscaleExe) {
+    $tailscaleExe = $tailscaleCommand.Source
+}
+if (-not $tailscaleExe) {
+    $tailscaleExe = $tailscaleCommand.FullName
+}
+if (-not $tailscaleExe) {
+    throw "Tailscale 실행 파일 경로를 확인하지 못했습니다."
+}
+
 $env:MK5_SERVER_HOST = "127.0.0.1"
 $env:MK5_SERVER_PORT = "8010"
 $env:MK5_SESSION_COOKIE_SECURE = "true"
@@ -31,14 +42,14 @@ function Test-Mk5Health {
     }
 }
 
-$funnelStatus = (& $tailscaleCommand.FullName funnel status 2>&1) -join "`n"
+$funnelStatus = (& $tailscaleExe funnel status 2>&1) -join "`n"
 $expectedProxy = "proxy http://127.0.0.1:8010"
 if ($funnelStatus -notmatch [regex]::Escape($expectedProxy)) {
-    & $tailscaleCommand.FullName funnel --bg 8010
+    & $tailscaleExe funnel --bg 8010
     if ($LASTEXITCODE -ne 0) {
         throw "Tailscale Funnel 설정에 실패했습니다. 기존 Serve/Funnel 설정을 확인하세요."
     }
-    $funnelStatus = (& $tailscaleCommand.FullName funnel status 2>&1) -join "`n"
+    $funnelStatus = (& $tailscaleExe funnel status 2>&1) -join "`n"
 }
 
 if (Test-Mk5Health) {
