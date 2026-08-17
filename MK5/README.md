@@ -214,8 +214,10 @@ python manage_accounts.py purge-memory
 도메인 없이 재사용 가능한 외부 HTTPS 주소는 Tailscale Funnel을 사용한다. Tailscale을 설치하고 로그인한 뒤 MagicDNS와 HTTPS/Funnel 사용을 승인하고 다음 스크립트를 실행한다.
 
 ```powershell
-.\start_public_tailscale.ps1
+.\start_public_tailscale.cmd
 ```
+
+`.cmd` 실행기는 시스템 전체 PowerShell 정책을 변경하지 않고 이 프로젝트의 `start_public_tailscale.ps1`에만 `ExecutionPolicy Bypass`를 적용한다. 정책상 `.ps1` 직접 실행이 허용된 환경에서는 기존 스크립트를 그대로 실행해도 된다.
 
 스크립트는 MK5를 `127.0.0.1:8010`에서 숨김 프로세스로 실행하고 secure session cookie를 활성화한 뒤 `tailscale funnel 8010`을 연결한다. Funnel은 이 장치의 예측 가능한 `https://<장치>.<tailnet>.ts.net` 주소를 공개 인터넷에 제공한다. 장치가 켜져 있고 Tailscale과 MK5가 실행 중일 때만 접속할 수 있으며, Funnel 자체가 공개 인터넷 경로라는 점은 변하지 않는다.
 
