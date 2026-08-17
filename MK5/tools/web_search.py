@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 from html.parser import HTMLParser
 import ipaddress
 import re
@@ -550,6 +551,60 @@ def _term_matches_text(term: str, text: str) -> bool:
     )
 
 
+def _charset_from_content_type(content_type: str) -> str | None:
+    match = re.search(
+        r"(?:^|;)\s*charset\s*=\s*[\"']?([^;\s\"']+)",
+        content_type,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else None
+
+
+def _bom_encoding(content: bytes) -> str | None:
+    if content.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig"
+    if content.startswith(codecs.BOM_UTF32_LE) or content.startswith(codecs.BOM_UTF32_BE):
+        return "utf-32"
+    if content.startswith(codecs.BOM_UTF16_LE) or content.startswith(codecs.BOM_UTF16_BE):
+        return "utf-16"
+    return None
+
+
+def _charset_from_html_meta(content: bytes) -> str | None:
+    prefix = content[:16_384]
+    match = re.search(
+        br"<meta\b[^>]*\bcharset\s*=\s*[\"']?\s*([A-Za-z0-9._:-]+)",
+        prefix,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return match.group(1).decode("ascii")
+
+
+def _decode_page_bytes(content: bytes, *, content_type: str) -> str:
+    candidates = [
+        _bom_encoding(content),
+        _charset_from_content_type(content_type),
+        _charset_from_html_meta(content),
+        "utf-8",
+    ]
+    attempted: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        normalized = candidate.strip().lower()
+        if not normalized or normalized in attempted:
+            continue
+        attempted.append(normalized)
+        try:
+            codecs.lookup(normalized)
+            return content.decode(normalized)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    raise ValueError(f"unable to decode public page with encodings: {attempted}")
+
+
 async def _fetch_public_page(url: str) -> tuple[str, str, str]:
     current_url = url
     async with httpx.AsyncClient(
@@ -580,8 +635,11 @@ async def _fetch_public_page(url: str) -> tuple[str, str, str]:
                         break
                     chunks.append(chunk[:remaining])
                     byte_count += min(len(chunk), remaining)
-                encoding = response.encoding or "utf-8"
-                return current_url, content_type, b"".join(chunks).decode(encoding, errors="replace")
+                content = b"".join(chunks)
+                return current_url, content_type, _decode_page_bytes(
+                    content,
+                    content_type=content_type,
+                )
     raise ValueError("too many redirects while reading web page")
 
 
@@ -1070,4 +1128,3 @@ class StubWebSearchTool:
                 "change_percent": "+2.0%",
             },
         }
-

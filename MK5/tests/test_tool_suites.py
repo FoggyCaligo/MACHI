@@ -840,4 +840,3 @@ async def test_wikipedia_search_strips_html_snippets(monkeypatch: pytest.MonkeyP
     hits = await web_search._wiki_search("글록", "ko")
 
     assert hits[0].snippet == "글록 권총"
-
