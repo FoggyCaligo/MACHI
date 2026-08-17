@@ -2,6 +2,7 @@ runtime/
 # *.env
 # *.db
 logs/
+MK5/public-server.*.log
 __pycache__/
 *.pyc
 .venv/
@@ -11,4 +12,6 @@ MK4/data/*.db
 MK4/data/*.db-*
 MK5/data/*.db
 MK5/data/*.db-*
+MK5/data/accounts.json
+MK5/.env
 .mk5_uploads/

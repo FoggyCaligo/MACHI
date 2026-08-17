@@ -701,6 +701,15 @@ class GraphMemoryService:
             ))
         return results
 
+    def delete_user_memory(self, user_id: str) -> dict[str, int]:
+        cleaned = user_id.strip()
+        if not cleaned:
+            raise ValueError("user_id must not be empty")
+        return self._repo.delete_user_graph(
+            user_id=cleaned,
+            anchor_id=user_anchor_id(cleaned),
+        )
+
     def _extract_fact_candidates(self, text: str) -> list[str]:
         normalized = re.sub(r"\s+", " ", text.strip())
         if not normalized:

@@ -3,8 +3,11 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class LoginRequest(BaseModel):
+    login_id: str = Field(min_length=1, max_length=200)
+
+
 class ChatRequest(BaseModel):
-    user_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
     model: str | None = None
     image_model: str | None = None

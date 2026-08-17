@@ -71,7 +71,7 @@
       justify-content: flex-end;
     }
 
-    .chip-input, #model-select, #image-model-select, #new-chat-btn {
+    .account-chip, #model-select, #image-model-select, #new-chat-btn, #logout-btn {
       background: var(--surface);
       border: 1px solid var(--border);
       color: var(--text-dim);
@@ -81,9 +81,56 @@
       outline: none;
     }
 
-    .chip-input { width: 180px; }
+    .account-chip { min-width: 84px; text-align: center; }
     #model-select, #image-model-select { max-width: 180px; cursor: pointer; }
-    #new-chat-btn { cursor: pointer; }
+    #new-chat-btn, #logout-btn { cursor: pointer; }
+
+    .login-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(5, 5, 8, 0.86);
+      backdrop-filter: blur(8px);
+    }
+
+    .login-overlay.hidden { display: none; }
+
+    .login-modal {
+      width: min(420px, 100%);
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.45);
+    }
+
+    .login-modal h2 { color: var(--accent); margin-bottom: 8px; }
+    .login-modal p { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
+    .login-row { display: flex; gap: 8px; }
+    #login-id-input {
+      flex: 1;
+      min-width: 0;
+      padding: 11px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      outline: none;
+    }
+    #login-submit {
+      padding: 11px 16px;
+      border: 0;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #07111f;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    #login-error { min-height: 20px; margin-top: 10px; color: var(--danger); font-size: 12px; }
 
     #messages {
       flex: 1;
@@ -323,11 +370,22 @@
   </style>
 </head>
 <body>
+<div id="login-overlay" class="login-overlay">
+  <form id="login-form" class="login-modal">
+    <h2>MK5 로그인</h2>
+    <p>허용된 접속 ID를 입력해 주세요. 등록되지 않은 ID와 default-user는 사용할 수 없습니다.</p>
+    <div class="login-row">
+      <input id="login-id-input" type="password" autocomplete="current-password" placeholder="접속 ID" />
+      <button id="login-submit" type="submit">접속</button>
+    </div>
+    <div id="login-error"></div>
+  </form>
+</div>
 <div id="app">
   <header>
     <div class="logo">MK5 <span>tool-using graph memory agent</span></div>
     <div class="header-right">
-      <input id="user-id-input" class="chip-input" placeholder="USER_ID 입력" value="default-user" />
+      <span id="account-chip" class="account-chip">로그인 필요</span>
       <select id="model-select" title="대화 모델 선택">
         <option value="">모델 로딩 중...</option>
       </select>
@@ -335,13 +393,14 @@
         <option value="">이미지 모델 로딩 중...</option>
       </select>
       <button id="new-chat-btn">새 채팅</button>
+      <button id="logout-btn">로그아웃</button>
     </div>
   </header>
 
   <div id="messages">
     <div id="empty-state">
       <div style="font-size:36px;color:var(--accent);font-weight:700;">MK5</div>
-      <div>USER_ID를 넣고 메시지를 보내면, 선택한 sLLM이 기억, 검색, 파일, 터미널, 시장 스냅샷 도구를 사용할 수 있습니다.</div>
+      <div>로그인하면 선택한 sLLM이 기억, 검색, 파일, 문서, 이미지와 터미널 도구를 사용할 수 있습니다.</div>
     </div>
   </div>
 
@@ -357,18 +416,23 @@
 </div>
 
 <script>
-  const state = { loading: false, attachments: [] };
+  const state = { loading: false, attachments: [], authenticated: false, role: null };
   const $messages = document.getElementById("messages");
   const $emptyState = document.getElementById("empty-state");
   const $modelSelect = document.getElementById("model-select");
   const $imageModelSelect = document.getElementById("image-model-select");
-  const $userIdInput = document.getElementById("user-id-input");
+  const $accountChip = document.getElementById("account-chip");
   const $msgInput = document.getElementById("msg-input");
   const $sendBtn = document.getElementById("send-btn");
   const $attachBtn = document.getElementById("attach-btn");
   const $fileInput = document.getElementById("file-input");
   const $attachmentList = document.getElementById("attachment-list");
   const $newChatBtn = document.getElementById("new-chat-btn");
+  const $logoutBtn = document.getElementById("logout-btn");
+  const $loginOverlay = document.getElementById("login-overlay");
+  const $loginForm = document.getElementById("login-form");
+  const $loginIdInput = document.getElementById("login-id-input");
+  const $loginError = document.getElementById("login-error");
 
   async function loadModels() {
     try {
@@ -403,7 +467,68 @@
     }
   }
 
-  loadModels();
+  initializeAuth();
+
+  async function initializeAuth() {
+    try {
+      const res = await fetch("/auth/status");
+      if (!res.ok) throw new Error("login_required");
+      const data = await res.json();
+      setAuthenticated(data.role);
+      await loadModels();
+    } catch (_) {
+      showLogin();
+    }
+  }
+
+  function setAuthenticated(role) {
+    state.authenticated = true;
+    state.role = role;
+    $accountChip.textContent = role === "owner" ? "소유자" : "체험판";
+    $attachBtn.disabled = role === "trial";
+    $attachBtn.title = role === "trial" ? "파일 첨부는 소유자만 사용할 수 있습니다" : "파일 첨부";
+    $loginOverlay.classList.add("hidden");
+    $loginIdInput.value = "";
+    $loginError.textContent = "";
+  }
+
+  function showLogin(message = "") {
+    state.authenticated = false;
+    state.role = null;
+    $attachBtn.disabled = true;
+    $accountChip.textContent = "로그인 필요";
+    $loginError.textContent = message;
+    $loginOverlay.classList.remove("hidden");
+    setTimeout(() => $loginIdInput.focus(), 0);
+  }
+
+  $loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const loginId = $loginIdInput.value.trim();
+    if (!loginId) {
+      $loginError.textContent = "접속 ID를 입력해 주세요.";
+      return;
+    }
+    try {
+      const res = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ login_id: loginId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.message || "로그인 실패");
+      setAuthenticated(data.role);
+      await loadModels();
+      $msgInput.focus();
+    } catch (err) {
+      showLogin(err.message || "로그인 실패");
+    }
+  });
+
+  $logoutBtn.addEventListener("click", async () => {
+    try { await fetch("/auth/logout", { method: "POST" }); } catch (_) {}
+    showLogin("로그아웃했습니다.");
+  });
 
   $msgInput.addEventListener("input", () => {
     $msgInput.style.height = "auto";
@@ -433,13 +558,16 @@
 
   async function sendMessage() {
     if (state.loading) return;
+    if (!state.authenticated) {
+      showLogin("허용된 접속 ID를 입력해 주세요.");
+      return;
+    }
     const rawMessage = $msgInput.value.trim();
-    const userId = $userIdInput.value.trim();
-    if ((!rawMessage && state.attachments.length === 0) || !userId) return;
+    if (!rawMessage && state.attachments.length === 0) return;
 
     $emptyState.style.display = "none";
     const pendingAttachmentNames = state.attachments.map((file) => file.name);
-    appendUserBubble(userId, rawMessage || "(첨부 파일)", pendingAttachmentNames);
+    appendUserBubble(state.role === "owner" ? "소유자" : "체험판", rawMessage || "(첨부 파일)", pendingAttachmentNames);
     $msgInput.value = "";
     $msgInput.style.height = "auto";
 
@@ -461,7 +589,6 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: userId,
           message,
           model: $modelSelect.value || null,
           image_model: $imageModelSelect.value || null
@@ -473,6 +600,10 @@
         data = raw ? JSON.parse(raw) : {};
       } catch (parseErr) {
         data = { detail: raw || res.statusText };
+      }
+      if (res.status === 401) {
+        showLogin(data.message || "다시 로그인해 주세요.");
+        throw new Error(data.message || "로그인이 필요합니다.");
       }
       if (!res.ok) throw new Error(data.detail || res.statusText);
       loaderRow.remove();
@@ -493,6 +624,10 @@
     form.append("file", file);
     const res = await fetch("/upload", { method: "POST", body: form });
     const data = await res.json();
+    if (res.status === 401) {
+      showLogin(data.message || "다시 로그인해 주세요.");
+      throw new Error(data.message || "로그인이 필요합니다.");
+    }
     if (!res.ok || !data.ok) throw new Error(data.detail || data.message || "파일 업로드 실패");
     return data;
   }

@@ -197,6 +197,66 @@ class GraphRepository:
         scored.sort(key=lambda item: (-item[0], item[1].node_id))
         return [node for _, node in scored[:limit]]
 
+    def delete_user_graph(self, *, user_id: str, anchor_id: str) -> dict[str, int]:
+        """Delete one user's private graph material and now-orphaned concepts."""
+        owned_node_ids: set[str] = set()
+        if self.get_node(anchor_id) is not None:
+            owned_node_ids.add(anchor_id)
+        for row in self._conn.execute("SELECT node_id, payload_json FROM graph_nodes").fetchall():
+            payload = self._decode_json_dict(str(row["payload_json"]))
+            if str(payload.get("user_id") or "") == user_id:
+                owned_node_ids.add(str(row["node_id"]))
+
+        edge_ids: set[int] = set()
+        for row in self._conn.execute(
+            "SELECT edge_id, source_id, target_id, payload_json FROM graph_edges"
+        ).fetchall():
+            payload = self._decode_json_dict(str(row["payload_json"]))
+            if (
+                str(row["source_id"]) in owned_node_ids
+                or str(row["target_id"]) in owned_node_ids
+                or str(payload.get("user_id") or "") == user_id
+            ):
+                edge_ids.add(int(row["edge_id"]))
+
+        if edge_ids:
+            placeholders = ",".join("?" for _ in edge_ids)
+            self._conn.execute(
+                f"DELETE FROM graph_edges WHERE edge_id IN ({placeholders})",
+                tuple(sorted(edge_ids)),
+            )
+        if owned_node_ids:
+            placeholders = ",".join("?" for _ in owned_node_ids)
+            self._conn.execute(
+                f"DELETE FROM graph_nodes WHERE node_id IN ({placeholders})",
+                tuple(sorted(owned_node_ids)),
+            )
+
+        orphan_rows = self._conn.execute(
+            """
+            SELECT n.node_id
+            FROM graph_nodes AS n
+            LEFT JOIN graph_edges AS e
+              ON e.source_id = n.node_id OR e.target_id = n.node_id
+            WHERE n.node_type = 'concept' AND n.provenance = 'ingest'
+            GROUP BY n.node_id
+            HAVING COUNT(e.edge_id) = 0
+            """
+        ).fetchall()
+        orphan_ids = [str(row["node_id"]) for row in orphan_rows]
+        if orphan_ids:
+            placeholders = ",".join("?" for _ in orphan_ids)
+            self._conn.execute(
+                f"DELETE FROM graph_nodes WHERE node_id IN ({placeholders})",
+                tuple(orphan_ids),
+            )
+        self._conn.commit()
+        return {
+            "deleted_nodes": len(owned_node_ids),
+            "deleted_edges": len(edge_ids),
+            "deleted_orphan_concepts": len(orphan_ids),
+        }
+
     def close(self) -> None:
         self._conn.close()
 

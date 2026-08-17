@@ -3,6 +3,8 @@
 import os
 import re
 import shutil
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,12 +14,23 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .pipeline import Pipeline
-from .schemas import ChatRequest, ChatResponse
+from .accounts import AccountStore
+from .schemas import ChatRequest, ChatResponse, LoginRequest
+from .sessions import SessionStore
 from .. import config
 from ..tools.ollama_client import list_models
 
 
 pipeline: Pipeline | None = None
+account_store = AccountStore()
+session_store = SessionStore(
+    ttl_seconds=config.SESSION_TTL_HOURS * 3600,
+    max_active_sessions=config.MAX_ACTIVE_SESSIONS,
+    path=config.SESSIONS_DB_PATH,
+    account_validator=account_store.is_active,
+)
+_login_attempts: dict[str, deque[float]] = defaultdict(deque)
+_SESSION_COOKIE = "mk5_session"
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _UPLOAD_DIR = config.WORKSPACE_ROOT / ".mk5_uploads"
 
@@ -36,6 +49,27 @@ app = FastAPI(title="Machi MK5", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    public = path in {"/", "/health", "/auth/login", "/auth/status"} or path.startswith("/static/")
+    if public:
+        return await call_next(request)
+    account = session_store.get(request.cookies.get(_SESSION_COOKIE))
+    if account is None:
+        return JSONResponse(
+            status_code=401,
+            content={"ok": False, "error": "login_required", "message": "허용된 접속 ID를 입력해 주세요."},
+        )
+    if account.role == "trial" and path == "/upload":
+        return JSONResponse(
+            status_code=403,
+            content={"ok": False, "error": "owner_only", "message": "파일 업로드는 소유자 계정만 사용할 수 있습니다."},
+        )
+    request.state.account = account
+    return await call_next(request)
+
+
 def _get_pipeline() -> Pipeline:
     if pipeline is None:
         raise RuntimeError("Pipeline not initialized")
@@ -52,6 +86,66 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/auth/login")
+async def login(req: LoginRequest, request: Request):
+    client_ip = request.client.host if request.client is not None else "unknown"
+    now = time.time()
+    attempts = _login_attempts[client_ip]
+    while attempts and attempts[0] < now - 300:
+        attempts.popleft()
+    if len(attempts) >= 10:
+        return JSONResponse(
+            status_code=429,
+            content={"ok": False, "error": "too_many_attempts", "message": "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요."},
+        )
+    account = account_store.authenticate(req.login_id)
+    if account is None:
+        attempts.append(now)
+        return JSONResponse(
+            status_code=401,
+            content={"ok": False, "error": "invalid_login", "message": "허용되지 않은 접속 ID입니다."},
+        )
+    _login_attempts.pop(client_ip, None)
+    session_store.revoke(request.cookies.get(_SESSION_COOKIE))
+    token = session_store.create(account)
+    if token is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "error": "session_capacity_reached",
+                "message": f"현재 접속 가능한 {config.MAX_ACTIVE_SESSIONS}개 세션이 모두 사용 중입니다.",
+            },
+        )
+    response = JSONResponse(content={"ok": True, "role": account.role})
+    response.set_cookie(
+        _SESSION_COOKIE,
+        token,
+        httponly=True,
+        secure=config.SESSION_COOKIE_SECURE,
+        samesite="strict",
+        max_age=config.SESSION_TTL_HOURS * 3600,
+        path="/",
+    )
+    return response
+
+
+@app.get("/auth/status")
+async def auth_status(request: Request):
+    account = session_store.get(request.cookies.get(_SESSION_COOKIE))
+    if account is None:
+        return JSONResponse(status_code=401, content={"ok": False, "error": "login_required"})
+    return {"ok": True, "role": account.role}
+
+
+@app.post("/auth/logout")
+async def logout(request: Request):
+    session_store.revoke(request.cookies.get(_SESSION_COOKIE))
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(_SESSION_COOKIE, path="/")
+    return response
+
+
 @app.get("/models")
 async def get_models() -> dict:
     return {
@@ -62,9 +156,8 @@ async def get_models() -> dict:
 
 
 @app.get("/tools")
-async def get_tools() -> dict:
-    return {
-        "tools": [
+async def get_tools(request: Request) -> dict:
+    tools = [
             "graph_search",
             "record_memory_correction",
             "latest_search",
@@ -81,7 +174,10 @@ async def get_tools() -> dict:
             "terminal_command",
             "tool_manual",
         ]
-    }
+    if request.state.account.role == "trial":
+        from .pipeline import TRIAL_TOOL_NAMES
+        tools = [name for name in tools if name in TRIAL_TOOL_NAMES]
+    return {"tools": tools}
 
 
 @app.post("/upload")
@@ -123,14 +219,16 @@ async def upload_file(request: Request):
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest) -> ChatResponse:
+async def chat(req: ChatRequest, request: Request) -> ChatResponse:
+    account = request.state.account
     try:
         result = await _get_pipeline().run(
-            user_id=req.user_id,
+            user_id=account.graph_user_id,
             message=req.message,
             model=req.model,
             image_model=req.image_model,
             session_id=req.session_id,
+            account_role=account.role,
         )
     except Exception as exc:
         return JSONResponse(
@@ -171,5 +269,5 @@ def _unique_upload_path(path: Path) -> Path:
 def run() -> None:
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8010, reload=False)
+    uvicorn.run(app, host=config.SERVER_HOST, port=config.SERVER_PORT, reload=False)
 

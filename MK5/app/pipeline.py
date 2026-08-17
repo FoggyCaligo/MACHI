@@ -24,6 +24,15 @@ class PipelineResult:
     tool_events: list[dict]
 
 
+TRIAL_TOOL_NAMES = {
+    "graph_search",
+    "record_memory_correction",
+    "latest_search",
+    "web_research",
+    "tool_manual",
+}
+
+
 class Pipeline:
     def __init__(
         self,
@@ -60,6 +69,7 @@ class Pipeline:
         model: str | None = None,
         image_model: str | None = None,
         session_id: str | None = None,
+        account_role: str = "owner",
     ) -> PipelineResult:
         result = await self._orchestrator.respond(
             user_id=user_id,
@@ -67,6 +77,7 @@ class Pipeline:
             model=model,
             image_model=image_model,
             session_id=session_id,
+            allowed_tool_names=TRIAL_TOOL_NAMES if account_role == "trial" else None,
         )
         return PipelineResult(
             text=result.text,

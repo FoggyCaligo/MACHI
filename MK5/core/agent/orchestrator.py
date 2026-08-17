@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import PurePosixPath
 import json
 import re
@@ -55,11 +56,19 @@ class AgentOrchestrator:
         model: str | None = None,
         image_model: str | None = None,
         session_id: str | None = None,
+        allowed_tool_names: set[str] | None = None,
     ) -> AgentResponse:
+        system_prompt = f"{SYSTEM_PROMPT}\nCurrent date: {datetime.now().astimezone().date().isoformat()}."
         self._memory_service.ensure_user_anchor(user_id)
         conversation_key = f"{user_id}::{session_id or 'default'}"
         recent_dialogue_messages = list(self._recent_dialogue_messages.get(conversation_key, []))
         recent_tool_operations = list(self._recent_tool_operations.get(conversation_key, []))
+        model_tool_definitions = [
+            definition
+            for definition in self._tool_registry.model_definitions()
+            if allowed_tool_names is None or definition.name in allowed_tool_names
+        ]
+        allowed_tools = {definition.name for definition in model_tool_definitions}
         previous_activation_node_ids = set(self._previous_activation_node_ids.get(conversation_key, set()))
         previous_activation_node_weights = dict(
             self._previous_activation_node_weights.get(
@@ -167,11 +176,11 @@ class AgentOrchestrator:
             started = time.perf_counter()
             try:
                 turn = await self._chat_model.next_turn(
-                    system=SYSTEM_PROMPT,
+                    system=system_prompt,
                     user_message=model_user_message,
                     model=model,
                     memory_summary=memory_summary,
-                    tool_definitions=self._tool_registry.model_definitions(),
+                    tool_definitions=model_tool_definitions,
                     tool_history=tool_history,
                 )
             except ModelRequestError as exc:
@@ -263,7 +272,7 @@ class AgentOrchestrator:
                     rejected_final_answer=turn.final_answer,
                 ) or _local_tool_blocked_guard_result(
                     turn=turn,
-                    available_tools=self._tool_registry.model_definitions(),
+                    available_tools=model_tool_definitions,
                     tool_history=tool_history,
                     rejected_final_answer=turn.final_answer,
                 ) or _file_execution_guard_result(
@@ -283,7 +292,7 @@ class AgentOrchestrator:
                     continue
                 if _should_force_graph_search_for_memory_recall(
                     user_message=message,
-                    available_tools=self._tool_registry.model_definitions(),
+                    available_tools=model_tool_definitions,
                     tool_history=tool_history,
                 ):
                     _debug_log(
@@ -343,14 +352,18 @@ class AgentOrchestrator:
                 })
                 continue
             unknown_tool_call = next(
-                (call for call in turn.tool_calls if not self._tool_registry.has_tool(call.tool)),
+                (
+                    call
+                    for call in turn.tool_calls
+                    if not self._tool_registry.has_tool(call.tool) or call.tool not in allowed_tools
+                ),
                 None,
             )
             if unknown_tool_call is not None:
                 unknown_tool_guards += 1
                 guard_result = _unknown_tool_guard_result(
                     unknown_tool=unknown_tool_call.tool,
-                    available_tools=[definition.name for definition in self._tool_registry.model_definitions()],
+                    available_tools=[definition.name for definition in model_tool_definitions],
                 )
                 _debug_log(
                     f"execution_guard round={round_index} "
@@ -462,7 +475,7 @@ class AgentOrchestrator:
         try:
             synthesis_turn = await self._chat_model.next_turn(
                 system=(
-                    SYSTEM_PROMPT
+                    system_prompt
                     + "\nTool execution is finished. Do not call tools or ask the user to choose routine next steps. "
                     "Synthesize the available evidence into the best final answer now."
                 ),
