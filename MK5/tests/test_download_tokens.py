@@ -46,7 +46,7 @@ async def test_file_download_link_tool_returns_mobile_url(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_download_endpoint_requires_owner_and_consumes_token(tmp_path: Path) -> None:
+async def test_download_endpoint_requires_owner_and_accepts_valid_token(tmp_path: Path) -> None:
     target = tmp_path / "report.txt"
     target.write_text("private", encoding="utf-8")
     item = default_download_token_store.create(target)
@@ -59,4 +59,4 @@ async def test_download_endpoint_requires_owner_and_consumes_token(tmp_path: Pat
 
     assert isinstance(denied, JSONResponse) and denied.status_code == 403
     assert isinstance(allowed, FileResponse) and allowed.path == str(target.resolve())
-    assert isinstance(reused, JSONResponse) and reused.status_code == 404
+    assert isinstance(reused, FileResponse)

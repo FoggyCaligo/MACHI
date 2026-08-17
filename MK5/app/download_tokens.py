@@ -18,7 +18,7 @@ class DownloadToken:
 
 
 class DownloadTokenStore:
-    """Short-lived, in-memory, single-use file download tokens."""
+    """Short-lived, in-memory file download tokens."""
 
     def __init__(self, default_ttl_seconds: int = 3600) -> None:
         self._default_ttl_seconds = max(1, int(default_ttl_seconds))

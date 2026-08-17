@@ -190,7 +190,7 @@ async def download_file(token: str, request: Request):
             status_code=403,
             content={"ok": False, "error": "owner_only", "message": "파일 다운로드는 소유자 계정만 사용할 수 있습니다."},
         )
-    token_item = default_download_token_store.resolve(token, consume=True)
+    token_item = default_download_token_store.resolve(token)
     if token_item is None:
         return JSONResponse(
             status_code=404,
