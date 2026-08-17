@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .pipeline import Pipeline
 from .accounts import AccountStore
+from .download_tokens import default_download_token_store
 from .schemas import ChatRequest, ChatResponse, LoginRequest
 from .sessions import SessionStore
 from .. import config
@@ -168,6 +169,7 @@ async def get_tools(request: Request) -> dict:
             "file_search",
             "file_create",
             "file_read",
+            "file_download_link",
             "document_read",
             "image_analyze",
             "file_update",
@@ -179,6 +181,31 @@ async def get_tools(request: Request) -> dict:
         from .pipeline import TRIAL_TOOL_NAMES
         tools = [name for name in tools if name in TRIAL_TOOL_NAMES]
     return {"tools": tools}
+
+
+@app.get("/download/{token}")
+async def download_file(token: str, request: Request):
+    if request.state.account.role != "owner":
+        return JSONResponse(
+            status_code=403,
+            content={"ok": False, "error": "owner_only", "message": "파일 다운로드는 소유자 계정만 사용할 수 있습니다."},
+        )
+    token_item = default_download_token_store.resolve(token, consume=True)
+    if token_item is None:
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "invalid_or_expired_token", "message": "다운로드 링크가 유효하지 않거나 만료되었습니다."},
+        )
+    if not token_item.path.exists() or not token_item.path.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "file_not_found", "message": "요청한 파일이 디스크에 존재하지 않습니다."},
+        )
+    return FileResponse(
+        path=str(token_item.path),
+        filename=token_item.filename,
+        media_type="application/octet-stream",
+    )
 
 
 @app.post("/upload")

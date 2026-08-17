@@ -133,6 +133,20 @@
     }
     #login-error { min-height: 20px; margin-top: 10px; color: var(--danger); font-size: 12px; }
 
+    .download-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .download-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 700;
+    }
+    .download-link:hover { background: var(--accent-dim); }
+
     #messages {
       flex: 1;
       overflow-y: auto;
@@ -673,6 +687,14 @@
     const row = document.createElement("div");
     row.className = "msg-row MK5";
     const toolEvents = Array.isArray(data.tool_events) ? data.tool_events : [];
+    const downloads = toolEvents
+      .filter((event) => event.tool === "file_download_link" && event.result?.ok && event.result?.download_url)
+      .map((event) => event.result);
+    const downloadPanel = downloads.length ? `
+      <div class="download-links">
+        ${downloads.map((item) => `<a class="download-link" href="${escapeHtml(item.download_url)}" download>⬇ ${escapeHtml(item.filename || "파일 다운로드")}</a>`).join("")}
+      </div>
+    ` : "";
     const toolPanel = toolEvents.length ? `
       <div class="tool-panel">
         <button class="tool-toggle" type="button">툴 로그 ${toolEvents.length}개 보기</button>
@@ -690,7 +712,8 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
     row.innerHTML = `
       <div class="avatar MK5">M5</div>
       <div class="bubble">
-        <div class="bubble-text">${escapeHtml(data.text || "(응답 없음)")}</div>
+        <div class="bubble-text">${renderMessageText(data.text || "(응답 없음)")}</div>
+        ${downloadPanel}
         <div class="meta">
           <span>tools ${escapeHtml(String((data.used_tools || []).length))}</span>
           <span>writes ${escapeHtml(String((data.memory_writes || []).length))}</span>
@@ -744,6 +767,21 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+  }
+
+  function renderMessageText(value) {
+    const text = String(value);
+    const pattern = /\[([^\]\n]{1,120})\]\((\/download\/[A-Za-z0-9_-]{20,100})\)|(\/download\/[A-Za-z0-9_-]{20,100})/g;
+    let output = "";
+    let cursor = 0;
+    for (const match of text.matchAll(pattern)) {
+      output += escapeHtml(text.slice(cursor, match.index));
+      const url = match[2] || match[3];
+      const label = match[1] || "파일 다운로드";
+      output += `<a class="download-link" href="${escapeHtml(url)}" download>${escapeHtml(label)}</a>`;
+      cursor = match.index + match[0].length;
+    }
+    return output + escapeHtml(text.slice(cursor));
   }
 </script>
 </body>

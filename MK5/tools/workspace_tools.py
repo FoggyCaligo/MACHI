@@ -2,13 +2,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from typing import TYPE_CHECKING
 from .. import config
 from .tool_runtime import ToolDefinition, ToolRegistry
 
+if TYPE_CHECKING:
+    from ..app.download_tokens import DownloadTokenStore
+
 
 class WorkspaceFileToolSuite:
-    def __init__(self, workspace_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        workspace_root: Path | None = None,
+        *,
+        token_store: DownloadTokenStore | None = None,
+    ) -> None:
         self._workspace_root = (workspace_root or config.WORKSPACE_ROOT).resolve()
+        if token_store is None:
+            from ..app.download_tokens import default_download_token_store
+            self._token_store = default_download_token_store
+        else:
+            self._token_store = token_store
 
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -124,6 +138,24 @@ class WorkspaceFileToolSuite:
                 },
             ),
             self._delete,
+        )
+        registry.register(
+            ToolDefinition(
+                name="file_download_link",
+                description=(
+                    "Create a direct download URL for a file so the user can download it on a phone or other device. "
+                    "Paths resolve from the workspace root; parent and absolute paths are allowed."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._download_link,
         )
         return registry
 
@@ -344,6 +376,23 @@ class WorkspaceFileToolSuite:
             raise ValueError("file_delete only supports files")
         target.unlink()
         return {"ok": True, "path": relative_path, "status": "deleted"}
+
+    async def _download_link(self, arguments: dict) -> dict:
+        relative_path = self._path_argument(arguments)
+        target = self._resolve(relative_path)
+        missing = self._missing_result(relative_path, target, not_found_message="File not found")
+        if missing is not None:
+            return missing
+        token = self._token_store.create(target)
+        display_path = self._display_path(target)
+        return {
+            "ok": True,
+            "path": display_path,
+            "filename": target.name,
+            "download_url": f"/download/{token.token}",
+            "expires_in_seconds": int(token.expires_at - token.created_at),
+            "size_bytes": token.size_bytes,
+        }
 
     def _missing_result(self, relative_path: str, target: Path, *, not_found_message: str) -> dict | None:
         if not target.exists():

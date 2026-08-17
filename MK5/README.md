@@ -55,7 +55,7 @@
 
 ### 6. 파일, 문서, 이미지 입력
 
-- 파일 경로 탐색은 `file_search`, 텍스트 파일 작업은 `file_read`, `file_create`, `file_update`, `file_delete`로 다룬다.
+- 파일 경로 탐색은 `file_search`, 텍스트 파일 작업은 `file_read`, `file_create`, `file_update`, `file_delete`로 다룬다. 소유자가 PC 파일을 휴대폰 등 현재 브라우저로 내려받으려면 `file_download_link`로 1시간짜리 링크를 만든다.
 - `file_search`는 기본적으로 workspace 아래를 재귀 검색하며, `root`에 부모·절대 경로를 주면 workspace 밖도 탐색할 수 있다. 파일 CRUD·문서·이미지·터미널 도구도 부모·절대 경로를 해석할 수 있다.
 - `.txt`, `.md`, `.markdown` 파일을 `file_read`로 읽으면 파일 본문에서 핵심 노드 후보를 뽑아 그래프 DB에 파일 문맥 노드로 기록하고 현재 턴의 국소활성화에 편입한다.
 - 파일에서 온 노드는 사용자 발화 노드보다 약한 `0.25` 활성 강도로 들어가며, 사용자 장기 기억 summary 후보에서는 제외된다.
@@ -163,6 +163,7 @@ JSON 파싱 실패가 발생하면 서버 콘솔의 `[MK5 model] output_parse_fa
 - `code_index`: Python 코드의 import, 클래스, 함수, route, 도구, 설정, 테스트 구조를 압축 인덱싱
 - `code_search`: 압축 코드 인덱스에서 관련 파일과 symbol 검색
 - `file_create`, `file_read`, `file_update`, `file_delete`: 파일 CRUD
+- `file_download_link`: 소유자 전용 단일 사용 파일 다운로드 링크 생성
 - `document_read`: PDF/DOCX 텍스트 추출
 - `image_analyze`: 이미지 분석
 - `terminal_command`: 터미널 명령 실행
@@ -171,6 +172,8 @@ JSON 파싱 실패가 발생하면 서버 콘솔의 `[MK5 model] output_parse_fa
 사용자가 과거 대화의 내용·주제·세부사항을 회상해 달라고 했는데 모델이 자동 기억만으로 최종 답변을 만들면, 완료 검증기가 그 답변을 보류하고 `graph_search`를 한 번 실행한 뒤 검색 결과를 포함해 다시 답하도록 한다. 이때 현재 질문 자체의 발화 노드는 검색에서 제외한다.
 
 도구 목록은 UI의 `/tools` 엔드포인트에서도 확인할 수 있다.
+
+`file_download_link`는 워크스페이스 상대 경로, 상위 경로와 절대 경로의 파일을 받을 수 있다. 링크는 기본 60분 동안 유효하지만 첫 다운로드 성공 요청에서 즉시 소모된다. `/download/{token}`은 로그인한 `owner` 세션에서만 열리며 `trial` 계정과 로그아웃 상태에서는 거부된다. 서버를 재시작하면 메모리에 있던 미사용 링크도 모두 무효화된다. UI는 도구 결과를 모바일에서 누르기 쉬운 다운로드 버튼으로 표시한다.
 
 ## 외부 접속 계정
 

@@ -14,6 +14,7 @@ from ..tools.manual_tools import ToolManualSuite
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.web_search import HttpWebSearchTool, WebSearchTool
 from ..tools.workspace_tools import WorkspaceFileToolSuite
+from .download_tokens import default_download_token_store
 
 
 @dataclass
@@ -53,7 +54,9 @@ class Pipeline:
             chat_model=self._chat_model,
             web_search=self._web_search,
         )
-        self._orchestrator.register_tool_registry(WorkspaceFileToolSuite().build_registry())
+        self._orchestrator.register_tool_registry(
+            WorkspaceFileToolSuite(token_store=default_download_token_store).build_registry()
+        )
         self._orchestrator.register_tool_registry(CodeIndexToolSuite().build_registry())
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())

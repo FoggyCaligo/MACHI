@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from copy import deepcopy
@@ -327,6 +327,10 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
         files = result.get("files")
         if isinstance(files, list):
             compact["files"] = [_shorten(str(path), 300) for path in files[:80]]
+    elif tool == "file_download_link":
+        for key in ("download_url", "filename", "size_bytes", "expires_in_seconds"):
+            if key in result:
+                compact[key] = result.get(key)
     elif tool == "terminal_command":
         _add_tail(compact, "stdout", result.get("stdout"), 320)
         _add_tail(compact, "stderr", result.get("stderr"), 320)
