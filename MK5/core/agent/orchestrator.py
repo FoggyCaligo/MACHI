@@ -11,7 +11,7 @@ import time
 from ... import config
 from ...tools.graph_tools import GraphToolSuite
 from ...tools.llm_client import ChatModel, ModelRequestError, ModelTurn
-from ...tools.tool_runtime import ToolCall, ToolRegistry
+from ...tools.tool_runtime import ToolCall, ToolDefinition, ToolRegistry
 from ...tools.web_search import WebSearchTool
 from ..graph.service import GraphMemoryService
 from .prompts import SYSTEM_PROMPT
@@ -289,31 +289,6 @@ class AgentOrchestrator:
                         "arguments": {},
                         "result": guard_result,
                     })
-                    continue
-                if _should_force_graph_search_for_memory_recall(
-                    user_message=message,
-                    available_tools=model_tool_definitions,
-                    tool_history=tool_history,
-                ):
-                    _debug_log(
-                        f"completion_memory_search round={round_index} "
-                        "action=run_graph_search_before_final"
-                    )
-                    event = await self._run_tool_call(
-                        ToolCall(tool="graph_search", arguments={"query": message, "limit": 8}),
-                        user_id=user_id,
-                        utterance_id=utterance_id,
-                        image_model=image_model,
-                    )
-                    tool_event = {
-                        "tool": "graph_search",
-                        "arguments": event["arguments"],
-                        "result": event["result"],
-                    }
-                    tool_history.append(tool_event)
-                    tool_events.append(tool_event)
-                    if "graph_search" not in used_tools:
-                        used_tools.append("graph_search")
                     continue
                 self._remember_dialogue_messages(
                     conversation_key=conversation_key,
@@ -610,8 +585,6 @@ class AgentOrchestrator:
     ) -> dict:
         arguments = dict(call.arguments)
         if call.tool in {"graph_search", "record_memory_correction"}:
-            # The authenticated/request-scoped identity is authoritative. Never
-            # let the model select or impersonate a graph-memory owner.
             arguments["user_id"] = user_id
         if call.tool == "graph_search":
             arguments["exclude_node_ids"] = [utterance_id]
@@ -983,33 +956,6 @@ def _has_successful_tool_event(
                 continue
         return True
     return False
-
-
-def _should_force_graph_search_for_memory_recall(
-    *,
-    user_message: str,
-    available_tools: list[ToolDefinition],
-    tool_history: list[dict],
-) -> bool:
-    if "graph_search" not in {tool.name for tool in available_tools}:
-        return False
-    if _has_successful_tool_event(tool_history, "graph_search"):
-        return False
-
-    normalized = re.sub(r"\s+", " ", user_message.strip().lower())
-    if not normalized:
-        return False
-    past_context = bool(re.search(
-        r"(?:이전|예전|전에|그때|지금까지|여태|과거|기억|대화|말했|논의|"
-        r"previous|earlier|before|past|remember|recall|conversation|discussed)",
-        normalized,
-    ))
-    requested_content = bool(re.search(
-        r"(?:무슨|무엇|뭐|어떤|내용|주제|상세|자세|구체|확인|알려|말해|"
-        r"what|which|detail|specific|topic|content|tell|describe|check)",
-        normalized,
-    ))
-    return past_context and requested_content
 
 
 def _arguments_include(actual: object, expected_subset: dict) -> bool:
