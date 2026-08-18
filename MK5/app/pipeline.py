@@ -8,6 +8,7 @@ from ..core.graph.service import GraphMemoryService
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.code_index_tools import CodeIndexToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
+from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
 from ..tools.manual_tools import ToolManualSuite
@@ -57,6 +58,7 @@ class Pipeline:
         self._orchestrator.register_tool_registry(
             WorkspaceFileToolSuite(token_store=default_download_token_store).build_registry()
         )
+        self._orchestrator.register_tool_registry(FileNavigationToolSuite().build_registry())
         self._orchestrator.register_tool_registry(CodeIndexToolSuite().build_registry())
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
