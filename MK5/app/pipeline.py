@@ -8,6 +8,7 @@ from ..core.graph.service import GraphMemoryService
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.code_index_tools import CodeIndexToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
+from ..tools.file_agent_tools import FileAgentToolSuite
 from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
@@ -59,6 +60,9 @@ class Pipeline:
             WorkspaceFileToolSuite(token_store=default_download_token_store).build_registry()
         )
         self._orchestrator.register_tool_registry(FileNavigationToolSuite().build_registry())
+        # Register agent-oriented overrides last so file_read/file_text_search/file_update
+        # use narrow context and recovery-aware behavior without changing the stable base suite.
+        self._orchestrator.register_tool_registry(FileAgentToolSuite().build_registry())
         self._orchestrator.register_tool_registry(CodeIndexToolSuite().build_registry())
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
