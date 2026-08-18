@@ -331,6 +331,10 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
         for key in ("download_url", "filename", "size_bytes", "expires_in_seconds"):
             if key in result:
                 compact[key] = result.get(key)
+    elif tool == "file_update":
+        compact["message"] = _shorten(str(result.get("message") or ""), 500)
+        if result.get("recovery"):
+            compact["recovery"] = _compact_value(result.get("recovery"), limit=700)
     elif tool == "terminal_command":
         _add_tail(compact, "stdout", result.get("stdout"), 320)
         _add_tail(compact, "stderr", result.get("stderr"), 320)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from typing import TYPE_CHECKING
@@ -333,7 +334,11 @@ class WorkspaceFileToolSuite:
                     "ok": False,
                     "path": relative_path,
                     "error": "old_not_found",
-                    "message": "Old text not found.",
+                    "message": (
+                        "Old text not found. Use one of closest_matches as the exact old value, "
+                        "or call file_read and retry. The file was not changed."
+                    ),
+                    "recovery": self._replacement_recovery(original, old),
                 }
             updated = original.replace(old, new)
             target.write_text(updated, encoding="utf-8")
@@ -360,6 +365,39 @@ class WorkspaceFileToolSuite:
             "path": relative_path,
             "error": "invalid_arguments",
             "message": "file_update requires content, mode='append' with content, or old/new replacement.",
+        }
+
+    @staticmethod
+    def _replacement_recovery(original: str, old: str) -> dict:
+        lines = original.splitlines()
+        old_lines = old.splitlines() or [old]
+        span = max(1, len(old_lines))
+        normalized_old = "\n".join(line.strip() for line in old_lines).strip()
+        ranked: list[tuple[float, int, str]] = []
+        max_windows = min(len(lines), 10000)
+        for start in range(max_windows):
+            candidate_lines = lines[start : start + span]
+            if not candidate_lines:
+                continue
+            candidate = "\n".join(candidate_lines)
+            normalized_candidate = "\n".join(line.strip() for line in candidate_lines).strip()
+            if not normalized_candidate:
+                continue
+            score = SequenceMatcher(None, normalized_old, normalized_candidate).ratio()
+            if score >= 0.18:
+                ranked.append((score, start + 1, candidate))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return {
+            "instruction": "Retry file_update with an exact current snippet as old; call file_read if none is intended.",
+            "requested_old": old[:500],
+            "closest_matches": [
+                {
+                    "line": line_number,
+                    "similarity": round(score, 3),
+                    "text": text[:500],
+                }
+                for score, line_number, text in ranked[:3]
+            ],
         }
 
     async def _delete(self, arguments: dict) -> dict:

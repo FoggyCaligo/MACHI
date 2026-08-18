@@ -10,7 +10,7 @@ from MK5.tools.terminal_tools import TerminalToolSuite
 from MK5.tools.code_index_tools import CodeIndexToolSuite
 from MK5.tools.document_tools import DocumentReadToolSuite, _looks_garbled
 from MK5.tools.image_tools import ImageAnalyzeToolSuite
-from MK5.tools.llm_client import ModelOutputParseError, ModelTurn, _parse_model_turn, _require_tool_manuals, _response_schema_for_tools
+from MK5.tools.llm_client import ModelOutputParseError, ModelTurn, _compact_tool_result, _parse_model_turn, _require_tool_manuals, _response_schema_for_tools
 from MK5.tools.tool_runtime import ToolCall, ToolDefinition
 from MK5.tools.workspace_tools import WorkspaceFileToolSuite
 from MK5.tools import web_search
@@ -277,6 +277,27 @@ async def test_file_update_replaces_exact_utf8_text(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert result["replacements"] == 1
     assert read_result["content"] == "감성\n샤워\n"
+
+
+@pytest.mark.asyncio
+async def test_file_update_old_not_found_returns_recovery_candidates(tmp_path: Path) -> None:
+    current = '<a class="download-link" href="/download/token">파일 다운로드</a>\n'
+    (tmp_path / "index.html").write_text(current, encoding="utf-8")
+    registry = WorkspaceFileToolSuite(tmp_path).build_registry()
+
+    result = await registry.run(ToolCall(tool="file_update", arguments={
+        "path": "index.html",
+        "old": '<a href="#" class="btn btn-sm">사용자명</a>',
+        "new": "",
+    }))
+    compact = _compact_tool_result(tool="file_update", result=result)
+
+    assert result["ok"] is False
+    assert result["error"] == "old_not_found"
+    assert result["recovery"]["closest_matches"]
+    assert result["recovery"]["closest_matches"][0]["line"] == 1
+    assert compact["recovery"]["closest_matches"]
+    assert (tmp_path / "index.html").read_text(encoding="utf-8") == current
 
 
 @pytest.mark.asyncio
