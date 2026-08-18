@@ -15,6 +15,7 @@ _IGNORED_DIRS = {
     "node_modules",
     ".pytest_cache",
 }
+_MODEL_CONTEXT_LIMIT = 1800
 
 
 class FileNavigationToolSuite:
@@ -31,7 +32,8 @@ class FileNavigationToolSuite:
                 description=(
                     "Inspect a directory tree before guessing file paths. Use this when you know the project or "
                     "folder but do not yet know which file to read. Returns workspace-relative directories and files. "
-                    "After locating a likely file, continue with file_read instead of stopping."
+                    "The result includes model_context, a compact path-first summary designed to survive tool-history "
+                    "compaction. After locating a likely file, continue with file_read instead of stopping."
                 ),
                 input_schema={
                     "type": "object",
@@ -53,7 +55,9 @@ class FileNavigationToolSuite:
                     "Search text inside UTF-8 workspace files and return exact paths, line numbers, and matching lines. "
                     "Use this when you know text, a HTML label, CSS class, function name, symbol, or code fragment but "
                     "do not know which file contains it. Use file_search instead when searching by filename/glob. "
-                    "After finding a likely file, continue with file_read and then file_update when editing is requested."
+                    "The result includes model_context, a compact path+line summary designed to survive tool-history "
+                    "compaction. After finding a likely file, continue with file_read and then file_update when editing "
+                    "is requested."
                 ),
                 input_schema={
                     "type": "object",
@@ -85,6 +89,25 @@ class FileNavigationToolSuite:
     def _ignored(path: Path) -> bool:
         return any(part in _IGNORED_DIRS for part in path.parts)
 
+    @staticmethod
+    def _compact_lines(lines: list[str], *, limit: int = _MODEL_CONTEXT_LIMIT) -> str:
+        kept: list[str] = []
+        used = 0
+        for line in lines:
+            clean = line.strip()
+            if not clean:
+                continue
+            cost = len(clean) + 1
+            if kept and used + cost > limit:
+                kept.append("... [more results omitted]")
+                break
+            if not kept and cost > limit:
+                kept.append(clean[: max(0, limit - 3)] + "...")
+                break
+            kept.append(clean)
+            used += cost
+        return "\n".join(kept)
+
     async def _tree(self, arguments: dict) -> dict:
         root_text = str(arguments.get("root") or ".").strip() or "."
         try:
@@ -104,6 +127,7 @@ class FileNavigationToolSuite:
                 "error": "not_found",
                 "message": f"Tree root not found: {root_text}",
                 "entries": [],
+                "model_context": f"file_tree failed: root not found: {root_text}",
             }
         if not root.is_dir():
             return {
@@ -112,6 +136,7 @@ class FileNavigationToolSuite:
                 "error": "not_directory",
                 "message": f"Tree root is not a directory: {root_text}",
                 "entries": [],
+                "model_context": f"file_tree failed: not a directory: {root_text}",
             }
 
         entries: list[dict[str, object]] = []
@@ -142,8 +167,20 @@ class FileNavigationToolSuite:
                 "error": "tree_failed",
                 "message": str(exc),
                 "entries": [],
+                "model_context": self._compact_lines([
+                    f"file_tree failed for {root_text}",
+                    str(exc),
+                ]),
             }
 
+        model_context = self._compact_lines([
+            f"file_tree root={root_text} depth={depth} count={len(entries)} truncated={truncated}",
+            *[
+                f"{'DIR ' if entry['type'] == 'directory' else 'FILE'} {entry['path']}"
+                for entry in entries
+            ],
+            "Next: choose the likely file and call file_read; do not stop at discovery.",
+        ])
         return {
             "ok": True,
             "workspace_root": str(self._workspace_root),
@@ -152,6 +189,7 @@ class FileNavigationToolSuite:
             "entries": entries,
             "count": len(entries),
             "truncated": truncated,
+            "model_context": model_context,
         }
 
     async def _text_search(self, arguments: dict) -> dict:
@@ -162,6 +200,7 @@ class FileNavigationToolSuite:
                 "error": "invalid_arguments",
                 "message": "file_text_search requires a non-empty query.",
                 "matches": [],
+                "model_context": "file_text_search failed: query is empty.",
             }
         root_text = str(arguments.get("root") or ".").strip() or "."
         pattern = str(arguments.get("pattern") or "*").strip() or "*"
@@ -179,6 +218,7 @@ class FileNavigationToolSuite:
                 "error": "not_found",
                 "message": f"Search root not found: {root_text}",
                 "matches": [],
+                "model_context": f"file_text_search failed: root not found: {root_text}",
             }
         if not root.is_dir():
             return {
@@ -188,6 +228,7 @@ class FileNavigationToolSuite:
                 "error": "not_directory",
                 "message": f"Search root is not a directory: {root_text}",
                 "matches": [],
+                "model_context": f"file_text_search failed: not a directory: {root_text}",
             }
 
         matches: list[dict[str, object]] = []
@@ -207,6 +248,10 @@ class FileNavigationToolSuite:
                 "error": "invalid_search",
                 "message": str(exc),
                 "matches": [],
+                "model_context": self._compact_lines([
+                    f"file_text_search failed for query={query!r} root={root_text}",
+                    str(exc),
+                ]),
             }
 
         for path in candidates:
@@ -235,6 +280,21 @@ class FileNavigationToolSuite:
             if truncated:
                 break
 
+        model_context = self._compact_lines([
+            (
+                f"file_text_search query={query!r} root={root_text} pattern={pattern!r} "
+                f"matches={len(matches)} scanned={scanned_files} skipped={skipped_files} truncated={truncated}"
+            ),
+            *[
+                f"{match['path']}:{match['line']} | {match['text']}"
+                for match in matches
+            ],
+            (
+                "Next: call file_read on the most relevant path before editing."
+                if matches
+                else "No matching text found; broaden the query or inspect the tree/file names."
+            ),
+        ])
         return {
             "ok": True,
             "workspace_root": str(self._workspace_root),
@@ -246,4 +306,5 @@ class FileNavigationToolSuite:
             "scanned_files": scanned_files,
             "skipped_files": skipped_files,
             "truncated": truncated,
+            "model_context": model_context,
         }
