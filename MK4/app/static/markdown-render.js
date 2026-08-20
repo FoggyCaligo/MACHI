@@ -2,6 +2,7 @@
   "use strict";
 
   const SAFE_LINK_RE = /^(?:https?:\/\/|\/download\/|mailto:)/i;
+  const DOWNLOAD_PATH_RE = /\/download\/[A-Za-z0-9_-]{20,100}/g;
 
   function escapeHtml(value) {
     return String(value)
@@ -14,6 +15,7 @@
 
   function renderInline(value) {
     const codeTokens = [];
+    const linkTokens = [];
     let text = escapeHtml(value);
 
     text = text.replace(/`([^`\n]+)`/g, (_, code) => {
@@ -25,9 +27,17 @@
     text = text.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_, label, href) => {
       const decodedHref = href.replace(/&amp;/g, "&");
       if (!SAFE_LINK_RE.test(decodedHref)) return `${label} (${href})`;
-      const download = decodedHref.startsWith("/download/") ? " download" : "";
+      const token = `@@LINK_${linkTokens.length}@@`;
+      const download = decodedHref.startsWith("/download/") ? ' class="download-link" download' : "";
       const external = /^https?:\/\//i.test(decodedHref) ? ' target="_blank" rel="noopener noreferrer"' : "";
-      return `<a href="${escapeHtml(decodedHref)}"${download}${external}>${label}</a>`;
+      linkTokens.push(`<a href="${escapeHtml(decodedHref)}"${download}${external}>${label}</a>`);
+      return token;
+    });
+
+    text = text.replace(DOWNLOAD_PATH_RE, (href) => {
+      const token = `@@LINK_${linkTokens.length}@@`;
+      linkTokens.push(`<a class="download-link" href="${escapeHtml(href)}" download>파일 다운로드</a>`);
+      return token;
     });
 
     text = text
@@ -38,6 +48,9 @@
 
     codeTokens.forEach((html, index) => {
       text = text.replace(`@@CODE_${index}@@`, html);
+    });
+    linkTokens.forEach((html, index) => {
+      text = text.replace(`@@LINK_${index}@@`, html);
     });
     return text;
   }
