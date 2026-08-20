@@ -15,6 +15,11 @@ from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
 from ..tools.manual_tools import ToolManualSuite
 from ..tools.terminal_tools import TerminalToolSuite
+from ..tools.tool_runtime import (
+    get_file_working_root,
+    reset_file_working_root,
+    set_file_working_root,
+)
 from ..tools.web_search import HttpWebSearchTool, WebSearchTool
 from ..tools.workspace_tools import WorkspaceFileToolSuite
 from .download_tokens import default_download_token_store
@@ -52,6 +57,7 @@ class Pipeline:
         base_chat_model = chat_model or OllamaToolChatModel()
         self._chat_model = AutonomyChatModel(base_chat_model)
         self._web_search = web_search or HttpWebSearchTool()
+        self._file_working_roots: dict[str, str] = {}
         self._orchestrator = AgentOrchestrator(
             memory_service=self._memory,
             graph_tools=self._tools,
@@ -83,14 +89,20 @@ class Pipeline:
         session_id: str | None = None,
         account_role: str = "owner",
     ) -> PipelineResult:
-        result = await self._orchestrator.respond(
-            user_id=user_id,
-            message=message,
-            model=model,
-            image_model=image_model,
-            session_id=session_id,
-            allowed_tool_names=TRIAL_TOOL_NAMES if account_role == "trial" else None,
-        )
+        conversation_key = f"{user_id}::{session_id or 'default'}"
+        token = set_file_working_root(self._file_working_roots.get(conversation_key, "."))
+        try:
+            result = await self._orchestrator.respond(
+                user_id=user_id,
+                message=message,
+                model=model,
+                image_model=image_model,
+                session_id=session_id,
+                allowed_tool_names=TRIAL_TOOL_NAMES if account_role == "trial" else None,
+            )
+            self._file_working_roots[conversation_key] = get_file_working_root()
+        finally:
+            reset_file_working_root(token)
         return PipelineResult(
             text=result.text,
             used_tools=result.used_tools,
