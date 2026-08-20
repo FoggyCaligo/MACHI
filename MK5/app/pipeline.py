@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from ..core.agent.orchestrator import AgentOrchestrator
 from ..core.graph.repository import GraphRepository
 from ..core.graph.service import GraphMemoryService
+from ..tools.autonomy_tools import AutonomyChatModel
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.code_index_tools import CodeIndexToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
@@ -48,7 +49,8 @@ class Pipeline:
         self._graph_repo = graph_repo or GraphRepository()
         self._memory = GraphMemoryService(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
-        self._chat_model = chat_model or OllamaToolChatModel()
+        base_chat_model = chat_model or OllamaToolChatModel()
+        self._chat_model = AutonomyChatModel(base_chat_model)
         self._web_search = web_search or HttpWebSearchTool()
         self._orchestrator = AgentOrchestrator(
             memory_service=self._memory,
