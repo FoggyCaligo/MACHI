@@ -28,23 +28,15 @@ class _FakeWhisperModel:
         ]), SimpleNamespace(language="ko")
 
 
-class _FakeSynthesisConfig:
-    def __init__(self, **kwargs) -> None:
-        self.kwargs = kwargs
-
-
-class _FakePiperVoice:
+class _FakeQwenTTSModel:
     def __init__(self) -> None:
         self.calls = 0
+        self.last_kwargs: dict[str, object] = {}
 
-    def synthesize_wav(self, text: str, wav_file, *, syn_config=None) -> None:
+    def generate_custom_voice(self, **kwargs):
         self.calls += 1
-        assert text == "안녕하세요"
-        assert isinstance(syn_config, _FakeSynthesisConfig)
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(16000)
-        wav_file.writeframes(b"\x00\x00" * 100)
+        self.last_kwargs = kwargs
+        return [[0.0] * 240], 24000
 
 
 @pytest.mark.asyncio
@@ -97,94 +89,114 @@ def test_faster_whisper_uses_managed_download_cache(tmp_path: Path, monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_tts_uses_current_piper_synthesize_wav_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    model_path = tmp_path / "custom.onnx"
-    config_path = tmp_path / "custom.onnx.json"
-    model_path.write_bytes(b"model")
-    config_path.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(config, "VOICE_TTS_MODEL_PATH", str(model_path))
-    monkeypatch.setattr(config, "VOICE_TTS_CONFIG_PATH", str(config_path))
-    monkeypatch.setattr(config, "VOICE_TTS_SPEAKER_ID", None)
-    monkeypatch.setattr(config, "VOICE_TTS_LENGTH_SCALE", None)
+async def test_tts_uses_qwen_sohee_custom_voice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "VOICE_TTS_SPEAKER", "Sohee")
+    monkeypatch.setattr(config, "VOICE_TTS_LANGUAGE", "Korean")
+    monkeypatch.setattr(config, "VOICE_TTS_INSTRUCT", "차분하고 안정적인 말투로 자연스럽게 말해줘.")
     monkeypatch.setattr(config, "VOICE_MAX_TTS_CHARS", 6000)
     monkeypatch.setattr(config, "VOICE_INFERENCE_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(voice.importlib.util, "find_spec", lambda name: object())
 
-    fake_piper = ModuleType("piper")
-    fake_piper.SynthesisConfig = _FakeSynthesisConfig
-    monkeypatch.setitem(sys.modules, "piper", fake_piper)
+    fake_soundfile = ModuleType("soundfile")
+
+    def fake_write(path: str, samples, sample_rate: int) -> None:
+        assert sample_rate == 24000
+        assert len(samples) == 240
+        with wave.open(path, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(b"\x00\x00" * len(samples))
+
+    fake_soundfile.write = fake_write
+    monkeypatch.setitem(sys.modules, "soundfile", fake_soundfile)
 
     service = LocalVoiceService()
-    fake_voice = _FakePiperVoice()
-    monkeypatch.setattr(service, "_get_tts_voice", lambda: fake_voice)
+    fake_model = _FakeQwenTTSModel()
+    monkeypatch.setattr(service, "_get_tts_model", lambda: fake_model)
 
     output_path = await service.synthesize("안녕하세요")
     try:
         assert output_path.exists()
         with wave.open(str(output_path), "rb") as wav_file:
-            assert wav_file.getframerate() == 16000
+            assert wav_file.getframerate() == 24000
             assert wav_file.getnchannels() == 1
-        assert fake_voice.calls == 1
+        assert fake_model.calls == 1
+        assert fake_model.last_kwargs["text"] == "안녕하세요"
+        assert fake_model.last_kwargs["speaker"] == "Sohee"
+        assert fake_model.last_kwargs["language"] == "Korean"
+        assert "차분" in str(fake_model.last_kwargs["instruct"])
     finally:
         output_path.unlink(missing_ok=True)
 
 
-def test_default_piper_voice_auto_downloads_into_managed_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_qwen_tts_auto_downloads_into_managed_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "VOICE_MODEL_DIR", tmp_path)
     monkeypatch.setattr(config, "VOICE_TTS_MODEL_PATH", "")
-    monkeypatch.setattr(config, "VOICE_TTS_CONFIG_PATH", "")
-    monkeypatch.setattr(config, "VOICE_TTS_VOICE", "ko_KR-kss-medium")
+    monkeypatch.setattr(config, "VOICE_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
     monkeypatch.setattr(config, "VOICE_AUTO_DOWNLOAD", True)
+    seen: dict[str, object] = {}
 
-    piper_package = ModuleType("piper")
-    piper_package.__path__ = []
-    download_module = ModuleType("piper.download_voices")
+    hub_module = ModuleType("huggingface_hub")
 
-    def fake_download(voice_name: str, download_dir: Path) -> None:
-        assert voice_name == "ko_KR-kss-medium"
-        download_dir.mkdir(parents=True, exist_ok=True)
-        (download_dir / f"{voice_name}.onnx").write_bytes(b"model")
-        (download_dir / f"{voice_name}.onnx.json").write_text("{}", encoding="utf-8")
+    def fake_snapshot_download(*, repo_id: str, local_dir: str) -> str:
+        seen["repo_id"] = repo_id
+        seen["local_dir"] = local_dir
+        target = Path(local_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "config.json").write_text("{}", encoding="utf-8")
+        (target / "model.safetensors").write_bytes(b"model")
+        return str(target)
 
-    download_module.download_voice = fake_download
-    monkeypatch.setitem(sys.modules, "piper", piper_package)
-    monkeypatch.setitem(sys.modules, "piper.download_voices", download_module)
+    hub_module.snapshot_download = fake_snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub_module)
 
-    model_path, config_path = voice._ensure_tts_model()
+    model_path = voice._ensure_qwen_tts_model()
 
-    assert model_path == tmp_path / "piper" / "ko_KR-kss-medium.onnx"
-    assert config_path == tmp_path / "piper" / "ko_KR-kss-medium.onnx.json"
-    assert model_path.is_file()
-    assert config_path.is_file()
+    assert seen["repo_id"] == "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    assert model_path == tmp_path / "Qwen-Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    assert (model_path / "config.json").is_file()
+    assert (model_path / "model.safetensors").is_file()
 
 
-def test_custom_piper_voice_overrides_default_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    model_path = tmp_path / "my-voice.onnx"
-    config_path = tmp_path / "my-voice.onnx.json"
-    model_path.write_bytes(b"custom")
-    config_path.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(config, "VOICE_TTS_MODEL_PATH", str(model_path))
-    monkeypatch.setattr(config, "VOICE_TTS_CONFIG_PATH", "")
-    monkeypatch.setattr(config, "VOICE_TTS_VOICE", "ko_KR-kss-medium")
+def test_local_qwen_tts_model_directory_overrides_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    custom_path = tmp_path / "custom-qwen-tts"
+    custom_path.mkdir()
+    (custom_path / "config.json").write_text("{}", encoding="utf-8")
+    (custom_path / "model.safetensors").write_bytes(b"model")
+    monkeypatch.setattr(config, "VOICE_TTS_MODEL_PATH", str(custom_path))
 
-    resolved_model, resolved_config = voice._ensure_tts_model()
+    assert voice._ensure_qwen_tts_model() == custom_path.resolve()
 
-    assert resolved_model == model_path.resolve()
-    assert resolved_config == config_path.resolve()
+
+def test_qwen_runtime_auto_falls_back_to_cpu_float32(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_torch = SimpleNamespace(
+        float32=object(),
+        float16=object(),
+        bfloat16=object(),
+        cuda=SimpleNamespace(is_available=lambda: False, is_bf16_supported=lambda: False),
+    )
+    monkeypatch.setattr(config, "VOICE_TTS_DEVICE", "auto")
+    monkeypatch.setattr(config, "VOICE_TTS_DTYPE", "auto")
+
+    device, dtype = voice._resolve_qwen_runtime(fake_torch)
+
+    assert device == "cpu"
+    assert dtype is fake_torch.float32
 
 
 def test_voice_status_is_zero_config_when_libraries_are_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     service = LocalVoiceService()
     monkeypatch.setattr(config, "VOICE_STT_MODEL", "small")
     monkeypatch.setattr(config, "VOICE_TTS_MODEL_PATH", "")
-    monkeypatch.setattr(config, "VOICE_TTS_VOICE", "ko_KR-kss-medium")
+    monkeypatch.setattr(config, "VOICE_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
     monkeypatch.setattr(voice.importlib.util, "find_spec", lambda name: object())
 
     status = service.status()
     assert status.ready is True
     assert status.prepared is False
 
-    monkeypatch.setattr(voice.importlib.util, "find_spec", lambda name: None if name == "piper" else object())
+    monkeypatch.setattr(voice.importlib.util, "find_spec", lambda name: None if name == "qwen_tts" else object())
     assert service.status().ready is False
 
 
@@ -216,12 +228,16 @@ def test_ui_injects_voice_assets() -> None:
 def test_requirements_include_python_voice_libraries() -> None:
     requirements = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text(encoding="utf-8")
     assert "faster-whisper" in requirements
-    assert "piper-tts>=1.6.0" in requirements
+    assert "qwen-tts>=0.1.1" in requirements
+    assert "piper-tts" not in requirements
 
 
 def test_default_voice_configuration_is_documented() -> None:
     example = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
     assert "MK4_VOICE_AUTO_DOWNLOAD=true" in example
     assert "MK4_STT_MODEL=small" in example
-    assert "MK4_TTS_VOICE=ko_KR-kss-medium" in example
+    assert "MK4_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" in example
+    assert "MK4_TTS_SPEAKER=Sohee" in example
+    assert "MK4_TTS_LANGUAGE=Korean" in example
     assert "MK4_TTS_MODEL_PATH=" in example
+    assert "Piper" not in example
