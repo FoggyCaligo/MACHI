@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core.agent.orchestrator import AgentOrchestrator
+from ..core.graph.assistant_memory import AssistantMemoryRecorder
 from ..core.graph.repository import GraphRepository
 from ..core.graph.service import GraphMemoryService
 from ..tools.autonomy_tools import AutonomyChatModel
@@ -55,6 +56,7 @@ class Pipeline:
     ) -> None:
         self._graph_repo = graph_repo or GraphRepository()
         self._memory = GraphMemoryService(self._graph_repo)
+        self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = chat_model or OllamaToolChatModel()
         self._chat_model = AutonomyChatModel(base_chat_model)
@@ -101,6 +103,11 @@ class Pipeline:
                 session_id=session_id,
                 allowed_tool_names=TRIAL_TOOL_NAMES if account_role == "trial" else None,
             )
+            self._assistant_memory.record(
+                user_id=user_id,
+                text=result.text,
+                session_id=session_id,
+            )
             # Persist the logical file cwd exactly where the file tools ended.
             # It may be a project such as MK4/MK5, a parent-relative directory,
             # or an absolute path outside config.WORKSPACE_ROOT.
@@ -111,7 +118,7 @@ class Pipeline:
         return PipelineResult(
             text=result.text,
             used_tools=result.used_tools,
-            memory_writes=result.memory_writes,
+            memory_writes=[*result.memory_writes, "assistant_utterance"],
             tool_events=result.tool_events,
         )
 
