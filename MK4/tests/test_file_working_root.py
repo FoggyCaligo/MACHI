@@ -107,6 +107,25 @@ async def test_file_tree_can_switch_from_mk4_to_mk5_via_parent_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_file_tree_can_move_above_initial_workspace() -> None:
+    registry = ToolRegistry()
+
+    async def tree(arguments: dict) -> dict:
+        return {"ok": True, "root": arguments["root"]}
+
+    registry.register(_definition("file_tree"), tree)
+    token = set_file_working_root("MK4")
+    try:
+        call = ToolCall(tool="file_tree", arguments={"root": "../.."})
+        result = await registry.run(call)
+        assert call.arguments["root"] == ".."
+        assert result["file_working_root"] == ".."
+        assert get_file_working_root() == ".."
+    finally:
+        reset_file_working_root(token)
+
+
+@pytest.mark.asyncio
 async def test_parent_traversal_can_leave_initial_workspace() -> None:
     registry = ToolRegistry()
 
