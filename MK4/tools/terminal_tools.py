@@ -28,6 +28,10 @@ _DIRECTORY_DISCOVERY_COMMAND_RE = re.compile(
 )
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 class TerminalToolSuite:
     def __init__(self, workspace_root: Path | None = None) -> None:
         self._workspace_root = (workspace_root or config.WORKSPACE_ROOT).resolve()
@@ -98,7 +102,7 @@ class TerminalToolSuite:
         }
 
     def _unsupported_windows_command_result(self, command: str) -> dict | None:
-        if os.name != "nt":
+        if not _is_windows():
             return None
         if not (
             _WINDOWS_UNIX_COMMAND_RE.search(command)
@@ -170,7 +174,7 @@ def _decode_process_output(data: bytes) -> str:
     preferred = locale.getpreferredencoding(False)
     if preferred and preferred.lower().replace("-", "") != "utf8":
         encodings.append(preferred)
-    if os.name == "nt":
+    if _is_windows():
         # mbcs follows the active Windows ANSI code page. cp949 is a final explicit
         # fallback for Korean Windows where cmd.exe commonly emits localized errors.
         encodings.extend(["mbcs", "cp949"])
