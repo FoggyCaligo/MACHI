@@ -35,16 +35,6 @@ def _string_list(name: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(item).strip() for item in parsed if str(item).strip()))
 
 
-def _optional_int(name: str) -> int | None:
-    raw = os.getenv(name, "").strip()
-    return int(raw) if raw else None
-
-
-def _optional_float(name: str) -> float | None:
-    raw = os.getenv(name, "").strip()
-    return float(raw) if raw else None
-
-
 _load_local_env(BASE_DIR / ".env")
 WORKSPACE_ROOT = Path(os.getenv("MK4_WORKSPACE_ROOT", str(BASE_DIR.parent))).resolve()
 DATA_DIR = BASE_DIR / "data"
@@ -89,17 +79,16 @@ OWNER_LOGIN_ID = os.getenv("MK4_OWNER_LOGIN_ID", "").strip()
 OWNER_GRAPH_USER_ID = os.getenv("MK4_OWNER_GRAPH_USER_ID", "account::owner").strip()
 MODEL_FAILURE_PREVIEW_CHARS = int(os.getenv("MK4_MODEL_FAILURE_PREVIEW_CHARS", "2000"))
 
-# Local continuous voice mode. Defaults are intentionally usable without manual
-# model configuration: the first voice-mode activation downloads the default
-# models into MK4/data/voice_models and later runs reuse those local files.
+# Local continuous voice mode. Defaults require no manual model paths: first use
+# downloads managed STT/TTS assets into MK4/data/voice_models and later runs reuse
+# the same local files.
 VOICE_AUTO_DOWNLOAD = os.getenv("MK4_VOICE_AUTO_DOWNLOAD", "true").strip().lower() in {"1", "true", "yes", "on"}
 VOICE_MODEL_DIR = Path(
     os.getenv("MK4_VOICE_MODEL_DIR", str(DATA_DIR / "voice_models"))
 ).expanduser().resolve()
 
-# STT: multilingual faster-whisper small is the default balance for Korean
-# accuracy, CPU latency and memory. A local CTranslate2 directory may be supplied
-# instead of the model name for a fully pre-provisioned/offline deployment.
+# STT: multilingual faster-whisper small balances Korean accuracy, CPU latency and
+# memory. A local CTranslate2 directory can be supplied for pre-provisioned use.
 VOICE_STT_MODEL = os.getenv("MK4_STT_MODEL", "small").strip() or "small"
 VOICE_STT_DEVICE = os.getenv("MK4_STT_DEVICE", "cpu").strip() or "cpu"
 VOICE_STT_COMPUTE_TYPE = os.getenv("MK4_STT_COMPUTE_TYPE", "int8").strip() or "int8"
@@ -107,15 +96,25 @@ VOICE_STT_LANGUAGE = os.getenv("MK4_STT_LANGUAGE", "ko").strip()
 VOICE_STT_BEAM_SIZE = int(os.getenv("MK4_STT_BEAM_SIZE", "1"))
 VOICE_STT_CPU_THREADS = int(os.getenv("MK4_STT_CPU_THREADS", "4"))
 
-# TTS: use the bundled Piper voice name unless a custom .onnx model path is
-# supplied. Custom paths always win and are never overwritten by auto-download.
-VOICE_TTS_VOICE = os.getenv("MK4_TTS_VOICE", "ko_KR-kss-medium").strip() or "ko_KR-kss-medium"
+# TTS: Apache-2.0 Qwen3-TTS 12Hz 0.6B CustomVoice. Sohee is the native Korean
+# preset. A local model directory can override the managed Hugging Face download.
+VOICE_TTS_MODEL = os.getenv(
+    "MK4_TTS_MODEL",
+    "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+).strip() or "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 VOICE_TTS_MODEL_PATH = os.getenv("MK4_TTS_MODEL_PATH", "").strip()
-VOICE_TTS_CONFIG_PATH = os.getenv("MK4_TTS_CONFIG_PATH", "").strip()
-VOICE_TTS_SPEAKER_ID = _optional_int("MK4_TTS_SPEAKER_ID")
-VOICE_TTS_LENGTH_SCALE = _optional_float("MK4_TTS_LENGTH_SCALE")
+VOICE_TTS_SPEAKER = os.getenv("MK4_TTS_SPEAKER", "Sohee").strip() or "Sohee"
+VOICE_TTS_LANGUAGE = os.getenv("MK4_TTS_LANGUAGE", "Korean").strip() or "Korean"
+VOICE_TTS_INSTRUCT = os.getenv(
+    "MK4_TTS_INSTRUCT",
+    "차분하고 안정적인 말투로 자연스럽게 말해줘.",
+).strip()
+VOICE_TTS_DEVICE = os.getenv("MK4_TTS_DEVICE", "auto").strip() or "auto"
+VOICE_TTS_DTYPE = os.getenv("MK4_TTS_DTYPE", "auto").strip() or "auto"
 
-VOICE_INFERENCE_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_INFERENCE_TIMEOUT_SECONDS", "180"))
+# First-run Qwen3-TTS download is ~2.5 GB, so preparation gets a separate timeout.
+VOICE_PREPARE_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_PREPARE_TIMEOUT_SECONDS", "1800"))
+VOICE_INFERENCE_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_INFERENCE_TIMEOUT_SECONDS", "300"))
 VOICE_MAX_AUDIO_BYTES = int(os.getenv("MK4_VOICE_MAX_AUDIO_BYTES", str(12 * 1024 * 1024)))
 VOICE_MAX_TTS_CHARS = int(os.getenv("MK4_VOICE_MAX_TTS_CHARS", "6000"))
 
