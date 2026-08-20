@@ -18,6 +18,7 @@ class VoiceStatus:
     tts_configured: bool
     stt_library_available: bool
     tts_library_available: bool
+    prepared: bool
 
     @property
     def ready(self) -> bool:
@@ -30,11 +31,14 @@ class VoiceStatus:
 
 
 class LocalVoiceService:
-    """Local, reusable Python-native STT/TTS service for continuous voice mode.
+    """Reusable Python-native STT/TTS service with first-run model provisioning.
 
-    STT uses faster-whisper and TTS uses piper-tts directly inside the MK4 server
-    process. Models are loaded lazily on first use and then reused for subsequent
-    turns. No cloud STT/TTS API is called by this service.
+    Defaults use faster-whisper ``small`` and Piper ``ko_KR-kss-medium``. When
+    auto-download is enabled, the first prepare/use downloads missing models into
+    MK4's voice model directory. Loaded model objects are retained for later turns.
+
+    A custom Piper .onnx path always wins over the default voice and is never
+    replaced or downloaded over by this service.
     """
 
     def __init__(self) -> None:
@@ -46,10 +50,27 @@ class LocalVoiceService:
     def status(self) -> VoiceStatus:
         return VoiceStatus(
             stt_configured=bool(config.VOICE_STT_MODEL),
-            tts_configured=_tts_model_path().is_file() if config.VOICE_TTS_MODEL_PATH else False,
+            tts_configured=bool(config.VOICE_TTS_MODEL_PATH or config.VOICE_TTS_VOICE),
             stt_library_available=importlib.util.find_spec("faster_whisper") is not None,
             tts_library_available=importlib.util.find_spec("piper") is not None,
+            prepared=self._stt_model is not None and self._tts_voice is not None,
         )
+
+    async def prepare(self) -> VoiceStatus:
+        status = self.status()
+        if not status.stt_library_available:
+            raise RuntimeError("faster-whisper is not installed; run pip install -r MK4/requirements.txt")
+        if not status.tts_library_available:
+            raise RuntimeError("piper-tts is not installed; run pip install -r MK4/requirements.txt")
+
+        await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(self._get_stt_model),
+                asyncio.to_thread(self._get_tts_voice),
+            ),
+            timeout=config.VOICE_INFERENCE_TIMEOUT_SECONDS,
+        )
+        return self.status()
 
     async def transcribe(self, audio_bytes: bytes) -> str:
         if not config.VOICE_STT_MODEL:
@@ -73,11 +94,6 @@ class LocalVoiceService:
         return text
 
     async def synthesize(self, text: str) -> Path:
-        model_path = _tts_model_path()
-        if not config.VOICE_TTS_MODEL_PATH:
-            raise RuntimeError("MK4_TTS_MODEL_PATH is not configured")
-        if not model_path.is_file():
-            raise RuntimeError(f"Piper voice model not found: {model_path}")
         if importlib.util.find_spec("piper") is None:
             raise RuntimeError("piper-tts is not installed; run pip install -r MK4/requirements.txt")
 
@@ -115,17 +131,15 @@ class LocalVoiceService:
         return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 
     def _synthesize_sync(self, text: str, output_path: Path) -> None:
-        voice = self._get_tts_voice()
-        kwargs: dict[str, Any] = {}
-        if config.VOICE_TTS_SPEAKER_ID is not None:
-            kwargs["speaker_id"] = config.VOICE_TTS_SPEAKER_ID
-        if config.VOICE_TTS_LENGTH_SCALE is not None:
-            kwargs["length_scale"] = config.VOICE_TTS_LENGTH_SCALE
-        if config.VOICE_TTS_SENTENCE_SILENCE is not None:
-            kwargs["sentence_silence"] = config.VOICE_TTS_SENTENCE_SILENCE
+        from piper import SynthesisConfig
 
+        voice = self._get_tts_voice()
+        syn_config = SynthesisConfig(
+            speaker_id=config.VOICE_TTS_SPEAKER_ID,
+            length_scale=config.VOICE_TTS_LENGTH_SCALE,
+        )
         with wave.open(str(output_path), "wb") as wav_file:
-            voice.synthesize(text, wav_file, **kwargs)
+            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
 
     def _get_stt_model(self):
         if self._stt_model is not None:
@@ -134,11 +148,15 @@ class LocalVoiceService:
             if self._stt_model is None:
                 from faster_whisper import WhisperModel
 
+                download_root = _stt_download_root()
+                download_root.mkdir(parents=True, exist_ok=True)
                 self._stt_model = WhisperModel(
                     config.VOICE_STT_MODEL,
                     device=config.VOICE_STT_DEVICE,
                     compute_type=config.VOICE_STT_COMPUTE_TYPE,
                     cpu_threads=config.VOICE_STT_CPU_THREADS,
+                    download_root=str(download_root),
+                    local_files_only=not config.VOICE_AUTO_DOWNLOAD,
                 )
         return self._stt_model
 
@@ -147,20 +165,65 @@ class LocalVoiceService:
             return self._tts_voice
         with self._tts_load_lock:
             if self._tts_voice is None:
-                from piper.voice import PiperVoice
+                from piper import PiperVoice
 
-                config_path = str(_tts_config_path()) if config.VOICE_TTS_CONFIG_PATH else None
+                model_path, config_path = _ensure_tts_model()
                 self._tts_voice = PiperVoice.load(
-                    str(_tts_model_path()),
+                    model_path,
                     config_path=config_path,
                     use_cuda=False,
+                    download_dir=_piper_download_root(),
                 )
         return self._tts_voice
 
 
-def _tts_model_path() -> Path:
-    return Path(config.VOICE_TTS_MODEL_PATH).expanduser().resolve() if config.VOICE_TTS_MODEL_PATH else Path()
+def _voice_model_root() -> Path:
+    root = Path(config.VOICE_MODEL_DIR).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
-def _tts_config_path() -> Path:
-    return Path(config.VOICE_TTS_CONFIG_PATH).expanduser().resolve()
+def _stt_download_root() -> Path:
+    return _voice_model_root() / "faster-whisper"
+
+
+def _piper_download_root() -> Path:
+    root = _voice_model_root() / "piper"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _ensure_tts_model() -> tuple[Path, Path | None]:
+    if config.VOICE_TTS_MODEL_PATH:
+        model_path = Path(config.VOICE_TTS_MODEL_PATH).expanduser().resolve()
+        if not model_path.is_file():
+            raise RuntimeError(f"Custom Piper voice model not found: {model_path}")
+        if config.VOICE_TTS_CONFIG_PATH:
+            config_path = Path(config.VOICE_TTS_CONFIG_PATH).expanduser().resolve()
+            if not config_path.is_file():
+                raise RuntimeError(f"Custom Piper voice config not found: {config_path}")
+        else:
+            config_path = Path(f"{model_path}.json")
+            if not config_path.is_file():
+                raise RuntimeError(f"Piper voice config not found: {config_path}")
+        return model_path, config_path
+
+    voice_name = str(config.VOICE_TTS_VOICE or "").strip()
+    if not voice_name:
+        raise RuntimeError("MK4_TTS_VOICE is not configured")
+
+    download_root = _piper_download_root()
+    model_path = download_root / f"{voice_name}.onnx"
+    config_path = download_root / f"{voice_name}.onnx.json"
+    if not model_path.is_file() or not config_path.is_file():
+        if not config.VOICE_AUTO_DOWNLOAD:
+            raise RuntimeError(
+                f"Piper voice is not downloaded: {voice_name}. Enable MK4_VOICE_AUTO_DOWNLOAD or provide MK4_TTS_MODEL_PATH."
+            )
+        from piper.download_voices import download_voice
+
+        download_voice(voice_name, download_root)
+
+    if not model_path.is_file() or not config_path.is_file():
+        raise RuntimeError(f"Piper voice download did not produce expected files for {voice_name}")
+    return model_path, config_path
