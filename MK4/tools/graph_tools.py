@@ -19,7 +19,7 @@ class GraphToolSuite:
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
     ) -> list[dict]:
-        return self._memory_service.user_memory_summary(
+        items = self._memory_service.user_memory_summary(
             user_id,
             query=query,
             limit=limit,
@@ -28,6 +28,7 @@ class GraphToolSuite:
             activation_node_ids=activation_node_ids,
             activation_node_weights=activation_node_weights,
         )
+        return [_format_memory_speaker(item, user_id=user_id) for item in items]
 
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -35,8 +36,8 @@ class GraphToolSuite:
             ToolDefinition(
                 name="graph_search",
                 description=(
-                    "Search persistent graph memory for past user statements, preferences, decisions, "
-                    "and project context. Results are small subgraph summaries containing a focus node, "
+                    "Search persistent graph memory for past user statements, assistant responses and recommendations, "
+                    "preferences, decisions, and project context. Results are small subgraph summaries containing a focus node, "
                     "its important relations, and source metadata. Search by query first, then pass a "
                     "returned relation node_id to expand that exact node. Use before concluding that "
                     "relevant past memory is unavailable. The current user identity is supplied by the system."
@@ -92,14 +93,15 @@ class GraphToolSuite:
             raise ValueError("graph_search requires user_id")
         if not query and not node_id:
             raise ValueError("graph_search requires query or node_id")
+        results = self._memory_service.graph_search(
+            user_id=user_id,
+            query=query,
+            node_id=node_id,
+            limit=max(1, min(limit, 12)),
+            exclude_node_ids=exclude_node_ids,
+        )
         return {
-            "results": self._memory_service.graph_search(
-                user_id=user_id,
-                query=query,
-                node_id=node_id,
-                limit=max(1, min(limit, 12)),
-                exclude_node_ids=exclude_node_ids,
-            )
+            "results": [_format_graph_search_speaker(item, user_id=user_id) for item in results]
         }
 
     async def _record_memory_correction(self, arguments: dict) -> dict:
@@ -115,3 +117,31 @@ class GraphToolSuite:
             session_id=session_id,
         )
         return {"replacement_fact_id": replacement_id}
+
+
+def _format_memory_speaker(item: dict, *, user_id: str) -> dict:
+    subgraph = item.get("subgraph") if isinstance(item.get("subgraph"), dict) else {}
+    focus = subgraph.get("focus") if isinstance(subgraph.get("focus"), dict) else {}
+    if focus.get("provenance") != "assistant_utterance":
+        return item
+    raw_label = str(item.get("raw_label") or focus.get("label") or "")
+    formatted = dict(item)
+    formatted["label"] = (
+        f'assistant가 사용자({user_id})에게 이전에 말한 내용: "{raw_label}" '
+        "이 발화의 speaker는 assistant이며 사용자의 발언이나 사용자 사실이 아닙니다."
+    )
+    return formatted
+
+
+def _format_graph_search_speaker(item: dict, *, user_id: str) -> dict:
+    focus = item.get("focus") if isinstance(item.get("focus"), dict) else {}
+    if focus.get("provenance") != "assistant_utterance":
+        return item
+    formatted = dict(item)
+    formatted_focus = dict(focus)
+    formatted_focus["speaker"] = "assistant"
+    formatted["focus"] = formatted_focus
+    source = dict(formatted.get("source") or {})
+    source.update({"speaker": "assistant", "user_id": user_id})
+    formatted["source"] = source
+    return formatted
