@@ -1,0 +1,39 @@
+name: Run MK4 file mutation completion patch on PR
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Reuse patch script
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+          source = Path('.github/workflows/patch-file-mutation-contract.yml').read_text(encoding='utf-8')
+          block = source.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+          exec(dedent(block), {})
+          PY
+      - name: Test focused behavior
+        run: |
+          python -m pip install -e . pytest pytest-asyncio
+          pytest -q MK4/tests/test_file_mutation_completion_contract.py MK4/tests/test_agent_round_guard.py
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add MK4/core/agent/orchestrator.py MK4/core/agent/prompts.py MK4/tests/test_file_mutation_completion_contract.py
+          git commit -m "MK4: require evidence before file edit completion"
+          git push origin HEAD:${{ github.head_ref }}
