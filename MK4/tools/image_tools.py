@@ -22,16 +22,15 @@ class ImageAnalyzeToolSuite:
             ToolDefinition(
                 name="image_analyze",
                 description=(
-                    "Inspect an image file. Always returns basic metadata. If an Ollama "
-                    "vision-capable model is configured or provided, also returns a text "
-                    "description of visible content."
+                    "Inspect an image file. Always returns basic metadata. If the server-configured "
+                    "Ollama vision model is available, also returns a text description of visible content. "
+                    "The vision model is configured by MK4_OLLAMA_IMAGE_MODEL_NAME and is not selected per call."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
                         "path": {"type": "string"},
                         "prompt": {"type": "string"},
-                        "model": {"type": ["string", "null"]},
                     },
                     "required": ["path"],
                     "additionalProperties": False,
@@ -113,9 +112,7 @@ class ImageAnalyzeToolSuite:
                 "message": "Could not identify image file.",
             }
 
-        requested_model = arguments.get("model")
-        model = str(requested_model).strip() if isinstance(requested_model, str) and requested_model.strip() else None
-        configured_model = model or config.OLLAMA_IMAGE_MODEL_NAME or config.OLLAMA_MODEL_NAME
+        configured_model = config.OLLAMA_IMAGE_MODEL_NAME
         if not configured_model:
             return {
                 "ok": True,
@@ -124,9 +121,8 @@ class ImageAnalyzeToolSuite:
                 "vision_model_used": None,
                 "description": None,
                 "message": (
-                    "Image metadata was read, but no Ollama model is configured. Set "
-                    "MK4_OLLAMA_IMAGE_MODEL_NAME, OLLAMA_MODEL_NAME, or pass model to image_analyze "
-                    "for visual recognition."
+                    "Image metadata was read, but no Ollama vision model is configured. "
+                    "Set MK4_OLLAMA_IMAGE_MODEL_NAME for visual recognition."
                 ),
             }
 
