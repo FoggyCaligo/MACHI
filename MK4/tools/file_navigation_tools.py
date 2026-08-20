@@ -16,6 +16,9 @@ _IGNORED_DIRS = {
     ".pytest_cache",
 }
 _MODEL_CONTEXT_LIMIT = 1800
+_DEFAULT_TREE_DEPTH = 3
+_DEFAULT_TREE_LIMIT = 4000
+_MAX_TREE_LIMIT = 20000
 
 
 class FileNavigationToolSuite:
@@ -30,10 +33,12 @@ class FileNavigationToolSuite:
             ToolDefinition(
                 name="file_tree",
                 description=(
-                    "Inspect a directory tree before guessing file paths. Use this when you know the project or "
-                    "folder but do not yet know which file to read. Returns workspace-relative directories and files. "
-                    "The result includes model_context, a compact path-first summary designed to survive tool-history "
-                    "compaction. After locating a likely file, continue with file_read instead of stopping."
+                    "Inspect a directory tree before guessing file paths. By default this returns a broad depth-3 tree "
+                    "with a large result limit so the project root can usually be inspected in one call. Returns "
+                    "workspace-relative directories and files. IMPORTANT: if truncated=true or error=tree_truncated, "
+                    "the listing is incomplete and absence from the result does NOT prove that a path does not exist. "
+                    "Retry with a larger limit or use file_search for an exact filename/folder name before concluding "
+                    "that something is absent. After locating a likely file, continue with file_read instead of stopping."
                 ),
                 input_schema={
                     "type": "object",
@@ -111,13 +116,13 @@ class FileNavigationToolSuite:
     async def _tree(self, arguments: dict) -> dict:
         root_text = str(arguments.get("root") or ".").strip() or "."
         try:
-            depth = max(1, min(int(arguments.get("depth", 3)), 8))
+            depth = max(1, min(int(arguments.get("depth", _DEFAULT_TREE_DEPTH)), 8))
         except (TypeError, ValueError):
-            depth = 3
+            depth = _DEFAULT_TREE_DEPTH
         try:
-            limit = max(1, min(int(arguments.get("limit", 120)), 400))
+            limit = max(1, min(int(arguments.get("limit", _DEFAULT_TREE_LIMIT)), _MAX_TREE_LIMIT))
         except (TypeError, ValueError):
-            limit = 120
+            limit = _DEFAULT_TREE_LIMIT
 
         root = self._resolve(root_text)
         if not root.exists():
@@ -173,8 +178,42 @@ class FileNavigationToolSuite:
                 ]),
             }
 
+        if truncated:
+            next_limit = min(_MAX_TREE_LIMIT, max(limit * 2, limit + 100))
+            warning = (
+                "WARNING: this directory listing is truncated and incomplete. Absence from these entries does NOT "
+                "prove that a file or folder is absent. Do not conclude that a requested target does not exist. "
+                f"Retry file_tree with a larger limit (for example {next_limit}) or use file_search for the exact name."
+            )
+            model_context = self._compact_lines([
+                f"file_tree root={root_text} depth={depth} count={len(entries)} truncated=True",
+                warning,
+                *[
+                    f"{'DIR ' if entry['type'] == 'directory' else 'FILE'} {entry['path']}"
+                    for entry in entries
+                ],
+                "Next: continue discovery; this result is not complete enough to prove absence.",
+            ])
+            return {
+                "ok": False,
+                "workspace_root": str(self._workspace_root),
+                "root": root_text,
+                "depth": depth,
+                "entries": entries,
+                "count": len(entries),
+                "truncated": True,
+                "error": "tree_truncated",
+                "message": warning,
+                "recovery": {
+                    "next_tools": ["file_tree", "file_search"],
+                    "suggested_limit": next_limit,
+                    "absence_is_unproven": True,
+                },
+                "model_context": model_context,
+            }
+
         model_context = self._compact_lines([
-            f"file_tree root={root_text} depth={depth} count={len(entries)} truncated={truncated}",
+            f"file_tree root={root_text} depth={depth} count={len(entries)} truncated=False",
             *[
                 f"{'DIR ' if entry['type'] == 'directory' else 'FILE'} {entry['path']}"
                 for entry in entries
@@ -188,7 +227,7 @@ class FileNavigationToolSuite:
             "depth": depth,
             "entries": entries,
             "count": len(entries),
-            "truncated": truncated,
+            "truncated": False,
             "model_context": model_context,
         }
 
