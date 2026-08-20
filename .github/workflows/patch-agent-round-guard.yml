@@ -1,0 +1,140 @@
+name: Patch MK4 agent round guard
+
+on:
+  push:
+    branches:
+      - mk4/agent-round-guard
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch round and repeated-call guards
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8-sig')
+              if old not in text:
+                  raise SystemExit(f'expected block not found in {path}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+              p.write_text(text, encoding='utf-8')
+
+          replace_once(
+              'MK4/config.py',
+              'AGENT_MAX_IDENTICAL_TOOL_CALLS = int(os.getenv("MK4_AGENT_MAX_IDENTICAL_TOOL_CALLS", "3"))\n',
+              'AGENT_MAX_ROUNDS = int(os.getenv("MK4_AGENT_MAX_ROUNDS", "40"))\n'
+              'AGENT_MAX_IDENTICAL_TOOL_CALLS = int(os.getenv("MK4_AGENT_MAX_IDENTICAL_TOOL_CALLS", "3"))\n',
+          )
+
+          replace_once(
+              'MK4/core/agent/orchestrator.py',
+              '        identical_tool_call_counts: dict[str, int] = {}\n'
+              '        round_index = 0\n'
+              '        stagnated = False\n\n'
+              '        while True:\n'
+              '            round_index += 1\n',
+              '        identical_tool_call_counts: dict[str, int] = {}\n'
+              '        round_index = 0\n\n'
+              '        while True:\n'
+              '            if round_index >= max(1, config.AGENT_MAX_ROUNDS):\n'
+              '                guard_result = {\n'
+              '                    "ok": False,\n'
+              '                    "error": "max_agent_rounds_reached",\n'
+              '                    "message": (\n'
+              '                        f"The agent reached the configured round limit ({config.AGENT_MAX_ROUNDS}). "\n'
+              '                        "Tool execution is stopping only because of the global safety limit; "\n'
+              '                        "synthesize the best available result without claiming unfinished work is complete."\n'
+              '                    ),\n'
+              '                }\n'
+              '                tool_history.append({\n'
+              '                    "tool": "execution_guard",\n'
+              '                    "arguments": {},\n'
+              '                    "result": guard_result,\n'
+              '                })\n'
+              '                _debug_log(\n'
+              '                    f"execution_guard round={round_index} error=max_agent_rounds_reached"\n'
+              '                )\n'
+              '                break\n'
+              '            round_index += 1\n',
+          )
+
+          replace_once(
+              'MK4/core/agent/orchestrator.py',
+              '                if identical_tool_call_counts[call_signature] > config.AGENT_MAX_IDENTICAL_TOOL_CALLS:\n'
+              '                    tool_history.append({\n'
+              '                        "tool": "execution_guard",\n'
+              '                        "arguments": {},\n'
+              '                        "result": {\n'
+              '                            "ok": False,\n'
+              '                            "error": "repeated_identical_tool_call",\n'
+              '                            "message": (\n'
+              '                                f"{call.tool} was requested repeatedly with identical arguments. "\n'
+              '                                "Stop calling tools and synthesize the available results."\n'
+              '                            ),\n'
+              '                        },\n'
+              '                    })\n'
+              '                    _debug_log(f"execution_guard round={round_index} error=repeated_identical_tool_call")\n'
+              '                    stagnated = True\n'
+              '                    break\n',
+              '                if identical_tool_call_counts[call_signature] > config.AGENT_MAX_IDENTICAL_TOOL_CALLS:\n'
+              '                    tool_history.append({\n'
+              '                        "tool": "execution_guard",\n'
+              '                        "arguments": {},\n'
+              '                        "result": {\n'
+              '                            "ok": False,\n'
+              '                            "error": "repeated_identical_tool_call",\n'
+              '                            "message": (\n'
+              '                                f"{call.tool} was requested repeatedly with identical arguments. "\n'
+              '                                "This exact call is blocked. Do not retry it; choose different arguments, "\n'
+              '                                "use another tool, or continue from the evidence already collected."\n'
+              '                            ),\n'
+              '                        },\n'
+              '                    })\n'
+              '                    _debug_log(f"execution_guard round={round_index} error=repeated_identical_tool_call")\n'
+              '                    break\n',
+          )
+
+          replace_once(
+              'MK4/core/agent/orchestrator.py',
+              '            if stagnated:\n'
+              '                break\n\n'
+              '        _debug_log("final_synthesis_start tools=disabled")\n',
+              '        _debug_log("final_synthesis_start tools=disabled")\n',
+          )
+
+          env_path = Path('MK4/.env.example')
+          env_text = env_path.read_text(encoding='utf-8-sig')
+          if 'MK4_AGENT_MAX_ROUNDS=' not in env_text:
+              env_text += '\n# Global safety cap for model/tool rounds inside one user request.\nMK4_AGENT_MAX_ROUNDS=40\n'
+              env_path.write_text(env_text, encoding='utf-8')
+
+          Path('MK4/tests/test_agent_round_guard.py').write_text('''from __future__ import annotations\n\nfrom typing import Any\n\nimport pytest\n\nfrom MK4 import config\nfrom MK4.core.agent.orchestrator import AgentOrchestrator\nfrom MK4.core.graph.repository import GraphRepository\nfrom MK4.core.graph.service import GraphMemoryService\nfrom MK4.tools.graph_tools import GraphToolSuite\nfrom MK4.tools.llm_client import ModelTurn\nfrom MK4.tools.tool_runtime import ToolCall, ToolDefinition\nfrom MK4.tools.web_search import StubWebSearchTool\n\n\nclass RepeatedCallRecoveryModel:\n    def __init__(self) -> None:\n        self.turns = 0\n\n    async def next_turn(\n        self,\n        *,\n        system: str,\n        user_message: str,\n        model: str | None,\n        memory_summary: list[Any],\n        tool_definitions: list[ToolDefinition],\n        tool_history: list[dict[str, Any]],\n    ) -> ModelTurn:\n        self.turns += 1\n        if any(\n            event.get("tool") == "execution_guard"\n            and event.get("result", {}).get("error") == "repeated_identical_tool_call"\n            for event in tool_history\n        ):\n            return ModelTurn(final_answer="recovered")\n        return ModelTurn(tool_calls=[\n            ToolCall(tool="graph_search", arguments={"query": "same query"})\n        ])\n\n\nclass RoundLimitModel:\n    def __init__(self) -> None:\n        self.turns = 0\n\n    async def next_turn(\n        self,\n        *,\n        system: str,\n        user_message: str,\n        model: str | None,\n        memory_summary: list[Any],\n        tool_definitions: list[ToolDefinition],\n        tool_history: list[dict[str, Any]],\n    ) -> ModelTurn:\n        self.turns += 1\n        if not tool_definitions:\n            assert any(\n                event.get("tool") == "execution_guard"\n                and event.get("result", {}).get("error") == "max_agent_rounds_reached"\n                for event in tool_history\n            )\n            return ModelTurn(final_answer="round limit synthesis")\n        return ModelTurn(tool_calls=[\n            ToolCall(tool="graph_search", arguments={"query": f"query-{self.turns}"})\n        ])\n\n\ndef build_orchestrator(chat_model: Any) -> tuple[AgentOrchestrator, GraphRepository]:\n    repo = GraphRepository(":memory:")\n    memory = GraphMemoryService(repo)\n    return (\n        AgentOrchestrator(\n            memory_service=memory,\n            graph_tools=GraphToolSuite(memory),\n            chat_model=chat_model,\n            web_search=StubWebSearchTool(),\n        ),\n        repo,\n    )\n\n\n@pytest.mark.asyncio\nasync def test_repeated_identical_call_is_blocked_without_ending_agent_loop(monkeypatch: pytest.MonkeyPatch) -> None:\n    monkeypatch.setattr(config, "AGENT_MAX_IDENTICAL_TOOL_CALLS", 3)\n    monkeypatch.setattr(config, "AGENT_MAX_ROUNDS", 20)\n    model = RepeatedCallRecoveryModel()\n    orchestrator, repo = build_orchestrator(model)\n    try:\n        result = await orchestrator.respond(user_id="alice", message="keep working", session_id="s1")\n    finally:\n        repo.close()\n\n    assert result.text == "recovered"\n    assert model.turns == 5\n    assert sum(event.get("tool") == "graph_search" for event in result.tool_events) == 3\n\n\n@pytest.mark.asyncio\nasync def test_global_round_limit_stops_tools_then_runs_final_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:\n    monkeypatch.setattr(config, "AGENT_MAX_ROUNDS", 2)\n    monkeypatch.setattr(config, "AGENT_MAX_IDENTICAL_TOOL_CALLS", 3)\n    model = RoundLimitModel()\n    orchestrator, repo = build_orchestrator(model)\n    try:\n        result = await orchestrator.respond(user_id="alice", message="long task", session_id="s2")\n    finally:\n        repo.close()\n\n    assert result.text == "round limit synthesis"\n    assert model.turns == 3\n    assert sum(event.get("tool") == "graph_search" for event in result.tool_events) == 2\n''', encoding='utf-8')
+          PY
+
+      - name: Run focused tests
+        shell: bash
+        run: |
+          python -m pip install -e . pytest pytest-asyncio
+          pytest -q MK4/tests/test_agent_round_guard.py MK4/tests/test_orchestrator.py
+
+      - name: Commit patch
+        if: success()
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add MK4/config.py MK4/core/agent/orchestrator.py MK4/.env.example MK4/tests/test_agent_round_guard.py
+          git commit -m "MK4: separate repeated-call guard from global round limit"
+          git push origin HEAD:mk4/agent-round-guard
