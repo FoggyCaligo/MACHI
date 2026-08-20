@@ -1,0 +1,85 @@
+name: Reorganize MK generation names
+
+on:
+  push:
+    branches:
+      - reorg/mk-generation-order-v2
+
+permissions:
+  contents: write
+
+jobs:
+  reorg:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rewrite MK generation references and paths
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          workflow = '.github/workflows/reorg-mk-generation-order.yml'
+
+          def swap_text(text: str) -> str:
+              text = text.replace('MK4', '__MACHI_UPPER_OLD_MK4__')
+              text = text.replace('MK5', 'MK4')
+              text = text.replace('__MACHI_UPPER_OLD_MK4__', 'MK5')
+              text = text.replace('mk4', '__MACHI_LOWER_OLD_MK4__')
+              text = text.replace('mk5', 'mk4')
+              text = text.replace('__MACHI_LOWER_OLD_MK4__', 'mk5')
+              text = text.replace('MK6', 'MK5').replace('mk6', 'mk5')
+              return text
+
+          tracked = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          tracked = [p for p in tracked if p and p != workflow]
+
+          # First rewrite UTF-8 text content. Binary files are left untouched.
+          for rel in tracked:
+              path = Path(rel)
+              try:
+                  raw = path.read_bytes()
+                  text = raw.decode('utf-8')
+              except (UnicodeDecodeError, OSError):
+                  continue
+              updated = swap_text(text)
+              if updated != text:
+                  path.write_text(updated, encoding='utf-8')
+
+          # Then rename paths. Preserve the already-swapped top-level MK4/MK5 directories;
+          # only rewrite names below them. Outside those directories, swap normally.
+          tracked = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          for rel in sorted((p for p in tracked if p and p != workflow), key=lambda p: p.count('/'), reverse=True):
+              parts = rel.split('/')
+              if parts[0] in {'MK4', 'MK5'}:
+                  head, rest = parts[0], parts[1:]
+                  rewritten = [swap_text(part) for part in rest]
+                  new_rel = '/'.join([head, *rewritten])
+              else:
+                  new_rel = '/'.join(swap_text(part) for part in parts)
+              if new_rel == rel:
+                  continue
+              Path(new_rel).parent.mkdir(parents=True, exist_ok=True)
+              subprocess.run(['git', 'mv', rel, new_rel], check=True)
+
+          # MK6 was removed at tree level before this workflow. Assert it did not return.
+          assert not Path('MK6').exists(), 'MK6 directory unexpectedly exists'
+          PY
+
+      - name: Commit rewritten repository
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No rewrite changes"
+            exit 0
+          fi
+          git commit -m "reorg: align MK generation names across code and docs"
+          git push origin HEAD:reorg/mk-generation-order-v2
