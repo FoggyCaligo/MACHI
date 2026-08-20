@@ -178,7 +178,7 @@ def _log_model_output_failure(*, raw: str, error: Exception) -> None:
     limit = max(0, config.MODEL_FAILURE_PREVIEW_CHARS)
     preview = raw[:limit] if limit else "<disabled>"
     print(
-        f"[MK5 model] output_parse_failed error={error!r} raw_chars={len(raw)} raw_preview={preview!r}",
+        f"[MK4 model] output_parse_failed error={error!r} raw_chars={len(raw)} raw_preview={preview!r}",
         file=sys.stderr,
         flush=True,
     )
@@ -200,8 +200,8 @@ class StubChatModel:
                 tool_calls=[ToolCall(tool="web_research", arguments={"objective": user_message})]
             )
         if memory_summary:
-            return ModelTurn(final_answer=f"MK5 stub reply.\nmessage={user_message}\nmemory={memory_summary}")
-        return ModelTurn(final_answer=f"MK5 stub reply.\nmessage={user_message}")
+            return ModelTurn(final_answer=f"MK4 stub reply.\nmessage={user_message}\nmemory={memory_summary}")
+        return ModelTurn(final_answer=f"MK4 stub reply.\nmessage={user_message}")
 
 
 def _compact_tool_history_event(event: dict[str, Any]) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-from MK5.tools import web_search
+from MK4.tools import web_search
 
 
 def test_decode_page_bytes_uses_html_meta_charset_for_euc_kr() -> None:

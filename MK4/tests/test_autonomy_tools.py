@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
-from MK5.tools.autonomy_tools import AutonomyChatModel
-from MK5.tools.llm_client import ModelTurn
-from MK5.tools.tool_runtime import ToolCall, ToolDefinition
+from MK4.tools.autonomy_tools import AutonomyChatModel
+from MK4.tools.llm_client import ModelTurn
+from MK4.tools.tool_runtime import ToolCall, ToolDefinition
 
 
 class ScriptedChatModel:
@@ -27,7 +27,7 @@ def _tools(*names: str) -> list[ToolDefinition]:
 async def test_routine_file_clarification_is_retried_into_tool_call() -> None:
     delegate = ScriptedChatModel([
         ModelTurn(final_answer="어느 파일인지 알려주시거나 HTML 코드를 붙여넣어 주실 수 있나요?"),
-        ModelTurn(tool_calls=[ToolCall(tool="file_tree", arguments={"root": "MK5"})]),
+        ModelTurn(tool_calls=[ToolCall(tool="file_tree", arguments={"root": "MK4"})]),
     ])
     model = AutonomyChatModel(delegate)
 
@@ -40,7 +40,7 @@ async def test_routine_file_clarification_is_retried_into_tool_call() -> None:
         tool_history=[],
     )
 
-    assert turn.tool_calls == [ToolCall(tool="file_tree", arguments={"root": "MK5"})]
+    assert turn.tool_calls == [ToolCall(tool="file_tree", arguments={"root": "MK4"})]
     assert len(delegate.calls) == 2
     assert "routine intermediate decision" in delegate.calls[1]["system"]
     retry_history = delegate.calls[1]["tool_history"]

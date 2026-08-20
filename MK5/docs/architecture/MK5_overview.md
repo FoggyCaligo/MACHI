@@ -1,4 +1,4 @@
-﻿# MK4 아키텍처 개요
+﻿# MK5 아키텍처 개요
 
 작성: 2026-04-20  
 상태: 구현 완료 (MVP)
@@ -7,13 +7,13 @@
 
 ## 한 줄 요약
 
-MK4는 언어를 그래프 주소로 변환하고, 임시 사고 그래프에서 검색·correction·merge를 조정한 뒤, 다시 언어로 출력하는 파이프라인이다.
+MK5는 언어를 그래프 주소로 변환하고, 임시 사고 그래프에서 검색·correction·merge를 조정한 뒤, 다시 언어로 출력하는 파이프라인이다.
 
 ---
 
 ## MK3와의 차이
 
-| 항목 | MK3 | MK4 |
+| 항목 | MK3 | MK5 |
 |---|---|---|
 | 노드 정체성 | 텍스트 레이블 | 그래프 구조 위치 (텍스트는 부속 레이블) |
 | 언어→의미 변환 | 여러 컴포넌트에 분산 | 단일 함수 `LangToGraph` |
@@ -198,7 +198,7 @@ Think의 목표는 단순 그래프 업데이트가 아니다.
 | `WorldGraph` | 세계그래프 영구 저장/커밋 | GraphIngestService + GraphCommitService |
 | `ThoughtEngine` | Think 루프 / 의도 판단 / 검색 내포 | ThoughtEngine |
 | `SearchFunction` | EmptySlot hint 합산 → 1회 검색 → ingest + payload 저장 | SearchSidecar |
-| `ConceptDifferentiation` | LocalSubgraph 기반 공통부 추출 + 분화 | 미구현 (MK5에서 이관) |
+| `ConceptDifferentiation` | LocalSubgraph 기반 공통부 추출 + 분화 | 미구현 (MK4에서 이관) |
 | `ConclusionViewBuilder` | 결론 구조 선별 | ConclusionViewBuilder |
 | `ToolLayer` | 파일/코드 도구 실행 | 없음 (신규, 2차) |
 

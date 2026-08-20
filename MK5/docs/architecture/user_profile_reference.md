@@ -1,4 +1,4 @@
-﻿# MK4 UserProfile Reference 정책
+﻿# MK5 UserProfile Reference 정책
 
 작성: 2026-05-18  
 상태: skeleton 정책 v1  
@@ -109,7 +109,7 @@ ProfileActivationView
 
 ```text
 현재 입력: 난 신재용이라고 해. 날 기억하니?
-프로필 참조: 신재용, 개발자, 기획자, MK4
+프로필 참조: 신재용, 개발자, 기획자, MK5
 입력/프로필 overlap: 신재용
 
 → ProfileActivationView 활성화
@@ -252,7 +252,7 @@ UserProfile 자체와 profile_reference edge는 내부 구조다.
 
 ```text
 [현재 사용자 맥락]
-신재용, 개발자, 기획자, MK4
+신재용, 개발자, 기획자, MK5
 ```
 
 단, 이는 확정된 사용자 사실 목록이 아니라 현재 사용자 프로필에서 재활성화된 concept 후보들이다.

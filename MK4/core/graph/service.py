@@ -592,7 +592,7 @@ class GraphMemoryService:
     ) -> str:
         """Replace a user fact while preserving both provenance and history.
 
-        MK5 intentionally does not guess corrections from cue strings. The planner
+        MK4 intentionally does not guess corrections from cue strings. The planner
         calls this explicit operation after it has identified the previous fact.
         """
         anchor_id = self.ensure_user_anchor(user_id)

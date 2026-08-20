@@ -18,7 +18,7 @@ _WIKI_SEARCH_URL = "https://{lang}.wikipedia.org/w/api.php"
 _WIKI_SUMMARY_URL = "https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}"
 _WIKI_PAGE_URL = "https://{lang}.wikipedia.org/wiki/{title}"
 _HTTP_HEADERS = {
-    "User-Agent": "MK4/0.1 SearchClient (Windows; local development; +https://wikipedia.org)",
+    "User-Agent": "MK5/0.1 SearchClient (Windows; local development; +https://wikipedia.org)",
     "Accept": "application/json",
     "Accept-Language": "ko,en;q=0.8",
 }

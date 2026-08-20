@@ -4,17 +4,17 @@ from typing import Any
 
 import pytest
 
-from MK5.core.agent.orchestrator import AgentOrchestrator, _final_answer_evidence_guard_result
-from MK5.core.graph.repository import GraphRepository
-from MK5.core.graph.service import GraphMemoryService
-from MK5.tools.graph_tools import GraphToolSuite
-from MK5.tools.document_tools import DocumentReadToolSuite
-from MK5.tools.llm_client import ModelTurn
-from MK5.tools.terminal_tools import TerminalToolSuite
-from MK5.tools.tool_runtime import ToolCall, ToolDefinition
-from MK5.tools.web_search import StubWebSearchTool
-from MK5.tools.tool_runtime import ToolRegistry
-from MK5.tools.workspace_tools import WorkspaceFileToolSuite
+from MK4.core.agent.orchestrator import AgentOrchestrator, _final_answer_evidence_guard_result
+from MK4.core.graph.repository import GraphRepository
+from MK4.core.graph.service import GraphMemoryService
+from MK4.tools.graph_tools import GraphToolSuite
+from MK4.tools.document_tools import DocumentReadToolSuite
+from MK4.tools.llm_client import ModelTurn
+from MK4.tools.terminal_tools import TerminalToolSuite
+from MK4.tools.tool_runtime import ToolCall, ToolDefinition
+from MK4.tools.web_search import StubWebSearchTool
+from MK4.tools.tool_runtime import ToolRegistry
+from MK4.tools.workspace_tools import WorkspaceFileToolSuite
 
 
 def test_tool_completion_without_names_uses_successful_substantive_tool_history() -> None:
@@ -240,7 +240,7 @@ class ContextAwareFileReadModel:
         if not tool_history:
             return ModelTurn(tool_calls=[
                 ToolCall(tool="file_read", arguments={"path": "README.md"}),
-                ToolCall(tool="file_read", arguments={"path": "MK5/README.md"}),
+                ToolCall(tool="file_read", arguments={"path": "MK4/README.md"}),
             ])
         return ModelTurn(final_answer="done")
 
@@ -1064,8 +1064,8 @@ async def test_orchestrator_pushes_relevant_memory_summary_into_model() -> None:
 @pytest.mark.asyncio
 async def test_orchestrator_passes_previous_dialogue_so_model_can_read_files(tmp_path) -> None:
     (tmp_path / "README.md").write_text("Root project", encoding="utf-8")
-    (tmp_path / "MK5").mkdir()
-    (tmp_path / "MK5" / "README.md").write_text("MK5 project", encoding="utf-8")
+    (tmp_path / "MK4").mkdir()
+    (tmp_path / "MK4" / "README.md").write_text("MK4 project", encoding="utf-8")
 
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
@@ -1081,7 +1081,7 @@ async def test_orchestrator_passes_previous_dialogue_so_model_can_read_files(tmp
 
     await orchestrator.respond(
         user_id="alice",
-        message="루트의 README.md 파일과, MK5 폴더 안의 README.md 파일을 우선 봐줘.",
+        message="루트의 README.md 파일과, MK4 폴더 안의 README.md 파일을 우선 봐줘.",
         model=None,
         session_id="s1",
     )
@@ -1093,9 +1093,9 @@ async def test_orchestrator_passes_previous_dialogue_so_model_can_read_files(tmp
     )
 
     file_events = [event for event in result.tool_events if event["tool"] == "file_read"]
-    assert [event["arguments"]["path"] for event in file_events] == ["README.md", "MK5/README.md"]
+    assert [event["arguments"]["path"] for event in file_events] == ["README.md", "MK4/README.md"]
     assert file_events[0]["result"]["content"] == "Root project"
-    assert file_events[1]["result"]["content"] == "MK5 project"
+    assert file_events[1]["result"]["content"] == "MK4 project"
     assert "루트의 README.md" in chat_model.last_user_message
     assert "응. 읽어봐줘." in chat_model.last_user_message
     repo.close()
@@ -1748,20 +1748,20 @@ async def test_orchestrator_limits_and_deduplicates_auto_attachment_analysis() -
     orchestrator.register_tool_registry(registry)
     message = (
         "첨부를 봐줘.\n\n[첨부 파일]\n"
-        "- a.jpg: .mk5_uploads/a.jpg\n"
-        "- b.jpg: .mk5_uploads/b.jpg\n"
-        "- c.jpg: .mk5_uploads/c.jpg\n"
-        "- d.jpg: .mk5_uploads/d.jpg"
+        "- a.jpg: .mk4_uploads/a.jpg\n"
+        "- b.jpg: .mk4_uploads/b.jpg\n"
+        "- c.jpg: .mk4_uploads/c.jpg\n"
+        "- d.jpg: .mk4_uploads/d.jpg"
     )
 
     await orchestrator.respond(user_id="alice", message=message, model="gemma4:e4b", session_id="s1")
     await orchestrator.respond(user_id="alice", message=message, model="gemma4:e4b", session_id="s1")
 
     assert [call["path"] for call in calls] == [
-        ".mk5_uploads/a.jpg",
-        ".mk5_uploads/b.jpg",
-        ".mk5_uploads/c.jpg",
-        ".mk5_uploads/d.jpg",
+        ".mk4_uploads/a.jpg",
+        ".mk4_uploads/b.jpg",
+        ".mk4_uploads/c.jpg",
+        ".mk4_uploads/d.jpg",
     ]
     repo.close()
 

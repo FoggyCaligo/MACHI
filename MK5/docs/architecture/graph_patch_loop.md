@@ -1,11 +1,11 @@
-﻿# MK4 GraphPatch Reasoning Loop 설계
+﻿# MK5 GraphPatch Reasoning Loop 설계
 
 작성: 2026-05-18
 상태: 5단계 구현 기준 문서
 
 ## 배경
 
-MK6의 다음 목표는 입력 그래프를 목적 그래프에 맞게 반복적으로 수정하다가, 더 이상 유의미한 변화가 줄어드는 시점에 결론 그래프로 확정하는 것이다.
+MK5의 다음 목표는 입력 그래프를 목적 그래프에 맞게 반복적으로 수정하다가, 더 이상 유의미한 변화가 줄어드는 시점에 결론 그래프로 확정하는 것이다.
 
 이를 위해 그래프 수정의 최소 단위를 `GraphPatch`로 표준화하고, 5단계부터는 이 patch log를 수렴 판단에 사용한다.
 
@@ -60,10 +60,10 @@ current_loop_patches
 구현 위치:
 
 ```text
-MK4/core/thinking/graph_patch.py
+MK5/core/thinking/graph_patch.py
   - patch_overlap_ratio(previous, current)
 
-MK4/core/thinking/thought_engine.py
+MK5/core/thinking/thought_engine.py
   - PATCH_CONVERGENCE_OVERLAP_RATIO = 0.5
   - _has_converged(..., previous_patches)
   - Think loop에서 prev_loop_patches 갱신

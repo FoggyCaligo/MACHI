@@ -7,18 +7,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from MK4.core.entities.edge import Edge
-from MK4.core.entities.node import Node
-from MK4.core.entities.translated_graph import (
+from MK5.core.entities.edge import Edge
+from MK5.core.entities.node import Node
+from MK5.core.entities.translated_graph import (
     ConceptPointer,
     LocalSubgraph,
     TranslatedEdge,
     TranslatedGraph,
 )
-from MK4.core.thinking.conclusion_graph import ConclusionGraph
-from MK4.core.thinking.thought_engine import ConclusionView
-from MK4.core.utils.hash_resolver import PARTICIPANT_ASSISTANT, PARTICIPANT_SEARCH, PARTICIPANT_USER, participant_anchor_hash
-from MK4.core.verbalization import build_answer_contract
+from MK5.core.thinking.conclusion_graph import ConclusionGraph
+from MK5.core.thinking.thought_engine import ConclusionView
+from MK5.core.utils.hash_resolver import PARTICIPANT_ASSISTANT, PARTICIPANT_SEARCH, PARTICIPANT_USER, participant_anchor_hash
+from MK5.core.verbalization import build_answer_contract
 
 
 class AnswerContractSectionsTest(unittest.TestCase):

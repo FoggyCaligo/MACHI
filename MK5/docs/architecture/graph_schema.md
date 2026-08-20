@@ -1,4 +1,4 @@
-﻿# MK4 그래프 스키마
+﻿# MK5 그래프 스키마
 
 작성: 2026-04-20  
 상태: 구현 완료 → `core/storage/db.py`, `core/storage/world_graph.py`

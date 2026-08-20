@@ -1,7 +1,7 @@
-from MK5.app.accounts import AccountStore
-from MK5.app.sessions import SessionStore
-from MK5.core.graph.repository import GraphRepository
-from MK5.core.graph.service import GraphMemoryService
+from MK4.app.accounts import AccountStore
+from MK4.app.sessions import SessionStore
+from MK4.core.graph.repository import GraphRepository
+from MK4.core.graph.service import GraphMemoryService
 
 
 def _store() -> AccountStore:

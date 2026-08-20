@@ -1,2 +1,2 @@
-﻿"""MK5 application package."""
+﻿"""MK4 application package."""
 

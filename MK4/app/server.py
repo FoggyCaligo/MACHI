@@ -31,9 +31,9 @@ session_store = SessionStore(
     account_validator=account_store.is_active,
 )
 _login_attempts: dict[str, deque[float]] = defaultdict(deque)
-_SESSION_COOKIE = "mk5_session"
+_SESSION_COOKIE = "mk4_session"
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-_UPLOAD_DIR = config.WORKSPACE_ROOT / ".mk5_uploads"
+_UPLOAD_DIR = config.WORKSPACE_ROOT / ".mk4_uploads"
 
 
 @asynccontextmanager
@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
         pipeline = None
 
 
-app = FastAPI(title="Machi MK5", lifespan=lifespan)
+app = FastAPI(title="Machi MK4", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
@@ -219,7 +219,7 @@ async def upload_file(request: Request):
                 "ok": False,
                 "error": "missing_dependency",
                 "message": (
-                    "File upload requires python-multipart. Install MK5 requirements "
+                    "File upload requires python-multipart. Install MK4 requirements "
                     "or run: pip install python-multipart"
                 ),
                 "detail": str(exc),

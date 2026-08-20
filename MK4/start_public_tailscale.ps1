@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 
-$mk5Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$mk4Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
 $tailscaleCommand = Get-Command tailscale -ErrorAction SilentlyContinue
 if (-not $tailscaleCommand) {
@@ -11,7 +11,7 @@ if (-not $tailscaleCommand) {
 }
 
 if (-not $pythonCommand) {
-    throw "python 명령을 찾지 못했습니다. MK5 가상환경을 활성화한 뒤 다시 실행하세요."
+    throw "python 명령을 찾지 못했습니다. MK4 가상환경을 활성화한 뒤 다시 실행하세요."
 }
 if (-not $tailscaleCommand) {
     throw "tailscale 명령을 찾지 못했습니다. Tailscale을 설치하고 로그인하세요."
@@ -28,9 +28,9 @@ if (-not $tailscaleExe) {
     throw "Tailscale 실행 파일 경로를 확인하지 못했습니다."
 }
 
-$env:MK5_SERVER_HOST = "127.0.0.1"
-$env:MK5_SERVER_PORT = "8010"
-$env:MK5_SESSION_COOKIE_SECURE = "true"
+$env:MK4_SERVER_HOST = "127.0.0.1"
+$env:MK4_SERVER_PORT = "8010"
+$env:MK4_SESSION_COOKIE_SECURE = "true"
 
 function Test-Mk5Health {
     try {
@@ -53,16 +53,16 @@ if ($funnelStatus -notmatch [regex]::Escape($expectedProxy)) {
 }
 
 if (Test-Mk5Health) {
-    Write-Host "이미 실행 중인 MK5 서버를 사용합니다."
+    Write-Host "이미 실행 중인 MK4 서버를 사용합니다."
     Write-Host $funnelStatus
     return
 }
 
 Write-Host $funnelStatus
-Write-Host "MK5 서버를 시작합니다. 종료하려면 Ctrl+C를 누르세요."
-Push-Location $mk5Root
+Write-Host "MK4 서버를 시작합니다. 종료하려면 Ctrl+C를 누르세요."
+Push-Location $mk4Root
 try {
-    & $pythonCommand.Source (Join-Path $mk5Root "run_server.py")
+    & $pythonCommand.Source (Join-Path $mk4Root "run_server.py")
 }
 finally {
     Pop-Location

@@ -93,7 +93,7 @@ def _t(label: str, start: float) -> float:
 class ConclusionView:
     """GraphToLang에 전달되는 결론 뷰.
 
-    기존 호환 필드(nodes/edges/key_hashes/ref_hashes)는 유지한다. 다만 MK6의
+    기존 호환 필드(nodes/edges/key_hashes/ref_hashes)는 유지한다. 다만 MK5의
     장기 계약에서 결론 본체는 node list가 아니라 selected_graphs에 담기는
     ConclusionGraph다.
     """

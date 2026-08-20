@@ -1,4 +1,4 @@
-﻿# MK4 Goal 정책
+﻿# MK5 Goal 정책
 
 작성: 2026-05-18  
 상태: 정책 확정 초안 v1  
@@ -8,7 +8,7 @@
 
 ## 1. 핵심 결정
 
-MK6의 Goal은 단일 욕망 문장이나 템플릿 규칙이 아니다.
+MK5의 Goal은 단일 욕망 문장이나 템플릿 규칙이 아니다.
 
 > Goal은 Think 루프가 결론 후보를 평가할 때 바라보는 방향성 앵커이며, 최종적으로는 GoalRoot를 중심으로 한 목표 그래프다.
 
@@ -27,7 +27,7 @@ Goal은 Think가 어떤 노드와 경로를 더 좋은 결론 후보로 볼지 �
 
 ## 2. Think / Update와 Goal의 관계
 
-MK6는 Think와 Update를 분리한다.
+MK5는 Think와 Update를 분리한다.
 
 ```text
 Update = 세계그래프를 변경하는 루프
@@ -121,7 +121,7 @@ TurnGoalView는 WorldGraph에 직접 저장되는 장기 목표가 아니다.
 이 경우 TurnGoalView에는 `동조`, `오류 지적 회피`, `불편한 말 회피` 같은 방향이 생길 수 있다.  
 하지만 GlobalGoalGraph의 `정직성`, `정확성`, `사용자 장기 이익`과 충돌한다.
 
-이때 MK6는 TurnGoalView를 그대로 따르지 않는다.
+이때 MK5는 TurnGoalView를 그대로 따르지 않는다.
 
 > TurnGoalView는 현재 입력의 요구를 반영하지만, GlobalGoalGraph와 충돌하면 두 목표 사이에서 현재 더 맞는 방향으로 재정렬된다.
 

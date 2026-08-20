@@ -1,4 +1,4 @@
-﻿# MK4 InputGraphBundle 설계
+﻿# MK5 InputGraphBundle 설계
 
 작성: 2026-05-18
 상태: 3단계 구현 기준 문서
@@ -7,7 +7,7 @@
 
 기존 흐름은 사용자 문장을 concept 후보 목록으로 바꾼 뒤, 각 ConceptPointer가 가진 LocalSubgraph를 TempThoughtGraph에 로드하는 방식이었다. 이 방식은 입력 단어들이 어떤 concept을 가리키는지는 전달하지만, 사용자 문장 자체가 하나의 임시 국소그래프 묶음이라는 사실을 명시하지 못한다.
 
-앞으로 MK6의 입력 해석은 다음 방향을 따른다.
+앞으로 MK5의 입력 해석은 다음 방향을 따른다.
 
 ```text
 사용자 문장

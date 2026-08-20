@@ -1,4 +1,4 @@
-﻿# MK4 AnswerContract 정책
+﻿# MK5 AnswerContract 정책
 
 작성: 2026-05-18  
 상태: 구현 반영 초안

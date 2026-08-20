@@ -1,2 +1,2 @@
-﻿"""MK5 core package."""
+﻿"""MK4 core package."""
 

@@ -1,4 +1,4 @@
-﻿"""MK4 FastAPI 서버.
+﻿"""MK5 FastAPI 서버.
 
 엔드포인트:
   GET  /           UI (index.html)
@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         _pipeline = None
 
 
-app = FastAPI(title="MK4", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="MK5", version="0.1.0", lifespan=lifespan)
 
 # 정적 파일 마운트 (app/static/)
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")

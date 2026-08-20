@@ -1,4 +1,4 @@
-﻿"""User profile reference support for MK4.
+﻿"""User profile reference support for MK5.
 
 UserProfile은 사용자에 대한 사실 저장소가 아니라, 현재 사용자와의 대화에서
 등장한 WorldGraph concept들을 참조하는 개인화된 context index다.

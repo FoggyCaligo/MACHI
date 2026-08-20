@@ -1,4 +1,4 @@
-﻿# MK4 Claim / Assertion Graph
+﻿# MK5 Claim / Assertion Graph
 
 작성: 2026-08-01  
 상태: active  
@@ -8,7 +8,7 @@
 
 ## 1. 핵심 원칙
 
-MK4는 다음 같은 전용 그래프 타입을 늘리지 않습니다.
+MK5는 다음 같은 전용 그래프 타입을 늘리지 않습니다.
 
 - `SelfClaimGraph`
 - `CorrectionGraph`

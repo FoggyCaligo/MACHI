@@ -33,7 +33,7 @@ This avoids a support edge or alias-evidence edge artificially lowering the stru
 
 ## Delayed alias-merge flow
 
-`MK4` now uses a delayed merge path instead of immediate same-node attachment.
+`MK5` now uses a delayed merge path instead of immediate same-node attachment.
 
 1. separate surface forms can exist as separate nodes first
 2. `surface_variant_evidence` adds or strengthens a persistent edge between likely aliases

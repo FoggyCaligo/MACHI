@@ -1,4 +1,4 @@
-﻿# MK4 파일 구조 및 컴포넌트
+﻿# MK5 파일 구조 및 컴포넌트
 
 작성: 2026-04-20  
 상태: 구현 완료 (MVP)
@@ -8,7 +8,7 @@
 ## 디렉터리 트리
 
 ```
-MK4/
+MK5/
 ├── __init__.py                      # 패키지 루트
 ├── config.py                        # 전역 설정 (환경변수 기반)
 ├── requirements.txt                 # 의존성 목록
@@ -58,7 +58,7 @@ MK4/
 │
 └── docs/
     └── architecture/
-        ├── MK4_overview.md          # 전체 아키텍처 개요
+        ├── MK5_overview.md          # 전체 아키텍처 개요
         ├── file_structure.md        # 이 문서
         ├── lang_to_graph.md         # LangToGraph 상세 설계
         ├── graph_schema.md          # SQLite 스키마 및 전처리 파이프라인
@@ -462,8 +462,8 @@ SIGINT/SIGTERM 핸들러(`_shutdown_handler`) 등록: uvicorn lifespan이 미처
 대화형 CLI. sys.path 자동 조정으로 어느 위치에서 실행해도 동작한다.
 
 ```bash
-python MK4/run_cli.py          # MACHI/ 에서
-python run_cli.py              # MK4/ 안에서
+python MK5/run_cli.py          # MACHI/ 에서
+python run_cli.py              # MK5/ 안에서
 ```
 
 ### run_server.py
@@ -471,7 +471,7 @@ python run_cli.py              # MK4/ 안에서
 FastAPI 서버 실행기.
 
 ```bash
-python MK4/run_server.py [--host 127.0.0.1] [--port 8000] [--reload]
+python MK5/run_server.py [--host 127.0.0.1] [--port 8000] [--reload]
 ```
 
 ---
@@ -489,11 +489,11 @@ Ollama 없이 실행 가능한 단위 테스트. in-memory SQLite 사용.
 | `test_temp_thought_graph.py` | 노드/엣지 조작, delta 추적, EmptySlot, load_from_translated |
 
 ```bash
-# MK4/ 안에서
+# MK5/ 안에서
 pytest
 
 # MACHI/ 에서
-pytest MK4/
+pytest MK5/
 ```
 
 ---

@@ -22,7 +22,7 @@ _MAX_PAGE_BYTES = 1_000_000
 _MAX_PAGE_CHARS = 16_000
 _WIKI_RESULTS_PER_SOURCE = 3
 _HEADERS = {
-    "User-Agent": "MACHI-MK5/0.2 WebSearch (+https://wikipedia.org)",
+    "User-Agent": "MACHI-MK4/0.2 WebSearch (+https://wikipedia.org)",
     "Accept": "application/json",
     "Accept-Language": "ko,en;q=0.8",
 }

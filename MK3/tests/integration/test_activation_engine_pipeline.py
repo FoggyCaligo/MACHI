@@ -30,7 +30,7 @@ def main() -> None:
                 session_id='session-1',
                 turn_index=1,
                 role='user',
-                content='MK5에서는 profile과 project와 chat을 분리하지 말자. chat으로 통합하는 게 더 맞아.',
+                content='MK4에서는 profile과 project와 chat을 분리하지 말자. chat으로 통합하는 게 더 맞아.',
             )
         )
         ingest.ingest(
@@ -38,7 +38,7 @@ def main() -> None:
                 session_id='session-1',
                 turn_index=2,
                 role='user',
-                content='MK5에서 chat 통합은 맞아. project와 profile 분리는 말고 chat으로 가자.',
+                content='MK4에서 chat 통합은 맞아. project와 profile 분리는 말고 chat으로 가자.',
             )
         )
 
@@ -46,7 +46,7 @@ def main() -> None:
         view = engine.build_view(
             ActivationRequest(
                 session_id='session-1',
-                content='MK5에서는 chat 통합이 맞고 profile과 project를 분리하지 말자.',
+                content='MK4에서는 chat 통합이 맞고 profile과 project를 분리하지 말자.',
             )
         )
 

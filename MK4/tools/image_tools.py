@@ -93,7 +93,7 @@ class ImageAnalyzeToolSuite:
                 "ok": False,
                 "path": relative_path,
                 "error": "missing_dependency",
-                "message": "image_analyze requires the pillow package. Install MK5 requirements or run: pip install pillow",
+                "message": "image_analyze requires the pillow package. Install MK4 requirements or run: pip install pillow",
             }
 
         try:
@@ -125,7 +125,7 @@ class ImageAnalyzeToolSuite:
                 "description": None,
                 "message": (
                     "Image metadata was read, but no Ollama model is configured. Set "
-                    "MK5_OLLAMA_IMAGE_MODEL_NAME, OLLAMA_MODEL_NAME, or pass model to image_analyze "
+                    "MK4_OLLAMA_IMAGE_MODEL_NAME, OLLAMA_MODEL_NAME, or pass model to image_analyze "
                     "for visual recognition."
                 ),
             }

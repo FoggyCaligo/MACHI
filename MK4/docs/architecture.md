@@ -1,8 +1,8 @@
-# MK5 Architecture
+# MK4 Architecture
 
 ## Goal
 
-`MK5`의 목적은 그래프를 사고 엔진으로 두지 않고, **장기 기억과 회수 인프라로 단순화한 뒤 LLM이 도구를 오케스트레이션하게 만드는 것**이다.
+`MK4`의 목적은 그래프를 사고 엔진으로 두지 않고, **장기 기억과 회수 인프라로 단순화한 뒤 LLM이 도구를 오케스트레이션하게 만드는 것**이다.
 
 핵심은 다음과 같다.
 
@@ -14,7 +14,7 @@
 
 ## Why This Architecture
 
-이전 구조는 그래프 위에서 직접 사고하는 데 강점이 있었지만, 기본 응답 경로가 무거워지고 유지보수 부담도 커진다. `MK5`는 이 문제를 줄이기 위해 그래프의 책임을 다시 좁힌다.
+이전 구조는 그래프 위에서 직접 사고하는 데 강점이 있었지만, 기본 응답 경로가 무거워지고 유지보수 부담도 커진다. `MK4`는 이 문제를 줄이기 위해 그래프의 책임을 다시 좁힌다.
 
 즉 이 단계에서 그래프는:
 
@@ -58,7 +58,7 @@ LLM은 planner이자 최종 문장 생성자다. 오케스트레이터는 모델
 
 ### 4. Active graph context
 
-`MK5`는 장기 기억과 별도로, 세션 단위의 짧은 작업 기억을 둔다. 이것을 active graph context라고 부른다.
+`MK4`는 장기 기억과 별도로, 세션 단위의 짧은 작업 기억을 둔다. 이것을 active graph context라고 부른다.
 
 active graph context는 다음과 같은 항목에서 만들어진다.
 
@@ -76,7 +76,7 @@ active graph context는 다음과 같은 항목에서 만들어진다.
 
 ## LLM Input Contract
 
-`MK5`는 모델 입력을 의도적으로 짧게 유지한다. 현재 한 턴의 입력은 아래 요소로 구성된다.
+`MK4`는 모델 입력을 의도적으로 짧게 유지한다. 현재 한 턴의 입력은 아래 요소로 구성된다.
 
 ```text
 system prompt
@@ -93,7 +93,7 @@ response format
 
 ### File text activation
 
-`file_read`가 `.txt`, `.md`, `.markdown` 파일을 성공적으로 읽으면 MK5는 파일 본문을 그대로 장기 기억으로 저장하지 않는다. 대신 파일 텍스트에서 후보 노드를 뽑고 점수를 매긴 뒤, 하위 30%를 제거한 결과만 `file_context`와 concept node로 국소활성화 그래프에 임시 편입한다.
+`file_read`가 `.txt`, `.md`, `.markdown` 파일을 성공적으로 읽으면 MK4는 파일 본문을 그대로 장기 기억으로 저장하지 않는다. 대신 파일 텍스트에서 후보 노드를 뽑고 점수를 매긴 뒤, 하위 30%를 제거한 결과만 `file_context`와 concept node로 국소활성화 그래프에 임시 편입한다.
 
 파일에서 온 노드는 사용자 발화에서 온 노드보다 약한 활성 강도로 들어간다.
 
@@ -105,7 +105,7 @@ file text activation nodes: 0.25
 
 이 값은 “파일을 읽었다”는 사실이 현재 작업에는 중요하지만, 사용자가 직접 말한 기억과 같은 강도로 장기 문맥을 끌어당기면 안 된다는 판단을 반영한다. 파일 text activation은 다음 턴의 작업 문맥에만 약하게 이어지며, 새 턴에서 다시 파일을 읽지 않으면 장기 기억 summary 후보로 고정되거나 계속 재전파되지 않는다.
 
-긴 파일에서 후처리가 멈추지 않도록 파일 text activation 입력은 기본 8,000자로 제한한다. 또한 2,000자를 넘는 파일은 Sentence_Breaker 대신 더 가벼운 token fallback으로 후보를 만든다. 현재 기본값은 상위 70%, 최대 24개이며, 각각 `MK5_FILE_TEXT_NODE_KEEP_RATIO`, `MK5_FILE_TEXT_NODE_MAX_ITEMS`, `MK5_FILE_TEXT_ACTIVATION_MAX_CHARS`로 조정할 수 있다.
+긴 파일에서 후처리가 멈추지 않도록 파일 text activation 입력은 기본 8,000자로 제한한다. 또한 2,000자를 넘는 파일은 Sentence_Breaker 대신 더 가벼운 token fallback으로 후보를 만든다. 현재 기본값은 상위 70%, 최대 24개이며, 각각 `MK4_FILE_TEXT_NODE_KEEP_RATIO`, `MK4_FILE_TEXT_NODE_MAX_ITEMS`, `MK4_FILE_TEXT_ACTIVATION_MAX_CHARS`로 조정할 수 있다.
 
 ### Tool names and visibility
 
@@ -145,7 +145,7 @@ file text activation nodes: 0.25
 
 파일 수정, 터미널 실행, 이미지 분석처럼 사용자가 실제 도구 수행을 요구한 턴에서는 도구가 성공하기 전의 “했습니다”류 답변을 완료로 보지 않는다. 최종 문장 자체는 LLM이 만들지만, 오케스트레이터가 도구 실행 여부와 성공 여부를 구조적으로 검증한다.
 
-도구 라운드 수에는 고정 상한이 없다. 모델이 JSON 출력 계약을 반복해서 깨거나 존재하지 않는 도구를 반복 호출하면 회로차단기가 응답을 멈춘다. 같은 도구와 같은 인자의 반복 허용 횟수는 기본 3회이며 `MK5_AGENT_MAX_IDENTICAL_TOOL_CALLS`로 조정할 수 있다.
+도구 라운드 수에는 고정 상한이 없다. 모델이 JSON 출력 계약을 반복해서 깨거나 존재하지 않는 도구를 반복 호출하면 회로차단기가 응답을 멈춘다. 같은 도구와 같은 인자의 반복 허용 횟수는 기본 3회이며 `MK4_AGENT_MAX_IDENTICAL_TOOL_CALLS`로 조정할 수 있다.
 
 웹 조사가 필요하면 모델이 사용자 입력을 간결한 조사 목적으로 정리해 `web_research`를 호출한다. 그래프 노드나 노드 조합으로 자동 검색을 시작하거나 검색어를 만들지는 않는다. 복수 검색 소스 조회부터 페이지 본문 근거 추출까지는 서버 측에서 수행한다.
 
@@ -153,7 +153,7 @@ file text activation nodes: 0.25
 
 ## Tooling
 
-현재 `MK5`의 주요 도구군은 아래와 같다.
+현재 `MK4`의 주요 도구군은 아래와 같다.
 
 - graph memory: `graph_search`, `record_memory_correction`
 - search: `web_research`, `latest_search`
@@ -171,11 +171,11 @@ file text activation nodes: 0.25
 
 이미지 분석은 대화 모델과 별도의 모델을 사용할 수 있다.
 
-- `MK5_OLLAMA_MODEL_NAME`: 일반 대화 모델
-- `MK5_OLLAMA_IMAGE_MODEL_NAME`: 이미지 분석 우선 모델
-- `MK5_OLLAMA_IMAGE_FALLBACK_MODEL_NAME`: 우선 모델이 이미지 요청을 거부할 때의 대체 모델
+- `MK4_OLLAMA_MODEL_NAME`: 일반 대화 모델
+- `MK4_OLLAMA_IMAGE_MODEL_NAME`: 이미지 분석 우선 모델
+- `MK4_OLLAMA_IMAGE_FALLBACK_MODEL_NAME`: 우선 모델이 이미지 요청을 거부할 때의 대체 모델
 
-UI에서도 대화 모델과 이미지 모델을 별도로 선택할 수 있다. 사용자가 클립 버튼으로 파일을 첨부하면 서버는 `/upload`로 파일을 받아 `.mk5_uploads/` 아래에 저장하고, 이후 대화에서는 업로드 경로를 `image_analyze`, `document_read`, `file_read` 같은 도구가 사용할 수 있다.
+UI에서도 대화 모델과 이미지 모델을 별도로 선택할 수 있다. 사용자가 클립 버튼으로 파일을 첨부하면 서버는 `/upload`로 파일을 받아 `.mk4_uploads/` 아래에 저장하고, 이후 대화에서는 업로드 경로를 `image_analyze`, `document_read`, `file_read` 같은 도구가 사용할 수 있다.
 
 이 방식은 사용자가 다른 PC에서 브라우저로 접속하는 경우에도 경로 문자열만 넘기는 방식보다 안전하다. 실제 파일 바이트가 서버에 업로드되기 때문이다.
 

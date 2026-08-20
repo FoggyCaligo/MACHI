@@ -7,10 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from MK4.core.entities.edge import Edge
-from MK4.core.entities.node import Node
-from MK4.core.thinking import concept_merge, surface_variant_evidence
-from MK4.core.thinking.temp_thought_graph import TempThoughtGraph
+from MK5.core.entities.edge import Edge
+from MK5.core.entities.node import Node
+from MK5.core.thinking import concept_merge, surface_variant_evidence
+from MK5.core.thinking.temp_thought_graph import TempThoughtGraph
 
 
 def _make_node(label: str, *, stability: float = 0.8, embedding: list[float] | None = None) -> Node:

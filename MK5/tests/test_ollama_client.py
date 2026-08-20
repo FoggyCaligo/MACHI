@@ -9,7 +9,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from MK4.tools import ollama_client
+from MK5.tools import ollama_client
 
 
 class _FakeClient:

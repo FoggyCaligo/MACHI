@@ -1,4 +1,4 @@
-﻿# MK4 Profile Context Display / Recall View
+﻿# MK5 Profile Context Display / Recall View
 
 작성: 2026-05-18  
 상태: 구현 반영 초안

@@ -6,15 +6,15 @@ import zipfile
 
 import pytest
 
-from MK5.tools.terminal_tools import TerminalToolSuite
-from MK5.tools.code_index_tools import CodeIndexToolSuite
-from MK5.tools.document_tools import DocumentReadToolSuite, _looks_garbled
-from MK5.tools.image_tools import ImageAnalyzeToolSuite
-from MK5.tools.llm_client import ModelOutputParseError, ModelTurn, _compact_tool_result, _parse_model_turn, _require_tool_manuals, _response_schema_for_tools
-from MK5.tools.tool_runtime import ToolCall, ToolDefinition
-from MK5.tools.workspace_tools import WorkspaceFileToolSuite
-from MK5.tools import web_search
-from MK5.tools.web_search import HttpWebSearchTool, SearchHit
+from MK4.tools.terminal_tools import TerminalToolSuite
+from MK4.tools.code_index_tools import CodeIndexToolSuite
+from MK4.tools.document_tools import DocumentReadToolSuite, _looks_garbled
+from MK4.tools.image_tools import ImageAnalyzeToolSuite
+from MK4.tools.llm_client import ModelOutputParseError, ModelTurn, _compact_tool_result, _parse_model_turn, _require_tool_manuals, _response_schema_for_tools
+from MK4.tools.tool_runtime import ToolCall, ToolDefinition
+from MK4.tools.workspace_tools import WorkspaceFileToolSuite
+from MK4.tools import web_search
+from MK4.tools.web_search import HttpWebSearchTool, SearchHit
 
 
 def test_low_level_web_tools_are_hidden_from_model() -> None:
@@ -31,7 +31,7 @@ def test_low_level_web_tools_are_hidden_from_model() -> None:
 
 @pytest.mark.asyncio
 async def test_market_snapshot_stub() -> None:
-    from MK5.tools.web_search import StubWebSearchTool
+    from MK4.tools.web_search import StubWebSearchTool
 
     registry = StubWebSearchTool().build_registry()
     result = await registry.run(ToolCall(tool="market_snapshot", arguments={"query": "태광"}))
@@ -46,7 +46,7 @@ def test_unconsulted_tool_call_is_replaced_with_manual_lookup() -> None:
         ToolDefinition(name="tool_manual", description="manual", input_schema={}),
     ]
     turn = ModelTurn(tool_calls=[
-        ToolCall(tool="terminal_command", arguments={"command": "tree -L 2 MK5"}),
+        ToolCall(tool="terminal_command", arguments={"command": "tree -L 2 MK4"}),
     ])
 
     guarded = _require_tool_manuals(turn, tool_definitions=definitions, tool_history=[])
@@ -60,7 +60,7 @@ def test_consulted_tool_call_is_preserved() -> None:
         ToolDefinition(name="tool_manual", description="manual", input_schema={}),
     ]
     turn = ModelTurn(tool_calls=[
-        ToolCall(tool="terminal_command", arguments={"command": "dir MK5"}),
+        ToolCall(tool="terminal_command", arguments={"command": "dir MK4"}),
     ])
     history = [{
         "tool": "tool_manual",
@@ -126,20 +126,20 @@ async def test_file_tools_can_create_update_and_read(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_file_search_returns_workspace_relative_recursive_paths(tmp_path: Path) -> None:
-    (tmp_path / "MK5" / "core").mkdir(parents=True)
-    (tmp_path / "MK5" / "core" / "agent.py").write_text("# agent", encoding="utf-8")
-    (tmp_path / "MK5" / "README.md").write_text("# MK5", encoding="utf-8")
+    (tmp_path / "MK4" / "core").mkdir(parents=True)
+    (tmp_path / "MK4" / "core" / "agent.py").write_text("# agent", encoding="utf-8")
+    (tmp_path / "MK4" / "README.md").write_text("# MK4", encoding="utf-8")
     registry = WorkspaceFileToolSuite(tmp_path).build_registry()
 
     result = await registry.run(ToolCall(tool="file_search", arguments={
-        "root": "MK5",
+        "root": "MK4",
         "pattern": "*.py",
         "recursive": True,
     }))
 
     assert result["ok"] is True
     assert result["workspace_root"] == str(tmp_path.resolve())
-    assert result["files"] == ["MK5/core/agent.py"]
+    assert result["files"] == ["MK4/core/agent.py"]
 
 
 @pytest.mark.asyncio
@@ -412,8 +412,8 @@ async def test_image_analyze_returns_metadata_without_vision_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("MK5.config.OLLAMA_IMAGE_MODEL_NAME", "")
-    monkeypatch.setattr("MK5.config.OLLAMA_MODEL_NAME", "")
+    monkeypatch.setattr("MK4.config.OLLAMA_IMAGE_MODEL_NAME", "")
+    monkeypatch.setattr("MK4.config.OLLAMA_MODEL_NAME", "")
     suite = ImageAnalyzeToolSuite(tmp_path)
     registry = suite.build_registry()
     from PIL import Image
@@ -437,7 +437,7 @@ async def test_image_analyze_uses_configured_vision_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("MK5.config.OLLAMA_IMAGE_MODEL_NAME", "vision-model")
+    monkeypatch.setattr("MK4.config.OLLAMA_IMAGE_MODEL_NAME", "vision-model")
     captured: dict[str, object] = {}
 
     async def fake_image_chat(*, image_bytes: bytes, prompt: str, model: str | None = None) -> str:
@@ -446,7 +446,7 @@ async def test_image_analyze_uses_configured_vision_model(
         captured["model"] = model
         return "빨간 사각형 이미지입니다."
 
-    monkeypatch.setattr("MK5.tools.image_tools.image_chat", fake_image_chat)
+    monkeypatch.setattr("MK4.tools.image_tools.image_chat", fake_image_chat)
     suite = ImageAnalyzeToolSuite(tmp_path)
     registry = suite.build_registry()
     from PIL import Image
@@ -471,15 +471,15 @@ async def test_image_analyze_falls_back_to_default_ollama_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("MK5.config.OLLAMA_IMAGE_MODEL_NAME", "")
-    monkeypatch.setattr("MK5.config.OLLAMA_MODEL_NAME", "gemma4:e4b")
+    monkeypatch.setattr("MK4.config.OLLAMA_IMAGE_MODEL_NAME", "")
+    monkeypatch.setattr("MK4.config.OLLAMA_MODEL_NAME", "gemma4:e4b")
     captured: dict[str, object] = {}
 
     async def fake_image_chat(*, image_bytes: bytes, prompt: str, model: str | None = None) -> str:
         captured["model"] = model
         return "이미지 설명"
 
-    monkeypatch.setattr("MK5.tools.image_tools.image_chat", fake_image_chat)
+    monkeypatch.setattr("MK4.tools.image_tools.image_chat", fake_image_chat)
     suite = ImageAnalyzeToolSuite(tmp_path)
     registry = suite.build_registry()
     from PIL import Image
@@ -501,7 +501,7 @@ async def test_image_analyze_retries_fallback_when_primary_rejects_image_request
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("MK5.config.OLLAMA_IMAGE_FALLBACK_MODEL_NAME", "gemma4:12b")
+    monkeypatch.setattr("MK4.config.OLLAMA_IMAGE_FALLBACK_MODEL_NAME", "gemma4:12b")
     used_models: list[str | None] = []
 
     async def fake_image_chat(*, image_bytes: bytes, prompt: str, model: str | None = None) -> str:
@@ -510,7 +510,7 @@ async def test_image_analyze_retries_fallback_when_primary_rejects_image_request
             raise ValueError("Ollama rejected image request for model 'qwen3:8b'.")
         return "실현손익 +139,546원입니다."
 
-    monkeypatch.setattr("MK5.tools.image_tools.image_chat", fake_image_chat)
+    monkeypatch.setattr("MK4.tools.image_tools.image_chat", fake_image_chat)
     suite = ImageAnalyzeToolSuite(tmp_path)
     registry = suite.build_registry()
     from PIL import Image
@@ -644,8 +644,8 @@ async def test_internet_search_runs_per_concept_node(monkeypatch: pytest.MonkeyP
         searched.append((f"wiki_{lang}", query))
         return [SearchHit(title=f"{query}-{lang}", url=f"https://example.com/{query}/{lang}", snippet="result", source=f"wikipedia_{lang}")]
 
-    monkeypatch.setattr("MK5.tools.web_search._ddg_search", fake_ddg)
-    monkeypatch.setattr("MK5.tools.web_search._wiki_search", fake_wiki)
+    monkeypatch.setattr("MK4.tools.web_search._ddg_search", fake_ddg)
+    monkeypatch.setattr("MK4.tools.web_search._wiki_search", fake_wiki)
 
     result = await HttpWebSearchTool()._run({
         "query": "파이썬 러스트 비교",
@@ -670,8 +670,8 @@ async def test_internet_search_falls_back_to_whole_query_without_node_heuristics
         searched.append(query)
         return []
 
-    monkeypatch.setattr("MK5.tools.web_search._ddg_search", fake_ddg)
-    monkeypatch.setattr("MK5.tools.web_search._wiki_search", fake_wiki)
+    monkeypatch.setattr("MK4.tools.web_search._ddg_search", fake_ddg)
+    monkeypatch.setattr("MK4.tools.web_search._wiki_search", fake_wiki)
 
     query = "글록의 특징과 총기시장에서의 의의"
     result = await HttpWebSearchTool()._run({"query": query})
@@ -688,8 +688,8 @@ async def test_internet_search_keeps_up_to_eight_node_combinations(monkeypatch: 
     async def fake_wiki(query: str, lang: str) -> list[SearchHit]:
         return []
 
-    monkeypatch.setattr("MK5.tools.web_search._ddg_search", fake_ddg)
-    monkeypatch.setattr("MK5.tools.web_search._wiki_search", fake_wiki)
+    monkeypatch.setattr("MK4.tools.web_search._ddg_search", fake_ddg)
+    monkeypatch.setattr("MK4.tools.web_search._wiki_search", fake_wiki)
     nodes = [f"node-{index}" for index in range(8)]
 
     result = await HttpWebSearchTool()._run({"query": "context", "search_nodes": nodes})
@@ -780,8 +780,8 @@ async def test_latest_search_returns_recent_news_freshness(monkeypatch: pytest.M
         searched.append(f"google:{query}")
         return []
 
-    monkeypatch.setattr("MK5.tools.web_search._ddg_news_search", fake_ddg_news)
-    monkeypatch.setattr("MK5.tools.web_search._google_news_rss_search", fake_google_news)
+    monkeypatch.setattr("MK4.tools.web_search._ddg_news_search", fake_ddg_news)
+    monkeypatch.setattr("MK4.tools.web_search._google_news_rss_search", fake_google_news)
 
     result = await HttpWebSearchTool()._run_latest({
         "query": "현재 한국 주식 장 상황",
@@ -804,8 +804,8 @@ async def test_latest_search_reports_unknown_freshness_when_empty(monkeypatch: p
     async def fake_google_news(query: str) -> list[SearchHit]:
         return []
 
-    monkeypatch.setattr("MK5.tools.web_search._ddg_news_search", fake_ddg_news)
-    monkeypatch.setattr("MK5.tools.web_search._google_news_rss_search", fake_google_news)
+    monkeypatch.setattr("MK4.tools.web_search._ddg_news_search", fake_ddg_news)
+    monkeypatch.setattr("MK4.tools.web_search._google_news_rss_search", fake_google_news)
 
     result = await HttpWebSearchTool()._run_latest({"query": "현재 한국 주식 장 상황"})
 

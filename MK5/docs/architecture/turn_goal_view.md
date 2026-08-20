@@ -1,11 +1,11 @@
-﻿# MK4 TurnGoalView 설계
+﻿# MK5 TurnGoalView 설계
 
 작성: 2026-05-18
 상태: 3단계 구현 기준 문서
 
 ## 배경
 
-MK6에는 이미 GlobalGoalGraph가 있다. 이 그래프는 정직성, 정확성, 장기 이익, 구조적 이해 같은 장기 목적 축을 WorldGraph 안에 bootstrap한다.
+MK5에는 이미 GlobalGoalGraph가 있다. 이 그래프는 정직성, 정확성, 장기 이익, 구조적 이해 같은 장기 목적 축을 WorldGraph 안에 bootstrap한다.
 
 하지만 이번 턴에서 사용자가 무엇을 요구했는지에 대한 목적 구조는 아직 명시적으로 분리되어 있지 않았다. 그 결과 ThoughtEngine은 장기 목적 노드와 입력 그래프를 연결하지만, 이번 턴 목적을 별도 view로 들고 있지 못했다.
 

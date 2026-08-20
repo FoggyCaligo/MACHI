@@ -36,7 +36,7 @@ def main() -> None:
                 session_id='session-thinking',
                 turn_index=1,
                 role='user',
-                content='MK5에서는 profile과 project를 chat으로 통합하자. graph 구조가 더 맞다.',
+                content='MK4에서는 profile과 project를 chat으로 통합하자. graph 구조가 더 맞다.',
             )
         )
 
@@ -53,14 +53,14 @@ def main() -> None:
         thought_view = activation.build_view(
             ActivationRequest(
                 session_id='session-thinking',
-                content='MK5는 chat 통합 구조가 더 맞다.',
+                content='MK4는 chat 통합 구조가 더 맞다.',
             )
         )
         result = thinker.think(
             ThoughtRequest(
                 session_id='session-thinking',
                 message_id=ingest_result.message_id,
-                message_text='MK5는 chat 통합 구조가 더 맞다.',
+                message_text='MK4는 chat 통합 구조가 더 맞다.',
             ),
             thought_view,
         )

@@ -901,7 +901,7 @@ def _tool_failure_debug(result: object) -> str:
 def _debug_log(message: str) -> None:
     if not config.AGENT_DEBUG_LOG:
         return
-    print(f"[MK5 agent] {message}", file=sys.stderr, flush=True)
+    print(f"[MK4 agent] {message}", file=sys.stderr, flush=True)
 
 
 def _model_output_guard_result(exc: Exception) -> dict:

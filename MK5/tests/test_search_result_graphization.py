@@ -9,20 +9,20 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from MK4.core.entities.node import Node
-from MK4.core.entities.translated_graph import EmptySlot
-from MK4.core.entities.word_entry import WordEntry
-from MK4.core.storage.db import close_db, open_db
-from MK4.core.storage.world_graph import (
+from MK5.core.entities.node import Node
+from MK5.core.entities.translated_graph import EmptySlot
+from MK5.core.entities.word_entry import WordEntry
+from MK5.core.storage.db import close_db, open_db
+from MK5.core.storage.world_graph import (
     get_edges_for_node,
     get_node,
     insert_node,
     insert_word,
 )
-from MK4.core.thinking.temp_thought_graph import TempThoughtGraph
-from MK4.core.thinking.thought_engine import ThoughtEngine
-from MK4.core.utils.hash_resolver import compute_hash, normalize_text
-from MK4.tools.search_client import SearchBundle, SearchResult
+from MK5.core.thinking.temp_thought_graph import TempThoughtGraph
+from MK5.core.thinking.thought_engine import ThoughtEngine
+from MK5.core.utils.hash_resolver import compute_hash, normalize_text
+from MK5.tools.search_client import SearchBundle, SearchResult
 
 
 class SearchResultGraphizationTest(unittest.IsolatedAsyncioTestCase):
@@ -100,7 +100,7 @@ class SearchResultGraphizationTest(unittest.IsolatedAsyncioTestCase):
                 )
 
                 with patch(
-                    "MK4.core.thinking.thought_engine.extract_relation_candidates",
+                    "MK5.core.thinking.thought_engine.extract_relation_candidates",
                     return_value=[],
                 ):
                     searched_hashes = await engine._fill_empty_slots(
@@ -161,7 +161,7 @@ class SearchResultGraphizationTest(unittest.IsolatedAsyncioTestCase):
                 )
 
                 with patch(
-                    "MK4.core.thinking.thought_engine.extract_relation_candidates",
+                    "MK5.core.thinking.thought_engine.extract_relation_candidates",
                     return_value=[],
                 ):
                     await engine._fill_empty_slots(

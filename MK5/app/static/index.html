@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MK4</title>
+  <title>MK5</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -16,7 +16,7 @@
       --text:       #e4e4ef;
       --text-dim:   #6b6b80;
       --user-bg:    #252538;
-      --MK4-bg:     #1c1c28;
+      --MK5-bg:     #1c1c28;
       --danger:     #e05260;
       --meta:       #4b4b62;
       --radius:     12px;
@@ -140,7 +140,7 @@
       font-weight: 700;
       flex-shrink: 0;
     }
-    .avatar.MK4  { background: var(--accent-dim); color: var(--accent); }
+    .avatar.MK5  { background: var(--accent-dim); color: var(--accent); }
     .avatar.user { background: var(--user-bg);    color: var(--text-dim); }
 
     .bubble {
@@ -153,7 +153,7 @@
       word-break: break-word;
     }
     .msg-row.user  .bubble { background: var(--user-bg); border-top-right-radius: 4px; }
-    .msg-row.MK4   .bubble { background: var(--MK4-bg);  border-top-left-radius: 4px; }
+    .msg-row.MK5   .bubble { background: var(--MK5-bg);  border-top-left-radius: 4px; }
 
     .bubble .file-tag {
       display: inline-flex;
@@ -200,7 +200,7 @@
       display: flex;
       gap: 5px;
       padding: 12px 16px;
-      background: var(--MK4-bg);
+      background: var(--MK5-bg);
       border-radius: var(--radius);
       border-top-left-radius: 4px;
       width: fit-content;
@@ -313,7 +313,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="logo">MK4 <span>cognitive graph AI</span></div>
+    <div class="logo">MK5 <span>cognitive graph AI</span></div>
     <div class="header-right">
       <div class="user-id-wrap">
         <label for="user-id-input">user_id</label>
@@ -328,7 +328,7 @@
 
   <div id="messages">
     <div id="empty-state">
-      <div class="big">MK4</div>
+      <div class="big">MK5</div>
       <div class="sub">메시지를 입력하거나 파일을 첨부하세요.</div>
     </div>
   </div>
@@ -354,8 +354,8 @@
     fileContent: null,
     fileName: null,
     loading: false,
-    userId: window.localStorage.getItem('MK4:user-id') || 'default_user',
-    sessionId: getOrCreateStoredId('MK4:session-id', 'session'),
+    userId: window.localStorage.getItem('MK5:user-id') || 'default_user',
+    sessionId: getOrCreateStoredId('MK5:session-id', 'session'),
   };
 
   function createStableId(prefix) {
@@ -375,7 +375,7 @@
 
   function rotateSessionId() {
     state.sessionId = createStableId('session');
-    window.localStorage.setItem('MK4:session-id', state.sessionId);
+    window.localStorage.setItem('MK5:session-id', state.sessionId);
   }
 
   // ── 모델 셀렉터 초기화 ────────────────────────────────────────────────────
@@ -435,7 +435,7 @@
     const normalized = $userIdInput.value.trim() || 'default_user';
     state.userId = normalized;
     $userIdInput.value = normalized;
-    window.localStorage.setItem('MK4:user-id', normalized);
+    window.localStorage.setItem('MK5:user-id', normalized);
   });
 
   // ── 자동 높이 조절 ────────────────────────────────────────────────────────
@@ -496,7 +496,7 @@
 
     state.userId = $userIdInput.value.trim() || 'default_user';
     $userIdInput.value = state.userId;
-    window.localStorage.setItem('MK4:user-id', state.userId);
+    window.localStorage.setItem('MK5:user-id', state.userId);
 
     const typed = $msgInput.value.trim();
     if (!typed && !state.fileContent) return;
@@ -594,10 +594,10 @@
 
   function appendMk6Bubble(data) {
     const row = document.createElement('div');
-    row.className = 'msg-row MK4';
+    row.className = 'msg-row MK5';
 
     const avatar = document.createElement('div');
-    avatar.className = 'avatar MK4';
+    avatar.className = 'avatar MK5';
     avatar.textContent = 'M6';
 
     const bubble = document.createElement('div');
@@ -626,10 +626,10 @@
 
   function appendErrorBubble(message) {
     const row = document.createElement('div');
-    row.className = 'msg-row MK4';
+    row.className = 'msg-row MK5';
 
     const avatar = document.createElement('div');
-    avatar.className = 'avatar MK4';
+    avatar.className = 'avatar MK5';
     avatar.textContent = 'M6';
 
     const bubble = document.createElement('div');
@@ -645,10 +645,10 @@
 
   function appendLoader() {
     const row = document.createElement('div');
-    row.className = 'msg-row MK4 loader-row';
+    row.className = 'msg-row MK5 loader-row';
 
     const avatar = document.createElement('div');
-    avatar.className = 'avatar MK4';
+    avatar.className = 'avatar MK5';
     avatar.textContent = 'M6';
 
     const loader = document.createElement('div');

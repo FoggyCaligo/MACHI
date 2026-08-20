@@ -1,5 +1,5 @@
-from MK5.core.agent.orchestrator import _final_answer_evidence_guard_result
-from MK5.tools.llm_client import ModelTurn
+from MK4.core.agent.orchestrator import _final_answer_evidence_guard_result
+from MK4.tools.llm_client import ModelTurn
 
 
 def test_memory_recall_requires_declared_graph_search_evidence() -> None:

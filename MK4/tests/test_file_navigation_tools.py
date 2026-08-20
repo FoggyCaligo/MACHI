@@ -4,33 +4,33 @@ from pathlib import Path
 
 import pytest
 
-from MK5.core.agent.prompts import SYSTEM_PROMPT
-from MK5.tools.file_navigation_tools import FileNavigationToolSuite
-from MK5.tools.llm_client import _compact_tool_result
-from MK5.tools.tool_runtime import ToolCall
+from MK4.core.agent.prompts import SYSTEM_PROMPT
+from MK4.tools.file_navigation_tools import FileNavigationToolSuite
+from MK4.tools.llm_client import _compact_tool_result
+from MK4.tools.tool_runtime import ToolCall
 
 
 @pytest.mark.asyncio
 async def test_file_tree_returns_workspace_relative_structure(tmp_path: Path) -> None:
-    (tmp_path / "MK5" / "app" / "static").mkdir(parents=True)
-    (tmp_path / "MK5" / "app" / "static" / "index.html").write_text(
+    (tmp_path / "MK4" / "app" / "static").mkdir(parents=True)
+    (tmp_path / "MK4" / "app" / "static" / "index.html").write_text(
         "<html><body>Machi</body></html>",
         encoding="utf-8",
     )
-    (tmp_path / "MK5" / "app" / "server.py").write_text("# server", encoding="utf-8")
+    (tmp_path / "MK4" / "app" / "server.py").write_text("# server", encoding="utf-8")
     registry = FileNavigationToolSuite(tmp_path).build_registry()
 
     result = await registry.run(ToolCall(tool="file_tree", arguments={
-        "root": "MK5/app",
+        "root": "MK4/app",
         "depth": 2,
     }))
 
     assert result["ok"] is True
     paths = [entry["path"] for entry in result["entries"]]
-    assert "MK5/app/server.py" in paths
-    assert "MK5/app/static" in paths
-    assert "MK5/app/static/index.html" in paths
-    assert "FILE MK5/app/static/index.html" in result["model_context"]
+    assert "MK4/app/server.py" in paths
+    assert "MK4/app/static" in paths
+    assert "MK4/app/static/index.html" in paths
+    assert "FILE MK4/app/static/index.html" in result["model_context"]
     assert "call file_read" in result["model_context"]
 
 
@@ -51,7 +51,7 @@ async def test_file_tree_hides_ignored_directories(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_file_text_search_returns_path_line_and_matching_text(tmp_path: Path) -> None:
-    static = tmp_path / "MK5" / "app" / "static"
+    static = tmp_path / "MK4" / "app" / "static"
     static.mkdir(parents=True)
     (static / "index.html").write_text(
         "<html>\n<body>\n<h1>Machi Chat</h1>\n</body>\n</html>\n",
@@ -61,18 +61,18 @@ async def test_file_text_search_returns_path_line_and_matching_text(tmp_path: Pa
     registry = FileNavigationToolSuite(tmp_path).build_registry()
 
     result = await registry.run(ToolCall(tool="file_text_search", arguments={
-        "root": "MK5",
+        "root": "MK4",
         "query": "Machi Chat",
     }))
 
     assert result["ok"] is True
     assert result["count"] == 1
     assert result["matches"] == [{
-        "path": "MK5/app/static/index.html",
+        "path": "MK4/app/static/index.html",
         "line": 3,
         "text": "<h1>Machi Chat</h1>",
     }]
-    assert "MK5/app/static/index.html:3" in result["model_context"]
+    assert "MK4/app/static/index.html:3" in result["model_context"]
     assert "<h1>Machi Chat</h1>" in result["model_context"]
     assert "file_read" in result["model_context"]
 
@@ -96,7 +96,7 @@ async def test_file_text_search_is_case_insensitive_and_can_filter_by_glob(tmp_p
 
 @pytest.mark.asyncio
 async def test_model_context_survives_generic_tool_history_compaction(tmp_path: Path) -> None:
-    static = tmp_path / "MK5" / "app" / "static"
+    static = tmp_path / "MK4" / "app" / "static"
     static.mkdir(parents=True)
     (static / "index.html").write_text(
         "<h1>Machi Chat</h1>\n",
@@ -104,7 +104,7 @@ async def test_model_context_survives_generic_tool_history_compaction(tmp_path: 
     )
     registry = FileNavigationToolSuite(tmp_path).build_registry()
     result = await registry.run(ToolCall(tool="file_text_search", arguments={
-        "root": "MK5",
+        "root": "MK4",
         "query": "Machi Chat",
     }))
 
@@ -113,7 +113,7 @@ async def test_model_context_survives_generic_tool_history_compaction(tmp_path: 
     assert isinstance(compacted, dict)
     summary = compacted["summary"]
     assert isinstance(summary, dict)
-    assert "MK5/app/static/index.html:1" in summary["model_context"]
+    assert "MK4/app/static/index.html:1" in summary["model_context"]
     assert "file_read" in summary["model_context"]
 
 

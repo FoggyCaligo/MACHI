@@ -1,4 +1,4 @@
-﻿"""Ollama helpers for MK5 chat-model selection and execution."""
+﻿"""Ollama helpers for MK4 chat-model selection and execution."""
 from __future__ import annotations
 
 from typing import Any

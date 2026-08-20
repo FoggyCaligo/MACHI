@@ -16,7 +16,7 @@ class Account:
 
 
 class AccountStore:
-    """Exact-match login allowlist sourced from MK5 environment settings."""
+    """Exact-match login allowlist sourced from MK4 environment settings."""
 
     def __init__(
         self,

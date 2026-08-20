@@ -30,7 +30,7 @@ def main() -> None:
                 session_id="session-1",
                 turn_index=1,
                 role="user",
-                content="MK5에서는 profile과 project와 chat을 분리하지 말자. chat으로 통합하는 게 더 맞아.",
+                content="MK4에서는 profile과 project와 chat을 분리하지 말자. chat으로 통합하는 게 더 맞아.",
             )
         )
         assert first.block_count > 0
@@ -42,7 +42,7 @@ def main() -> None:
                 session_id="session-1",
                 turn_index=2,
                 role="user",
-                content="MK5에서 chat 통합은 맞아. profile과 project를 따로 두지 말자.",
+                content="MK4에서 chat 통합은 맞아. profile과 project를 따로 두지 말자.",
             )
         )
         assert second.block_count > 0
@@ -50,8 +50,8 @@ def main() -> None:
         assert second.supported_edge_ids, "Repeated co-occurrence should reinforce an existing edge"
 
         with make_uow() as uow:
-            mk5_nodes = uow.nodes.search_by_normalized_value("MK3", limit=10)
-            assert mk5_nodes, "The reusable block 'MK3' should exist as a durable node"
+            mk4_nodes = uow.nodes.search_by_normalized_value("MK3", limit=10)
+            assert mk4_nodes, "The reusable block 'MK3' should exist as a durable node"
             user_anchor_nodes = uow.nodes.search_by_normalized_value("participant_user", limit=10)
             assert user_anchor_nodes, "Session-scoped user identity anchor should exist"
             authored_edges = [

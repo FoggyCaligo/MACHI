@@ -74,7 +74,7 @@ def main() -> None:
         response = pipeline.process(
             ChatPipelineRequest(
                 session_id='session-e2e',
-                message='MK5에서는 project와 profile을 분리하지 말고 chat 흐름으로 통합하자.',
+                message='MK4에서는 project와 profile을 분리하지 말고 chat 흐름으로 통합하자.',
                 turn_index=1,
             )
         )

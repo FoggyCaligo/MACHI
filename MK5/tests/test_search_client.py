@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from MK4.tools.search_client import SearchBundle, SearchResult, search_structured
+from MK5.tools.search_client import SearchBundle, SearchResult, search_structured
 
 
 class SearchClientTest(unittest.IsolatedAsyncioTestCase):
@@ -19,8 +19,8 @@ class SearchClientTest(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("wiki blocked")
 
         with (
-            patch("MK4.tools.search_client._ddg_search", side_effect=fail_ddg),
-            patch("MK4.tools.search_client._wiki_search", side_effect=fail_wiki),
+            patch("MK5.tools.search_client._ddg_search", side_effect=fail_ddg),
+            patch("MK5.tools.search_client._wiki_search", side_effect=fail_wiki),
         ):
             bundle = await search_structured("그래프")
 
@@ -43,8 +43,8 @@ class SearchClientTest(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("403 forbidden")
 
         with (
-            patch("MK4.tools.search_client._ddg_search", side_effect=ok_ddg),
-            patch("MK4.tools.search_client._wiki_search", side_effect=fail_wiki),
+            patch("MK5.tools.search_client._ddg_search", side_effect=ok_ddg),
+            patch("MK5.tools.search_client._wiki_search", side_effect=fail_wiki),
         ):
             bundle = await search_structured("그래프")
 

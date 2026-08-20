@@ -1,9 +1,9 @@
 ﻿from pathlib import Path
 
-from MK5.core.graph.anchors import user_anchor_id
-from MK5.core.graph.repository import GraphRepository
-from MK5.core.graph.service import GraphMemoryService
-from MK5.core.graph.text_graph import tokenize_spans
+from MK4.core.graph.anchors import user_anchor_id
+from MK4.core.graph.repository import GraphRepository
+from MK4.core.graph.service import GraphMemoryService
+from MK4.core.graph.text_graph import tokenize_spans
 
 
 def test_user_anchor_is_persistent_key() -> None:
@@ -159,7 +159,7 @@ def test_graph_search_node_id_cannot_expand_another_users_private_node() -> None
 
 
 def test_graph_repository_persists_across_reopen(tmp_path: Path) -> None:
-    db_path = tmp_path / "MK5-memory.db"
+    db_path = tmp_path / "MK4-memory.db"
     repo_a = GraphRepository(db_path)
     service_a = GraphMemoryService(repo_a)
     service_a.record_user_utterance(user_id="alice", text="persist me", session_id="s1")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from MK5.app import server
+from MK4.app import server
 
 
 class RaisingFormRequest:

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from MK5.tools.file_agent_tools import FileAgentToolSuite
-from MK5.tools.tool_runtime import ToolCall
+from MK4.tools.file_agent_tools import FileAgentToolSuite
+from MK4.tools.tool_runtime import ToolCall
 
 
 @pytest.mark.asyncio
@@ -46,7 +46,7 @@ async def test_file_read_start_only_is_bounded_to_200_lines(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_file_text_search_returns_surrounding_context(tmp_path: Path) -> None:
-    static = tmp_path / "MK5" / "app" / "static"
+    static = tmp_path / "MK4" / "app" / "static"
     static.mkdir(parents=True)
     (static / "index.html").write_text(
         "<div class=\"header-right\">\n"
@@ -60,7 +60,7 @@ async def test_file_text_search_returns_surrounding_context(tmp_path: Path) -> N
     registry = FileAgentToolSuite(tmp_path).build_registry()
 
     result = await registry.run(ToolCall(tool="file_text_search", arguments={
-        "root": "MK5",
+        "root": "MK4",
         "query": "model-select",
         "context_lines": 2,
     }))
@@ -68,7 +68,7 @@ async def test_file_text_search_returns_surrounding_context(tmp_path: Path) -> N
     assert result["ok"] is True
     assert result["count"] == 1
     match = result["matches"][0]
-    assert match["path"] == "MK5/app/static/index.html"
+    assert match["path"] == "MK4/app/static/index.html"
     assert match["line"] == 3
     assert any("account-chip" in item["text"] for item in match["context"])
     assert "account-chip" in result["model_context"]

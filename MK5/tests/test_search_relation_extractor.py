@@ -3,8 +3,8 @@
 import unittest
 from typing import Any
 
-from MK4.core.thinking.search_relation_extractor import extract_relation_candidates
-from MK4.tools.search_client import SearchResult
+from MK5.core.thinking.search_relation_extractor import extract_relation_candidates
+from MK5.tools.search_client import SearchResult
 
 
 class SearchRelationExtractorTest(unittest.IsolatedAsyncioTestCase):

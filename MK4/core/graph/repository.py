@@ -10,7 +10,7 @@ from .models import GraphEdge, GraphNode
 
 
 class GraphRepository:
-    """SQLite-backed graph repository for MK5."""
+    """SQLite-backed graph repository for MK4."""
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         if db_path == ":memory:":

@@ -7,9 +7,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from MK4.app.pipeline import _ensure_participant_anchors
-from MK4.core.storage.db import close_db, open_db
-from MK4.core.storage.world_graph import get_node
+from MK5.app.pipeline import _ensure_participant_anchors
+from MK5.core.storage.db import close_db, open_db
+from MK5.core.storage.world_graph import get_node
 
 
 class UserIdMemoryScopeTest(unittest.TestCase):

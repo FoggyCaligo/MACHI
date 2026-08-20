@@ -30,7 +30,7 @@ def _env_bool(key: str, default: bool) -> bool:
 
 
 # ── DB ──────────────────────────────────────────────────────────────────────
-DB_PATH = os.getenv("MK5_DB_PATH", "data/memory.db")
+DB_PATH = os.getenv("MK4_DB_PATH", "data/memory.db")
 
 # ── 임베딩 ───────────────────────────────────────────────────────────────────
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "nomic-embed-text").strip()

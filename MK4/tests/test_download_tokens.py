@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pytest
 from fastapi.responses import FileResponse, JSONResponse
 
-from MK5.app.accounts import Account
-from MK5.app.download_tokens import DownloadTokenStore, default_download_token_store
-from MK5.app.server import download_file
-from MK5.tools.tool_runtime import ToolCall
-from MK5.tools.workspace_tools import WorkspaceFileToolSuite
+from MK4.app.accounts import Account
+from MK4.app.download_tokens import DownloadTokenStore, default_download_token_store
+from MK4.app.server import download_file
+from MK4.tools.tool_runtime import ToolCall
+from MK4.tools.workspace_tools import WorkspaceFileToolSuite
 
 
 def test_download_token_expires_and_is_single_use(tmp_path: Path) -> None:

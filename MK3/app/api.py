@@ -21,7 +21,7 @@ def register_routes(app: Flask) -> None:
 
     @app.get('/')
     def index():
-        session['mk5_session_id'] = _new_session_id()
+        session['mk4_session_id'] = _new_session_id()
         return send_from_directory(app.static_folder, 'chat.html')
 
     @app.get('/ui-config')
@@ -52,13 +52,13 @@ def register_routes(app: Flask) -> None:
 
         requested_session_id = (request.form.get('session_id') or 'default').strip() or 'default'
         if requested_session_id == 'default':
-            session_id = str(session.get('mk5_session_id') or '').strip()
+            session_id = str(session.get('mk4_session_id') or '').strip()
             if not session_id:
                 session_id = _new_session_id()
-                session['mk5_session_id'] = session_id
+                session['mk4_session_id'] = session_id
         else:
             session_id = requested_session_id
-            session['mk5_session_id'] = session_id
+            session['mk4_session_id'] = session_id
         selected_model = (request.form.get('model') or '').strip() or DEFAULT_MODEL_NAME
         file = request.files.get('file')
         attached_files: list[dict[str, object]] = []
@@ -90,7 +90,7 @@ def register_routes(app: Flask) -> None:
     @app.post('/session/reset')
     def reset_session():
         session_id = _new_session_id()
-        session['mk5_session_id'] = session_id
+        session['mk4_session_id'] = session_id
         return jsonify({'session_id': session_id})
 
     @app.post('/internal/revision-review')

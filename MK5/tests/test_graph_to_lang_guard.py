@@ -6,8 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from MK4.app.pipeline import _extract_final_answer, _is_answer_grounded
-from MK4.core.verbalization.answer_contract_clean import (
+from MK5.app.pipeline import _extract_final_answer, _is_answer_grounded
+from MK5.core.verbalization.answer_contract_clean import (
     AnswerContract,
     SurfaceFocus,
     SurfaceGraphSection,

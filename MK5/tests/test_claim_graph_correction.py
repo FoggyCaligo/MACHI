@@ -7,17 +7,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from MK4.core.entities.edge import Edge
-from MK4.core.entities.node import Node
-from MK4.core.entities.translated_graph import ConceptPointer, LocalSubgraph, TranslatedGraph
-from MK4.core.thinking.claim_graph import (
+from MK5.core.entities.edge import Edge
+from MK5.core.entities.node import Node
+from MK5.core.entities.translated_graph import ConceptPointer, LocalSubgraph, TranslatedGraph
+from MK5.core.thinking.claim_graph import (
     AssertionState,
     ClaimAssertion,
     apply_user_correction_policy,
     build_claim_conflict_graph,
 )
-from MK4.core.thinking.temp_thought_graph import TempThoughtGraph
-from MK4.core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER, compute_hash
+from MK5.core.thinking.temp_thought_graph import TempThoughtGraph
+from MK5.core.utils.hash_resolver import ANCHOR_ASSISTANT, ANCHOR_USER, compute_hash
 
 
 class ClaimGraphCorrectionTest(unittest.TestCase):
