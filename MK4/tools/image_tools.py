@@ -22,16 +22,16 @@ class ImageAnalyzeToolSuite:
             ToolDefinition(
                 name="image_analyze",
                 description=(
-                    "Inspect an image file. Always returns basic metadata. If an Ollama "
-                    "vision-capable model is configured or provided, also returns a text "
-                    "description of visible content."
+                    "Inspect an image file. Always returns basic metadata. If the server-configured "
+                    "Ollama vision model is available, also returns a text description of visible content. "
+                    "The browser/user-facing model choice is configured by MK4_OLLAMA_IMAGE_MODEL_NAME, "
+                    "not selected in the chat UI or public chat request."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
                         "path": {"type": "string"},
                         "prompt": {"type": "string"},
-                        "model": {"type": ["string", "null"]},
                     },
                     "required": ["path"],
                     "additionalProperties": False,
@@ -113,9 +113,11 @@ class ImageAnalyzeToolSuite:
                 "message": "Could not identify image file.",
             }
 
-        requested_model = arguments.get("model")
-        model = str(requested_model).strip() if isinstance(requested_model, str) and requested_model.strip() else None
-        configured_model = model or config.OLLAMA_IMAGE_MODEL_NAME or config.OLLAMA_MODEL_NAME
+        # `model` is intentionally absent from the public tool schema and chat API.
+        # Keeping this private compatibility input lets existing internal/direct callers
+        # continue to exercise a specific vision backend without re-exposing it to users.
+        internal_model = str(arguments.get("model") or "").strip()
+        configured_model = internal_model or config.OLLAMA_IMAGE_MODEL_NAME or config.OLLAMA_MODEL_NAME
         if not configured_model:
             return {
                 "ok": True,
@@ -124,9 +126,8 @@ class ImageAnalyzeToolSuite:
                 "vision_model_used": None,
                 "description": None,
                 "message": (
-                    "Image metadata was read, but no Ollama model is configured. Set "
-                    "MK4_OLLAMA_IMAGE_MODEL_NAME, OLLAMA_MODEL_NAME, or pass model to image_analyze "
-                    "for visual recognition."
+                    "Image metadata was read, but no Ollama model is configured for vision. "
+                    "Set MK4_OLLAMA_IMAGE_MODEL_NAME for visual recognition."
                 ),
             }
 

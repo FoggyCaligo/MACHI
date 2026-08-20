@@ -87,7 +87,6 @@ class Pipeline:
         user_id: str,
         message: str,
         model: str | None = None,
-        image_model: str | None = None,
         session_id: str | None = None,
         account_role: str = "owner",
     ) -> PipelineResult:
@@ -99,7 +98,6 @@ class Pipeline:
                 user_id=user_id,
                 message=message,
                 model=model,
-                image_model=image_model,
                 session_id=session_id,
                 allowed_tool_names=TRIAL_TOOL_NAMES if account_role == "trial" else None,
             )

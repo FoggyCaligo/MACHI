@@ -71,7 +71,7 @@
       justify-content: flex-end;
     }
 
-    .account-chip, #model-select, #image-model-select, #new-chat-btn, #logout-btn {
+    .account-chip, #model-select, #logout-btn {
       background: var(--surface);
       border: 1px solid var(--border);
       color: var(--text-dim);
@@ -82,8 +82,8 @@
     }
 
     .account-chip { min-width: 84px; text-align: center; }
-    #model-select, #image-model-select { max-width: 180px; cursor: pointer; }
-    #new-chat-btn, #logout-btn { cursor: pointer; }
+    #model-select { max-width: 180px; cursor: pointer; }
+    #logout-btn { cursor: pointer; }
 
     .login-overlay {
       position: fixed;
@@ -185,14 +185,14 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 12px;
+      font-size: 10px;
       font-weight: 700;
       flex-shrink: 0;
       margin-top: 2px;
     }
 
     .avatar.MK4 { background: var(--accent-dim); color: var(--accent); }
-    .avatar.user { background: var(--user-bg); color: var(--text-dim); }
+    .avatar.user { background: var(--user-bg); color: var(--text-dim); font-size: 12px; }
 
     .bubble {
       width: fit-content;
@@ -374,8 +374,28 @@
 
     @media (max-width: 720px) {
       #app { max-width: 100%; }
-      header { align-items: flex-start; }
-      .header-right { width: 100%; justify-content: flex-start; }
+      header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+      }
+      .logo { width: 100%; }
+      .logo span {
+        display: block;
+        margin-top: 2px;
+        margin-left: 0;
+      }
+      .header-right {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: nowrap;
+      }
+      #model-select {
+        flex: 1;
+        min-width: 0;
+        max-width: none;
+      }
+      .account-chip, #logout-btn { flex: 0 0 auto; }
       .bubble {
         min-width: 0;
         max-width: calc(100% - 52px);
@@ -404,10 +424,6 @@
       <select id="model-select" title="대화 모델 선택">
         <option value="">모델 로딩 중...</option>
       </select>
-      <select id="image-model-select" title="이미지 인식 모델 선택">
-        <option value="">이미지 모델 로딩 중...</option>
-      </select>
-      <button id="new-chat-btn">새 채팅</button>
       <button id="logout-btn">로그아웃</button>
     </div>
   </header>
@@ -435,14 +451,12 @@
   const $messages = document.getElementById("messages");
   const $emptyState = document.getElementById("empty-state");
   const $modelSelect = document.getElementById("model-select");
-  const $imageModelSelect = document.getElementById("image-model-select");
   const $accountChip = document.getElementById("account-chip");
   const $msgInput = document.getElementById("msg-input");
   const $sendBtn = document.getElementById("send-btn");
   const $attachBtn = document.getElementById("attach-btn");
   const $fileInput = document.getElementById("file-input");
   const $attachmentList = document.getElementById("attachment-list");
-  const $newChatBtn = document.getElementById("new-chat-btn");
   const $logoutBtn = document.getElementById("logout-btn");
   const $loginOverlay = document.getElementById("login-overlay");
   const $loginForm = document.getElementById("login-form");
@@ -455,12 +469,9 @@
       const data = await res.json();
       const models = data.models || [];
       const current = data.current || "";
-      const currentImage = data.current_image || current || "";
       $modelSelect.innerHTML = "";
-      $imageModelSelect.innerHTML = "";
       if (models.length === 0) {
         $modelSelect.innerHTML = '<option value="">모델 없음</option>';
-        $imageModelSelect.innerHTML = '<option value="">모델 없음</option>';
         return;
       }
       models.forEach((name) => {
@@ -469,16 +480,9 @@
         opt.textContent = name;
         if (name === current) opt.selected = true;
         $modelSelect.appendChild(opt);
-
-        const imageOpt = document.createElement("option");
-        imageOpt.value = name;
-        imageOpt.textContent = `이미지: ${name}`;
-        if (name === currentImage) imageOpt.selected = true;
-        $imageModelSelect.appendChild(imageOpt);
       });
     } catch (err) {
       $modelSelect.innerHTML = '<option value="">연결 실패</option>';
-      $imageModelSelect.innerHTML = '<option value="">연결 실패</option>';
     }
   }
 
@@ -563,14 +567,6 @@
     }
   });
 
-  $newChatBtn.addEventListener("click", () => {
-    document.querySelectorAll(".msg-row, .loader-row").forEach((el) => el.remove());
-    $emptyState.style.display = "flex";
-    $msgInput.value = "";
-    $msgInput.style.height = "auto";
-    clearAttachments();
-  });
-
   async function sendMessage() {
     if (state.loading) return;
     if (!state.authenticated) {
@@ -605,8 +601,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message,
-          model: $modelSelect.value || null,
-          image_model: $imageModelSelect.value || null
+          model: $modelSelect.value || null
         }),
       });
       const raw = await res.text();
@@ -622,7 +617,7 @@
       }
       if (!res.ok) throw new Error(data.detail || res.statusText);
       loaderRow.remove();
-      appendMk5Bubble(data);
+      appendAssistantBubble(data);
       clearAttachments();
     } catch (err) {
       loaderRow.remove();
@@ -683,7 +678,7 @@
     scrollBottom();
   }
 
-  function appendMk5Bubble(data) {
+  function appendAssistantBubble(data) {
     const row = document.createElement("div");
     row.className = "msg-row MK4";
     const toolEvents = Array.isArray(data.tool_events) ? data.tool_events : [];
@@ -710,7 +705,7 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
     ` : "";
 
     row.innerHTML = `
-      <div class="avatar MK4">M5</div>
+      <div class="avatar MK4">MK5</div>
       <div class="bubble">
         <div class="bubble-text">${renderMessageText(data.text || "(응답 없음)")}</div>
         ${downloadPanel}
@@ -739,7 +734,7 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
     const row = document.createElement("div");
     row.className = "msg-row MK4";
     row.innerHTML = `
-      <div class="avatar MK4">M5</div>
+      <div class="avatar MK4">MK5</div>
       <div class="bubble" style="color:var(--danger)">[오류] ${escapeHtml(message)}</div>
     `;
     $messages.appendChild(row);
@@ -750,7 +745,7 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
     const row = document.createElement("div");
     row.className = "msg-row MK4 loader-row";
     row.innerHTML = `
-      <div class="avatar MK4">M5</div>
+      <div class="avatar MK4">MK5</div>
       <div class="loader"><span></span><span></span><span></span></div>
     `;
     $messages.appendChild(row);
@@ -786,4 +781,3 @@ result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
 </script>
 </body>
 </html>
-

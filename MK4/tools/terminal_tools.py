@@ -46,7 +46,14 @@ class TerminalToolSuite:
                     "Use this for shell work that file tools cannot do directly. This project runs on Windows cmd.exe. "
                     "For directory/project discovery, prefer file_tree instead of terminal commands. "
                     "Do not use direct Unix commands such as ls, cat, grep, pwd, rm, cp, mv, touch, head, or tail. "
-                    "Use Windows commands such as dir/tree /F, or invoke PowerShell explicitly when shell work is needed."
+                    "Use Windows commands such as dir/tree /F, or invoke PowerShell explicitly when shell work is needed. "
+                    "For Windows user-profile or shell integration work, resolve known folders through Windows or PowerShell APIs "
+                    "instead of guessing paths. For a requested current-user Startup registration, resolve the Startup folder "
+                    "with [Environment]::GetFolderPath('Startup'), create a .lnk with the WScript.Shell CreateShortcut API, set "
+                    "TargetPath to the already-discovered executable and WorkingDirectory to its parent directory, save it, then "
+                    "re-open or inspect the shortcut to verify its TargetPath before claiming completion. Commands may intentionally "
+                    "modify locations outside the workspace; when they do, verify the resulting external state explicitly because "
+                    "filesystem_changed only reflects the workspace snapshot."
                 ),
                 input_schema={
                     "type": "object",
