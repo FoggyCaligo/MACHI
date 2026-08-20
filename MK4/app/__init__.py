@@ -1,3 +1,2 @@
-from .pipeline import Pipeline, PipelineResult
+﻿"""MK4 application package."""
 
-__all__ = ["Pipeline", "PipelineResult"]

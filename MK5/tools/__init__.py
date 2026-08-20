@@ -1,2 +1,4 @@
-﻿"""External adapters and tool surfaces for MK5."""
+from .ollama_client import get_embedding, generate, chat
+from .search_client import search, search_structured
 
+__all__ = ["get_embedding", "generate", "chat", "search", "search_structured"]

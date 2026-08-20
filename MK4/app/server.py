@@ -1,118 +1,81 @@
-﻿"""MK4 FastAPI 서버.
-
-엔드포인트:
-  GET  /           UI (index.html)
-  POST /chat       사용자 입력 → 언어 응답
-  GET  /health     서버 상태 확인
-  GET  /graph/node/{address_hash}         노드 조회
-  GET  /graph/neighbors/{address_hash}    이웃 노드 조회
-"""
 from __future__ import annotations
 
-import logging
 import os
-import signal
+import re
+import shutil
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
 from .pipeline import Pipeline
-from ..core.storage.world_graph import get_node, get_edges_for_node, get_words_for_node
-from ..tools.ollama_client import list_models
+from .accounts import AccountStore
+from .download_tokens import default_download_token_store
+from .schemas import ChatRequest, ChatResponse, LoginRequest
+from .sessions import SessionStore
 from .. import config
-
-logger = logging.getLogger(__name__)
-
-
-# ── 앱 생명주기 ───────────────────────────────────────────────────────────────
-
-_pipeline: Pipeline | None = None
+from ..tools.ollama_client import list_models
 
 
-def _shutdown_handler(signum: int, frame: object) -> None:
-    """SIGINT / SIGTERM 수신 시 DB를 안전하게 닫는다.
-
-    uvicorn이 lifespan 종료를 완료하기 전에 프로세스가 종료되는 경우
-    (예: 이중 Ctrl+C, kill 명령어)를 대비해 WAL 체크포인트를 보장한다.
-    """
-    if _pipeline is not None:
-        try:
-            _pipeline.close()
-        except Exception:
-            pass
-    # 기본 동작으로 복구하고 시그널을 재전달 → 프로세스 정상 종료
-    signal.signal(signum, signal.SIG_DFL)
-    signal.raise_signal(signum)
+pipeline: Pipeline | None = None
+account_store = AccountStore()
+session_store = SessionStore(
+    ttl_seconds=config.SESSION_TTL_HOURS * 3600,
+    max_active_sessions=config.MAX_ACTIVE_SESSIONS,
+    path=config.SESSIONS_DB_PATH,
+    account_validator=account_store.is_active,
+)
+_login_attempts: dict[str, deque[float]] = defaultdict(deque)
+_SESSION_COOKIE = "mk4_session"
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_UPLOAD_DIR = config.WORKSPACE_ROOT / ".mk4_uploads"
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global _pipeline
-    _pipeline = Pipeline()
-    # 시그널 핸들러 등록 — lifespan 종료 외 경로로 프로세스가 죽을 때 대비
-    signal.signal(signal.SIGINT, _shutdown_handler)
-    signal.signal(signal.SIGTERM, _shutdown_handler)
+async def lifespan(app: FastAPI):
+    global pipeline
+    pipeline = Pipeline()
     yield
-    if _pipeline is not None:
-        _pipeline.close()
-        _pipeline = None
+    if pipeline is not None:
+        pipeline.close()
+        pipeline = None
 
 
-app = FastAPI(title="MK4", version="0.1.0", lifespan=lifespan)
-
-# 정적 파일 마운트 (app/static/)
-_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+app = FastAPI(title="Machi MK4", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    public = path in {"/", "/health", "/auth/login", "/auth/status"} or path.startswith("/static/")
+    if public:
+        return await call_next(request)
+    account = session_store.get(request.cookies.get(_SESSION_COOKIE))
+    if account is None:
+        return JSONResponse(
+            status_code=401,
+            content={"ok": False, "error": "login_required", "message": "허용된 접속 ID를 입력해 주세요."},
+        )
+    if account.role == "trial" and path == "/upload":
+        return JSONResponse(
+            status_code=403,
+            content={"ok": False, "error": "owner_only", "message": "파일 업로드는 소유자 계정만 사용할 수 있습니다."},
+        )
+    request.state.account = account
+    return await call_next(request)
+
+
 def _get_pipeline() -> Pipeline:
-    if _pipeline is None:
+    if pipeline is None:
         raise RuntimeError("Pipeline not initialized")
-    return _pipeline
+    return pipeline
 
-
-# ── 요청/응답 스키마 ──────────────────────────────────────────────────────────
-
-class ChatRequest(BaseModel):
-    user_id: str = Field(default="default_user", min_length=1)
-    message: str
-    model: str | None = None   # None이면 config.OLLAMA_MODEL_NAME 사용
-    session_id: str = "default"
-
-
-class ChatResponse(BaseModel):
-    response: str
-    loop_count: int
-    had_empty_slots: bool
-    node_count: int
-    edge_count: int
-    model_used: str | None = None
-
-
-class NodeResponse(BaseModel):
-    address_hash: str
-    labels: list[str]
-    node_kind: str
-    is_abstract: bool
-    trust_score: float
-    stability_score: float
-    formation_source: str
-    is_active: bool
-    words: list[str]
-
-
-class NeighborResponse(BaseModel):
-    address_hash: str
-    labels: list[str]
-    connect_type: str
-    direction: str   # "outgoing" | "incoming"
-
-
-# ── 라우터 ────────────────────────────────────────────────────────────────────
 
 @app.get("/", include_in_schema=False)
 async def ui() -> FileResponse:
@@ -120,90 +83,219 @@ async def ui() -> FileResponse:
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "model": config.OLLAMA_MODEL_NAME}
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/auth/login")
+async def login(req: LoginRequest, request: Request):
+    client_ip = request.client.host if request.client is not None else "unknown"
+    now = time.time()
+    attempts = _login_attempts[client_ip]
+    while attempts and attempts[0] < now - 300:
+        attempts.popleft()
+    if len(attempts) >= 10:
+        return JSONResponse(
+            status_code=429,
+            content={"ok": False, "error": "too_many_attempts", "message": "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요."},
+        )
+    account = account_store.authenticate(req.login_id)
+    if account is None:
+        attempts.append(now)
+        return JSONResponse(
+            status_code=401,
+            content={"ok": False, "error": "invalid_login", "message": "허용되지 않은 접속 ID입니다."},
+        )
+    _login_attempts.pop(client_ip, None)
+    session_store.revoke(request.cookies.get(_SESSION_COOKIE))
+    token = session_store.create(account)
+    if token is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "error": "session_capacity_reached",
+                "message": f"현재 접속 가능한 {config.MAX_ACTIVE_SESSIONS}개 세션이 모두 사용 중입니다.",
+            },
+        )
+    response = JSONResponse(content={"ok": True, "role": account.role})
+    response.set_cookie(
+        _SESSION_COOKIE,
+        token,
+        httponly=True,
+        secure=config.SESSION_COOKIE_SECURE,
+        samesite="strict",
+        max_age=config.SESSION_TTL_HOURS * 3600,
+        path="/",
+    )
+    return response
+
+
+@app.get("/auth/status")
+async def auth_status(request: Request):
+    account = session_store.get(request.cookies.get(_SESSION_COOKIE))
+    if account is None:
+        return JSONResponse(status_code=401, content={"ok": False, "error": "login_required"})
+    return {"ok": True, "role": account.role}
+
+
+@app.post("/auth/logout")
+async def logout(request: Request):
+    session_store.revoke(request.cookies.get(_SESSION_COOKIE))
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(_SESSION_COOKIE, path="/")
+    return response
 
 
 @app.get("/models")
 async def get_models() -> dict:
-    """Ollama에 설치된 모델 목록을 반환한다."""
-    models = await list_models()
     return {
-        "models": models,
+        "models": await list_models(),
         "current": config.OLLAMA_MODEL_NAME or None,
+        "current_image": config.OLLAMA_IMAGE_MODEL_NAME or None,
+    }
+
+
+@app.get("/tools")
+async def get_tools(request: Request) -> dict:
+    tools = [
+            "graph_search",
+            "record_memory_correction",
+            "latest_search",
+            "market_snapshot",
+            "web_research",
+            "code_index",
+            "code_search",
+            "file_search",
+            "file_create",
+            "file_read",
+            "file_download_link",
+            "document_read",
+            "image_analyze",
+            "file_update",
+            "file_delete",
+            "terminal_command",
+            "tool_manual",
+        ]
+    if request.state.account.role == "trial":
+        from .pipeline import TRIAL_TOOL_NAMES
+        tools = [name for name in tools if name in TRIAL_TOOL_NAMES]
+    return {"tools": tools}
+
+
+@app.get("/download/{token}")
+async def download_file(token: str, request: Request):
+    if request.state.account.role != "owner":
+        return JSONResponse(
+            status_code=403,
+            content={"ok": False, "error": "owner_only", "message": "파일 다운로드는 소유자 계정만 사용할 수 있습니다."},
+        )
+    token_item = default_download_token_store.resolve(token)
+    if token_item is None:
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "invalid_or_expired_token", "message": "다운로드 링크가 유효하지 않거나 만료되었습니다."},
+        )
+    if not token_item.path.exists() or not token_item.path.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "file_not_found", "message": "요청한 파일이 디스크에 존재하지 않습니다."},
+        )
+    return FileResponse(
+        path=str(token_item.path),
+        filename=token_item.filename,
+        media_type="application/octet-stream",
+    )
+
+
+@app.post("/upload")
+async def upload_file(request: Request):
+    try:
+        form = await request.form()
+    except (RuntimeError, AssertionError) as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "missing_dependency",
+                "message": (
+                    "File upload requires python-multipart. Install MK4 requirements "
+                    "or run: pip install python-multipart"
+                ),
+                "detail": str(exc),
+            },
+        )
+    file = form.get("file")
+    if file is None or not hasattr(file, "filename") or not hasattr(file, "file"):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "missing_file", "message": "Upload field 'file' is required."},
+        )
+    original_name = Path(file.filename or "attachment").name
+    safe_name = _safe_upload_name(original_name)
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    target = _unique_upload_path(_UPLOAD_DIR / safe_name)
+    with target.open("wb") as handle:
+        shutil.copyfileobj(file.file, handle)
+    relative_path = target.resolve().relative_to(config.WORKSPACE_ROOT)
+    return {
+        "ok": True,
+        "filename": original_name,
+        "path": relative_path.as_posix(),
+        "bytes": target.stat().st_size,
     }
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest) -> ChatResponse:
+async def chat(req: ChatRequest, request: Request) -> ChatResponse:
+    account = request.state.account
     try:
-        pipeline = _get_pipeline()
-        result = await pipeline.run(
-            req.message,
+        result = await _get_pipeline().run(
+            user_id=account.graph_user_id,
+            message=req.message,
             model=req.model,
+            image_model=req.image_model,
             session_id=req.session_id,
-            user_id=req.user_id,
-        )
-        c = result.conclusion
-        return ChatResponse(
-            response=result.response_text,
-            loop_count=c.loop_count,
-            had_empty_slots=c.had_empty_slots,
-            node_count=len(c.nodes),
-            edge_count=len(c.edges),
-            model_used=c.model or config.OLLAMA_MODEL_NAME or None,
+            account_role=account.role,
         )
     except Exception as exc:
-        logger.exception("POST /chat 처리 중 오류: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.get("/graph/node/{address_hash}", response_model=NodeResponse)
-async def get_graph_node(address_hash: str) -> NodeResponse:
-    pipeline = _get_pipeline()
-    node = get_node(pipeline._conn, address_hash)
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found")
-    words = get_words_for_node(pipeline._conn, address_hash)
-    return NodeResponse(
-        address_hash=node.address_hash,
-        labels=node.labels,
-        node_kind=node.node_kind,
-        is_abstract=node.is_abstract,
-        trust_score=node.trust_score,
-        stability_score=node.stability_score,
-        formation_source=node.formation_source,
-        is_active=node.is_active,
-        words=[w.surface_form for w in words],
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": f"{type(exc).__name__}: {exc}",
+                "text": f"[오류] {type(exc).__name__}: {exc}",
+                "used_tools": [],
+                "memory_writes": [],
+                "tool_events": [],
+            },
+        )
+    return ChatResponse(
+        text=result.text,
+        used_tools=result.used_tools,
+        memory_writes=result.memory_writes,
+        tool_events=result.tool_events,
     )
 
 
-@app.get("/graph/neighbors/{address_hash}", response_model=list[NeighborResponse])
-async def get_neighbors(address_hash: str) -> list[NeighborResponse]:
-    pipeline = _get_pipeline()
-    node = get_node(pipeline._conn, address_hash)
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found")
+def _safe_upload_name(filename: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(" .")
+    return cleaned or "attachment"
 
-    edges = get_edges_for_node(pipeline._conn, address_hash, active_only=True)
-    result: list[NeighborResponse] = []
-    for edge in edges:
-        if edge.source_hash == address_hash:
-            neighbor_hash = edge.target_hash
-            direction = "outgoing"
-        else:
-            neighbor_hash = edge.source_hash
-            direction = "incoming"
 
-        neighbor = get_node(pipeline._conn, neighbor_hash)
-        if neighbor is None:
-            continue
+def _unique_upload_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for index in range(1, 10000):
+        candidate = path.with_name(f"{stem}_{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("Could not allocate upload filename")
 
-        result.append(NeighborResponse(
-            address_hash=neighbor.address_hash,
-            labels=neighbor.labels,
-            connect_type=edge.connect_type,
-            direction=direction,
-        ))
-    return result
+
+def run() -> None:
+    import uvicorn
+
+    uvicorn.run(app, host=config.SERVER_HOST, port=config.SERVER_PORT, reload=False)
 

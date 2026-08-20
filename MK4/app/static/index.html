@@ -6,181 +6,156 @@
   <title>MK4</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --bg:         #0f0f12;
-      --surface:    #18181f;
-      --border:     #2a2a35;
-      --accent:     #7c6af7;
-      --accent-dim: #4a4280;
-      --text:       #e4e4ef;
-      --text-dim:   #6b6b80;
-      --user-bg:    #252538;
-      --MK4-bg:     #1c1c28;
-      --danger:     #e05260;
-      --meta:       #4b4b62;
-      --radius:     12px;
-      --font:       'Segoe UI', 'Apple SD Gothic Neo', sans-serif;
+      --bg: #0f0f12;
+      --surface: #18181f;
+      --border: #2a2a35;
+      --accent: #5ea0ff;
+      --accent-dim: #2f4d7a;
+      --text: #e4e4ef;
+      --text-dim: #7e8296;
+      --user-bg: #252538;
+      --MK4-bg: #17202d;
+      --danger: #d85b67;
+      --meta: #596178;
+      --radius: 12px;
+      --font: "Segoe UI", "Apple SD Gothic Neo", sans-serif;
     }
 
-    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); }
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+    }
 
-    /* ── 레이아웃 ── */
     #app {
       display: flex;
       flex-direction: column;
       height: 100vh;
-      max-width: 800px;
+      max-width: 980px;
       margin: 0 auto;
     }
 
-    /* ── 헤더 ── */
     header {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 16px;
       padding: 16px 20px;
       border-bottom: 1px solid var(--border);
-      background: var(--bg);
       position: sticky;
       top: 0;
+      background: var(--bg);
       z-index: 10;
     }
+
     .logo {
       font-size: 18px;
       font-weight: 700;
-      letter-spacing: .5px;
       color: var(--accent);
     }
-    .logo span { color: var(--text-dim); font-weight: 400; font-size: 13px; margin-left: 8px; }
-    #new-chat-btn {
-      background: none;
-      border: 1px solid var(--border);
-      color: var(--text-dim);
-      padding: 6px 14px;
-      border-radius: 20px;
-      font-size: 13px;
-      cursor: pointer;
-      transition: border-color .15s, color .15s;
-    }
-    #new-chat-btn:hover { border-color: var(--accent); color: var(--text); }
 
-    /* 모델 셀렉터 */
-    .header-right { display: flex; align-items: center; gap: 10px; }
-    .user-id-wrap {
+    .logo span {
+      color: var(--text-dim);
+      font-size: 13px;
+      font-weight: 400;
+      margin-left: 8px;
+    }
+
+    .header-right {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      background: var(--surface);
-      min-width: 0;
-    }
-    .user-id-wrap label {
-      font-size: 11px;
-      color: var(--text-dim);
-      white-space: nowrap;
-    }
-    #user-id-input {
-      width: 170px;
-      border: none;
-      outline: none;
-      background: transparent;
-      color: var(--text);
-      font-size: 12px;
-      font-family: var(--font);
-    }
-    #user-id-input::placeholder { color: var(--text-dim); }
-    #model-select {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      color: var(--text-dim);
-      padding: 5px 10px;
-      border-radius: 20px;
-      font-size: 12px;
-      cursor: pointer;
-      outline: none;
-      max-width: 180px;
-      transition: border-color .15s, color .15s;
-    }
-    #model-select:hover, #model-select:focus { border-color: var(--accent); color: var(--text); }
-    #model-select option { background: var(--surface); color: var(--text); }
-
-    /* ── 메시지 영역 ── */
-    #messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      scroll-behavior: smooth;
-    }
-    #messages::-webkit-scrollbar { width: 4px; }
-    #messages::-webkit-scrollbar-track { background: transparent; }
-    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-
-    /* ── 메시지 버블 ── */
-    .msg-row {
-      display: flex;
       gap: 10px;
-      align-items: flex-start;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
-    .msg-row.user { flex-direction: row-reverse; }
 
-    .avatar {
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
+    .account-chip, #model-select, #image-model-select, #new-chat-btn, #logout-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      border-radius: 20px;
+      padding: 7px 12px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .account-chip { min-width: 84px; text-align: center; }
+    #model-select, #image-model-select { max-width: 180px; cursor: pointer; }
+    #new-chat-btn, #logout-btn { cursor: pointer; }
+
+    .login-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 13px;
+      padding: 20px;
+      background: rgba(5, 5, 8, 0.86);
+      backdrop-filter: blur(8px);
+    }
+
+    .login-overlay.hidden { display: none; }
+
+    .login-modal {
+      width: min(420px, 100%);
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.45);
+    }
+
+    .login-modal h2 { color: var(--accent); margin-bottom: 8px; }
+    .login-modal p { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
+    .login-row { display: flex; gap: 8px; }
+    #login-id-input {
+      flex: 1;
+      min-width: 0;
+      padding: 11px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      outline: none;
+      -webkit-text-security: disc;
+    }
+    #login-submit {
+      padding: 11px 16px;
+      border: 0;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #07111f;
       font-weight: 700;
-      flex-shrink: 0;
+      cursor: pointer;
     }
-    .avatar.MK4  { background: var(--accent-dim); color: var(--accent); }
-    .avatar.user { background: var(--user-bg);    color: var(--text-dim); }
+    #login-error { min-height: 20px; margin-top: 10px; color: var(--danger); font-size: 12px; }
 
-    .bubble {
-      max-width: 75%;
-      padding: 12px 16px;
-      border-radius: var(--radius);
-      font-size: 14px;
-      line-height: 1.65;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .msg-row.user  .bubble { background: var(--user-bg); border-top-right-radius: 4px; }
-    .msg-row.MK4   .bubble { background: var(--MK4-bg);  border-top-left-radius: 4px; }
-
-    .bubble .file-tag {
+    .download-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .download-link {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
-      background: var(--border);
-      border-radius: 6px;
-      padding: 3px 8px;
-      font-size: 11px;
-      color: var(--text-dim);
-      margin-bottom: 8px;
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 700;
     }
+    .download-link:hover { background: var(--accent-dim); }
 
-    .meta {
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
       display: flex;
+      flex-direction: column;
       gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 8px;
-      padding-top: 8px;
-      border-top: 1px solid var(--border);
-      font-size: 11px;
-      color: var(--meta);
     }
-    .meta span { display: flex; align-items: center; gap: 3px; }
-    .meta .tag-empty { color: var(--danger); }
 
-    /* ── 빈 상태 ── */
     #empty-state {
       flex: 1;
       display: flex;
@@ -189,69 +164,122 @@
       justify-content: center;
       gap: 10px;
       color: var(--text-dim);
-      pointer-events: none;
-      user-select: none;
+      text-align: center;
     }
-    #empty-state .big { font-size: 36px; color: var(--accent); font-weight: 700; }
-    #empty-state .sub { font-size: 13px; }
 
-    /* ── 로딩 ── */
-    .loader {
+    .msg-row {
       display: flex;
-      gap: 5px;
-      padding: 12px 16px;
-      background: var(--MK4-bg);
-      border-radius: var(--radius);
-      border-top-left-radius: 4px;
-      width: fit-content;
-    }
-    .loader span {
-      width: 7px; height: 7px;
-      border-radius: 50%;
-      background: var(--accent-dim);
-      animation: bounce .9s infinite;
-    }
-    .loader span:nth-child(2) { animation-delay: .15s; }
-    .loader span:nth-child(3) { animation-delay: .3s; }
-    @keyframes bounce {
-      0%, 80%, 100% { transform: translateY(0); }
-      40%            { transform: translateY(-6px); background: var(--accent); }
+      gap: 10px;
+      align-items: flex-start;
+      width: 100%;
     }
 
-    /* ── 입력 영역 ── */
+    .msg-row.user {
+      flex-direction: row-reverse;
+    }
+
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .avatar.MK4 { background: var(--accent-dim); color: var(--accent); }
+    .avatar.user { background: var(--user-bg); color: var(--text-dim); }
+
+    .bubble {
+      width: fit-content;
+      min-width: 140px;
+      max-width: min(78%, 720px);
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .msg-row.user .bubble {
+      background: var(--user-bg);
+      border-top-right-radius: 4px;
+      margin-left: auto;
+    }
+
+    .msg-row.MK4 .bubble {
+      background: var(--MK4-bg);
+      border-top-left-radius: 4px;
+      min-width: 220px;
+    }
+
+    .bubble-text {
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+
+    .meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--meta);
+    }
+
+    .tool-panel {
+      margin-top: 8px;
+      border-top: 1px dashed var(--border);
+      padding-top: 8px;
+    }
+
+    .tool-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .tool-log {
+      margin-top: 8px;
+      display: none;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .tool-log.open {
+      display: grid;
+    }
+
+    .tool-item {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 9px;
+      white-space: pre-wrap;
+      overflow-x: auto;
+      max-height: 180px;
+    }
+
     #input-area {
       border-top: 1px solid var(--border);
-      padding: 16px 20px;
+      padding: 12px 20px;
       background: var(--bg);
     }
 
-    /* 파일 뱃지 */
-    #file-badge {
-      display: none;
-      align-items: center;
-      gap: 8px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 6px 10px;
-      margin-bottom: 10px;
-      font-size: 12px;
-      color: var(--text-dim);
-    }
-    #file-badge .fname { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #remove-file {
-      background: none;
-      border: none;
-      color: var(--text-dim);
-      cursor: pointer;
-      font-size: 16px;
-      line-height: 1;
-      padding: 0 2px;
-      flex-shrink: 0;
-    }
-    #remove-file:hover { color: var(--danger); }
-
-    /* 입력 행 */
     #input-row {
       display: flex;
       align-items: flex-end;
@@ -260,295 +288,345 @@
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 10px 12px;
-      transition: border-color .15s;
     }
-    #input-row:focus-within { border-color: var(--accent-dim); }
-
-    #file-btn {
-      background: none;
-      border: none;
-      cursor: pointer;
-      font-size: 18px;
-      color: var(--text-dim);
-      padding: 2px;
-      flex-shrink: 0;
-      transition: color .15s;
-      line-height: 1;
-    }
-    #file-btn:hover { color: var(--accent); }
-
-    #file-input { display: none; }
 
     #msg-input {
       flex: 1;
+      min-height: 24px;
+      max-height: 140px;
+      resize: none;
       background: none;
       border: none;
       outline: none;
       color: var(--text);
       font-size: 14px;
       font-family: var(--font);
-      resize: none;
-      min-height: 24px;
-      max-height: 140px;
-      line-height: 1.5;
     }
-    #msg-input::placeholder { color: var(--text-dim); }
 
     #send-btn {
       background: var(--accent);
       border: none;
-      color: #fff;
+      color: white;
       padding: 7px 16px;
       border-radius: 8px;
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
-      flex-shrink: 0;
-      transition: background .15s, opacity .15s;
     }
-    #send-btn:hover  { background: #9585ff; }
-    #send-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    #attach-btn {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    #attachment-list {
+      display: none;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+
+    .attachment-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 999px;
+      padding: 5px 9px;
+    }
+
+    .loader {
+      display: flex;
+      gap: 5px;
+      padding: 10px 14px;
+      background: var(--MK4-bg);
+      border-radius: var(--radius);
+      border-top-left-radius: 4px;
+      width: fit-content;
+      min-width: 96px;
+    }
+
+    .loader span {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-dim);
+      animation: bounce .9s infinite;
+    }
+
+    .loader span:nth-child(2) { animation-delay: .15s; }
+    .loader span:nth-child(3) { animation-delay: .3s; }
+
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); }
+      40% { transform: translateY(-6px); background: var(--accent); }
+    }
+
+    @media (max-width: 720px) {
+      #app { max-width: 100%; }
+      header { align-items: flex-start; }
+      .header-right { width: 100%; justify-content: flex-start; }
+      .bubble {
+        min-width: 0;
+        max-width: calc(100% - 52px);
+      }
+      .msg-row.MK4 .bubble { min-width: 0; }
+    }
   </style>
 </head>
 <body>
+<div id="login-overlay" class="login-overlay">
+  <form id="login-form" class="login-modal">
+    <h2>MK4 로그인</h2>
+    <p>허용된 접속 ID를 입력해 주세요. 등록되지 않은 ID와 default-user는 사용할 수 없습니다.</p>
+    <div class="login-row">
+      <input id="login-id-input" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="접속 ID" />
+      <button id="login-submit" type="submit">접속</button>
+    </div>
+    <div id="login-error"></div>
+  </form>
+</div>
 <div id="app">
   <header>
-    <div class="logo">MK4 <span>cognitive graph AI</span></div>
+    <div class="logo">MK4 <span>tool-using graph memory agent</span></div>
     <div class="header-right">
-      <div class="user-id-wrap">
-        <label for="user-id-input">user_id</label>
-        <input id="user-id-input" type="text" placeholder="사용할 사용자 ID를 입력하세요" />
-      </div>
-      <select id="model-select" title="생성 모델 선택">
-        <option value="">모델 로딩 중…</option>
+      <span id="account-chip" class="account-chip">로그인 필요</span>
+      <select id="model-select" title="대화 모델 선택">
+        <option value="">모델 로딩 중...</option>
+      </select>
+      <select id="image-model-select" title="이미지 인식 모델 선택">
+        <option value="">이미지 모델 로딩 중...</option>
       </select>
       <button id="new-chat-btn">새 채팅</button>
+      <button id="logout-btn">로그아웃</button>
     </div>
   </header>
 
   <div id="messages">
     <div id="empty-state">
-      <div class="big">MK4</div>
-      <div class="sub">메시지를 입력하거나 파일을 첨부하세요.</div>
+      <div style="font-size:36px;color:var(--accent);font-weight:700;">MK4</div>
+      <div>로그인하면 선택한 sLLM이 기억, 검색, 파일, 문서, 이미지와 터미널 도구를 사용할 수 있습니다.</div>
     </div>
   </div>
 
   <div id="input-area">
-    <div id="file-badge">
-      <span>📄</span>
-      <span class="fname" id="file-name"></span>
-      <button id="remove-file" title="파일 제거">×</button>
-    </div>
+    <div id="attachment-list"></div>
     <div id="input-row">
-      <button id="file-btn" title="파일 첨부">📎</button>
-      <input type="file" id="file-input" accept=".txt,.md,.py,.js,.ts,.json,.yaml,.yml,.toml,.csv,.html,.css,.sh,.go,.rs,.java,.c,.cpp,.h" />
       <textarea id="msg-input" rows="1" placeholder="메시지를 입력하세요..."></textarea>
+      <input id="file-input" type="file" multiple hidden />
+      <button id="attach-btn" type="button" title="파일 첨부">📎</button>
       <button id="send-btn">전송</button>
     </div>
   </div>
 </div>
 
 <script>
-  // ── 상태 ──────────────────────────────────────────────────────────────────
-  const state = {
-    fileContent: null,
-    fileName: null,
-    loading: false,
-    userId: window.localStorage.getItem('MK4:user-id') || 'default_user',
-    sessionId: getOrCreateStoredId('MK4:session-id', 'session'),
-  };
-
-  function createStableId(prefix) {
-    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
-      return `${prefix}-${window.crypto.randomUUID()}`;
-    }
-    return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-
-  function getOrCreateStoredId(storageKey, prefix) {
-    const existing = window.localStorage.getItem(storageKey);
-    if (existing) return existing;
-    const created = createStableId(prefix);
-    window.localStorage.setItem(storageKey, created);
-    return created;
-  }
-
-  function rotateSessionId() {
-    state.sessionId = createStableId('session');
-    window.localStorage.setItem('MK4:session-id', state.sessionId);
-  }
-
-  // ── 모델 셀렉터 초기화 ────────────────────────────────────────────────────
-  const $modelSelect = document.getElementById('model-select');
+  const state = { loading: false, attachments: [], authenticated: false, role: null };
+  const $messages = document.getElementById("messages");
+  const $emptyState = document.getElementById("empty-state");
+  const $modelSelect = document.getElementById("model-select");
+  const $imageModelSelect = document.getElementById("image-model-select");
+  const $accountChip = document.getElementById("account-chip");
+  const $msgInput = document.getElementById("msg-input");
+  const $sendBtn = document.getElementById("send-btn");
+  const $attachBtn = document.getElementById("attach-btn");
+  const $fileInput = document.getElementById("file-input");
+  const $attachmentList = document.getElementById("attachment-list");
+  const $newChatBtn = document.getElementById("new-chat-btn");
+  const $logoutBtn = document.getElementById("logout-btn");
+  const $loginOverlay = document.getElementById("login-overlay");
+  const $loginForm = document.getElementById("login-form");
+  const $loginIdInput = document.getElementById("login-id-input");
+  const $loginError = document.getElementById("login-error");
 
   async function loadModels() {
     try {
-      const res = await fetch('/models');
+      const res = await fetch("/models");
       const data = await res.json();
       const models = data.models || [];
-      const current = data.current || '';
-
-      $modelSelect.innerHTML = '';
-
+      const current = data.current || "";
+      const currentImage = data.current_image || current || "";
+      $modelSelect.innerHTML = "";
+      $imageModelSelect.innerHTML = "";
       if (models.length === 0) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = '모델 없음 (Ollama 확인 필요)';
-        $modelSelect.appendChild(opt);
+        $modelSelect.innerHTML = '<option value="">모델 없음</option>';
+        $imageModelSelect.innerHTML = '<option value="">모델 없음</option>';
         return;
       }
-
-      models.forEach(name => {
-        const opt = document.createElement('option');
+      models.forEach((name) => {
+        const opt = document.createElement("option");
         opt.value = name;
         opt.textContent = name;
         if (name === current) opt.selected = true;
         $modelSelect.appendChild(opt);
-      });
 
-      // current가 목록에 없으면 첫 번째 선택
-      if (current && !models.includes(current)) {
-        $modelSelect.selectedIndex = 0;
-      }
-    } catch (e) {
+        const imageOpt = document.createElement("option");
+        imageOpt.value = name;
+        imageOpt.textContent = `이미지: ${name}`;
+        if (name === currentImage) imageOpt.selected = true;
+        $imageModelSelect.appendChild(imageOpt);
+      });
+    } catch (err) {
       $modelSelect.innerHTML = '<option value="">연결 실패</option>';
+      $imageModelSelect.innerHTML = '<option value="">연결 실패</option>';
     }
   }
 
-  loadModels();
+  initializeAuth();
 
-  // ── DOM 참조 ──────────────────────────────────────────────────────────────
-  const $messages   = document.getElementById('messages');
-  const $emptyState = document.getElementById('empty-state');
-  const $fileBadge  = document.getElementById('file-badge');
-  const $fileName   = document.getElementById('file-name');
-  const $fileInput  = document.getElementById('file-input');
-  const $fileBtn    = document.getElementById('file-btn');
-  const $removeFile = document.getElementById('remove-file');
-  const $msgInput   = document.getElementById('msg-input');
-  const $sendBtn    = document.getElementById('send-btn');
-  const $newChatBtn = document.getElementById('new-chat-btn');
-  const $userIdInput = document.getElementById('user-id-input');
-
-  $userIdInput.value = state.userId;
-  $userIdInput.addEventListener('change', () => {
-    const normalized = $userIdInput.value.trim() || 'default_user';
-    state.userId = normalized;
-    $userIdInput.value = normalized;
-    window.localStorage.setItem('MK4:user-id', normalized);
-  });
-
-  // ── 자동 높이 조절 ────────────────────────────────────────────────────────
-  $msgInput.addEventListener('input', () => {
-    $msgInput.style.height = 'auto';
-    $msgInput.style.height = Math.min($msgInput.scrollHeight, 140) + 'px';
-  });
-
-  // ── 파일 첨부 ─────────────────────────────────────────────────────────────
-  $fileBtn.addEventListener('click', () => $fileInput.click());
-
-  $fileInput.addEventListener('change', () => {
-    const file = $fileInput.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      state.fileContent = e.target.result;
-      state.fileName    = file.name;
-      $fileName.textContent = file.name;
-      $fileBadge.style.display = 'flex';
-    };
-    reader.onerror = () => alert('파일을 읽지 못했습니다.');
-    reader.readAsText(file, 'utf-8');
-
-    $fileInput.value = '';
-  });
-
-  $removeFile.addEventListener('click', clearFile);
-
-  function clearFile() {
-    state.fileContent = null;
-    state.fileName    = null;
-    $fileBadge.style.display = 'none';
-    $fileName.textContent = '';
+  async function initializeAuth() {
+    try {
+      const res = await fetch("/auth/status");
+      if (!res.ok) throw new Error("login_required");
+      const data = await res.json();
+      setAuthenticated(data.role);
+      await loadModels();
+    } catch (_) {
+      showLogin();
+    }
   }
 
-  // ── 새 채팅 ───────────────────────────────────────────────────────────────
-  $newChatBtn.addEventListener('click', () => {
-    // 메시지 버블만 제거, empty-state 복원
-    const rows = $messages.querySelectorAll('.msg-row, .loader-row');
-    rows.forEach(r => r.remove());
-    $emptyState.style.display = 'flex';
-    clearFile();
-    $msgInput.value = '';
-    $msgInput.style.height = 'auto';
-    rotateSessionId();
+  function setAuthenticated(role) {
+    state.authenticated = true;
+    state.role = role;
+    $accountChip.textContent = role === "owner" ? "소유자" : "체험판";
+    $attachBtn.disabled = role === "trial";
+    $attachBtn.title = role === "trial" ? "파일 첨부는 소유자만 사용할 수 있습니다" : "파일 첨부";
+    $loginOverlay.classList.add("hidden");
+    $loginIdInput.value = "";
+    $loginError.textContent = "";
+  }
+
+  function showLogin(message = "") {
+    state.authenticated = false;
+    state.role = null;
+    $attachBtn.disabled = true;
+    $accountChip.textContent = "로그인 필요";
+    $loginError.textContent = message;
+    $loginOverlay.classList.remove("hidden");
+    setTimeout(() => $loginIdInput.focus(), 0);
+  }
+
+  $loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const loginId = $loginIdInput.value.trim();
+    if (!loginId) {
+      $loginError.textContent = "접속 ID를 입력해 주세요.";
+      return;
+    }
+    try {
+      const res = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ login_id: loginId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.message || "로그인 실패");
+      setAuthenticated(data.role);
+      await loadModels();
+      $msgInput.focus();
+    } catch (err) {
+      showLogin(err.message || "로그인 실패");
+    }
   });
 
-  // ── 전송 ──────────────────────────────────────────────────────────────────
-  $sendBtn.addEventListener('click', sendMessage);
-  $msgInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  $logoutBtn.addEventListener("click", async () => {
+    try { await fetch("/auth/logout", { method: "POST" }); } catch (_) {}
+    showLogin("로그아웃했습니다.");
+  });
+
+  $msgInput.addEventListener("input", () => {
+    $msgInput.style.height = "auto";
+    $msgInput.style.height = Math.min($msgInput.scrollHeight, 140) + "px";
+  });
+
+  $sendBtn.addEventListener("click", sendMessage);
+  $attachBtn.addEventListener("click", () => $fileInput.click());
+  $fileInput.addEventListener("change", () => {
+    state.attachments = Array.from($fileInput.files || []);
+    renderAttachments();
+  });
+  $msgInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  $newChatBtn.addEventListener("click", () => {
+    document.querySelectorAll(".msg-row, .loader-row").forEach((el) => el.remove());
+    $emptyState.style.display = "flex";
+    $msgInput.value = "";
+    $msgInput.style.height = "auto";
+    clearAttachments();
   });
 
   async function sendMessage() {
     if (state.loading) return;
-
-    state.userId = $userIdInput.value.trim() || 'default_user';
-    $userIdInput.value = state.userId;
-    window.localStorage.setItem('MK4:user-id', state.userId);
-
-    const typed = $msgInput.value.trim();
-    if (!typed && !state.fileContent) return;
-
-    // ── 사용자 메시지 조합 ──────────────────────────────────────────────────
-    let payload = typed;
-    let displayText = typed;
-    let displayFileName = state.fileName;
-
-    if (state.fileContent) {
-      const header = `[파일: ${state.fileName}]\n\n${state.fileContent}`;
-      payload = typed ? `${header}\n\n${typed}` : header;
+    if (!state.authenticated) {
+      showLogin("허용된 접속 ID를 입력해 주세요.");
+      return;
     }
+    const rawMessage = $msgInput.value.trim();
+    if (!rawMessage && state.attachments.length === 0) return;
 
-    // ── UI에 사용자 버블 추가 ──────────────────────────────────────────────
-    $emptyState.style.display = 'none';
-    appendUserBubble(displayText, displayFileName);
+    $emptyState.style.display = "none";
+    const pendingAttachmentNames = state.attachments.map((file) => file.name);
+    appendUserBubble(state.role === "owner" ? "소유자" : "체험판", rawMessage || "(첨부 파일)", pendingAttachmentNames);
+    $msgInput.value = "";
+    $msgInput.style.height = "auto";
 
-    $msgInput.value = '';
-    $msgInput.style.height = 'auto';
-    clearFile();
-
-    // ── 로딩 버블 ─────────────────────────────────────────────────────────
     const loaderRow = appendLoader();
     state.loading = true;
     $sendBtn.disabled = true;
 
     try {
-      const selectedModel = $modelSelect.value || null;
-      const res = await fetch('/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const uploaded = [];
+      for (const file of state.attachments) {
+        uploaded.push(await uploadAttachment(file));
+      }
+      const attachmentText = uploaded.length
+        ? "\n\n[첨부 파일]\n다음은 MK4 서버에 업로드된 파일 경로입니다. 원본 로컬 경로를 추측하지 말고 아래 경로를 도구로 읽어주세요.\n"
+          + uploaded.map((item) => `- ${item.filename}: ${item.path}`).join("\n")
+        : "";
+      const message = (rawMessage || "첨부 파일을 확인해줘.") + attachmentText;
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: state.userId,
-          session_id: state.sessionId,
-          message: payload,
-          model: selectedModel,
+          message,
+          model: $modelSelect.value || null,
+          image_model: $imageModelSelect.value || null
         }),
       });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail || res.statusText);
+      const raw = await res.text();
+      let data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch (parseErr) {
+        data = { detail: raw || res.statusText };
       }
-
-      const data = await res.json();
+      if (res.status === 401) {
+        showLogin(data.message || "다시 로그인해 주세요.");
+        throw new Error(data.message || "로그인이 필요합니다.");
+      }
+      if (!res.ok) throw new Error(data.detail || res.statusText);
       loaderRow.remove();
-      appendMk6Bubble(data);
-
+      appendMk5Bubble(data);
+      clearAttachments();
     } catch (err) {
       loaderRow.remove();
-      appendErrorBubble(err.message);
+      appendErrorBubble(err.message || String(err));
     } finally {
       state.loading = false;
       $sendBtn.disabled = false;
@@ -556,119 +634,154 @@
     }
   }
 
-  // ── 버블 생성 헬퍼 ────────────────────────────────────────────────────────
-  function appendUserBubble(text, fileName) {
-    const row = document.createElement('div');
-    row.className = 'msg-row user';
-
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar user';
-    avatar.textContent = 'YOU';
-
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-
-    if (fileName) {
-      const tag = document.createElement('div');
-      tag.className = 'file-tag';
-      tag.innerHTML = `📄 <span>${escHtml(fileName)}</span>`;
-      bubble.appendChild(tag);
-      bubble.appendChild(document.createElement('br'));
+  async function uploadAttachment(file) {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/upload", { method: "POST", body: form });
+    const data = await res.json();
+    if (res.status === 401) {
+      showLogin(data.message || "다시 로그인해 주세요.");
+      throw new Error(data.message || "로그인이 필요합니다.");
     }
+    if (!res.ok || !data.ok) throw new Error(data.detail || data.message || "파일 업로드 실패");
+    return data;
+  }
 
-    if (text) {
-      bubble.appendChild(document.createTextNode(text));
-    } else if (fileName) {
-      const hint = document.createElement('span');
-      hint.style.color = 'var(--text-dim)';
-      hint.style.fontSize = '13px';
-      hint.textContent = '(파일만 전송)';
-      bubble.appendChild(hint);
+  function renderAttachments() {
+    if (state.attachments.length === 0) {
+      $attachmentList.style.display = "none";
+      $attachmentList.innerHTML = "";
+      return;
     }
+    $attachmentList.style.display = "flex";
+    $attachmentList.innerHTML = state.attachments.map((file) =>
+      `<span class="attachment-chip">📎 ${escapeHtml(file.name)}</span>`
+    ).join("");
+  }
 
-    row.appendChild(avatar);
-    row.appendChild(bubble);
+  function clearAttachments() {
+    state.attachments = [];
+    $fileInput.value = "";
+    renderAttachments();
+  }
+
+  function appendUserBubble(userId, text, attachmentNames = []) {
+    const attachmentHtml = attachmentNames.length
+      ? `<div class="meta">${attachmentNames.map((name) => `<span>📎 ${escapeHtml(name)}</span>`).join("")}</div>`
+      : "";
+    const row = document.createElement("div");
+    row.className = "msg-row user";
+    row.innerHTML = `
+      <div class="avatar user">YOU</div>
+      <div class="bubble">
+        <div class="bubble-text">${escapeHtml(text)}</div>
+        <div class="meta"><span>USER_ID ${escapeHtml(userId)}</span></div>
+        ${attachmentHtml}
+      </div>
+    `;
     $messages.appendChild(row);
     scrollBottom();
   }
 
-  function appendMk6Bubble(data) {
-    const row = document.createElement('div');
-    row.className = 'msg-row MK4';
+  function appendMk5Bubble(data) {
+    const row = document.createElement("div");
+    row.className = "msg-row MK4";
+    const toolEvents = Array.isArray(data.tool_events) ? data.tool_events : [];
+    const downloads = toolEvents
+      .filter((event) => event.tool === "file_download_link" && event.result?.ok && event.result?.download_url)
+      .map((event) => event.result);
+    const downloadPanel = downloads.length ? `
+      <div class="download-links">
+        ${downloads.map((item) => `<a class="download-link" href="${escapeHtml(item.download_url)}" download>⬇ ${escapeHtml(item.filename || "파일 다운로드")}</a>`).join("")}
+      </div>
+    ` : "";
+    const toolPanel = toolEvents.length ? `
+      <div class="tool-panel">
+        <button class="tool-toggle" type="button">툴 로그 ${toolEvents.length}개 보기</button>
+        <div class="tool-log">
+          ${toolEvents.map((event, idx) => `
+            <div class="tool-item">#${idx + 1}
+tool: ${escapeHtml(event.tool)}
+args: ${escapeHtml(JSON.stringify(event.arguments, null, 2))}
+result: ${escapeHtml(JSON.stringify(event.result, null, 2))}</div>
+          `).join("")}
+        </div>
+      </div>
+    ` : "";
 
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar MK4';
-    avatar.textContent = 'M6';
-
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    bubble.appendChild(document.createTextNode(data.response || '(응답 없음)'));
-
-    // 메타데이터
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.innerHTML = `
-      <span>🔁 루프 ${data.loop_count}회</span>
-      <span>◉ 노드 ${data.node_count}</span>
-      <span>— 엣지 ${data.edge_count}</span>
-      ${data.had_empty_slots
-        ? '<span class="tag-empty">⚠ EmptySlot 있음</span>'
-        : '<span>✓ 모두 해석됨</span>'}
-      ${data.model_used ? `<span>🤖 ${escHtml(data.model_used)}</span>` : ''}
+    row.innerHTML = `
+      <div class="avatar MK4">M5</div>
+      <div class="bubble">
+        <div class="bubble-text">${renderMessageText(data.text || "(응답 없음)")}</div>
+        ${downloadPanel}
+        <div class="meta">
+          <span>tools ${escapeHtml(String((data.used_tools || []).length))}</span>
+          <span>writes ${escapeHtml(String((data.memory_writes || []).length))}</span>
+        </div>
+        ${toolPanel}
+      </div>
     `;
-    bubble.appendChild(meta);
 
-    row.appendChild(avatar);
-    row.appendChild(bubble);
+    const toggle = row.querySelector(".tool-toggle");
+    const log = row.querySelector(".tool-log");
+    if (toggle && log) {
+      toggle.addEventListener("click", () => {
+        const isOpen = log.classList.toggle("open");
+        toggle.textContent = isOpen ? `툴 로그 ${toolEvents.length}개 접기` : `툴 로그 ${toolEvents.length}개 보기`;
+      });
+    }
+
     $messages.appendChild(row);
     scrollBottom();
   }
 
   function appendErrorBubble(message) {
-    const row = document.createElement('div');
-    row.className = 'msg-row MK4';
-
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar MK4';
-    avatar.textContent = 'M6';
-
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    bubble.style.color = 'var(--danger)';
-    bubble.textContent = `[오류] ${message}`;
-
-    row.appendChild(avatar);
-    row.appendChild(bubble);
+    const row = document.createElement("div");
+    row.className = "msg-row MK4";
+    row.innerHTML = `
+      <div class="avatar MK4">M5</div>
+      <div class="bubble" style="color:var(--danger)">[오류] ${escapeHtml(message)}</div>
+    `;
     $messages.appendChild(row);
     scrollBottom();
   }
 
   function appendLoader() {
-    const row = document.createElement('div');
-    row.className = 'msg-row MK4 loader-row';
-
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar MK4';
-    avatar.textContent = 'M6';
-
-    const loader = document.createElement('div');
-    loader.className = 'loader';
-    loader.innerHTML = '<span></span><span></span><span></span>';
-
-    row.appendChild(avatar);
-    row.appendChild(loader);
+    const row = document.createElement("div");
+    row.className = "msg-row MK4 loader-row";
+    row.innerHTML = `
+      <div class="avatar MK4">M5</div>
+      <div class="loader"><span></span><span></span><span></span></div>
+    `;
     $messages.appendChild(row);
     scrollBottom();
     return row;
   }
 
-  // ── 유틸 ─────────────────────────────────────────────────────────────────
   function scrollBottom() {
     $messages.scrollTop = $messages.scrollHeight;
   }
 
-  function escHtml(str) {
-    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function renderMessageText(value) {
+    const text = String(value);
+    const pattern = /\[([^\]\n]{1,120})\]\((\/download\/[A-Za-z0-9_-]{20,100})\)|(\/download\/[A-Za-z0-9_-]{20,100})/g;
+    let output = "";
+    let cursor = 0;
+    for (const match of text.matchAll(pattern)) {
+      output += escapeHtml(text.slice(cursor, match.index));
+      const url = match[2] || match[3];
+      const label = match[1] || "파일 다운로드";
+      output += `<a class="download-link" href="${escapeHtml(url)}" download>${escapeHtml(label)}</a>`;
+      cursor = match.index + match[0].length;
+    }
+    return output + escapeHtml(text.slice(cursor));
   }
 </script>
 </body>

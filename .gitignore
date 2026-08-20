@@ -2,16 +2,16 @@ runtime/
 # *.env
 # *.db
 logs/
-MK5/public-server.*.log
+MK4/public-server.*.log
 __pycache__/
 *.pyc
 .venv/
 .tmp/
 .zip
-MK4/data/*.db
-MK4/data/*.db-*
 MK5/data/*.db
 MK5/data/*.db-*
-MK5/data/accounts.json
-MK5/.env
-.mk5_uploads/
+MK4/data/*.db
+MK4/data/*.db-*
+MK4/data/accounts.json
+MK4/.env
+.mk4_uploads/

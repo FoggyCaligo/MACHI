@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 
 from tools.ollama_client import OllamaClient, OllamaClientError
 
-DEFAULT_MODEL = os.getenv('MK5_SMOKE_MODEL', 'gemma4:e2b')
+DEFAULT_MODEL = os.getenv('MK4_SMOKE_MODEL', 'gemma4:e2b')
 
 
 def main() -> None:

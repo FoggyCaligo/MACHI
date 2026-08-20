@@ -1,2 +1,2 @@
-﻿"""MK5 package root."""
+﻿# MK5 패키지 루트
 

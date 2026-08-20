@@ -11,9 +11,9 @@ const modelSelectEl = document.getElementById("modelSelect");
 const newChatBtn = document.getElementById("newChatBtn");
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 360000;
-const MODEL_STORAGE_KEY = "mk5_selected_model";
-const DEBUG_STORAGE_KEY = "mk5_show_debug";
-const SESSION_STORAGE_KEY = "mk5_session_id";
+const MODEL_STORAGE_KEY = "mk4_selected_model";
+const DEBUG_STORAGE_KEY = "mk4_show_debug";
+const SESSION_STORAGE_KEY = "mk4_session_id";
 
 let uiState = {
   requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,

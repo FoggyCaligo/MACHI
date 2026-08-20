@@ -17,7 +17,7 @@ See [README.md](README.md) for detailed architecture and philosophy.
 ## Build and Test
 ```bash
 # Setup
-cd MK4
+cd MK5
 python -m venv .venv
 pip install -r requirements.txt
 

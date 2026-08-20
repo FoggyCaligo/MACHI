@@ -1,2 +1,2 @@
-﻿# MK4 패키지 루트
+﻿"""MK4 package root."""
 
