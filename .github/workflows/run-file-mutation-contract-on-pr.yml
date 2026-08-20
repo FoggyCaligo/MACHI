@@ -16,16 +16,23 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Reuse patch script
+      - name: Wire completion guard into orchestrator
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-          source = Path('.github/workflows/patch-file-mutation-contract.yml').read_text(encoding='utf-8')
-          block = source.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
-          lines = block.splitlines()
-          script = "\n".join(line[10:] if line.startswith("          ") else line for line in lines)
-          exec(script, {})
+          p = Path('MK4/core/agent/orchestrator.py')
+          text = p.read_text(encoding='utf-8-sig')
+          old_import = 'from .prompts import SYSTEM_PROMPT\n'
+          new_import = 'from .file_completion import file_mutation_completion_guard_result\nfrom .prompts import SYSTEM_PROMPT\n'
+          if old_import not in text:
+              raise SystemExit('orchestrator import anchor not found')
+          text = text.replace(old_import, new_import, 1)
+          old_guard = '''                ) or _file_execution_guard_result(\n                    tool_history=tool_history,\n                    rejected_final_answer=turn.final_answer,\n                )\n'''
+          new_guard = '''                ) or file_mutation_completion_guard_result(\n                    user_message=message,\n                    tool_history=tool_history,\n                    rejected_final_answer=turn.final_answer,\n                ) or _file_execution_guard_result(\n                    tool_history=tool_history,\n                    rejected_final_answer=turn.final_answer,\n                )\n'''
+          if old_guard not in text:
+              raise SystemExit('orchestrator final guard anchor not found')
+          p.write_text(text.replace(old_guard, new_guard, 1), encoding='utf-8')
           PY
       - name: Test focused behavior
         run: |
@@ -35,6 +42,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add MK4/core/agent/orchestrator.py MK4/core/agent/prompts.py MK4/tests/test_file_mutation_completion_contract.py
-          git commit -m "MK4: require evidence before file edit completion"
+          git add MK4/core/agent/orchestrator.py
+          git commit -m "MK4: enforce file mutation completion guard"
           git push origin HEAD:${{ github.head_ref }}
