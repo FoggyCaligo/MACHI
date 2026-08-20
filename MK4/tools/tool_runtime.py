@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+import posixpath
 import re
 from typing import Any, Awaitable, Callable
 
@@ -42,8 +43,7 @@ def get_file_working_root() -> str:
 
 
 def set_file_working_root(root: str) -> Token[str]:
-    normalized = _normalize_root_value(root)
-    return _FILE_WORKING_ROOT.set(normalized)
+    return _FILE_WORKING_ROOT.set(_normalize_root_value(root))
 
 
 def reset_file_working_root(token: Token[str]) -> None:
@@ -52,9 +52,8 @@ def reset_file_working_root(token: Token[str]) -> None:
 
 def _normalize_root_value(root: str) -> str:
     value = str(root or ".").strip().replace("\\", "/") or "."
-    while value.startswith("./"):
-        value = value[2:]
-    return value.strip("/") or "."
+    normalized = posixpath.normpath(value)
+    return normalized or "."
 
 
 def _is_absolute_path(value: str) -> bool:
@@ -68,23 +67,20 @@ def _is_workspace_relative_bypass(value: str) -> bool:
 
 
 def _resolve_under_working_root(value: str, working_root: str) -> str:
-    raw = str(value or "").strip().replace("\\", "/")
-    if not raw:
-        raw = "."
-    if working_root in {"", "."} or _is_absolute_path(raw) or _is_workspace_relative_bypass(raw):
-        return raw
-    while raw.startswith("./"):
-        raw = raw[2:]
+    raw = str(value or "").strip().replace("\\", "/") or "."
+    if _is_absolute_path(raw) or _is_workspace_relative_bypass(raw):
+        return _normalize_root_value(raw)
+
     root = _normalize_root_value(working_root)
-    if raw in {"", "."}:
-        return root
+    if root == ".":
+        return _normalize_root_value(raw)
     if raw == root or raw.startswith(root + "/"):
-        return raw
-    return f"{root}/{raw}"
+        return _normalize_root_value(raw)
+    return _normalize_root_value(posixpath.join(root, raw))
 
 
 def _normalize_file_call_arguments(call: ToolCall, working_root: str) -> None:
-    if call.tool not in _FILE_RELATED_TOOLS or working_root in {"", "."}:
+    if call.tool not in _FILE_RELATED_TOOLS:
         return
     arguments = dict(call.arguments)
     if call.tool in _FILE_PATH_TOOLS:
@@ -98,15 +94,29 @@ def _normalize_file_call_arguments(call: ToolCall, working_root: str) -> None:
     call.arguments.update(arguments)
 
 
-def _maybe_adopt_working_root(*, call: ToolCall, original_arguments: dict[str, Any], result: dict[str, Any]) -> None:
-    if get_file_working_root() not in {"", "."}:
+def _maybe_update_working_root(
+    *,
+    call: ToolCall,
+    original_arguments: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    if result.get("ok") is not True:
         return
-    if call.tool not in _FILE_ROOT_TOOLS or result.get("ok") is not True:
+
+    # file_tree is the explicit navigation primitive. A successful call with a
+    # root changes the logical file cwd, including ../ traversal or an absolute
+    # path. Search tools may inspect subdirectories without silently moving cwd.
+    if call.tool == "file_tree" and "root" in original_arguments:
+        resolved_root = str(call.arguments.get("root") or ".").strip() or "."
+        _FILE_WORKING_ROOT.set(_normalize_root_value(resolved_root))
         return
-    candidate = _normalize_root_value(str(original_arguments.get("root") or "."))
-    if candidate in {"", ".", ".."} or "/" in candidate or _is_absolute_path(candidate):
-        return
-    _FILE_WORKING_ROOT.set(candidate)
+
+    # For the first discovery only, search tools may establish a project root.
+    if get_file_working_root() == "." and call.tool in {"file_search", "file_text_search"}:
+        candidate = str(original_arguments.get("root") or ".").strip()
+        if candidate and candidate != ".":
+            resolved_root = str(call.arguments.get("root") or ".").strip() or "."
+            _FILE_WORKING_ROOT.set(_normalize_root_value(resolved_root))
 
 
 class ToolRegistry:
@@ -140,16 +150,16 @@ class ToolRegistry:
         result = await handler(call.arguments)
 
         if call.tool in _FILE_RELATED_TOOLS and isinstance(result, dict):
-            _maybe_adopt_working_root(
+            _maybe_update_working_root(
                 call=call,
                 original_arguments=original_arguments,
                 result=result,
             )
             result["file_working_root"] = get_file_working_root()
             result["path_base_hint"] = (
-                "Relative file paths resolve from file_working_root. "
-                "The active root may be any discovered project/subdirectory. Paths relative to that root, "
-                "with or without a leading './', are both valid."
+                "Relative file paths resolve from file_working_root. file_tree(root=...) changes that logical cwd. "
+                "Use ../ to move upward, sibling paths such as ../MK5 to move across projects, or an absolute path "
+                "to work outside the initial workspace. The working root is a convenience base, not a sandbox boundary."
             )
         return result
 
