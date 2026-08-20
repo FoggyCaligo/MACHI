@@ -79,6 +79,16 @@ OWNER_LOGIN_ID = os.getenv("MK4_OWNER_LOGIN_ID", "").strip()
 OWNER_GRAPH_USER_ID = os.getenv("MK4_OWNER_GRAPH_USER_ID", "account::owner").strip()
 MODEL_FAILURE_PREVIEW_CHARS = int(os.getenv("MK4_MODEL_FAILURE_PREVIEW_CHARS", "2000"))
 
+# Optional local-only voice mode. MK4 itself does not contact a cloud STT/TTS
+# service. Commands run on the same machine and may point at any already-installed
+# local engine or wrapper. STT must accept {input}; TTS must accept {output} and
+# read UTF-8 text from stdin.
+VOICE_STT_COMMAND = os.getenv("MK4_STT_COMMAND", "").strip()
+VOICE_TTS_COMMAND = os.getenv("MK4_TTS_COMMAND", "").strip()
+VOICE_COMMAND_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_COMMAND_TIMEOUT_SECONDS", "120"))
+VOICE_MAX_AUDIO_BYTES = int(os.getenv("MK4_VOICE_MAX_AUDIO_BYTES", str(12 * 1024 * 1024)))
+VOICE_MAX_TTS_CHARS = int(os.getenv("MK4_VOICE_MAX_TTS_CHARS", "6000"))
+
 OLLAMA_EXCLUDED_MODELS: frozenset[str] = frozenset(
     name.strip()
     for name in os.getenv("OLLAMA_EXCLUDED_MODELS", "embeddinggemma:latest,nomic-embed-text").split(",")

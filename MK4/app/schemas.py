@@ -19,3 +19,7 @@ class ChatResponse(BaseModel):
     used_tools: list[str] = Field(default_factory=list)
     memory_writes: list[str] = Field(default_factory=list)
     tool_events: list[dict] = Field(default_factory=list)
+
+
+class VoiceTTSRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)

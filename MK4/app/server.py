@@ -11,12 +11,14 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from .pipeline import Pipeline
 from .accounts import AccountStore
 from .download_tokens import default_download_token_store
-from .schemas import ChatRequest, ChatResponse, LoginRequest
+from .schemas import ChatRequest, ChatResponse, LoginRequest, VoiceTTSRequest
 from .sessions import SessionStore
+from .voice import LocalVoiceService
 from .. import config
 from ..tools.ollama_client import list_models
 
@@ -29,6 +31,7 @@ session_store = SessionStore(
     path=config.SESSIONS_DB_PATH,
     account_validator=account_store.is_active,
 )
+voice_service = LocalVoiceService()
 _login_attempts: dict[str, deque[float]] = defaultdict(deque)
 _SESSION_COOKIE = "mk4_session"
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -52,7 +55,7 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    public = path in {"/", "/health", "/auth/login", "/auth/status"} or path.startswith("/static/")
+    public = path in {"/", "/health", "/auth/login", "/auth/status", "/voice/status"} or path.startswith("/static/")
     if public:
         return await call_next(request)
     account = session_store.get(request.cookies.get(_SESSION_COOKIE))
@@ -81,12 +84,20 @@ def _render_ui_html() -> str:
     html = index_path.read_text(encoding="utf-8-sig")
     html = html.replace(
         "</head>",
-        '  <link rel="stylesheet" href="/static/markdown-render.css" />\n</head>',
+        (
+            '  <link rel="stylesheet" href="/static/markdown-render.css" />\n'
+            '  <link rel="stylesheet" href="/static/voice-mode.css" />\n'
+            "</head>"
+        ),
         1,
     )
     html = html.replace(
         "</body>",
-        '  <script src="/static/markdown-render.js"></script>\n</body>',
+        (
+            '  <script src="/static/markdown-render.js"></script>\n'
+            '  <script src="/static/voice-mode.js"></script>\n'
+            "</body>"
+        ),
         1,
     )
     return html
@@ -169,6 +180,61 @@ async def get_models() -> dict:
         "current": config.OLLAMA_MODEL_NAME or None,
         "current_image": config.OLLAMA_IMAGE_MODEL_NAME or None,
     }
+
+
+@app.get("/voice/status")
+async def voice_status() -> dict:
+    status = voice_service.status()
+    return {
+        "ok": True,
+        "ready": status.ready,
+        "stt_configured": status.stt_configured,
+        "tts_configured": status.tts_configured,
+        "mode": "local-command",
+    }
+
+
+@app.post("/voice/stt")
+async def voice_stt(request: Request):
+    try:
+        form = await request.form()
+    except (RuntimeError, AssertionError) as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "missing_dependency", "message": "Voice upload requires python-multipart.", "detail": str(exc)},
+        )
+    file = form.get("file")
+    if file is None or not hasattr(file, "read"):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "missing_file", "message": "Voice field 'file' is required."},
+        )
+    try:
+        audio_bytes = await file.read()
+        text = await voice_service.transcribe(audio_bytes)
+    except (ValueError, RuntimeError, TimeoutError) as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "stt_failed", "message": str(exc)},
+        )
+    return {"ok": True, "text": text}
+
+
+@app.post("/voice/tts")
+async def voice_tts(req: VoiceTTSRequest):
+    try:
+        output_path = await voice_service.synthesize(req.text)
+    except (ValueError, RuntimeError, TimeoutError) as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "tts_failed", "message": str(exc)},
+        )
+    return FileResponse(
+        path=str(output_path),
+        media_type="audio/wav",
+        filename="mk4-response.wav",
+        background=BackgroundTask(output_path.unlink, missing_ok=True),
+    )
 
 
 @app.get("/tools")
