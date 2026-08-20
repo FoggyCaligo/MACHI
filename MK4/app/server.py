@@ -178,7 +178,6 @@ async def get_models() -> dict:
     return {
         "models": await list_models(),
         "current": config.OLLAMA_MODEL_NAME or None,
-        "current_image": config.OLLAMA_IMAGE_MODEL_NAME or None,
     }
 
 
@@ -380,7 +379,6 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             user_id=account.graph_user_id,
             message=req.message,
             model=req.model,
-            image_model=req.image_model,
             session_id=req.session_id,
             account_role=account.role,
         )
