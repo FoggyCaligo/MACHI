@@ -11,15 +11,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from MK5 import config
-from MK5.app.accounts import AccountStore
-from MK5.app.sessions import SessionStore
-from MK5.core.graph.repository import GraphRepository
-from MK5.core.graph.service import GraphMemoryService
+from MK4 import config
+from MK4.app.accounts import AccountStore
+from MK4.app.sessions import SessionStore
+from MK4.core.graph.repository import GraphRepository
+from MK4.core.graph.service import GraphMemoryService
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect MK5 accounts, sessions, or purge one account's graph memory.")
+    parser = argparse.ArgumentParser(description="Inspect MK4 accounts, sessions, or purge one account's graph memory.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="List configured roles and graph identities without revealing login IDs.")
     subparsers.add_parser("list-sessions", help="List currently active sessions.")
@@ -62,7 +62,7 @@ def main() -> None:
     login_id = args.login_id or getpass.getpass("Login ID whose graph memory will be deleted: ")
     account = store.authenticate(login_id)
     if account is None:
-        raise SystemExit("The login ID is not present in MK5_ALLOWED_LOGIN_IDS.")
+        raise SystemExit("The login ID is not present in MK4_ALLOWED_LOGIN_IDS.")
     confirmation = input(f"Type DELETE {account.graph_user_id} to erase this graph memory: ")
     if confirmation != f"DELETE {account.graph_user_id}":
         raise SystemExit("Cancelled; confirmation did not match.")
