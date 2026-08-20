@@ -14,6 +14,7 @@ from ...tools.llm_client import ChatModel, ModelRequestError, ModelTurn
 from ...tools.tool_runtime import ToolCall, ToolDefinition, ToolRegistry
 from ...tools.web_search import WebSearchTool
 from ..graph.service import GraphMemoryService
+from .file_completion import file_mutation_completion_guard_result
 from .prompts import SYSTEM_PROMPT
 
 
@@ -285,6 +286,10 @@ class AgentOrchestrator:
                 ) or _local_tool_blocked_guard_result(
                     turn=turn,
                     available_tools=model_tool_definitions,
+                    tool_history=tool_history,
+                    rejected_final_answer=turn.final_answer,
+                ) or file_mutation_completion_guard_result(
+                    user_message=message,
                     tool_history=tool_history,
                     rejected_final_answer=turn.final_answer,
                 ) or _file_execution_guard_result(
