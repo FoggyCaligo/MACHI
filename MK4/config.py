@@ -89,22 +89,33 @@ OWNER_LOGIN_ID = os.getenv("MK4_OWNER_LOGIN_ID", "").strip()
 OWNER_GRAPH_USER_ID = os.getenv("MK4_OWNER_GRAPH_USER_ID", "account::owner").strip()
 MODEL_FAILURE_PREVIEW_CHARS = int(os.getenv("MK4_MODEL_FAILURE_PREVIEW_CHARS", "2000"))
 
-# Optional local-only continuous voice mode. faster-whisper and piper-tts run
-# inside the MK4 Python process; model objects are loaded lazily and reused.
-# Set model files/references explicitly so offline deployments do not silently
-# depend on a cloud STT/TTS service.
-VOICE_STT_MODEL = os.getenv("MK4_STT_MODEL", "").strip()
+# Local continuous voice mode. Defaults are intentionally usable without manual
+# model configuration: the first voice-mode activation downloads the default
+# models into MK4/data/voice_models and later runs reuse those local files.
+VOICE_AUTO_DOWNLOAD = os.getenv("MK4_VOICE_AUTO_DOWNLOAD", "true").strip().lower() in {"1", "true", "yes", "on"}
+VOICE_MODEL_DIR = Path(
+    os.getenv("MK4_VOICE_MODEL_DIR", str(DATA_DIR / "voice_models"))
+).expanduser().resolve()
+
+# STT: multilingual faster-whisper small is the default balance for Korean
+# accuracy, CPU latency and memory. A local CTranslate2 directory may be supplied
+# instead of the model name for a fully pre-provisioned/offline deployment.
+VOICE_STT_MODEL = os.getenv("MK4_STT_MODEL", "small").strip() or "small"
 VOICE_STT_DEVICE = os.getenv("MK4_STT_DEVICE", "cpu").strip() or "cpu"
 VOICE_STT_COMPUTE_TYPE = os.getenv("MK4_STT_COMPUTE_TYPE", "int8").strip() or "int8"
 VOICE_STT_LANGUAGE = os.getenv("MK4_STT_LANGUAGE", "ko").strip()
 VOICE_STT_BEAM_SIZE = int(os.getenv("MK4_STT_BEAM_SIZE", "1"))
 VOICE_STT_CPU_THREADS = int(os.getenv("MK4_STT_CPU_THREADS", "4"))
+
+# TTS: use the bundled Piper voice name unless a custom .onnx model path is
+# supplied. Custom paths always win and are never overwritten by auto-download.
+VOICE_TTS_VOICE = os.getenv("MK4_TTS_VOICE", "ko_KR-kss-medium").strip() or "ko_KR-kss-medium"
 VOICE_TTS_MODEL_PATH = os.getenv("MK4_TTS_MODEL_PATH", "").strip()
 VOICE_TTS_CONFIG_PATH = os.getenv("MK4_TTS_CONFIG_PATH", "").strip()
 VOICE_TTS_SPEAKER_ID = _optional_int("MK4_TTS_SPEAKER_ID")
 VOICE_TTS_LENGTH_SCALE = _optional_float("MK4_TTS_LENGTH_SCALE")
-VOICE_TTS_SENTENCE_SILENCE = _optional_float("MK4_TTS_SENTENCE_SILENCE")
-VOICE_INFERENCE_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_INFERENCE_TIMEOUT_SECONDS", "120"))
+
+VOICE_INFERENCE_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_INFERENCE_TIMEOUT_SECONDS", "180"))
 VOICE_MAX_AUDIO_BYTES = int(os.getenv("MK4_VOICE_MAX_AUDIO_BYTES", str(12 * 1024 * 1024)))
 VOICE_MAX_TTS_CHARS = int(os.getenv("MK4_VOICE_MAX_TTS_CHARS", "6000"))
 
