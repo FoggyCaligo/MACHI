@@ -34,6 +34,22 @@ def test_markdown_renderer_escapes_html_and_supports_expected_blocks() -> None:
     assert 'window.renderMessageText = renderMarkdown' in source
 
 
+def test_inline_placeholders_cannot_be_reinterpreted_as_markdown_emphasis() -> None:
+    source = (STATIC_DIR / "markdown-render.js").read_text(encoding="utf-8")
+
+    # The old @@CODE_0@@ / @@LINK_0@@ placeholders contained underscores. The
+    # italic parser could consume those underscores and leave visible artifacts
+    # such as @@CODE*0@@ in the rendered answer.
+    assert "@@CODE_" not in source
+    assert "@@LINK_" not in source
+    assert 'const TOKEN_START = "\\uE000"' in source
+    assert 'const TOKEN_END = "\\uE001"' in source
+    assert 'placeholder("C", codeTokens.length)' in source
+    assert 'placeholder("L", linkTokens.length)' in source
+    assert 'restorePlaceholders(text, "C", codeTokens)' in source
+    assert 'restorePlaceholders(text, "L", linkTokens)' in source
+
+
 def test_markdown_styles_are_scoped_to_assistant_bubbles() -> None:
     css = (STATIC_DIR / "markdown-render.css").read_text(encoding="utf-8")
 
