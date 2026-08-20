@@ -165,9 +165,21 @@ class AgentOrchestrator:
         unknown_tool_guards = 0
         identical_tool_call_counts: dict[str, int] = {}
         round_index = 0
-        stagnated = False
 
         while True:
+            if round_index >= max(1, config.AGENT_MAX_ROUNDS):
+                guard_result = {
+                    "ok": False,
+                    "error": "max_agent_rounds_reached",
+                    "message": (
+                        f"The agent reached the configured round limit ({config.AGENT_MAX_ROUNDS}). "
+                        "Tool execution is stopping only because of the global safety limit; "
+                        "synthesize the best available result without claiming unfinished work is complete."
+                    ),
+                }
+                tool_history.append({"tool": "execution_guard", "arguments": {}, "result": guard_result})
+                _debug_log(f"execution_guard round={round_index} error=max_agent_rounds_reached")
+                break
             round_index += 1
             _debug_log(
                 f"model_round_start round={round_index} "
@@ -398,12 +410,12 @@ class AgentOrchestrator:
                             "error": "repeated_identical_tool_call",
                             "message": (
                                 f"{call.tool} was requested repeatedly with identical arguments. "
-                                "Stop calling tools and synthesize the available results."
+                                "This exact call is blocked. Do not retry it; choose different arguments, "
+                                "use another tool, or continue from the evidence already collected."
                             ),
                         },
                     })
                     _debug_log(f"execution_guard round={round_index} error=repeated_identical_tool_call")
-                    stagnated = True
                     break
                 _debug_log(f"tool_start round={round_index} tool={call.tool}")
                 started = time.perf_counter()
@@ -443,9 +455,6 @@ class AgentOrchestrator:
                     file_activation_node_ids.update(event_node_ids)
                     file_activation_node_weights.update({node_id: 0.25 for node_id in event_node_ids})
                     tool_history.append(file_activation_event)
-            if stagnated:
-                break
-
         _debug_log("final_synthesis_start tools=disabled")
         try:
             synthesis_turn = await self._chat_model.next_turn(
