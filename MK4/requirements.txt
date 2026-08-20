@@ -7,5 +7,5 @@ ddgs
 pypdf
 pillow
 faster-whisper
-piper-tts
+piper-tts>=1.6.0
 sentence-breaker @ git+https://github.com/FoggyCaligo/Sentence_Breaker.git@f36bd37c95bbb77482ece0caab33b8b936f90f29
