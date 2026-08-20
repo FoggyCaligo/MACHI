@@ -188,9 +188,35 @@ async def voice_status() -> dict:
     return {
         "ok": True,
         "ready": status.ready,
+        "prepared": status.prepared,
         "stt_configured": status.stt_configured,
         "tts_configured": status.tts_configured,
-        "mode": "local-command",
+        "stt_library_available": status.stt_library_available,
+        "tts_library_available": status.tts_library_available,
+        "auto_download": config.VOICE_AUTO_DOWNLOAD,
+        "stt_model": config.VOICE_STT_MODEL,
+        "tts_voice": config.VOICE_TTS_VOICE,
+        "custom_tts": bool(config.VOICE_TTS_MODEL_PATH),
+        "mode": "python-native",
+    }
+
+
+@app.post("/voice/prepare")
+async def voice_prepare() -> dict:
+    try:
+        status = await voice_service.prepare()
+    except (ValueError, RuntimeError, TimeoutError, OSError) as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "voice_prepare_failed", "message": str(exc)},
+        )
+    return {
+        "ok": True,
+        "ready": status.ready,
+        "prepared": status.prepared,
+        "stt_model": config.VOICE_STT_MODEL,
+        "tts_voice": config.VOICE_TTS_VOICE,
+        "custom_tts": bool(config.VOICE_TTS_MODEL_PATH),
     }
 
 
