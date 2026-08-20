@@ -44,6 +44,7 @@ _CODE_ANCHOR_RE = re.compile(
     r"`([^`\n]{2,120})`|(?:id|class)=[\"']([^\"']{2,120})[\"']",
     re.IGNORECASE,
 )
+_BARE_IDENTIFIER_RE = re.compile(r"(?<![A-Za-z0-9])([#.][A-Za-z][A-Za-z0-9_-]{2,}|[A-Za-z][A-Za-z0-9]*[-_][A-Za-z0-9_-]{2,})")
 _GENERIC_ANCHORS = {
     "html", "css", "javascript", "typescript", "python", "code", "file", "select",
     "selector", "element", "button", "script", "style", "model", "remove", "delete",
@@ -173,8 +174,8 @@ def _request_anchors(message: str) -> set[str]:
             cleaned = token.lstrip("#.")
             if cleaned not in _GENERIC_ANCHORS:
                 anchors.add(cleaned)
-    for token in re.findall(r"[#.]?[A-Za-z][A-Za-z0-9_-]{3,}", message.lower()):
-        cleaned = token.lstrip("#.")
+    for match in _BARE_IDENTIFIER_RE.finditer(message):
+        cleaned = match.group(1).lower().lstrip("#.")
         if cleaned not in _GENERIC_ANCHORS:
             anchors.add(cleaned)
     return anchors
