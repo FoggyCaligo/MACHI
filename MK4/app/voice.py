@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import locale
-import os
-import shlex
+import importlib.util
 import tempfile
+import wave
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
+from typing import Any
 
 from .. import config
 
@@ -15,67 +16,71 @@ from .. import config
 class VoiceStatus:
     stt_configured: bool
     tts_configured: bool
+    stt_library_available: bool
+    tts_library_available: bool
 
     @property
     def ready(self) -> bool:
-        return self.stt_configured and self.tts_configured
+        return (
+            self.stt_configured
+            and self.tts_configured
+            and self.stt_library_available
+            and self.tts_library_available
+        )
 
 
 class LocalVoiceService:
-    """Bridge browser audio to user-configured local STT/TTS commands.
+    """Local, reusable Python-native STT/TTS service for continuous voice mode.
 
-    No network service is used by this class. The configured commands are launched
-    on the same machine as MK4. STT receives a WAV path through {input}; TTS receives
-    UTF-8 text on stdin and must write a WAV file to {output}.
+    STT uses faster-whisper and TTS uses piper-tts directly inside the MK4 server
+    process. Models are loaded lazily on first use and then reused for subsequent
+    turns. No cloud STT/TTS API is called by this service.
     """
+
+    def __init__(self) -> None:
+        self._stt_model: Any | None = None
+        self._tts_voice: Any | None = None
+        self._stt_load_lock = Lock()
+        self._tts_load_lock = Lock()
 
     def status(self) -> VoiceStatus:
         return VoiceStatus(
-            stt_configured=bool(config.VOICE_STT_COMMAND),
-            tts_configured=bool(config.VOICE_TTS_COMMAND),
+            stt_configured=bool(config.VOICE_STT_MODEL),
+            tts_configured=_tts_model_path().is_file() if config.VOICE_TTS_MODEL_PATH else False,
+            stt_library_available=importlib.util.find_spec("faster_whisper") is not None,
+            tts_library_available=importlib.util.find_spec("piper") is not None,
         )
 
     async def transcribe(self, audio_bytes: bytes) -> str:
-        command_template = config.VOICE_STT_COMMAND
-        if not command_template:
-            raise RuntimeError("MK4_STT_COMMAND is not configured")
-        if "{input}" not in command_template:
-            raise RuntimeError("MK4_STT_COMMAND must contain {input}")
+        if not config.VOICE_STT_MODEL:
+            raise RuntimeError("MK4_STT_MODEL is not configured")
         if len(audio_bytes) > config.VOICE_MAX_AUDIO_BYTES:
             raise ValueError(
                 f"Voice input is too large ({len(audio_bytes)} bytes; max={config.VOICE_MAX_AUDIO_BYTES})"
             )
+        if importlib.util.find_spec("faster_whisper") is None:
+            raise RuntimeError("faster-whisper is not installed; run pip install -r MK4/requirements.txt")
 
         with tempfile.TemporaryDirectory(prefix="mk4-stt-") as temp_dir:
-            temp_root = Path(temp_dir)
-            input_path = temp_root / "speech.wav"
-            output_path = temp_root / "transcript.txt"
+            input_path = Path(temp_dir) / "speech.wav"
             input_path.write_bytes(audio_bytes)
-            command = _format_command(
-                command_template,
-                input_path=input_path,
-                output_path=output_path,
+            text = await asyncio.wait_for(
+                asyncio.to_thread(self._transcribe_sync, input_path),
+                timeout=config.VOICE_INFERENCE_TIMEOUT_SECONDS,
             )
-            stdout, stderr, returncode = await _run_command(command)
-            if returncode != 0:
-                raise RuntimeError(
-                    f"Local STT command failed with exit code {returncode}: {_decode_output(stderr).strip()}"
-                )
-
-            if "{output}" in command_template and output_path.exists():
-                text = output_path.read_text(encoding="utf-8-sig").strip()
-            else:
-                text = _decode_output(stdout).strip()
-            if not text:
-                raise RuntimeError("Local STT command returned an empty transcription")
-            return text
+        if not text:
+            raise RuntimeError("faster-whisper returned an empty transcription")
+        return text
 
     async def synthesize(self, text: str) -> Path:
-        command_template = config.VOICE_TTS_COMMAND
-        if not command_template:
-            raise RuntimeError("MK4_TTS_COMMAND is not configured")
-        if "{output}" not in command_template:
-            raise RuntimeError("MK4_TTS_COMMAND must contain {output}")
+        model_path = _tts_model_path()
+        if not config.VOICE_TTS_MODEL_PATH:
+            raise RuntimeError("MK4_TTS_MODEL_PATH is not configured")
+        if not model_path.is_file():
+            raise RuntimeError(f"Piper voice model not found: {model_path}")
+        if importlib.util.find_spec("piper") is None:
+            raise RuntimeError("piper-tts is not installed; run pip install -r MK4/requirements.txt")
+
         clean_text = str(text or "").strip()
         if not clean_text:
             raise ValueError("TTS text is empty")
@@ -86,87 +91,76 @@ class LocalVoiceService:
         handle.close()
         output_path = Path(handle.name)
         try:
-            command = _format_command(command_template, output_path=output_path)
-            stdout, stderr, returncode = await _run_command(command, stdin=clean_text.encode("utf-8"))
-            if returncode != 0:
-                raise RuntimeError(
-                    f"Local TTS command failed with exit code {returncode}: {_decode_output(stderr).strip()}"
-                )
+            await asyncio.wait_for(
+                asyncio.to_thread(self._synthesize_sync, clean_text, output_path),
+                timeout=config.VOICE_INFERENCE_TIMEOUT_SECONDS,
+            )
             if not output_path.exists() or output_path.stat().st_size <= 44:
-                preview = _decode_output(stdout).strip()
-                raise RuntimeError(
-                    "Local TTS command did not create a valid WAV file"
-                    + (f": {preview}" if preview else "")
-                )
+                raise RuntimeError("Piper did not create a valid WAV file")
             return output_path
         except Exception:
             output_path.unlink(missing_ok=True)
             raise
 
-
-async def _run_command(command: str, *, stdin: bytes | None = None) -> tuple[bytes, bytes, int]:
-    process = await asyncio.create_subprocess_shell(
-        command,
-        cwd=str(config.WORKSPACE_ROOT),
-        stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(stdin),
-            timeout=config.VOICE_COMMAND_TIMEOUT_SECONDS,
+    def _transcribe_sync(self, input_path: Path) -> str:
+        model = self._get_stt_model()
+        language = config.VOICE_STT_LANGUAGE or None
+        segments, _info = model.transcribe(
+            str(input_path),
+            language=language,
+            beam_size=config.VOICE_STT_BEAM_SIZE,
+            vad_filter=True,
+            condition_on_previous_text=False,
         )
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.communicate()
-        raise TimeoutError(
-            f"Local voice command timed out after {config.VOICE_COMMAND_TIMEOUT_SECONDS:.0f}s"
-        )
-    return stdout, stderr, int(process.returncode or 0)
+        return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
+
+    def _synthesize_sync(self, text: str, output_path: Path) -> None:
+        voice = self._get_tts_voice()
+        kwargs: dict[str, Any] = {}
+        if config.VOICE_TTS_SPEAKER_ID is not None:
+            kwargs["speaker_id"] = config.VOICE_TTS_SPEAKER_ID
+        if config.VOICE_TTS_LENGTH_SCALE is not None:
+            kwargs["length_scale"] = config.VOICE_TTS_LENGTH_SCALE
+        if config.VOICE_TTS_SENTENCE_SILENCE is not None:
+            kwargs["sentence_silence"] = config.VOICE_TTS_SENTENCE_SILENCE
+
+        with wave.open(str(output_path), "wb") as wav_file:
+            voice.synthesize(text, wav_file, **kwargs)
+
+    def _get_stt_model(self):
+        if self._stt_model is not None:
+            return self._stt_model
+        with self._stt_load_lock:
+            if self._stt_model is None:
+                from faster_whisper import WhisperModel
+
+                self._stt_model = WhisperModel(
+                    config.VOICE_STT_MODEL,
+                    device=config.VOICE_STT_DEVICE,
+                    compute_type=config.VOICE_STT_COMPUTE_TYPE,
+                    cpu_threads=config.VOICE_STT_CPU_THREADS,
+                )
+        return self._stt_model
+
+    def _get_tts_voice(self):
+        if self._tts_voice is not None:
+            return self._tts_voice
+        with self._tts_load_lock:
+            if self._tts_voice is None:
+                from piper.voice import PiperVoice
+
+                config_path = str(_tts_config_path()) if config.VOICE_TTS_CONFIG_PATH else None
+                self._tts_voice = PiperVoice.load(
+                    str(_tts_model_path()),
+                    config_path=config_path,
+                    use_cuda=False,
+                )
+        return self._tts_voice
 
 
-def _format_command(
-    template: str,
-    *,
-    input_path: Path | None = None,
-    output_path: Path | None = None,
-) -> str:
-    values = {
-        "input": _quote_arg(input_path) if input_path is not None else "",
-        "output": _quote_arg(output_path) if output_path is not None else "",
-    }
-    try:
-        return template.format(**values)
-    except KeyError as exc:
-        raise RuntimeError(f"Unknown placeholder in local voice command: {exc}") from exc
+def _tts_model_path() -> Path:
+    return Path(config.VOICE_TTS_MODEL_PATH).expanduser().resolve() if config.VOICE_TTS_MODEL_PATH else Path()
 
 
-def _quote_arg(path: Path) -> str:
-    value = str(path)
-    if os.name == "nt":
-        import subprocess
-
-        return subprocess.list2cmdline([value])
-    return shlex.quote(value)
-
-
-def _decode_output(data: bytes) -> str:
-    if not data:
-        return ""
-    encodings = ["utf-8", locale.getpreferredencoding(False)]
-    if os.name == "nt":
-        encodings.extend(["mbcs", "cp949"])
-    seen: set[str] = set()
-    for encoding in encodings:
-        if not encoding:
-            continue
-        key = encoding.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            return data.decode(encoding)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    return data.decode("utf-8", errors="replace")
+def _tts_config_path() -> Path:
+    return Path(config.VOICE_TTS_CONFIG_PATH).expanduser().resolve()
