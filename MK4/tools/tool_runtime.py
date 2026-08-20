@@ -19,7 +19,7 @@ _FILE_PATH_TOOLS = {
 }
 _FILE_ROOT_TOOLS = {"file_tree", "file_search", "file_text_search"}
 _FILE_RELATED_TOOLS = _FILE_PATH_TOOLS | _FILE_ROOT_TOOLS
-_FILE_WORKING_ROOT: ContextVar[str] = ContextVar("mk4_file_working_root", default=".")
+_FILE_WORKING_ROOT: ContextVar[str] = ContextVar("file_working_root", default=".")
 _WORKSPACE_RELATIVE_BYPASS_PREFIXES = (".mk4_uploads/",)
 
 
@@ -148,8 +148,8 @@ class ToolRegistry:
             result["file_working_root"] = get_file_working_root()
             result["path_base_hint"] = (
                 "Relative file paths resolve from file_working_root. "
-                "After a project root is selected, paths such as app/static/index.html and "
-                "./app/static/index.html are both valid."
+                "The active root may be any discovered project/subdirectory. Paths relative to that root, "
+                "with or without a leading './', are both valid."
             )
         return result
 
