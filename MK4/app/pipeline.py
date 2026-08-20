@@ -100,6 +100,9 @@ class Pipeline:
                 session_id=session_id,
                 allowed_tool_names=TRIAL_TOOL_NAMES if account_role == "trial" else None,
             )
+            # Persist whatever logical cwd the file tools ended on. This may be a
+            # project folder such as MK4/MK5, a parent-relative location, or an
+            # absolute directory outside the initial workspace.
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
             reset_file_working_root(token)
