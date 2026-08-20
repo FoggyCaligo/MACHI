@@ -9,8 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .pipeline import Pipeline
@@ -77,9 +76,25 @@ def _get_pipeline() -> Pipeline:
     return pipeline
 
 
+def _render_ui_html() -> str:
+    index_path = Path(_STATIC_DIR) / "index.html"
+    html = index_path.read_text(encoding="utf-8-sig")
+    html = html.replace(
+        "</head>",
+        '  <link rel="stylesheet" href="/static/markdown-render.css" />\n</head>',
+        1,
+    )
+    html = html.replace(
+        "</body>",
+        '  <script src="/static/markdown-render.js"></script>\n</body>',
+        1,
+    )
+    return html
+
+
 @app.get("/", include_in_schema=False)
-async def ui() -> FileResponse:
-    return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
+async def ui() -> HTMLResponse:
+    return HTMLResponse(_render_ui_html())
 
 
 @app.get("/health")
@@ -298,4 +313,3 @@ def run() -> None:
     import uvicorn
 
     uvicorn.run(app, host=config.SERVER_HOST, port=config.SERVER_PORT, reload=False)
-
