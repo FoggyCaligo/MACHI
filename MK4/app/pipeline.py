@@ -17,7 +17,9 @@ from ..tools.manual_tools import ToolManualSuite
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.tool_runtime import (
     get_file_working_root,
+    reset_file_task_message,
     reset_file_working_root,
+    set_file_task_message,
     set_file_working_root,
 )
 from ..tools.web_search import HttpWebSearchTool, WebSearchTool
@@ -90,7 +92,8 @@ class Pipeline:
         account_role: str = "owner",
     ) -> PipelineResult:
         conversation_key = f"{user_id}::{session_id or 'default'}"
-        token = set_file_working_root(self._file_working_roots.get(conversation_key, "."))
+        root_token = set_file_working_root(self._file_working_roots.get(conversation_key, "."))
+        task_tokens = set_file_task_message(message)
         try:
             result = await self._orchestrator.respond(
                 user_id=user_id,
@@ -105,7 +108,8 @@ class Pipeline:
             # or an absolute path outside config.WORKSPACE_ROOT.
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
-            reset_file_working_root(token)
+            reset_file_task_message(task_tokens)
+            reset_file_working_root(root_token)
         return PipelineResult(
             text=result.text,
             used_tools=result.used_tools,
