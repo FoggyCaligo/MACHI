@@ -24,6 +24,8 @@
 
   const state = {
     ready: false,
+    prepared: false,
+    preparing: false,
     enabled: false,
     busy: false,
     speaking: false,
@@ -49,14 +51,19 @@
       if (!res.ok) throw new Error(`voice status ${res.status}`);
       const data = await res.json();
       state.ready = Boolean(data.ready);
+      state.prepared = Boolean(data.prepared);
       $voiceBtn.disabled = !state.ready;
       if (state.ready) {
-        $voiceBtn.title = "음성 대화 모드 켜기";
+        $voiceBtn.title = state.prepared
+          ? "음성 대화 모드 켜기"
+          : "음성 대화 모드 켜기 — 첫 실행 시 모델을 자동 설치합니다";
       } else {
         const missing = [];
-        if (!data.stt_configured) missing.push("STT");
-        if (!data.tts_configured) missing.push("TTS");
-        $voiceBtn.title = `로컬 음성 설정 필요: ${missing.join(" + ")}`;
+        if (!data.stt_library_available) missing.push("faster-whisper");
+        if (!data.tts_library_available) missing.push("piper-tts");
+        if (!data.stt_configured) missing.push("STT 모델");
+        if (!data.tts_configured) missing.push("TTS 모델");
+        $voiceBtn.title = `로컬 음성 준비 필요: ${missing.join(" + ")}`;
       }
     } catch (err) {
       state.ready = false;
@@ -67,7 +74,7 @@
   }
 
   $voiceBtn.addEventListener("click", async () => {
-    if (!state.ready) return;
+    if (!state.ready || state.preparing) return;
     if (state.enabled) {
       await disableVoiceMode();
     } else {
@@ -75,8 +82,27 @@
     }
   });
 
+  async function prepareVoiceModels() {
+    if (state.prepared) return;
+    state.preparing = true;
+    updateButtonState();
+    try {
+      const res = await fetch("/voice/prepare", { method: "POST" });
+      const raw = await res.text();
+      let data = {};
+      try { data = raw ? JSON.parse(raw) : {}; } catch (_) { data = {}; }
+      if (!res.ok || !data.ok) throw new Error(data.message || "음성 모델 준비 실패");
+      state.prepared = Boolean(data.prepared);
+      if (!state.prepared) throw new Error("음성 모델 준비가 완료되지 않았습니다.");
+    } finally {
+      state.preparing = false;
+      updateButtonState();
+    }
+  }
+
   async function enableVoiceMode() {
     try {
+      await prepareVoiceModels();
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -312,10 +338,15 @@
 
   function updateButtonState() {
     $voiceBtn.classList.toggle("active", state.enabled);
-    $voiceBtn.classList.toggle("busy", state.enabled && state.busy && !state.speaking);
+    $voiceBtn.classList.toggle("busy", state.preparing || (state.enabled && state.busy && !state.speaking));
     $voiceBtn.classList.toggle("speaking", state.enabled && state.speaking);
-    if (!state.enabled) {
-      $voiceBtn.title = state.ready ? "음성 대화 모드 켜기" : $voiceBtn.title;
+    $voiceBtn.disabled = !state.ready || state.preparing;
+    if (state.preparing) {
+      $voiceBtn.title = "음성 모델을 처음 설치하고 있습니다...";
+    } else if (!state.enabled) {
+      $voiceBtn.title = state.ready
+        ? (state.prepared ? "음성 대화 모드 켜기" : "음성 대화 모드 켜기 — 첫 실행 시 모델을 자동 설치합니다")
+        : $voiceBtn.title;
     } else if (state.speaking) {
       $voiceBtn.title = "MK4가 말하는 중 — 클릭하면 음성 모드 종료";
     } else if (state.busy) {
@@ -398,5 +429,6 @@
     enable: enableVoiceMode,
     disable: disableVoiceMode,
     get enabled() { return state.enabled; },
+    get prepared() { return state.prepared; },
   };
 })();

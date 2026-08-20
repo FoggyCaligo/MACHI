@@ -82,25 +82,25 @@ def _get_pipeline() -> Pipeline:
 def _render_ui_html() -> str:
     index_path = Path(_STATIC_DIR) / "index.html"
     html = index_path.read_text(encoding="utf-8-sig")
-    html = html.replace(
-        "</head>",
-        (
-            '  <link rel="stylesheet" href="/static/markdown-render.css" />\n'
-            '  <link rel="stylesheet" href="/static/voice-mode.css" />\n'
-            "</head>"
-        ),
-        1,
-    )
-    html = html.replace(
-        "</body>",
-        (
-            '  <script src="/static/markdown-render.js"></script>\n'
-            '  <script src="/static/voice-mode.js"></script>\n'
-            "</body>"
-        ),
-        1,
-    )
+    head_assets = '  <link rel="stylesheet" href="/static/markdown-render.css" />\n'
+    body_assets = '  <script src="/static/markdown-render.js"></script>\n'
+    if config.VOICE_ENABLED:
+        head_assets += '  <link rel="stylesheet" href="/static/voice-mode.css" />\n'
+        body_assets += '  <script src="/static/voice-mode.js"></script>\n'
+    html = html.replace("</head>", head_assets + "</head>", 1)
+    html = html.replace("</body>", body_assets + "</body>", 1)
     return html
+
+
+def _voice_disabled_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={
+            "ok": False,
+            "error": "voice_disabled",
+            "message": "음성 대화 기능이 서버 설정에서 비활성화되어 있습니다.",
+        },
+    )
 
 
 @app.get("/", include_in_schema=False)
@@ -184,18 +184,61 @@ async def get_models() -> dict:
 
 @app.get("/voice/status")
 async def voice_status() -> dict:
+    if not config.VOICE_ENABLED:
+        return {
+            "ok": True,
+            "enabled": False,
+            "ready": False,
+            "prepared": False,
+            "auto_download": False,
+            "mode": "disabled",
+        }
     status = voice_service.status()
     return {
         "ok": True,
+        "enabled": True,
         "ready": status.ready,
+        "prepared": status.prepared,
         "stt_configured": status.stt_configured,
         "tts_configured": status.tts_configured,
-        "mode": "local-command",
+        "stt_library_available": status.stt_library_available,
+        "tts_library_available": status.tts_library_available,
+        "auto_download": config.VOICE_AUTO_DOWNLOAD,
+        "stt_model": config.VOICE_STT_MODEL,
+        "tts_model": config.VOICE_TTS_MODEL,
+        "tts_speaker": config.VOICE_TTS_SPEAKER,
+        "custom_tts": bool(config.VOICE_TTS_MODEL_PATH),
+        "mode": "python-native",
+    }
+
+
+@app.post("/voice/prepare")
+async def voice_prepare():
+    if not config.VOICE_ENABLED:
+        return _voice_disabled_response()
+    try:
+        status = await voice_service.prepare()
+    except (ValueError, RuntimeError, TimeoutError, OSError) as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "voice_prepare_failed", "message": str(exc)},
+        )
+    return {
+        "ok": True,
+        "enabled": True,
+        "ready": status.ready,
+        "prepared": status.prepared,
+        "stt_model": config.VOICE_STT_MODEL,
+        "tts_model": config.VOICE_TTS_MODEL,
+        "tts_speaker": config.VOICE_TTS_SPEAKER,
+        "custom_tts": bool(config.VOICE_TTS_MODEL_PATH),
     }
 
 
 @app.post("/voice/stt")
 async def voice_stt(request: Request):
+    if not config.VOICE_ENABLED:
+        return _voice_disabled_response()
     try:
         form = await request.form()
     except (RuntimeError, AssertionError) as exc:
@@ -222,6 +265,8 @@ async def voice_stt(request: Request):
 
 @app.post("/voice/tts")
 async def voice_tts(req: VoiceTTSRequest):
+    if not config.VOICE_ENABLED:
+        return _voice_disabled_response()
     try:
         output_path = await voice_service.synthesize(req.text)
     except (ValueError, RuntimeError, TimeoutError) as exc:

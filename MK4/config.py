@@ -79,13 +79,44 @@ OWNER_LOGIN_ID = os.getenv("MK4_OWNER_LOGIN_ID", "").strip()
 OWNER_GRAPH_USER_ID = os.getenv("MK4_OWNER_GRAPH_USER_ID", "account::owner").strip()
 MODEL_FAILURE_PREVIEW_CHARS = int(os.getenv("MK4_MODEL_FAILURE_PREVIEW_CHARS", "2000"))
 
-# Optional local-only voice mode. MK4 itself does not contact a cloud STT/TTS
-# service. Commands run on the same machine and may point at any already-installed
-# local engine or wrapper. STT must accept {input}; TTS must accept {output} and
-# read UTF-8 text from stdin.
-VOICE_STT_COMMAND = os.getenv("MK4_STT_COMMAND", "").strip()
-VOICE_TTS_COMMAND = os.getenv("MK4_TTS_COMMAND", "").strip()
-VOICE_COMMAND_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_COMMAND_TIMEOUT_SECONDS", "120"))
+# Local continuous voice mode. Set MK4_VOICE_ENABLED=false to hide the microphone
+# UI and hard-disable all voice preparation/inference endpoints. This is useful
+# when MK4 is shared with family or demo users and the host should avoid STT/TTS
+# model load, download, and inference cost entirely.
+VOICE_ENABLED = os.getenv("MK4_VOICE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+VOICE_AUTO_DOWNLOAD = os.getenv("MK4_VOICE_AUTO_DOWNLOAD", "true").strip().lower() in {"1", "true", "yes", "on"}
+VOICE_MODEL_DIR = Path(
+    os.getenv("MK4_VOICE_MODEL_DIR", str(DATA_DIR / "voice_models"))
+).expanduser().resolve()
+
+# STT: multilingual faster-whisper small balances Korean accuracy, CPU latency and
+# memory. A local CTranslate2 directory can be supplied for pre-provisioned use.
+VOICE_STT_MODEL = os.getenv("MK4_STT_MODEL", "small").strip() or "small"
+VOICE_STT_DEVICE = os.getenv("MK4_STT_DEVICE", "cpu").strip() or "cpu"
+VOICE_STT_COMPUTE_TYPE = os.getenv("MK4_STT_COMPUTE_TYPE", "int8").strip() or "int8"
+VOICE_STT_LANGUAGE = os.getenv("MK4_STT_LANGUAGE", "ko").strip()
+VOICE_STT_BEAM_SIZE = int(os.getenv("MK4_STT_BEAM_SIZE", "1"))
+VOICE_STT_CPU_THREADS = int(os.getenv("MK4_STT_CPU_THREADS", "4"))
+
+# TTS: Apache-2.0 Qwen3-TTS 12Hz 0.6B CustomVoice. Sohee is the native Korean
+# preset. A local model directory can override the managed Hugging Face download.
+VOICE_TTS_MODEL = os.getenv(
+    "MK4_TTS_MODEL",
+    "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+).strip() or "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+VOICE_TTS_MODEL_PATH = os.getenv("MK4_TTS_MODEL_PATH", "").strip()
+VOICE_TTS_SPEAKER = os.getenv("MK4_TTS_SPEAKER", "Sohee").strip() or "Sohee"
+VOICE_TTS_LANGUAGE = os.getenv("MK4_TTS_LANGUAGE", "Korean").strip() or "Korean"
+VOICE_TTS_INSTRUCT = os.getenv(
+    "MK4_TTS_INSTRUCT",
+    "차분하고 안정적인 말투로 자연스럽게 말해줘.",
+).strip()
+VOICE_TTS_DEVICE = os.getenv("MK4_TTS_DEVICE", "auto").strip() or "auto"
+VOICE_TTS_DTYPE = os.getenv("MK4_TTS_DTYPE", "auto").strip() or "auto"
+
+# First-run Qwen3-TTS download is ~2.5 GB, so preparation gets a separate timeout.
+VOICE_PREPARE_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_PREPARE_TIMEOUT_SECONDS", "1800"))
+VOICE_INFERENCE_TIMEOUT_SECONDS = float(os.getenv("MK4_VOICE_INFERENCE_TIMEOUT_SECONDS", "300"))
 VOICE_MAX_AUDIO_BYTES = int(os.getenv("MK4_VOICE_MAX_AUDIO_BYTES", str(12 * 1024 * 1024)))
 VOICE_MAX_TTS_CHARS = int(os.getenv("MK4_VOICE_MAX_TTS_CHARS", "6000"))
 
