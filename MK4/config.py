@@ -57,6 +57,7 @@ OLLAMA_THINK = os.getenv("OLLAMA_THINK", "false").strip().lower() in {"1", "true
 SERVER_HOST = os.getenv("MK4_SERVER_HOST", "127.0.0.1").strip()
 SERVER_PORT = int(os.getenv("MK4_SERVER_PORT", "8010"))
 
+AGENT_MAX_ROUNDS = int(os.getenv("MK4_AGENT_MAX_ROUNDS", "40"))
 AGENT_MAX_IDENTICAL_TOOL_CALLS = int(os.getenv("MK4_AGENT_MAX_IDENTICAL_TOOL_CALLS", "3"))
 AGENT_MAX_PARSE_FAILURES = int(os.getenv("MK4_AGENT_MAX_PARSE_FAILURES", "3"))
 AGENT_MAX_UNKNOWN_TOOL_GUARDS = int(os.getenv("MK4_AGENT_MAX_UNKNOWN_TOOL_GUARDS", "2"))
