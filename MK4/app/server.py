@@ -55,7 +55,7 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    public = path in {"/", "/health", "/auth/login", "/auth/status"} or path.startswith("/static/")
+    public = path in {"/", "/health", "/auth/login", "/auth/status", "/voice/status"} or path.startswith("/static/")
     if public:
         return await call_next(request)
     account = session_store.get(request.cookies.get(_SESSION_COOKIE))
