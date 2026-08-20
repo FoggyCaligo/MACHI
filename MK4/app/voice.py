@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import re
 import tempfile
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -33,27 +33,26 @@ class VoiceStatus:
 class LocalVoiceService:
     """Reusable Python-native STT/TTS service with first-run model provisioning.
 
-    Defaults use faster-whisper ``small`` and Piper ``ko_KR-kss-medium``. When
-    auto-download is enabled, the first prepare/use downloads missing models into
-    MK4's voice model directory. Loaded model objects are retained for later turns.
-
-    A custom Piper .onnx path always wins over the default voice and is never
-    replaced or downloaded over by this service.
+    STT uses faster-whisper ``small`` by default. TTS uses the Apache-2.0
+    Qwen3-TTS 12Hz 0.6B CustomVoice model with the Korean ``Sohee`` speaker.
+    Missing default models are downloaded into MK4's managed voice-model directory
+    on first prepare/use and then reused locally. Loaded model objects stay cached
+    in the server process across turns.
     """
 
     def __init__(self) -> None:
         self._stt_model: Any | None = None
-        self._tts_voice: Any | None = None
+        self._tts_model: Any | None = None
         self._stt_load_lock = Lock()
         self._tts_load_lock = Lock()
 
     def status(self) -> VoiceStatus:
         return VoiceStatus(
             stt_configured=bool(config.VOICE_STT_MODEL),
-            tts_configured=bool(config.VOICE_TTS_MODEL_PATH or config.VOICE_TTS_VOICE),
+            tts_configured=bool(config.VOICE_TTS_MODEL_PATH or config.VOICE_TTS_MODEL),
             stt_library_available=importlib.util.find_spec("faster_whisper") is not None,
-            tts_library_available=importlib.util.find_spec("piper") is not None,
-            prepared=self._stt_model is not None and self._tts_voice is not None,
+            tts_library_available=importlib.util.find_spec("qwen_tts") is not None,
+            prepared=self._stt_model is not None and self._tts_model is not None,
         )
 
     async def prepare(self) -> VoiceStatus:
@@ -61,14 +60,14 @@ class LocalVoiceService:
         if not status.stt_library_available:
             raise RuntimeError("faster-whisper is not installed; run pip install -r MK4/requirements.txt")
         if not status.tts_library_available:
-            raise RuntimeError("piper-tts is not installed; run pip install -r MK4/requirements.txt")
+            raise RuntimeError("qwen-tts is not installed; run pip install -r MK4/requirements.txt")
 
         await asyncio.wait_for(
             asyncio.gather(
                 asyncio.to_thread(self._get_stt_model),
-                asyncio.to_thread(self._get_tts_voice),
+                asyncio.to_thread(self._get_tts_model),
             ),
-            timeout=config.VOICE_INFERENCE_TIMEOUT_SECONDS,
+            timeout=config.VOICE_PREPARE_TIMEOUT_SECONDS,
         )
         return self.status()
 
@@ -94,8 +93,8 @@ class LocalVoiceService:
         return text
 
     async def synthesize(self, text: str) -> Path:
-        if importlib.util.find_spec("piper") is None:
-            raise RuntimeError("piper-tts is not installed; run pip install -r MK4/requirements.txt")
+        if importlib.util.find_spec("qwen_tts") is None:
+            raise RuntimeError("qwen-tts is not installed; run pip install -r MK4/requirements.txt")
 
         clean_text = str(text or "").strip()
         if not clean_text:
@@ -112,7 +111,7 @@ class LocalVoiceService:
                 timeout=config.VOICE_INFERENCE_TIMEOUT_SECONDS,
             )
             if not output_path.exists() or output_path.stat().st_size <= 44:
-                raise RuntimeError("Piper did not create a valid WAV file")
+                raise RuntimeError("Qwen3-TTS did not create a valid WAV file")
             return output_path
         except Exception:
             output_path.unlink(missing_ok=True)
@@ -131,15 +130,18 @@ class LocalVoiceService:
         return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 
     def _synthesize_sync(self, text: str, output_path: Path) -> None:
-        from piper import SynthesisConfig
+        import soundfile as sf
 
-        voice = self._get_tts_voice()
-        syn_config = SynthesisConfig(
-            speaker_id=config.VOICE_TTS_SPEAKER_ID,
-            length_scale=config.VOICE_TTS_LENGTH_SCALE,
+        model = self._get_tts_model()
+        wavs, sample_rate = model.generate_custom_voice(
+            text=text,
+            language=config.VOICE_TTS_LANGUAGE,
+            speaker=config.VOICE_TTS_SPEAKER,
+            instruct=config.VOICE_TTS_INSTRUCT or None,
         )
-        with wave.open(str(output_path), "wb") as wav_file:
-            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+        if not wavs:
+            raise RuntimeError("Qwen3-TTS returned no audio")
+        sf.write(str(output_path), wavs[0], sample_rate)
 
     def _get_stt_model(self):
         if self._stt_model is not None:
@@ -160,21 +162,22 @@ class LocalVoiceService:
                 )
         return self._stt_model
 
-    def _get_tts_voice(self):
-        if self._tts_voice is not None:
-            return self._tts_voice
+    def _get_tts_model(self):
+        if self._tts_model is not None:
+            return self._tts_model
         with self._tts_load_lock:
-            if self._tts_voice is None:
-                from piper import PiperVoice
+            if self._tts_model is None:
+                import torch
+                from qwen_tts import Qwen3TTSModel
 
-                model_path, config_path = _ensure_tts_model()
-                self._tts_voice = PiperVoice.load(
-                    model_path,
-                    config_path=config_path,
-                    use_cuda=False,
-                    download_dir=_piper_download_root(),
+                model_path = _ensure_qwen_tts_model()
+                device_map, dtype = _resolve_qwen_runtime(torch)
+                self._tts_model = Qwen3TTSModel.from_pretrained(
+                    str(model_path),
+                    device_map=device_map,
+                    dtype=dtype,
                 )
-        return self._tts_voice
+        return self._tts_model
 
 
 def _voice_model_root() -> Path:
@@ -187,43 +190,64 @@ def _stt_download_root() -> Path:
     return _voice_model_root() / "faster-whisper"
 
 
-def _piper_download_root() -> Path:
-    root = _voice_model_root() / "piper"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+def _qwen_tts_download_root() -> Path:
+    model_name = re.sub(r"[^A-Za-z0-9._-]+", "-", config.VOICE_TTS_MODEL).strip("-")
+    return _voice_model_root() / (model_name or "qwen3-tts")
 
 
-def _ensure_tts_model() -> tuple[Path, Path | None]:
+def _ensure_qwen_tts_model() -> Path:
     if config.VOICE_TTS_MODEL_PATH:
-        model_path = Path(config.VOICE_TTS_MODEL_PATH).expanduser().resolve()
-        if not model_path.is_file():
-            raise RuntimeError(f"Custom Piper voice model not found: {model_path}")
-        if config.VOICE_TTS_CONFIG_PATH:
-            config_path = Path(config.VOICE_TTS_CONFIG_PATH).expanduser().resolve()
-            if not config_path.is_file():
-                raise RuntimeError(f"Custom Piper voice config not found: {config_path}")
-        else:
-            config_path = Path(f"{model_path}.json")
-            if not config_path.is_file():
-                raise RuntimeError(f"Piper voice config not found: {config_path}")
-        return model_path, config_path
+        custom_path = Path(config.VOICE_TTS_MODEL_PATH).expanduser().resolve()
+        if not custom_path.is_dir():
+            raise RuntimeError(f"Custom Qwen3-TTS model directory not found: {custom_path}")
+        return custom_path
 
-    voice_name = str(config.VOICE_TTS_VOICE or "").strip()
-    if not voice_name:
-        raise RuntimeError("MK4_TTS_VOICE is not configured")
+    model_dir = _qwen_tts_download_root()
+    if (model_dir / "config.json").is_file() and (model_dir / "model.safetensors").is_file():
+        return model_dir
+    if not config.VOICE_AUTO_DOWNLOAD:
+        raise RuntimeError(
+            "Qwen3-TTS model is not downloaded. Enable MK4_VOICE_AUTO_DOWNLOAD "
+            "or provide MK4_TTS_MODEL_PATH."
+        )
 
-    download_root = _piper_download_root()
-    model_path = download_root / f"{voice_name}.onnx"
-    config_path = download_root / f"{voice_name}.onnx.json"
-    if not model_path.is_file() or not config_path.is_file():
-        if not config.VOICE_AUTO_DOWNLOAD:
-            raise RuntimeError(
-                f"Piper voice is not downloaded: {voice_name}. Enable MK4_VOICE_AUTO_DOWNLOAD or provide MK4_TTS_MODEL_PATH."
-            )
-        from piper.download_voices import download_voice
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise RuntimeError("huggingface-hub is required to download Qwen3-TTS") from exc
 
-        download_voice(voice_name, download_root)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id=config.VOICE_TTS_MODEL,
+        local_dir=str(model_dir),
+    )
+    if not (model_dir / "config.json").is_file() or not (model_dir / "model.safetensors").is_file():
+        raise RuntimeError(f"Qwen3-TTS download did not produce expected model files: {model_dir}")
+    return model_dir
 
-    if not model_path.is_file() or not config_path.is_file():
-        raise RuntimeError(f"Piper voice download did not produce expected files for {voice_name}")
-    return model_path, config_path
+
+def _resolve_qwen_runtime(torch_module) -> tuple[str, Any]:
+    requested_device = str(config.VOICE_TTS_DEVICE or "auto").strip().lower()
+    if requested_device == "auto":
+        device_map = "cuda:0" if torch_module.cuda.is_available() else "cpu"
+    else:
+        device_map = requested_device
+
+    requested_dtype = str(config.VOICE_TTS_DTYPE or "auto").strip().lower()
+    dtype_map = {
+        "float32": torch_module.float32,
+        "fp32": torch_module.float32,
+        "float16": torch_module.float16,
+        "fp16": torch_module.float16,
+        "bfloat16": torch_module.bfloat16,
+        "bf16": torch_module.bfloat16,
+    }
+    if requested_dtype != "auto":
+        if requested_dtype not in dtype_map:
+            raise RuntimeError(f"Unsupported MK4_TTS_DTYPE: {config.VOICE_TTS_DTYPE}")
+        return device_map, dtype_map[requested_dtype]
+
+    if device_map.startswith("cuda"):
+        supports_bf16 = getattr(torch_module.cuda, "is_bf16_supported", lambda: False)()
+        return device_map, torch_module.bfloat16 if supports_bf16 else torch_module.float16
+    return device_map, torch_module.float32
