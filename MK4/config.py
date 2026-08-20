@@ -79,9 +79,11 @@ OWNER_LOGIN_ID = os.getenv("MK4_OWNER_LOGIN_ID", "").strip()
 OWNER_GRAPH_USER_ID = os.getenv("MK4_OWNER_GRAPH_USER_ID", "account::owner").strip()
 MODEL_FAILURE_PREVIEW_CHARS = int(os.getenv("MK4_MODEL_FAILURE_PREVIEW_CHARS", "2000"))
 
-# Local continuous voice mode. Defaults require no manual model paths: first use
-# downloads managed STT/TTS assets into MK4/data/voice_models and later runs reuse
-# the same local files.
+# Local continuous voice mode. Set MK4_VOICE_ENABLED=false to hide the microphone
+# UI and hard-disable all voice preparation/inference endpoints. This is useful
+# when MK4 is shared with family or demo users and the host should avoid STT/TTS
+# model load, download, and inference cost entirely.
+VOICE_ENABLED = os.getenv("MK4_VOICE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 VOICE_AUTO_DOWNLOAD = os.getenv("MK4_VOICE_AUTO_DOWNLOAD", "true").strip().lower() in {"1", "true", "yes", "on"}
 VOICE_MODEL_DIR = Path(
     os.getenv("MK4_VOICE_MODEL_DIR", str(DATA_DIR / "voice_models"))
