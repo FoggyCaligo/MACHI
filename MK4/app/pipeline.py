@@ -16,6 +16,8 @@ from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
 from ..tools.manual_tools import ToolManualSuite
+from ..tools.required_tool_model import RequiredToolChatModel
+from ..tools.strict_work_planning import StrictWorkPlanningChatModel
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.tool_runtime import (
     get_file_working_root,
@@ -63,8 +65,14 @@ class Pipeline:
         self._memory = GraphMemoryService(self._graph_repo)
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
-        base_chat_model = chat_model or OllamaToolChatModel()
-        planned_chat_model = WorkPlanningChatModel(AutonomyChatModel(base_chat_model))
+        if chat_model is None:
+            base_chat_model = OllamaToolChatModel()
+            planned_chat_model: ChatModel = StrictWorkPlanningChatModel(
+                AutonomyChatModel(base_chat_model),
+                required_tool_model=RequiredToolChatModel(),
+            )
+        else:
+            planned_chat_model = WorkPlanningChatModel(AutonomyChatModel(chat_model))
         self._chat_model = EvidenceGroundingChatModel(planned_chat_model)
         self._web_search = web_search or HttpWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
