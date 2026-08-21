@@ -121,6 +121,27 @@ def test_recall_memory_registry_contains_only_new_memory_workflow() -> None:
     repo.close()
 
 
+def test_recall_memory_returns_written_semantic_memory() -> None:
+    repo = GraphRepository(":memory:")
+    memory = ModelManagedGraphMemoryService(repo)
+    written = memory.write_semantic_memory(
+        user_id="alice",
+        subject={"kind": "user"},
+        relation="career_goal",
+        object_={"kind": "goal", "label": "Open a convenience store"},
+    )
+    registry = GraphToolSuite(memory).build_registry()
+
+    result = asyncio.run(registry.run(ToolCall(
+        tool="graph_search",
+        arguments={"user_id": "alice", "query": "convenience store", "limit": 8},
+    )))
+
+    assert result["ok"] is True
+    assert any(item["focus"]["node_id"] == written["memory_node_id"] for item in result["results"])
+    repo.close()
+
+
 def test_semantic_memory_is_prioritized_for_explicit_browse() -> None:
     repo = GraphRepository(":memory:")
     memory = ModelManagedGraphMemoryService(repo)
