@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -90,7 +90,7 @@ class MemoryRecallWithoutSearchModel:
     ) -> ModelTurn:
         self.turns += 1
         if self.turns == 1:
-            assert memory_summary
+            assert memory_summary == []
             return ModelTurn(
                 final_answer="관련 키워드는 기억합니다. 더 알려주시겠어요?",
                 final_answer_kind="tool_completion",
@@ -964,27 +964,7 @@ async def test_graph_tools_force_the_current_request_user_id() -> None:
         for item in event["result"]["results"]
     )
 
-    memory.record_user_utterance(user_id="bob", text="I use JavaScript.", session_id="s1")
-    bob_fact = next(
-        node
-        for node in repo.all_nodes()
-        if node.node_type == "fact" and node.payload.get("user_id") == "bob"
-    )
-    correction_event = await orchestrator._run_tool_call(
-        ToolCall(
-            tool="record_memory_correction",
-            arguments={
-                "user_id": "alice",
-                "previous_fact_id": bob_fact.node_id,
-                "replacement_text": "I use TypeScript.",
-            },
-        ),
-        user_id="bob",
-        utterance_id=bob_utterance_id,
-    )
-
-    assert correction_event["arguments"]["user_id"] == "bob"
-    assert correction_event["result"]["replacement_fact_id"]
+    assert not orchestrator.tool_registry.has_tool("record_memory_correction")
     repo.close()
 
 
@@ -1034,7 +1014,7 @@ async def test_orchestrator_does_not_auto_search_from_graph_nodes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_pushes_relevant_memory_summary_into_model() -> None:
+async def test_orchestrator_does_not_push_automatic_memory_summary_into_model() -> None:
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
     memory.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
@@ -1055,9 +1035,7 @@ async def test_orchestrator_pushes_relevant_memory_summary_into_model() -> None:
     )
 
     assert result.text == "done"
-    assert chat_model.memory_summaries
-    assert isinstance(chat_model.memory_summaries[-1][0], dict)
-    assert "score" in chat_model.memory_summaries[-1][0]
+    assert chat_model.memory_summaries == [[]]
     repo.close()
 
 
