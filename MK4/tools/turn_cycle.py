@@ -158,30 +158,41 @@ class TurnCycleChatModel:
     ) -> ModelTurn:
         if not is_memory_commit_active():
             raise RuntimeError("memory commit phase is not active")
+        mutation_succeeded = has_successful_memory_mutation()
+        allowed_memory_tools = {"write_memory", "revise_memory"}
+        if mutation_succeeded:
+            allowed_memory_tools.add("finish_memory_commit")
         memory_tools = [
             definition
             for definition in tool_definitions
-            if definition.name in _MEMORY_TOOLS or definition.name == "tool_manual"
+            if definition.name in allowed_memory_tools or definition.name == "tool_manual"
         ]
         if not any(definition.name in {"write_memory", "revise_memory"} for definition in memory_tools):
             raise RuntimeError("memory commit tools are not exposed")
         writable_terms = get_writable_terms()
+        completion_instruction = (
+            "At least one memory mutation has already succeeded. You may continue mutating memory or choose done."
+            if mutation_succeeded
+            else "No memory mutation has succeeded yet. Choose write_memory or revise_memory; done is not available yet."
+        )
         commit_message = (
             user_message
             + "\n\nMemory commit context:\n"
             + "The user-visible answer draft is already fixed. New semantic nodes may use only term_id values "
             + "from writable_terms. Existing node_id values must have been returned by recall_memory or created "
             + "during this memory commit. Relations may be freely chosen between in-scope nodes. You may make "
-            + "multiple chained graph mutations. Choose done only after at least one successful write_memory or "
-            + "revise_memory mutation.\n"
+            + "multiple chained graph mutations. "
+            + completion_instruction
+            + "\n"
             + f"writable_terms={writable_terms!r}"
         )
+        phase_action = "tool or done" if mutation_succeeded else "tool"
         turn = await self.inner.next_turn(
             system=(
                 system
                 + "\nTurn phase: memory commit. Do not rewrite the answer. "
-                "Use write_memory/revise_memory to reflect this turn in the scoped graph, then choose done. "
-                "Choose exactly one compact agent action: tool or done."
+                + completion_instruction
+                + f" Choose exactly one compact agent action: {phase_action}."
             ),
             user_message=commit_message,
             model=model,
@@ -191,7 +202,7 @@ class TurnCycleChatModel:
         )
         if turn.tool_calls:
             return turn
-        raise RuntimeError("memory commit phase requires graph mutation tools or done")
+        raise RuntimeError("memory commit phase requires one exposed memory action")
 
 
 class TurnCycleToolSuite:
