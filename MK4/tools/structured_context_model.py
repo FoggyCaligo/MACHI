@@ -44,7 +44,7 @@ class StructuredContextOllamaToolChatModel(OllamaToolChatModel):
                 system=system,
                 user=json.dumps(user_payload, ensure_ascii=False),
                 model=model,
-                response_format=_agent_action_schema(tool_names),
+                response_format=_agent_action_schema(tool_definitions),
             )
         except ValueError as exc:
             raise ModelRequestError(str(exc)) from exc
@@ -62,13 +62,37 @@ class StructuredContextOllamaToolChatModel(OllamaToolChatModel):
         return turn
 
 
-def _agent_action_schema(tool_names: list[str]) -> dict[str, Any]:
-    names = sorted(set(tool_names))
+def _agent_action_schema(tool_definitions: list[ToolDefinition]) -> dict[str, Any]:
+    names = sorted({definition.name for definition in tool_definitions})
     name_set = set(names)
+    if {"write_memory", "revise_memory"} & name_set:
+        definitions = {definition.name: definition for definition in tool_definitions}
+        variants: list[dict[str, Any]] = []
+        for name in names:
+            definition = definitions[name]
+            variants.append({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["tool"]},
+                    "tool": {"type": "string", "enum": [name]},
+                    "arguments": definition.input_schema,
+                },
+                "required": ["action", "tool", "arguments"],
+                "additionalProperties": False,
+            })
+        if "finish_memory_commit" in name_set:
+            variants.append({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["done"]},
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            })
+        return {"oneOf": variants}
+
     if name_set == {"recall_memory"}:
         actions = ["tool"]
-    elif {"write_memory", "revise_memory"} & name_set:
-        actions = ["tool", "done"] if "finish_memory_commit" in name_set else ["tool"]
     elif names:
         actions = ["tool", "answer"]
     else:

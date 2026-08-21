@@ -10,8 +10,16 @@ from MK4.tools.structured_context_model import StructuredContextOllamaToolChatMo
 from MK4.tools.tool_runtime import ToolDefinition
 
 
-def _definition(name: str) -> ToolDefinition:
-    return ToolDefinition(name=name, description=name, input_schema={"type": "object"})
+def _definition(name: str, schema: dict | None = None) -> ToolDefinition:
+    return ToolDefinition(name=name, description=name, input_schema=schema or {"type": "object"})
+
+
+def _tool_variant(schema: dict, tool_name: str) -> dict:
+    for variant in schema.get("oneOf", []):
+        tool_schema = variant.get("properties", {}).get("tool", {})
+        if tool_schema.get("enum") == [tool_name]:
+            return variant
+    raise AssertionError(f"tool variant not found: {tool_name}")
 
 
 @pytest.mark.asyncio
@@ -60,14 +68,29 @@ async def test_work_phase_accepts_direct_answer_action(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_memory_before_mutation_allows_tool_action_only(monkeypatch) -> None:
+async def test_memory_before_mutation_has_only_tool_variants_and_exact_arguments(monkeypatch) -> None:
+    write_schema = {
+        "type": "object",
+        "properties": {
+            "subject": {"type": "object"},
+            "relation": {"type": "string"},
+            "object": {"type": "object"},
+        },
+        "required": ["subject", "relation", "object"],
+    }
+
     async def fake_chat(*, system, user, model, response_format):
-        assert response_format["properties"]["action"]["enum"] == ["tool"]
-        assert "finish_memory_commit" not in response_format["properties"]["tool"]["enum"]
+        assert "properties" not in response_format
+        assert all(
+            variant.get("properties", {}).get("action", {}).get("enum") == ["tool"]
+            for variant in response_format["oneOf"]
+        )
+        variant = _tool_variant(response_format, "write_memory")
+        assert variant["properties"]["arguments"] == write_schema
         return json.dumps({
             "action": "tool",
             "tool": "write_memory",
-            "arguments": {},
+            "arguments": {"subject": {}, "relation": "said", "object": {}},
         })
 
     monkeypatch.setattr(structured_context_model, "ollama_chat", fake_chat)
@@ -77,19 +100,22 @@ async def test_memory_before_mutation_allows_tool_action_only(monkeypatch) -> No
         model=None,
         memory_summary=[],
         tool_definitions=[
-            _definition("write_memory"),
+            _definition("write_memory", write_schema),
             _definition("revise_memory"),
         ],
         tool_history=[],
     )
-    assert turn.tool_calls == [turn.tool_calls[0]]
     assert turn.tool_calls[0].tool == "write_memory"
 
 
 @pytest.mark.asyncio
 async def test_memory_done_action_maps_to_finish_tool(monkeypatch) -> None:
     async def fake_chat(*, system, user, model, response_format):
-        assert set(response_format["properties"]["action"]["enum"]) == {"tool", "done"}
+        done_variants = [
+            variant for variant in response_format["oneOf"]
+            if variant.get("properties", {}).get("action", {}).get("enum") == ["done"]
+        ]
+        assert len(done_variants) == 1
         return json.dumps({"action": "done"})
 
     monkeypatch.setattr(structured_context_model, "ollama_chat", fake_chat)
