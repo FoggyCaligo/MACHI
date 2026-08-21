@@ -8,13 +8,6 @@ from .memory_context import get_memory_user_id
 from .tool_runtime import ToolDefinition, ToolRegistry
 
 
-_MEMORY_SUMMARY_NOTE = (
-    "Memory summary is only a partial automatic recall, not the full persistent store. "
-    "Use recall_memory for broader recall before concluding that relevant memory is unavailable; "
-    "call recall_memory with no query/node_id to browse broad user memory."
-)
-_MEMORY_RETRIEVAL_INTERACTION_ROLE = "memory_retrieval"
-_MEMORY_RANK_OVERSAMPLE_FACTOR = 3
 _ENDPOINT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -41,21 +34,16 @@ class GraphToolSuite:
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
     ) -> list[dict]:
-        candidate_limit = _oversampled_limit(limit)
         items = self._memory_service.user_memory_summary(
             user_id,
             query=query,
-            limit=candidate_limit,
+            limit=limit,
             min_signal=min_signal,
             exclude_node_ids=exclude_node_ids,
             activation_node_ids=activation_node_ids,
             activation_node_weights=activation_node_weights,
         )
-        items = self._prioritize_content_memory(items)
-        if limit > 0:
-            items = items[:limit]
-        formatted = [_format_memory_speaker(item, user_id=user_id) for item in items]
-        return [*formatted, _memory_summary_note_item()]
+        return [_format_memory_speaker(item, user_id=user_id) for item in items]
 
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -139,17 +127,14 @@ class GraphToolSuite:
         if not user_id:
             raise ValueError("recall_memory requires user_id")
 
-        self._mark_memory_retrieval_interaction(exclude_node_ids)
-
         if not query and not node_id:
             items = self._memory_service.user_memory_summary(
                 user_id,
                 query="",
-                limit=_oversampled_limit(bounded_limit),
+                limit=bounded_limit,
                 min_signal=0.0,
                 exclude_node_ids=exclude_node_ids,
             )
-            items = self._prioritize_content_memory(items)[:bounded_limit]
             results = [
                 _format_graph_search_speaker(item["subgraph"], user_id=user_id)
                 for item in items
@@ -157,16 +142,13 @@ class GraphToolSuite:
             ]
             return {"ok": True, "mode": "browse", "results": results}
 
-        search_limit = bounded_limit if node_id else _oversampled_limit(bounded_limit)
         results = self._memory_service.graph_search(
             user_id=user_id,
             query=query,
             node_id=node_id,
-            limit=search_limit,
+            limit=bounded_limit,
             exclude_node_ids=exclude_node_ids,
         )
-        if not node_id:
-            results = self._prioritize_graph_results(results)[:bounded_limit]
         return {
             "ok": True,
             "mode": "node" if node_id else "query",
@@ -200,93 +182,12 @@ class GraphToolSuite:
             raise RuntimeError("model-managed semantic memory service is not active")
         return self._memory_service
 
-    def _mark_memory_retrieval_interaction(self, utterance_node_ids: set[str]) -> None:
-        repo = self._memory_service._repo
-        for node_id in utterance_node_ids:
-            node = repo.get_node(node_id)
-            if node is None or node.node_type != "utterance" or node.provenance != "user_utterance":
-                continue
-            node.payload["interaction_role"] = _MEMORY_RETRIEVAL_INTERACTION_ROLE
-            repo.upsert_node(node)
-            for edge in repo.edges_for_node(node_id):
-                if edge.source_id != node_id or edge.relation != "derived_fact" or not edge.is_active:
-                    continue
-                fact = repo.get_node(edge.target_id)
-                if fact is None or fact.node_type != "fact":
-                    continue
-                fact.payload["interaction_role"] = _MEMORY_RETRIEVAL_INTERACTION_ROLE
-                repo.upsert_node(fact)
-
-    def _prioritize_content_memory(self, items: list[dict]) -> list[dict]:
-        semantic: list[dict] = []
-        primary: list[dict] = []
-        interaction: list[dict] = []
-        for item in items:
-            if item.get("node_type") == "semantic_memory":
-                semantic.append(item)
-                continue
-            node_id = str(item.get("node_id") or "")
-            target = interaction if self._has_memory_retrieval_role(node_id) else primary
-            target.append(item)
-        return [*semantic, *primary, *interaction]
-
-    def _prioritize_graph_results(self, items: list[dict]) -> list[dict]:
-        semantic: list[dict] = []
-        primary: list[dict] = []
-        interaction: list[dict] = []
-        for item in items:
-            focus = item.get("focus") if isinstance(item.get("focus"), dict) else {}
-            if focus.get("node_type") == "semantic_memory":
-                semantic.append(item)
-                continue
-            node_id = str(focus.get("node_id") or "")
-            target = interaction if self._has_memory_retrieval_role(node_id) else primary
-            target.append(item)
-        return [*semantic, *primary, *interaction]
-
-    def _has_memory_retrieval_role(self, node_id: str) -> bool:
-        if not node_id:
-            return False
-        node = self._memory_service._repo.get_node(node_id)
-        return bool(
-            node is not None
-            and node.payload.get("interaction_role") == _MEMORY_RETRIEVAL_INTERACTION_ROLE
-        )
-
 
 def _require_endpoint(arguments: dict[str, Any], name: str) -> dict[str, Any]:
     endpoint = arguments.get(name)
     if not isinstance(endpoint, dict):
         raise ValueError(f"{name} must be an object")
     return dict(endpoint)
-
-
-def _oversampled_limit(limit: int) -> int:
-    if limit <= 0:
-        return limit
-    return limit * _MEMORY_RANK_OVERSAMPLE_FACTOR
-
-
-def _memory_summary_note_item() -> dict:
-    return {
-        "node_id": "memory_summary_contract",
-        "node_type": "system_note",
-        "label": _MEMORY_SUMMARY_NOTE,
-        "raw_label": _MEMORY_SUMMARY_NOTE,
-        "subgraph": {
-            "focus": {
-                "node_id": "memory_summary_contract",
-                "label": _MEMORY_SUMMARY_NOTE,
-                "node_type": "system_note",
-                "provenance": "system_policy",
-                "trust_score": 1.0,
-                "stability_score": 1.0,
-            },
-            "relations": [],
-        },
-        "score": 0.0,
-        "score_components": {},
-    }
 
 
 def _format_memory_speaker(item: dict, *, user_id: str) -> dict:
