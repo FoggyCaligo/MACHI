@@ -19,7 +19,7 @@ from MK4.tools.memory_context import (
     set_memory_turn_scope,
     set_memory_user_id,
 )
-from MK4.tools.tool_runtime import ToolCall, ToolDefinition, ToolRegistry
+from MK4.tools.tool_runtime import ToolCall, ToolDefinition
 from MK4.tools.turn_cycle import (
     TurnCycleChatModel,
     TurnCycleToolSuite,
@@ -63,13 +63,11 @@ class PhaseModel:
                     },
                 )])
             return ModelTurn(tool_calls=[ToolCall(tool="finish_memory_commit", arguments={})])
-        if not any(event.get("tool") == "skip_tool_use" for event in tool_history):
-            return ModelTurn(tool_calls=[ToolCall(tool="skip_tool_use", arguments={})])
         return ModelTurn(final_answer="hello back")
 
 
 @pytest.mark.asyncio
-async def test_turn_cycle_requires_recall_tool_review_memory_commit_then_releases_draft() -> None:
+async def test_turn_cycle_requires_recall_then_tool_review_draft_and_memory_commit() -> None:
     repo = GraphRepository(":memory:")
     memory = ModelManagedGraphMemoryService(repo)
     registry = GraphToolSuite(memory).build_registry()
@@ -78,7 +76,6 @@ async def test_turn_cycle_requires_recall_tool_review_memory_commit_then_release
     model = TurnCycleChatModel(model_inner)
     definitions = [
         _definition("graph_search"),
-        _definition("skip_tool_use"),
         _definition("file_read"),
         _definition("write_memory"),
         _definition("revise_memory"),
@@ -105,35 +102,28 @@ async def test_turn_cycle_requires_recall_tool_review_memory_commit_then_release
             system="s", user_message="u", model=None, memory_summary=[],
             tool_definitions=definitions, tool_history=history,
         )
-        assert second.tool_calls[0].tool == "skip_tool_use"
-        skip_result = await registry.run(second.tool_calls[0])
-        history.append({"tool": "skip_tool_use", "arguments": {}, "result": skip_result})
+        assert second.final_answer is None
+        assert second.tool_calls[0].tool == "write_memory"
+        assert "file_read" in model_inner.exposed[1]
+        assert "write_memory" not in model_inner.exposed[1]
+        write_result = await registry.run(second.tool_calls[0])
+        assert write_result["ok"] is True
+        history.append({"tool": "write_memory", "arguments": second.tool_calls[0].arguments, "result": write_result})
 
         third = await model.next_turn(
             system="s", user_message="u", model=None, memory_summary=[],
             tool_definitions=definitions, tool_history=history,
         )
-        assert third.final_answer is None
-        assert third.tool_calls[0].tool == "write_memory"
-        assert "write_memory" not in model_inner.exposed[1]
-        write_result = await registry.run(third.tool_calls[0])
-        assert write_result["ok"] is True
-        history.append({"tool": "write_memory", "arguments": third.tool_calls[0].arguments, "result": write_result})
+        assert third.tool_calls[0].tool == "finish_memory_commit"
+        finish_result = await registry.run(third.tool_calls[0])
+        assert finish_result["ok"] is True
+        history.append({"tool": "finish_memory_commit", "arguments": {}, "result": finish_result})
 
         fourth = await model.next_turn(
             system="s", user_message="u", model=None, memory_summary=[],
             tool_definitions=definitions, tool_history=history,
         )
-        assert fourth.tool_calls[0].tool == "finish_memory_commit"
-        finish_result = await registry.run(fourth.tool_calls[0])
-        assert finish_result["ok"] is True
-        history.append({"tool": "finish_memory_commit", "arguments": {}, "result": finish_result})
-
-        fifth = await model.next_turn(
-            system="s", user_message="u", model=None, memory_summary=[],
-            tool_definitions=definitions, tool_history=history,
-        )
-        assert fifth.final_answer == "hello back"
+        assert fourth.final_answer == "hello back"
         assert get_memory_turn_scope().mutation_succeeded is True
     finally:
         reset_turn_cycle_state(cycle_token)
