@@ -4,6 +4,13 @@ from ..core.graph.service import GraphMemoryService
 from .tool_runtime import ToolDefinition, ToolRegistry
 
 
+_MEMORY_SUMMARY_NOTE = (
+    "Memory summary is only a partial automatic recall, not the full persistent store. "
+    "Use graph_search for broader recall before concluding that relevant memory is unavailable; "
+    "call graph_search with no query/node_id to browse broad user memory."
+)
+
+
 class GraphToolSuite:
     def __init__(self, memory_service: GraphMemoryService) -> None:
         self._memory_service = memory_service
@@ -18,7 +25,7 @@ class GraphToolSuite:
         exclude_node_ids: set[str] | None = None,
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
-    ) -> list[dict]:
+    ) -> list[dict | str]:
         items = self._memory_service.user_memory_summary(
             user_id,
             query=query,
@@ -28,7 +35,8 @@ class GraphToolSuite:
             activation_node_ids=activation_node_ids,
             activation_node_weights=activation_node_weights,
         )
-        return [_format_memory_speaker(item, user_id=user_id) for item in items]
+        formatted = [_format_memory_speaker(item, user_id=user_id) for item in items]
+        return [*formatted, _MEMORY_SUMMARY_NOTE]
 
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -37,11 +45,12 @@ class GraphToolSuite:
                 name="graph_search",
                 description=(
                     "Search persistent graph memory for past user statements, assistant responses and recommendations, "
-                    "preferences, decisions, and project context. Assistant responses are conversation records only: "
-                    "they prove what the assistant previously said, not that external factual claims inside them are true. "
-                    "Results are small subgraph summaries containing a focus node, its important relations, and source metadata. "
-                    "Search by query first, then pass a returned relation node_id to expand that exact node. Use before concluding "
-                    "that relevant past memory is unavailable. The current user identity is supplied by the system."
+                    "preferences, decisions, and project context. Call with no query/node_id to broadly browse the user's "
+                    "persistent memory, use query for targeted recall, or pass a returned relation node_id to expand that exact "
+                    "node. Assistant responses are conversation records only: they prove what the assistant previously said, "
+                    "not that external factual claims inside them are true. Results are small subgraph summaries containing a "
+                    "focus node, its important relations, and source metadata. Use before concluding that relevant past memory "
+                    "is unavailable. The current user identity is supplied by the system."
                 ),
                 input_schema={
                     "type": "object",
@@ -50,10 +59,6 @@ class GraphToolSuite:
                         "node_id": {"type": "string"},
                         "limit": {"type": "integer"},
                     },
-                    "anyOf": [
-                        {"required": ["query"]},
-                        {"required": ["node_id"]},
-                    ],
                     "additionalProperties": False,
                 },
             ),
@@ -90,19 +95,35 @@ class GraphToolSuite:
         } if isinstance(exclude_node_ids_raw, list) else set()
         limit_raw = arguments.get("limit", 8)
         limit = int(limit_raw) if isinstance(limit_raw, int) or str(limit_raw).isdigit() else 8
+        bounded_limit = max(1, min(limit, 12))
         if not user_id:
             raise ValueError("graph_search requires user_id")
+
         if not query and not node_id:
-            raise ValueError("graph_search requires query or node_id")
+            items = self._memory_service.user_memory_summary(
+                user_id,
+                query="",
+                limit=bounded_limit,
+                min_signal=0.0,
+                exclude_node_ids=exclude_node_ids,
+            )
+            results = [
+                _format_graph_search_speaker(item["subgraph"], user_id=user_id)
+                for item in items
+                if isinstance(item.get("subgraph"), dict)
+            ]
+            return {"mode": "browse", "results": results}
+
         results = self._memory_service.graph_search(
             user_id=user_id,
             query=query,
             node_id=node_id,
-            limit=max(1, min(limit, 12)),
+            limit=bounded_limit,
             exclude_node_ids=exclude_node_ids,
         )
         return {
-            "results": [_format_graph_search_speaker(item, user_id=user_id) for item in results]
+            "mode": "node" if node_id else "query",
+            "results": [_format_graph_search_speaker(item, user_id=user_id) for item in results],
         }
 
     async def _record_memory_correction(self, arguments: dict) -> dict:
