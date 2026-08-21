@@ -9,7 +9,6 @@ from .llm_client import (
     ModelRequestError,
     ModelTurn,
     OllamaToolChatModel,
-    _compact_memory_item,
     _compact_tool_history_event,
     _log_model_output_failure,
     _parse_model_turn,
@@ -22,7 +21,7 @@ from .tool_runtime import ToolDefinition
 
 
 class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
-    """Expose automatic graph activation and authorization as explicit model context."""
+    """Expose authorization, tool catalog, and tool history as explicit model context."""
 
     async def next_turn(
         self,
@@ -34,16 +33,11 @@ class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
+        _ = memory_summary
         tool_names = [tool.name for tool in tool_definitions]
         user_payload = {
             "user_message": user_message,
             "authorization_context": get_authorization_context(),
-            "automatic_memory_context": {
-                "source": "automatic_graph_activation",
-                "scope": "partial",
-                "is_tool_result": False,
-                "items": [_compact_memory_item(item) for item in memory_summary],
-            },
             "tool_catalog": compact_tool_catalog(tool_definitions),
             "tool_history": [_compact_tool_history_event(event) for event in tool_history],
         }
