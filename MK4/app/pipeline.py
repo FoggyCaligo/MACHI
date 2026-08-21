@@ -16,8 +16,6 @@ from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
 from ..tools.manual_tools import ToolManualSuite
-from ..tools.required_tool_model import RequiredToolChatModel
-from ..tools.strict_work_planning import StrictWorkPlanningChatModel
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.tool_runtime import (
     get_file_working_root,
@@ -27,8 +25,6 @@ from ..tools.tool_runtime import (
     set_file_working_root,
 )
 from ..tools.web_search import HttpWebSearchTool, WebSearchTool
-from ..tools.work_plan_tools import WorkPlanToolSuite
-from ..tools.work_planning import WorkPlanningChatModel
 from ..tools.workspace_tools import WorkspaceFileToolSuite
 from .download_tokens import default_download_token_store
 
@@ -44,8 +40,6 @@ class PipelineResult:
 TRIAL_TOOL_NAMES = {
     "graph_search",
     "record_memory_correction",
-    "work_plan",
-    "work_step_complete",
     "latest_search",
     "market_snapshot",
     "web_research",
@@ -65,15 +59,8 @@ class Pipeline:
         self._memory = GraphMemoryService(self._graph_repo)
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
-        if chat_model is None:
-            base_chat_model = OllamaToolChatModel()
-            planned_chat_model: ChatModel = StrictWorkPlanningChatModel(
-                AutonomyChatModel(base_chat_model),
-                required_tool_model=RequiredToolChatModel(),
-            )
-        else:
-            planned_chat_model = WorkPlanningChatModel(AutonomyChatModel(chat_model))
-        self._chat_model = EvidenceGroundingChatModel(planned_chat_model)
+        base_chat_model = chat_model or OllamaToolChatModel()
+        self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
         self._web_search = web_search or HttpWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
         self._orchestrator = AgentOrchestrator(
@@ -93,7 +80,6 @@ class Pipeline:
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
         self._orchestrator.register_tool_registry(TerminalToolSuite().build_registry())
-        self._orchestrator.register_tool_registry(WorkPlanToolSuite().build_registry())
         self._orchestrator.register_tool_registry(
             ToolManualSuite(self._orchestrator.tool_registry).build_registry()
         )
