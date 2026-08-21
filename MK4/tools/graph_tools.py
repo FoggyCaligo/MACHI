@@ -112,7 +112,7 @@ class GraphToolSuite:
                 for item in items
                 if isinstance(item.get("subgraph"), dict)
             ]
-            return {"mode": "browse", "results": results}
+            return {"ok": True, "mode": "browse", "results": results}
 
         results = self._memory_service.graph_search(
             user_id=user_id,
@@ -122,6 +122,7 @@ class GraphToolSuite:
             exclude_node_ids=exclude_node_ids,
         )
         return {
+            "ok": True,
             "mode": "node" if node_id else "query",
             "results": [_format_graph_search_speaker(item, user_id=user_id) for item in results],
         }
