@@ -298,7 +298,7 @@ async def test_file_update_old_not_found_returns_recovery_candidates(tmp_path: P
     assert result["error"] == "old_not_found"
     assert result["recovery"]["closest_matches"]
     assert result["recovery"]["closest_matches"][0]["line"] == 1
-    assert compact["recovery"]["closest_matches"]
+    assert compact["closest_matches"]
     assert (tmp_path / "index.html").read_text(encoding="utf-8") == current
 
 
