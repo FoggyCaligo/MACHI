@@ -12,7 +12,6 @@ from .llm_client import (
     _compact_tool_history_event,
     _log_model_output_failure,
     _parse_model_turn,
-    _require_tool_manuals,
 )
 from .ollama_client import chat as ollama_chat
 from .tool_catalog import compact_tool_catalog
@@ -51,14 +50,16 @@ class StructuredContextOllamaToolChatModel(OllamaToolChatModel):
             raise ModelRequestError(str(exc)) from exc
         try:
             turn = _parse_agent_action(raw, tool_names=tool_names)
+            turn = _defer_unconsulted_tool_manual(
+                turn,
+                tool_definitions=tool_definitions,
+                tool_history=tool_history,
+            )
+            _validate_single_agent_action(turn)
         except ModelOutputParseError as exc:
             _log_model_output_failure(raw=raw, error=exc)
             raise
-        return _require_tool_manuals(
-            turn,
-            tool_definitions=tool_definitions,
-            tool_history=tool_history,
-        )
+        return turn
 
 
 def _agent_action_schema(tool_names: list[str]) -> dict[str, Any]:
@@ -66,8 +67,8 @@ def _agent_action_schema(tool_names: list[str]) -> dict[str, Any]:
     name_set = set(names)
     if name_set == {"recall_memory"}:
         actions = ["tool"]
-    elif {"write_memory", "revise_memory"} & name_set and "finish_memory_commit" in name_set:
-        actions = ["tool", "done"]
+    elif {"write_memory", "revise_memory"} & name_set:
+        actions = ["tool", "done"] if "finish_memory_commit" in name_set else ["tool"]
     elif names:
         actions = ["tool", "answer"]
     else:
@@ -129,7 +130,40 @@ def _parse_agent_action(raw: str, *, tool_names: list[str]) -> ModelTurn:
 
     if action == "done":
         if "finish_memory_commit" not in tool_names:
-            raise ModelOutputParseError("done action is only valid during memory commit")
+            raise ModelOutputParseError("done action is only valid after a successful memory mutation")
         return ModelTurn(tool_calls=[ToolCall(tool="finish_memory_commit", arguments={})])
 
     raise ModelOutputParseError(f"unknown agent action: {action!r}")
+
+
+def _defer_unconsulted_tool_manual(
+    turn: ModelTurn,
+    *,
+    tool_definitions: list[ToolDefinition],
+    tool_history: list[dict[str, Any]],
+) -> ModelTurn:
+    if len(turn.tool_calls) != 1:
+        return turn
+    definitions = {definition.name for definition in tool_definitions}
+    if "tool_manual" not in definitions:
+        return turn
+    call = turn.tool_calls[0]
+    if call.tool == "tool_manual":
+        return turn
+    consulted = {
+        str(event.get("result", {}).get("tool") or "")
+        for event in tool_history
+        if event.get("tool") == "tool_manual"
+        and isinstance(event.get("result"), dict)
+        and event["result"].get("ok") is True
+    }
+    if call.tool in consulted:
+        return turn
+    return ModelTurn(tool_calls=[ToolCall(tool="tool_manual", arguments={"tool": call.tool})])
+
+
+def _validate_single_agent_action(turn: ModelTurn) -> None:
+    if len(turn.tool_calls) > 1:
+        raise ModelOutputParseError("compact agent protocol permits at most one tool call per model round")
+    if turn.final_answer is not None and turn.tool_calls:
+        raise ModelOutputParseError("compact agent protocol cannot answer and call a tool in the same model round")

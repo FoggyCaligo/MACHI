@@ -119,6 +119,9 @@ async def test_turn_cycle_runs_one_model_call_per_agent_loop_round() -> None:
         )
         assert third.tool_calls[0].tool == "write_memory"
         assert len(model_inner.exposed) == 3
+        assert "finish_memory_commit" not in model_inner.exposed[2]
+        assert "write_memory" in model_inner.exposed[2]
+        assert "revise_memory" in model_inner.exposed[2]
         write_result = await registry.run(third.tool_calls[0])
         assert write_result["ok"] is True
         history.append({"tool": "write_memory", "arguments": third.tool_calls[0].arguments, "result": write_result})
@@ -129,6 +132,7 @@ async def test_turn_cycle_runs_one_model_call_per_agent_loop_round() -> None:
         )
         assert fourth.tool_calls[0].tool == "finish_memory_commit"
         assert len(model_inner.exposed) == 4
+        assert "finish_memory_commit" in model_inner.exposed[3]
         finish_result = await registry.run(fourth.tool_calls[0])
         assert finish_result["ok"] is True
         history.append({"tool": "finish_memory_commit", "arguments": {}, "result": finish_result})
