@@ -6,15 +6,16 @@ from .repository import GraphRepository
 from .text_graph import tokenize_spans
 
 
-_ASSISTANT_TEXT_GRAPH_VERSION = 1
+_ASSISTANT_TEXT_GRAPH_VERSION = 2
 
 
 class AssistantMemoryRecorder:
-    """Persist assistant-visible replies as user-scoped graph memory.
+    """Persist assistant replies as conversation records, not world facts.
 
-    Assistant replies remain distinguishable from user utterances through provenance
-    and edge relations, while using the existing utterance node type so the current
-    summary/search ranking code can retrieve them after a process restart.
+    Assistant utterances remain searchable after a process restart, but their text
+    is only indexed for retrieval. They do not create concept-to-concept semantic
+    relations, because a statement made by the assistant is evidence that the
+    assistant said it, not evidence that the statement is externally true.
     """
 
     def __init__(self, repo: GraphRepository) -> None:
@@ -49,10 +50,12 @@ class AssistantMemoryRecorder:
                     "session_id": session_id,
                     "speaker": "assistant",
                     "source": "assistant_response",
+                    "memory_role": "conversation_record",
+                    "factual_status": "unverified",
                     "text_graph_version": _ASSISTANT_TEXT_GRAPH_VERSION,
                 },
                 provenance="assistant_utterance",
-                trust_score=0.9,
+                trust_score=1.0,
                 stability_score=0.7,
             ))
 
@@ -60,6 +63,8 @@ class AssistantMemoryRecorder:
             "user_id": user_id,
             "session_id": session_id,
             "speaker": "assistant",
+            "memory_role": "conversation_record",
+            "factual_status": "unverified",
         }
         self._repo.add_edge(GraphEdge(
             source_id=ASSISTANT_ANCHOR_ID,
@@ -79,7 +84,7 @@ class AssistantMemoryRecorder:
         ))
 
         if existing is None:
-            self._graphize(
+            self._index_for_retrieval(
                 user_id=user_id,
                 node_id=node_id,
                 text=cleaned_text,
@@ -87,7 +92,7 @@ class AssistantMemoryRecorder:
             )
         return node_id
 
-    def _graphize(
+    def _index_for_retrieval(
         self,
         *,
         user_id: str,
@@ -95,7 +100,6 @@ class AssistantMemoryRecorder:
         text: str,
         session_id: str | None,
     ) -> None:
-        sentence_concepts: dict[int, list[str]] = {}
         for span in tokenize_spans(text):
             concept_id = concept_node_id(span.normalized)
             if self._repo.get_node(concept_id) is None:
@@ -108,38 +112,21 @@ class AssistantMemoryRecorder:
                     trust_score=0.5,
                     stability_score=0.4,
                 ))
-            payload = {
-                "user_id": user_id,
-                "session_id": session_id,
-                "speaker": "assistant",
-                "token": span.token,
-                "normalized": span.normalized,
-                "sentence_index": span.sentence_index,
-                "token_index": span.token_index,
-            }
             self._repo.add_edge(GraphEdge(
                 source_id=node_id,
                 target_id=concept_id,
                 relation="assistant_mentions_concept",
-                payload=payload,
+                payload={
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "speaker": "assistant",
+                    "memory_role": "retrieval_index",
+                    "factual_status": "unverified",
+                    "token": span.token,
+                    "normalized": span.normalized,
+                    "sentence_index": span.sentence_index,
+                    "token_index": span.token_index,
+                },
                 provenance="assistant_utterance",
-                trust_score=0.75,
+                trust_score=1.0,
             ))
-            sentence_concepts.setdefault(span.sentence_index, []).append(concept_id)
-
-        for concept_ids in sentence_concepts.values():
-            for left, right in zip(concept_ids, concept_ids[1:]):
-                if left == right:
-                    continue
-                self._repo.add_edge(GraphEdge(
-                    source_id=left,
-                    target_id=right,
-                    relation="assistant_adjacent_concept",
-                    payload={
-                        "user_id": user_id,
-                        "session_id": session_id,
-                        "speaker": "assistant",
-                    },
-                    provenance="assistant_utterance",
-                    trust_score=0.65,
-                ))

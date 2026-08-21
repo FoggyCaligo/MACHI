@@ -37,10 +37,11 @@ class GraphToolSuite:
                 name="graph_search",
                 description=(
                     "Search persistent graph memory for past user statements, assistant responses and recommendations, "
-                    "preferences, decisions, and project context. Results are small subgraph summaries containing a focus node, "
-                    "its important relations, and source metadata. Search by query first, then pass a "
-                    "returned relation node_id to expand that exact node. Use before concluding that "
-                    "relevant past memory is unavailable. The current user identity is supplied by the system."
+                    "preferences, decisions, and project context. Assistant responses are conversation records only: "
+                    "they prove what the assistant previously said, not that external factual claims inside them are true. "
+                    "Results are small subgraph summaries containing a focus node, its important relations, and source metadata. "
+                    "Search by query first, then pass a returned relation node_id to expand that exact node. Use before concluding "
+                    "that relevant past memory is unavailable. The current user identity is supplied by the system."
                 ),
                 input_schema={
                     "type": "object",
@@ -128,7 +129,9 @@ def _format_memory_speaker(item: dict, *, user_id: str) -> dict:
     formatted = dict(item)
     formatted["label"] = (
         f'assistant가 사용자({user_id})에게 이전에 말한 내용: "{raw_label}" '
-        "이 발화의 speaker는 assistant이며 사용자의 발언이나 사용자 사실이 아닙니다."
+        "이것은 대화 기록이며 사용자의 발언이나 사용자 사실이 아닙니다. "
+        "또한 발화 내부의 외부 세계 사실은 별도 근거로 검증되지 않은 상태이므로, "
+        "사실 근거로 사용하지 말고 필요하면 웹 검색 등으로 다시 확인해야 합니다."
     )
     return formatted
 
@@ -139,9 +142,18 @@ def _format_graph_search_speaker(item: dict, *, user_id: str) -> dict:
         return item
     formatted = dict(item)
     formatted_focus = dict(focus)
-    formatted_focus["speaker"] = "assistant"
+    formatted_focus.update({
+        "speaker": "assistant",
+        "memory_role": "conversation_record",
+        "factual_status": "unverified",
+    })
     formatted["focus"] = formatted_focus
     source = dict(formatted.get("source") or {})
-    source.update({"speaker": "assistant", "user_id": user_id})
+    source.update({
+        "speaker": "assistant",
+        "user_id": user_id,
+        "memory_role": "conversation_record",
+        "factual_status": "unverified",
+    })
     formatted["source"] = source
     return formatted
