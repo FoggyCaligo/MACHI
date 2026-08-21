@@ -6,8 +6,8 @@ from .tool_runtime import ToolDefinition, ToolRegistry
 
 _MEMORY_SUMMARY_NOTE = (
     "Memory summary is only a partial automatic recall, not the full persistent store. "
-    "Use graph_search for broader recall before concluding that relevant memory is unavailable; "
-    "call graph_search with no query/node_id to browse broad user memory."
+    "Use memory_search for broader recall before concluding that relevant memory is unavailable; "
+    "call memory_search with no query/node_id to browse broad user memory."
 )
 
 
@@ -44,15 +44,16 @@ class GraphToolSuite:
             ToolDefinition(
                 name="graph_search",
                 description=(
-                    "Search persistent graph memory for past user statements, assistant responses and recommendations, "
-                    "preferences, decisions, and project context. Call with no query/node_id to broadly browse the user's "
-                    "persistent memory, use query for targeted recall, or pass a returned relation node_id to expand that exact "
-                    "node. Assistant responses are conversation records only: they prove what the assistant previously said, "
-                    "not that external factual claims inside them are true. Results are small subgraph summaries containing a "
-                    "focus node, its important relations, and source metadata. Use before concluding that relevant past memory "
-                    "is unavailable. The current user identity is supplied by the system."
+                    "Search your persistent long-term graph memory for past user statements, assistant responses and "
+                    "recommendations, preferences, decisions, and project context. Call with no query/node_id to broadly "
+                    "browse the user's persistent memory, use query for targeted recall, or pass a returned relation node_id "
+                    "to expand that exact node. Assistant responses are conversation records only: they prove what the "
+                    "assistant previously said, not that external factual claims inside them are true. Results are small "
+                    "subgraph summaries containing a focus node, its important relations, and source metadata. Use before "
+                    "concluding that relevant past memory is unavailable. The current user identity is supplied by the system."
                 ),
                 input_schema={
+                    "x-model-name": "memory_search",
                     "type": "object",
                     "properties": {
                         "query": {"type": "string"},
