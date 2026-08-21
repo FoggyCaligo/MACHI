@@ -29,10 +29,10 @@ class CaptureModel:
         self.tool_history = tool_history
         return ModelTurn(
             tool_calls=[
-                ToolCall(tool="tool_manual", arguments={"tool": "memory_search"}),
-                ToolCall(tool="memory_search", arguments={}),
+                ToolCall(tool="tool_manual", arguments={"tool": "recall_memory"}),
+                ToolCall(tool="recall_memory", arguments={}),
             ],
-            completion_tools=["memory_search"],
+            completion_tools=["recall_memory"],
         )
 
 
@@ -40,9 +40,9 @@ def aliased_definitions() -> list[ToolDefinition]:
     return [
         ToolDefinition(
             name="graph_search",
-            description="Search persistent graph memory.",
+            description="Recall persistent graph memory.",
             input_schema={
-                "x-model-name": "memory_search",
+                "x-model-name": "recall_memory",
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
                 "additionalProperties": False,
@@ -62,7 +62,7 @@ def aliased_definitions() -> list[ToolDefinition]:
 
 
 @pytest.mark.asyncio
-async def test_memory_search_is_model_visible_but_returns_runtime_graph_search() -> None:
+async def test_recall_memory_is_model_visible_but_returns_runtime_graph_search() -> None:
     inner = CaptureModel()
     adapter = ModelToolNameAdapter(inner)
     turn = await adapter.next_turn(
@@ -83,16 +83,16 @@ async def test_memory_search_is_model_visible_but_returns_runtime_graph_search()
     )
 
     assert [definition.name for definition in inner.tool_definitions] == [
-        "memory_search",
+        "recall_memory",
         "tool_manual",
     ]
     memory_definition = inner.tool_definitions[0]
     assert "x-model-name" not in memory_definition.input_schema
 
     manual_event = inner.tool_history[0]
-    assert manual_event["arguments"]["tool"] == "memory_search"
-    assert manual_event["result"]["tool"] == "memory_search"
-    assert manual_event["result"]["available_tools"] == ["memory_search", "tool_manual"]
+    assert manual_event["arguments"]["tool"] == "recall_memory"
+    assert manual_event["result"]["tool"] == "recall_memory"
+    assert manual_event["result"]["available_tools"] == ["recall_memory", "tool_manual"]
 
     assert [(call.tool, call.arguments) for call in turn.tool_calls] == [
         ("tool_manual", {"tool": "graph_search"}),
@@ -101,11 +101,11 @@ async def test_memory_search_is_model_visible_but_returns_runtime_graph_search()
     assert turn.completion_tools == ["graph_search"]
 
 
-def test_graph_search_declares_memory_search_model_name() -> None:
+def test_graph_search_declares_recall_memory_model_name() -> None:
     suite = object.__new__(GraphToolSuite)
     definition = next(
         item
         for item in suite.build_registry().definitions()
         if item.name == "graph_search"
     )
-    assert definition.input_schema["x-model-name"] == "memory_search"
+    assert definition.input_schema["x-model-name"] == "recall_memory"

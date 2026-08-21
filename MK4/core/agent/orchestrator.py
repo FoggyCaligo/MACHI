@@ -855,6 +855,10 @@ def _tool_result_summary(*, tool: str, result: dict) -> str:
             parts.append(f"stdout={_truncate(stdout, 240)!r}")
         if stderr:
             parts.append(f"stderr={_truncate(stderr, 240)!r}")
+        if result.get("changes_state") is True:
+            parts.append("changes_state=True")
+        if result.get("verification") is True:
+            parts.append("verification=True")
         if result.get("changed_paths"):
             parts.append(f"changed_paths={result.get('changed_paths')!r}")
         return " ".join(parts)
@@ -1021,7 +1025,11 @@ def _has_terminal_filesystem_change_without_verification(tool_history: list[dict
         if (
             event.get("tool") == "terminal_command"
             and isinstance(result, dict)
-            and result.get("filesystem_changed") is True
+            and (
+                result.get("filesystem_changed") is True
+                or result.get("changes_state") is True
+            )
+            and result.get("verification") is not True
         ):
             latest_change_index = index
     if latest_change_index is None:
@@ -1031,6 +1039,15 @@ def _has_terminal_filesystem_change_without_verification(tool_history: list[dict
         if event.get("tool") == "file_read" and isinstance(result, dict) and result.get("ok") is True:
             return False
         if event.get("tool") in {"file_create", "file_update", "file_delete"} and isinstance(result, dict) and result.get("ok") is True:
+            return False
+        if (
+            event.get("tool") == "terminal_command"
+            and isinstance(result, dict)
+            and result.get("ok") is True
+            and result.get("verification") is True
+            and result.get("changes_state") is not True
+            and result.get("filesystem_changed") is not True
+        ):
             return False
     return True
 
@@ -1050,8 +1067,12 @@ def _file_execution_guard_result(
     if _has_terminal_filesystem_change_without_verification(tool_history):
         return {
             "ok": False,
-            "error": "terminal_filesystem_change_not_verified",
-            "message": "terminal_command changed files. Verify with file_read or a file_* tool before completion.",
+            "error": "terminal_change_not_verified",
+            "message": (
+                "terminal_command changed state. Verify the resulting state before completion. "
+                "Use a successful file read/check when appropriate, or run a separate terminal_command with verification=true. "
+                "A terminal verification call must succeed and must not create another state change."
+            ),
             "rejected_final_answer": rejected_final_answer,
         }
     return None

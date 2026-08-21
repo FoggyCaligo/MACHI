@@ -6,6 +6,11 @@ from ..core.agent.orchestrator import AgentOrchestrator
 from ..core.graph.assistant_memory import AssistantMemoryRecorder
 from ..core.graph.repository import GraphRepository
 from ..core.graph.service import GraphMemoryService
+from ..tools.account_authorization import (
+    AccountAuthorizationChatModel,
+    reset_account_role,
+    set_account_role,
+)
 from ..tools.autonomy_tools import AutonomyChatModel
 from ..tools.grounding_tools import EvidenceGroundingChatModel
 from ..tools.graph_tools import GraphToolSuite
@@ -69,7 +74,9 @@ class Pipeline:
         self._memory = GraphMemoryService(self._graph_repo)
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
-        base_chat_model = ModelToolNameAdapter(chat_model or OllamaToolChatModel())
+        base_chat_model = AccountAuthorizationChatModel(
+            ModelToolNameAdapter(chat_model or OllamaToolChatModel())
+        )
         self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
         self._web_search = web_search or HttpWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
@@ -83,8 +90,6 @@ class Pipeline:
             WorkspaceFileToolSuite(token_store=default_download_token_store).build_registry()
         )
         self._orchestrator.register_tool_registry(FileNavigationToolSuite().build_registry())
-        # Register agent-oriented overrides last so file_read/file_text_search/file_update
-        # use narrow context and recovery-aware behavior without changing the stable base suite.
         self._orchestrator.register_tool_registry(FileAgentToolSuite().build_registry())
         self._orchestrator.register_tool_registry(CodeIndexToolSuite().build_registry())
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
@@ -108,6 +113,7 @@ class Pipeline:
         root_token = set_file_working_root(self._file_working_roots.get(conversation_key, "."))
         task_tokens = set_file_task_message(message)
         scratchpad_token = start_request_scratchpad()
+        account_role_token = set_account_role(account_role)
         try:
             result = await self._orchestrator.respond(
                 user_id=user_id,
@@ -121,11 +127,9 @@ class Pipeline:
                 text=result.text,
                 session_id=session_id,
             )
-            # Persist the logical file cwd exactly where the file tools ended.
-            # It may be a project such as MK4/MK5, a parent-relative directory,
-            # or an absolute path outside config.WORKSPACE_ROOT.
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
+            reset_account_role(account_role_token)
             reset_request_scratchpad(scratchpad_token)
             reset_file_task_message(task_tokens)
             reset_file_working_root(root_token)

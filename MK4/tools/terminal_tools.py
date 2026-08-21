@@ -3,29 +3,10 @@ from __future__ import annotations
 import asyncio
 import locale
 import os
-import re
 from pathlib import Path
 
 from .. import config
 from .tool_runtime import ToolDefinition, ToolRegistry
-
-
-_WINDOWS_UNIX_COMMAND_RE = re.compile(
-    r"(?:^|&&|\|\||[|&;])\s*(?:ls|cat|grep|pwd|rm|cp|mv|touch|which|head|tail)\b",
-    re.IGNORECASE,
-)
-_WINDOWS_UNIX_FIND_RE = re.compile(
-    r"(?:^|&&|\|\||[|&;])\s*find\s+[^\r\n]*(?:\s-name\b|\s-type\b|\s-maxdepth\b|\s-mindepth\b)",
-    re.IGNORECASE,
-)
-_WINDOWS_UNIX_TREE_RE = re.compile(
-    r"(?:^|&&|\|\||[|&;])\s*tree\s+[^\r\n]*\s-L(?:\s|$)",
-    re.IGNORECASE,
-)
-_DIRECTORY_DISCOVERY_COMMAND_RE = re.compile(
-    r"(?:^|&&|\|\||[|&;])\s*(?:ls|pwd|find|tree)\b",
-    re.IGNORECASE,
-)
 
 
 def _is_windows() -> bool:
@@ -42,23 +23,32 @@ class TerminalToolSuite:
             ToolDefinition(
                 name="terminal_command",
                 description=(
-                    "Run a shell command from the workspace root and return stdout/stderr. "
-                    "Use this for shell work that file tools cannot do directly. This project runs on Windows cmd.exe. "
-                    "For directory/project discovery, prefer file_tree instead of terminal commands. "
-                    "Do not use direct Unix commands such as ls, cat, grep, pwd, rm, cp, mv, touch, head, or tail. "
-                    "Use Windows commands such as dir/tree /F, or invoke PowerShell explicitly when shell work is needed. "
-                    "For Windows user-profile or shell integration work, resolve known folders through Windows or PowerShell APIs "
-                    "instead of guessing paths. For a requested current-user Startup registration, resolve the Startup folder "
-                    "with [Environment]::GetFolderPath('Startup'), create a .lnk with the WScript.Shell CreateShortcut API, set "
-                    "TargetPath to the already-discovered executable and WorkingDirectory to its parent directory, save it, then "
-                    "re-open or inspect the shortcut to verify its TargetPath before claiming completion. Commands may intentionally "
-                    "modify locations outside the workspace; when they do, verify the resulting external state explicitly because "
-                    "filesystem_changed only reflects the workspace snapshot."
+                    "Run a shell command from the workspace root and return stdout/stderr. This project launches Windows "
+                    "cmd.exe; invoke PowerShell explicitly when PowerShell features are useful. The command may inspect or "
+                    "modify files, user-profile locations, registry, shell configuration, Startup registration, and other "
+                    "system state when the task requires it. Do not claim that a command is unavailable or unauthorized unless "
+                    "the actual shell/tool execution reports that failure. Set changes_state=true when a command intentionally "
+                    "changes persistent state. After a state-changing command, run a separate read/check command with "
+                    "verification=true. A verification call must inspect resulting state and must not intentionally mutate it."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
                         "command": {"type": "string"},
+                        "changes_state": {
+                            "type": "boolean",
+                            "description": (
+                                "Set true when this command intentionally changes filesystem, registry, shell configuration, "
+                                "startup registration, or other persistent system state."
+                            ),
+                        },
+                        "verification": {
+                            "type": "boolean",
+                            "description": (
+                                "Set true only for a follow-up read/check command that verifies a prior terminal change. "
+                                "The command must not intentionally mutate state."
+                            ),
+                        },
                     },
                     "required": ["command"],
                     "additionalProperties": False,
@@ -70,12 +60,12 @@ class TerminalToolSuite:
 
     async def _run(self, arguments: dict) -> dict:
         command = str(arguments.get("command") or "").strip()
+        changes_state = arguments.get("changes_state") is True
+        verification = arguments.get("verification") is True
         if not command:
             raise ValueError("terminal_command requires command")
-
-        unsupported = self._unsupported_windows_command_result(command)
-        if unsupported is not None:
-            return unsupported
+        if changes_state and verification:
+            raise ValueError("terminal_command cannot set both changes_state=true and verification=true")
 
         before = self._snapshot_files()
         process = await asyncio.create_subprocess_shell(
@@ -103,52 +93,11 @@ class TerminalToolSuite:
             "returncode": process.returncode,
             "stdout": _decode_process_output(stdout),
             "stderr": _decode_process_output(stderr),
+            "changes_state": changes_state,
+            "verification": verification,
             "filesystem_changed": bool(changed_paths),
             "changed_paths": changed_paths[:50],
             "changed_paths_truncated": len(changed_paths) > 50,
-        }
-
-    def _unsupported_windows_command_result(self, command: str) -> dict | None:
-        if not _is_windows():
-            return None
-        if not (
-            _WINDOWS_UNIX_COMMAND_RE.search(command)
-            or _WINDOWS_UNIX_FIND_RE.search(command)
-            or _WINDOWS_UNIX_TREE_RE.search(command)
-        ):
-            return None
-
-        directory_discovery = bool(_DIRECTORY_DISCOVERY_COMMAND_RE.search(command))
-        message = (
-            "This terminal uses Windows cmd.exe, so the requested direct Unix shell command is not supported. "
-            "Do not retry the same command. "
-        )
-        if directory_discovery:
-            message += (
-                "For directory or project inspection, use file_tree first. "
-                "If a shell command is genuinely needed, use dir/tree /F or invoke PowerShell explicitly."
-            )
-            next_tools = ["file_tree", "terminal_command"]
-        else:
-            message += "Use the Windows equivalent or invoke PowerShell explicitly."
-            next_tools = ["terminal_command"]
-
-        return {
-            "ok": False,
-            "error": "unsupported_windows_shell_command",
-            "message": message,
-            "command": command,
-            "cwd": str(self._workspace_root),
-            "returncode": None,
-            "stdout": "",
-            "stderr": "",
-            "filesystem_changed": False,
-            "changed_paths": [],
-            "changed_paths_truncated": False,
-            "recovery": {
-                "next_tools": next_tools,
-                "prefer_file_tree": directory_discovery,
-            },
         }
 
     def _snapshot_files(self) -> dict[str, tuple[int, int]]:
@@ -182,8 +131,6 @@ def _decode_process_output(data: bytes) -> str:
     if preferred and preferred.lower().replace("-", "") != "utf8":
         encodings.append(preferred)
     if _is_windows():
-        # mbcs follows the active Windows ANSI code page. cp949 is a final explicit
-        # fallback for Korean Windows where cmd.exe commonly emits localized errors.
         encodings.extend(["mbcs", "cp949"])
 
     seen: set[str] = set()
