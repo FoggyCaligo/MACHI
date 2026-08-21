@@ -16,6 +16,11 @@ from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
 from ..tools.manual_tools import ToolManualSuite
+from ..tools.scratchpad_tools import (
+    ScratchpadToolSuite,
+    reset_request_scratchpad,
+    start_request_scratchpad,
+)
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.tool_runtime import (
     get_file_working_root,
@@ -43,6 +48,10 @@ TRIAL_TOOL_NAMES = {
     "latest_search",
     "market_snapshot",
     "web_research",
+    "scratchpad_create",
+    "scratchpad_read",
+    "scratchpad_update",
+    "scratchpad_delete",
     "tool_manual",
 }
 
@@ -80,6 +89,7 @@ class Pipeline:
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
         self._orchestrator.register_tool_registry(TerminalToolSuite().build_registry())
+        self._orchestrator.register_tool_registry(ScratchpadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(
             ToolManualSuite(self._orchestrator.tool_registry).build_registry()
         )
@@ -96,6 +106,7 @@ class Pipeline:
         conversation_key = f"{user_id}::{session_id or 'default'}"
         root_token = set_file_working_root(self._file_working_roots.get(conversation_key, "."))
         task_tokens = set_file_task_message(message)
+        scratchpad_token = start_request_scratchpad()
         try:
             result = await self._orchestrator.respond(
                 user_id=user_id,
@@ -114,6 +125,7 @@ class Pipeline:
             # or an absolute path outside config.WORKSPACE_ROOT.
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
+            reset_request_scratchpad(scratchpad_token)
             reset_file_task_message(task_tokens)
             reset_file_working_root(root_token)
         return PipelineResult(
