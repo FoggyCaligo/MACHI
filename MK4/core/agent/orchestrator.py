@@ -855,6 +855,8 @@ def _tool_result_summary(*, tool: str, result: dict) -> str:
             parts.append(f"stdout={_truncate(stdout, 240)!r}")
         if stderr:
             parts.append(f"stderr={_truncate(stderr, 240)!r}")
+        if result.get("changes_state") is True:
+            parts.append("changes_state=True")
         if result.get("verification") is True:
             parts.append("verification=True")
         if result.get("changed_paths"):
@@ -1023,7 +1025,10 @@ def _has_terminal_filesystem_change_without_verification(tool_history: list[dict
         if (
             event.get("tool") == "terminal_command"
             and isinstance(result, dict)
-            and result.get("filesystem_changed") is True
+            and (
+                result.get("filesystem_changed") is True
+                or result.get("changes_state") is True
+            )
             and result.get("verification") is not True
         ):
             latest_change_index = index
@@ -1040,6 +1045,7 @@ def _has_terminal_filesystem_change_without_verification(tool_history: list[dict
             and isinstance(result, dict)
             and result.get("ok") is True
             and result.get("verification") is True
+            and result.get("changes_state") is not True
             and result.get("filesystem_changed") is not True
         ):
             return False
@@ -1065,7 +1071,7 @@ def _file_execution_guard_result(
             "message": (
                 "terminal_command changed state. Verify the resulting state before completion. "
                 "Use a successful file read/check when appropriate, or run a separate terminal_command with verification=true. "
-                "A terminal verification call must succeed and must not create another filesystem change."
+                "A terminal verification call must succeed and must not create another state change."
             ),
             "rejected_final_answer": rejected_final_answer,
         }
