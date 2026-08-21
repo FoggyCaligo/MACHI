@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .llm_client import ChatModel, ModelTurn
 from .memory_context import (
+    get_memory_turn_scope,
     get_writable_terms,
     has_successful_memory_mutation,
     is_memory_commit_active,
@@ -169,6 +170,7 @@ class TurnCycleChatModel:
         ]
         if not any(definition.name in {"write_memory", "revise_memory"} for definition in memory_tools):
             raise RuntimeError("memory commit tools are not exposed")
+        memory_tools = _with_current_scope_schemas(memory_tools)
         writable_terms = get_writable_terms()
         completion_instruction = (
             "At least one memory mutation has already succeeded. You may continue mutating memory or choose done."
@@ -241,6 +243,111 @@ class TurnCycleToolSuite:
                 "message": "At least one write_memory or revise_memory mutation must succeed first.",
             }
         return {"ok": True, "finished": True}
+
+
+def _with_current_scope_schemas(definitions: list[ToolDefinition]) -> list[ToolDefinition]:
+    scoped: list[ToolDefinition] = []
+    for definition in definitions:
+        if definition.name == "write_memory":
+            scoped.append(replace(definition, input_schema=_write_memory_schema()))
+        elif definition.name == "revise_memory":
+            scoped.append(replace(definition, input_schema=_revise_memory_schema()))
+        else:
+            scoped.append(definition)
+    return scoped
+
+
+def _write_memory_schema() -> dict[str, Any]:
+    endpoint = _memory_endpoint_schema(allow_new=True)
+    return {
+        "type": "object",
+        "properties": {
+            "subject": endpoint,
+            "relation": {"type": "string"},
+            "object": endpoint,
+        },
+        "required": ["subject", "relation", "object"],
+        "additionalProperties": False,
+    }
+
+
+def _revise_memory_schema() -> dict[str, Any]:
+    existing = _memory_endpoint_schema(allow_new=False)
+    writable = _memory_endpoint_schema(allow_new=True)
+    node_ids = _current_scope_node_ids()
+    return {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["connect"]},
+                    "subject": existing,
+                    "relation": {"type": "string"},
+                    "object": existing,
+                },
+                "required": ["operation", "subject", "relation", "object"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["update_node"]},
+                    "node_id": {"type": "string", "enum": node_ids},
+                    "attributes": {"type": "object"},
+                },
+                "required": ["operation", "node_id", "attributes"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["replace"]},
+                    "memory_node_id": {"type": "string", "enum": node_ids},
+                    "subject": writable,
+                    "relation": {"type": "string"},
+                    "object": writable,
+                },
+                "required": ["operation", "memory_node_id", "subject", "relation", "object"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+
+
+def _memory_endpoint_schema(*, allow_new: bool) -> dict[str, Any]:
+    variants: list[dict[str, Any]] = []
+    node_ids = _current_scope_node_ids()
+    if node_ids:
+        variants.append({
+            "type": "object",
+            "properties": {"node_id": {"type": "string", "enum": node_ids}},
+            "required": ["node_id"],
+            "additionalProperties": False,
+        })
+    variants.append({
+        "type": "object",
+        "properties": {"kind": {"type": "string", "enum": ["user"]}},
+        "required": ["kind"],
+        "additionalProperties": False,
+    })
+    if allow_new:
+        term_ids = [item["term_id"] for item in get_writable_terms()]
+        if term_ids:
+            variants.append({
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"},
+                    "term_id": {"type": "string", "enum": term_ids},
+                },
+                "required": ["term_id"],
+                "additionalProperties": False,
+            })
+    return {"oneOf": variants}
+
+
+def _current_scope_node_ids() -> list[str]:
+    scope = get_memory_turn_scope()
+    return sorted(scope.recalled_node_ids | scope.created_node_ids)
 
 
 def _close_memory_commit(state: TurnCycleState) -> None:
