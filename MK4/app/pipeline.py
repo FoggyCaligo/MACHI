@@ -60,7 +60,6 @@ TRIAL_TOOL_NAMES = {
     "graph_search",
     "write_memory",
     "revise_memory",
-    "skip_tool_use",
     "finish_memory_commit",
     "latest_search",
     "market_snapshot",
@@ -133,6 +132,12 @@ class Pipeline:
                 session_id=session_id,
                 allowed_tool_names=TRIAL_TOOL_NAMES if account_role == "trial" else None,
             )
+            if _successful_memory_commit(result.tool_events):
+                self._memory.graphize_user_utterance(
+                    user_id=user_id,
+                    text=message,
+                    session_id=session_id,
+                )
             self._assistant_memory.record(
                 user_id=user_id,
                 text=result.text,
@@ -159,7 +164,7 @@ class Pipeline:
             used_tools=[
                 str(event.get("tool"))
                 for event in result.tool_events
-                if event.get("tool") and event.get("tool") not in {"skip_tool_use", "finish_memory_commit"}
+                if event.get("tool") and event.get("tool") != "finish_memory_commit"
             ],
             memory_writes=[*raw_writes, *semantic_writes, "assistant_utterance"],
             tool_events=result.tool_events,
@@ -167,3 +172,19 @@ class Pipeline:
 
     def close(self) -> None:
         self._graph_repo.close()
+
+
+def _successful_memory_commit(tool_events: list[dict]) -> bool:
+    mutation_ok = any(
+        str(event.get("tool") or "") in {"write_memory", "revise_memory"}
+        and isinstance(event.get("result"), dict)
+        and event["result"].get("ok") is True
+        for event in tool_events
+    )
+    finish_ok = any(
+        str(event.get("tool") or "") == "finish_memory_commit"
+        and isinstance(event.get("result"), dict)
+        and event["result"].get("ok") is True
+        for event in tool_events
+    )
+    return mutation_ok and finish_ok
