@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from .llm_client import ChatModel, ModelTurn
-from .tool_runtime import ToolDefinition
+from .tool_runtime import ToolCall, ToolDefinition
 
 
 _PLAN_REQUIRED_INSTRUCTION = """
@@ -18,7 +18,7 @@ Do not perform later steps early. Do not return a final answer until every plann
 _STEP_INSTRUCTION = """
 Follow the current work_plan exactly in order.
 Perform only the current pending step. Do not skip ahead, combine later work, or return the final answer yet.
-For a tool step, call the exact planned tool. A tool_manual prerequisite may be called as needed.
+For a tool step, call the exact planned tool.
 For a reasoning step, complete the reasoning and call work_step_complete with the exact step_id and concise conclusion.
 """.strip()
 
@@ -29,9 +29,14 @@ If additional work is actually required, create a new work_plan before calling a
 
 
 class WorkPlanningChatModel:
-    """Require every request to be planned, then executed one structural step at a time."""
+    """Require every request to be planned, then executed one structural step at a time.
 
-    def __init__(self, delegate: ChatModel, *, max_retries: int = 1) -> None:
+    Lazy tool manuals are framework prerequisites. This wrapper requests the manual
+    deterministically before asking the model to produce a work_plan or execute a
+    planned tool, so the small model never has to guess an unseen input schema.
+    """
+
+    def __init__(self, delegate: ChatModel, *, max_retries: int = 2) -> None:
         self._delegate = delegate
         self._max_retries = max(0, max_retries)
 
@@ -47,6 +52,13 @@ class WorkPlanningChatModel:
     ) -> ModelTurn:
         plan_event = _latest_successful_plan_event(tool_history)
         if plan_event is None:
+            prerequisite = _manual_prerequisite_turn(
+                tool_name="work_plan",
+                tool_definitions=tool_definitions,
+                tool_history=tool_history,
+            )
+            if prerequisite is not None:
+                return prerequisite
             return await self._require_plan(
                 system=system,
                 user_message=user_message,
@@ -59,6 +71,14 @@ class WorkPlanningChatModel:
         plan = plan_event.get("result") if isinstance(plan_event.get("result"), dict) else {}
         pending = _next_pending_step(plan=plan, tool_history=tool_history, plan_event=plan_event)
         if pending is not None:
+            required_tool = _required_tool_for_step(pending)
+            prerequisite = _manual_prerequisite_turn(
+                tool_name=required_tool,
+                tool_definitions=tool_definitions,
+                tool_history=tool_history,
+            )
+            if prerequisite is not None:
+                return prerequisite
             return await self._require_current_step(
                 pending=pending,
                 system=system,
@@ -155,39 +175,72 @@ class WorkPlanningChatModel:
         pending: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> ModelTurn:
-        if self._max_retries <= 0:
-            return _blocked_turn(reason)
-        retry_history = [
-            *kwargs["tool_history"],
-            {
-                "tool": "work_plan_guard",
-                "arguments": {},
-                "result": {
-                    "ok": False,
-                    "error": reason,
-                    "message": instruction,
-                    "pending_step": pending,
-                    "rejected_final_answer": rejected.final_answer,
-                    "rejected_tools": [call.tool for call in rejected.tool_calls],
+        current_rejected = rejected
+        for _ in range(self._max_retries):
+            retry_history = [
+                *kwargs["tool_history"],
+                {
+                    "tool": "work_plan_guard",
+                    "arguments": {},
+                    "result": {
+                        "ok": False,
+                        "error": reason,
+                        "message": instruction,
+                        "pending_step": pending,
+                        "rejected_final_answer": current_rejected.final_answer,
+                        "rejected_tools": [call.tool for call in current_rejected.tool_calls],
+                    },
                 },
-            },
-        ]
-        retried = await self._delegate.next_turn(
-            system=f"{kwargs['system']}\n{instruction}",
-            user_message=kwargs["user_message"],
-            model=kwargs["model"],
-            memory_summary=kwargs["memory_summary"],
-            tool_definitions=kwargs["tool_definitions"],
-            tool_history=retry_history,
-        )
-        if reason == "work_plan_required" and _is_plan_turn(retried):
-            return retried
-        if reason == "work_plan_step_mismatch" and pending is not None and _matches_pending_step(retried, pending):
-            return retried
-        if reason == "work_plan_complete_requires_final_or_replan":
-            if (retried.final_answer and not retried.tool_calls) or _is_plan_turn(retried):
+            ]
+            retried = await self._delegate.next_turn(
+                system=f"{kwargs['system']}\n{instruction}",
+                user_message=kwargs["user_message"],
+                model=kwargs["model"],
+                memory_summary=kwargs["memory_summary"],
+                tool_definitions=kwargs["tool_definitions"],
+                tool_history=retry_history,
+            )
+            if reason == "work_plan_required" and _is_plan_turn(retried):
                 return retried
+            if reason == "work_plan_step_mismatch" and pending is not None and _matches_pending_step(retried, pending):
+                return retried
+            if reason == "work_plan_complete_requires_final_or_replan":
+                if (retried.final_answer and not retried.tool_calls) or _is_plan_turn(retried):
+                    return retried
+            current_rejected = retried
         return _blocked_turn(reason)
+
+
+def _required_tool_for_step(step: dict[str, Any]) -> str:
+    if str(step.get("action_type") or "") == "reasoning":
+        return "work_step_complete"
+    return str(step.get("tool") or "")
+
+
+def _manual_prerequisite_turn(
+    *,
+    tool_name: str,
+    tool_definitions: list[ToolDefinition],
+    tool_history: list[dict[str, Any]],
+) -> ModelTurn | None:
+    if not tool_name:
+        return None
+    available = {definition.name for definition in tool_definitions}
+    if "tool_manual" not in available or tool_name not in available:
+        return None
+    if _manual_was_consulted(tool_name, tool_history):
+        return None
+    return ModelTurn(tool_calls=[ToolCall(tool="tool_manual", arguments={"tool": tool_name})])
+
+
+def _manual_was_consulted(tool_name: str, tool_history: list[dict[str, Any]]) -> bool:
+    return any(
+        event.get("tool") == "tool_manual"
+        and isinstance(event.get("result"), dict)
+        and event["result"].get("ok") is True
+        and str(event["result"].get("tool") or "") == tool_name
+        for event in tool_history
+    )
 
 
 def _latest_successful_plan_event(tool_history: list[dict[str, Any]]) -> dict[str, Any] | None:
