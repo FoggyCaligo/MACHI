@@ -1,0 +1,47 @@
+name: Verify MK4 turn cycle
+
+on:
+  push:
+    branches:
+      - mk4-turn-scoped-memory-cycle
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r MK4/requirements.txt pytest pytest-asyncio
+      - name: Run MK4 tests and record result
+        shell: bash
+        run: |
+          set +e
+          python -m pytest MK4/tests -q --tb=short > /tmp/mk4-tests.txt 2>&1
+          status=$?
+          set -e
+          rm .github/workflows/verify-mk4-turn-cycle.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$status" = "0" ]; then
+            rm -f MK4/tests/.turn_cycle_failure_report.txt
+            message="MK4 turn-cycle tests passed"
+          else
+            tail -n 280 /tmp/mk4-tests.txt > MK4/tests/.turn_cycle_failure_report.txt
+            message="Record turn-cycle test failures (status=$status)"
+          fi
+          git add -A
+          git diff --cached --check
+          git commit -m "$message"
+          git push origin HEAD:mk4-turn-scoped-memory-cycle
+          exit "$status"
