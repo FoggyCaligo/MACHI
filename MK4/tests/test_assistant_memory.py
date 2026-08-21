@@ -42,12 +42,43 @@ def test_assistant_response_is_recalled_after_repository_restart(tmp_path) -> No
         if item["subgraph"]["focus"]["provenance"] == "assistant_utterance"
     )
     assert "assistant가 사용자(alice)에게 이전에 말한 내용" in assistant_item["label"]
+    assert "외부 세계 사실은 별도 근거로 검증되지 않은 상태" in assistant_item["label"]
     assert "프랭크 허버트" in assistant_item["raw_label"]
     assert "듄" in assistant_item["raw_label"]
     restarted_repo.close()
 
 
-def test_graph_search_marks_recalled_assistant_response_as_assistant(tmp_path) -> None:
+def test_assistant_memory_indexes_words_without_creating_semantic_fact_edges(tmp_path) -> None:
+    repo = GraphRepository(tmp_path / "memory.db")
+    memory = GraphMemoryService(repo)
+    memory.ensure_user_anchor("alice")
+    recorder = AssistantMemoryRecorder(repo)
+
+    node_id = recorder.record(
+        user_id="alice",
+        text="가상의 책 별빛 엔진은 이준하가 쓴 SF 소설입니다.",
+        session_id="s1",
+    )
+
+    assert node_id is not None
+    node = repo.get_node(node_id)
+    assert node is not None
+    assert node.payload["memory_role"] == "conversation_record"
+    assert node.payload["factual_status"] == "unverified"
+
+    edges = repo.all_edges()
+    assert any(
+        edge.source_id == node_id
+        and edge.relation == "assistant_mentions_concept"
+        and edge.payload.get("memory_role") == "retrieval_index"
+        and edge.payload.get("factual_status") == "unverified"
+        for edge in edges
+    )
+    assert not any(edge.relation == "assistant_adjacent_concept" for edge in edges)
+    repo.close()
+
+
+def test_graph_search_marks_recalled_assistant_response_as_unverified_conversation_record(tmp_path) -> None:
     repo = GraphRepository(tmp_path / "memory.db")
     memory = GraphMemoryService(repo)
     memory.ensure_user_anchor("alice")
@@ -71,8 +102,12 @@ def test_graph_search_marks_recalled_assistant_response_as_assistant(tmp_path) -
         if item["focus"].get("provenance") == "assistant_utterance"
     )
     assert assistant_result["focus"]["speaker"] == "assistant"
+    assert assistant_result["focus"]["memory_role"] == "conversation_record"
+    assert assistant_result["focus"]["factual_status"] == "unverified"
     assert assistant_result["source"]["speaker"] == "assistant"
     assert assistant_result["source"]["user_id"] == "alice"
+    assert assistant_result["source"]["memory_role"] == "conversation_record"
+    assert assistant_result["source"]["factual_status"] == "unverified"
     repo.close()
 
 
