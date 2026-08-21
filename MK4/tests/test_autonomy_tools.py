@@ -24,116 +24,112 @@ def _tools(*names: str) -> list[ToolDefinition]:
 
 
 @pytest.mark.asyncio
-async def test_routine_file_clarification_is_retried_into_tool_call() -> None:
+async def test_blocked_without_tool_failure_gets_structural_retry() -> None:
     delegate = ScriptedChatModel([
-        ModelTurn(final_answer="어느 파일인지 알려주시거나 HTML 코드를 붙여넣어 주실 수 있나요?"),
-        ModelTurn(tool_calls=[ToolCall(tool="file_tree", arguments={"root": "MK4"})]),
+        ModelTurn(final_answer="I cannot access the PC.", final_answer_kind="blocked"),
+        ModelTurn(tool_calls=[ToolCall(tool="terminal_command", arguments={"command": "echo ok"})]),
     ])
     model = AutonomyChatModel(delegate)
 
     turn = await model.next_turn(
         system="system",
-        user_message="UI 헤더를 수정해줘",
+        user_message="do the system task",
         model=None,
         memory_summary=[],
-        tool_definitions=_tools("file_tree", "file_read", "file_update"),
+        tool_definitions=_tools("terminal_command"),
         tool_history=[],
     )
 
-    assert turn.tool_calls == [ToolCall(tool="file_tree", arguments={"root": "MK4"})]
+    assert turn.tool_calls == [ToolCall(tool="terminal_command", arguments={"command": "echo ok"})]
     assert len(delegate.calls) == 2
-    assert "routine intermediate decision" in delegate.calls[1]["system"]
     retry_history = delegate.calls[1]["tool_history"]
     assert retry_history[-1]["tool"] == "autonomy_guard"
-    assert retry_history[-1]["result"]["error"] == "routine_clarification_blocked"
+    assert retry_history[-1]["result"]["error"] == "blocked_without_tool_failure"
+    assert "tools exposed to you are part of your capabilities" in delegate.calls[1]["system"].lower()
 
 
 @pytest.mark.asyncio
-async def test_routine_process_question_is_retried() -> None:
+async def test_real_tool_failure_allows_blocked_without_retry() -> None:
+    expected = ModelTurn(final_answer="The OS denied the operation.", final_answer_kind="blocked")
+    delegate = ScriptedChatModel([expected])
+    model = AutonomyChatModel(delegate)
+
+    turn = await model.next_turn(
+        system="system",
+        user_message="do the system task",
+        model=None,
+        memory_summary=[],
+        tool_definitions=_tools("terminal_command"),
+        tool_history=[
+            {
+                "tool": "terminal_command",
+                "arguments": {"command": "example"},
+                "result": {"ok": False, "returncode": 5, "stderr": "Access denied"},
+            }
+        ],
+    )
+
+    assert turn is expected
+    assert len(delegate.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_nonzero_returncode_counts_as_real_failure() -> None:
+    expected = ModelTurn(final_answer="The command failed.", final_answer_kind="blocked")
+    delegate = ScriptedChatModel([expected])
+    model = AutonomyChatModel(delegate)
+
+    turn = await model.next_turn(
+        system="system",
+        user_message="do the task",
+        model=None,
+        memory_summary=[],
+        tool_definitions=_tools("terminal_command"),
+        tool_history=[
+            {
+                "tool": "terminal_command",
+                "arguments": {"command": "example"},
+                "result": {"returncode": 1},
+            }
+        ],
+    )
+
+    assert turn is expected
+    assert len(delegate.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_guard_failures_do_not_count_as_real_tool_failure() -> None:
     delegate = ScriptedChatModel([
-        ModelTurn(final_answer="먼저 관련 파일을 찾아볼까요?"),
-        ModelTurn(tool_calls=[ToolCall(tool="file_search", arguments={"pattern": "*.html"})]),
+        ModelTurn(final_answer="Blocked.", final_answer_kind="blocked"),
+        ModelTurn(tool_calls=[ToolCall(tool="terminal_command", arguments={"command": "echo retry"})]),
     ])
     model = AutonomyChatModel(delegate)
 
     turn = await model.next_turn(
         system="system",
-        user_message="UI를 수정해줘",
+        user_message="do the task",
         model=None,
         memory_summary=[],
-        tool_definitions=_tools("file_search", "file_read"),
-        tool_history=[],
+        tool_definitions=_tools("terminal_command"),
+        tool_history=[
+            {
+                "tool": "execution_guard",
+                "arguments": {},
+                "result": {"ok": False, "error": "completion_tool_not_run"},
+            }
+        ],
     )
 
-    assert turn.tool_calls[0].tool == "file_search"
+    assert turn.tool_calls[0].tool == "terminal_command"
     assert len(delegate.calls) == 2
 
 
 @pytest.mark.asyncio
-async def test_material_design_choice_is_not_blocked() -> None:
-    expected = ModelTurn(final_answer="헤더 색상은 파란색과 회색 중 어느 쪽을 원하시나요?")
+async def test_ordinary_answer_is_not_text_inspected_or_retried() -> None:
+    expected = ModelTurn(final_answer="파일 경로를 알려주세요.", final_answer_kind="answer")
     delegate = ScriptedChatModel([expected])
     model = AutonomyChatModel(delegate)
-
-    turn = await model.next_turn(
-        system="system",
-        user_message="헤더 색상을 바꾸고 싶어",
-        model=None,
-        memory_summary=[],
-        tool_definitions=_tools("file_read", "file_update"),
-        tool_history=[],
-    )
-
-    assert turn is expected
-    assert len(delegate.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_destructive_file_question_is_not_blocked() -> None:
-    expected = ModelTurn(final_answer="이 설정 파일을 삭제해도 될까요?")
-    delegate = ScriptedChatModel([expected])
-    model = AutonomyChatModel(delegate)
-
-    turn = await model.next_turn(
-        system="system",
-        user_message="정리해줘",
-        model=None,
-        memory_summary=[],
-        tool_definitions=_tools("file_delete", "file_read"),
-        tool_history=[],
-    )
-
-    assert turn is expected
-    assert len(delegate.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_no_workspace_tools_means_no_autonomy_retry() -> None:
-    expected = ModelTurn(final_answer="코드 위치를 알려주실 수 있나요?")
-    delegate = ScriptedChatModel([expected])
-    model = AutonomyChatModel(delegate)
-
-    turn = await model.next_turn(
-        system="system",
-        user_message="수정해줘",
-        model=None,
-        memory_summary=[],
-        tool_definitions=_tools("graph_search", "web_research"),
-        tool_history=[],
-    )
-
-    assert turn is expected
-    assert len(delegate.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_retry_is_bounded_when_model_keeps_asking() -> None:
-    second = ModelTurn(final_answer="파일 경로를 알려주세요.")
-    delegate = ScriptedChatModel([
-        ModelTurn(final_answer="어느 파일인지 알려주세요."),
-        second,
-    ])
-    model = AutonomyChatModel(delegate, max_retries=1)
 
     turn = await model.next_turn(
         system="system",
@@ -141,6 +137,47 @@ async def test_retry_is_bounded_when_model_keeps_asking() -> None:
         model=None,
         memory_summary=[],
         tool_definitions=_tools("file_tree", "file_read"),
+        tool_history=[],
+    )
+
+    assert turn is expected
+    assert len(delegate.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_tools_means_blocked_is_not_retried() -> None:
+    expected = ModelTurn(final_answer="No capability is exposed.", final_answer_kind="blocked")
+    delegate = ScriptedChatModel([expected])
+    model = AutonomyChatModel(delegate)
+
+    turn = await model.next_turn(
+        system="system",
+        user_message="do something external",
+        model=None,
+        memory_summary=[],
+        tool_definitions=[],
+        tool_history=[],
+    )
+
+    assert turn is expected
+    assert len(delegate.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_is_bounded_when_model_stays_blocked() -> None:
+    second = ModelTurn(final_answer="Still blocked.", final_answer_kind="blocked")
+    delegate = ScriptedChatModel([
+        ModelTurn(final_answer="Blocked.", final_answer_kind="blocked"),
+        second,
+    ])
+    model = AutonomyChatModel(delegate, max_retries=1)
+
+    turn = await model.next_turn(
+        system="system",
+        user_message="do the task",
+        model=None,
+        memory_summary=[],
+        tool_definitions=_tools("terminal_command"),
         tool_history=[],
     )
 
