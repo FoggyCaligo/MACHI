@@ -133,10 +133,11 @@ class Pipeline:
                 allowed_tool_names=TRIAL_TOOL_NAMES if account_role == "trial" else None,
             )
             if _successful_memory_commit(result.tool_events):
-                self._memory.graphize_user_utterance(
+                self._memory.record_user_utterance(
                     user_id=user_id,
                     text=message,
                     session_id=session_id,
+                    graphize=True,
                 )
             self._assistant_memory.record(
                 user_id=user_id,
