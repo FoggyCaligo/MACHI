@@ -6,6 +6,7 @@ import pytest
 
 from MK4.tools.account_authorization import (
     AccountAuthorizationChatModel,
+    get_authorization_context,
     reset_account_role,
     set_account_role,
 )
@@ -32,7 +33,7 @@ class CaptureModel:
 
 
 @pytest.mark.asyncio
-async def test_owner_role_adds_system_authorization() -> None:
+async def test_authorization_wrapper_does_not_duplicate_system_prompt() -> None:
     inner = CaptureModel()
     wrapper = AccountAuthorizationChatModel(inner)
     token = set_account_role("owner")
@@ -48,26 +49,29 @@ async def test_owner_role_adds_system_authorization() -> None:
     finally:
         reset_account_role(token)
 
-    assert "owner account" in inner.system
-    assert "system-wide changes" in inner.system
-    assert "actual tool or OS denies" in inner.system
+    assert inner.system == "base"
 
 
-@pytest.mark.asyncio
-async def test_non_owner_role_does_not_receive_owner_authorization() -> None:
-    inner = CaptureModel()
-    wrapper = AccountAuthorizationChatModel(inner)
-    token = set_account_role("trial")
+def test_owner_authorization_is_structured() -> None:
+    token = set_account_role("owner")
     try:
-        await wrapper.next_turn(
-            system="base",
-            user_message="task",
-            model=None,
-            memory_summary=[],
-            tool_definitions=[],
-            tool_history=[],
-        )
+        context = get_authorization_context()
     finally:
         reset_account_role(token)
 
-    assert inner.system == "base"
+    assert context["role"] == "owner"
+    assert context["tool_access"] == "all_exposed_tools"
+    assert context["system_changes"] is True
+    assert context["permission_rule"] == "attempt_tool_then_trust_real_os_result"
+
+
+def test_non_owner_authorization_is_structured() -> None:
+    token = set_account_role("trial")
+    try:
+        context = get_authorization_context()
+    finally:
+        reset_account_role(token)
+
+    assert context["role"] == "trial"
+    assert context["tool_access"] == "exposed_tools_only"
+    assert context["system_changes"] is False
