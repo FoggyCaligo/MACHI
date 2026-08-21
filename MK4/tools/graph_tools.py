@@ -6,6 +6,8 @@ from ..core.graph.model_managed_memory import ModelManagedGraphMemoryService
 from ..core.graph.service import GraphMemoryService
 from .memory_context import (
     get_memory_user_id,
+    has_memory_turn_scope,
+    mark_memory_mutation_succeeded,
     register_created_node_ids,
     register_recalled_node_ids,
     require_memory_mutation_enabled,
@@ -152,7 +154,8 @@ class GraphToolSuite:
                 for item in items
                 if isinstance(item.get("subgraph"), dict)
             ]
-            register_recalled_node_ids(_result_node_ids(results))
+            if has_memory_turn_scope():
+                register_recalled_node_ids(_result_node_ids(results))
             return {"ok": True, "mode": "browse", "depth": 1, "results": results}
 
         results = self._memory_service.graph_search(
@@ -163,7 +166,8 @@ class GraphToolSuite:
             exclude_node_ids=exclude_node_ids,
         )
         formatted = [_format_graph_search_speaker(item, user_id=user_id) for item in results]
-        register_recalled_node_ids(_result_node_ids(formatted))
+        if has_memory_turn_scope():
+            register_recalled_node_ids(_result_node_ids(formatted))
         return {
             "ok": True,
             "mode": "node" if node_id else "query",
@@ -181,6 +185,7 @@ class GraphToolSuite:
             object_=_scoped_endpoint(arguments, "object", allow_new=True),
         )
         register_created_node_ids(_memory_result_node_ids(result))
+        mark_memory_mutation_succeeded()
         return result
 
     async def _revise_memory(self, arguments: dict) -> dict:
@@ -197,6 +202,7 @@ class GraphToolSuite:
                 object_=_scoped_endpoint(arguments, "object", allow_new=False),
             )
             register_created_node_ids(_memory_result_node_ids(result))
+            mark_memory_mutation_succeeded()
             return result
 
         if operation == "update_node":
@@ -204,7 +210,9 @@ class GraphToolSuite:
             attributes = arguments.get("attributes")
             if not isinstance(attributes, dict):
                 raise ValueError("update_node requires attributes object")
-            return service.update_memory_node(user_id=user_id, node_id=node_id, attributes=dict(attributes))
+            result = service.update_memory_node(user_id=user_id, node_id=node_id, attributes=dict(attributes))
+            mark_memory_mutation_succeeded()
+            return result
 
         if operation == "replace":
             memory_node_id = require_scoped_node_id(str(arguments.get("memory_node_id") or ""))
@@ -216,6 +224,7 @@ class GraphToolSuite:
                 object_=_scoped_endpoint(arguments, "object", allow_new=True),
             )
             register_created_node_ids(_memory_result_node_ids(result))
+            mark_memory_mutation_succeeded()
             return result
 
         raise ValueError("revise_memory operation must be connect, update_node, or replace")
