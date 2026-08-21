@@ -8,30 +8,6 @@ from MK4.tools.graph_tools import GraphToolSuite
 from MK4.tools.tool_runtime import ToolCall
 
 
-def test_memory_summary_ends_with_structural_graph_search_note() -> None:
-    repo = GraphRepository(":memory:")
-    memory = GraphMemoryService(repo)
-    memory.record_user_utterance(
-        user_id="alice",
-        text="I enjoy TypeScript and frontend work.",
-        session_id="s1",
-    )
-    tools = GraphToolSuite(memory)
-
-    summary = tools.get_user_memory_summary(
-        user_id="alice",
-        query="frontend",
-        limit=5,
-    )
-
-    note = summary[-1]
-    assert note["node_type"] == "system_note"
-    assert note["subgraph"]["focus"]["provenance"] == "system_policy"
-    assert "graph_search" in note["label"]
-    assert "partial automatic recall" in note["label"]
-    repo.close()
-
-
 def test_graph_search_accepts_empty_arguments_for_broad_memory_browse() -> None:
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)

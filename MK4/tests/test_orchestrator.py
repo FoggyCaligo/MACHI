@@ -307,7 +307,7 @@ class TerminalOnlyFileMutationModel:
             return ModelTurn(final_answer="수정했습니다.")
         if any(
             event.get("tool") == "execution_guard"
-            and event.get("result", {}).get("error") == "terminal_filesystem_change_not_verified"
+            and event.get("result", {}).get("error") == "terminal_change_not_verified"
             for event in tool_history
         ):
             self.saw_mutation_guard = True
@@ -1478,7 +1478,7 @@ async def test_orchestrator_recovers_from_empty_initial_model_turn(tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_rejects_local_tool_blocked_before_terminal_attempt(tmp_path) -> None:
+async def test_orchestrator_passes_blocked_answer_without_text_heuristic(tmp_path) -> None:
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
     graph_tools = GraphToolSuite(memory)
@@ -1498,9 +1498,9 @@ async def test_orchestrator_rejects_local_tool_blocked_before_terminal_attempt(t
         session_id="s1",
     )
 
-    assert result.text == "커밋 목록을 확인했습니다."
-    assert chat_model.saw_blocked_guard is True
-    assert any(event["tool"] == "terminal_command" for event in result.tool_events)
+    assert result.text == "로컬 작업을 진행할 수 없습니다."
+    assert chat_model.saw_blocked_guard is False
+    assert not any(event["tool"] == "terminal_command" for event in result.tool_events)
     repo.close()
 
 

@@ -1064,9 +1064,17 @@ def _file_execution_guard_result(
 
 
 def _empty_turn_after_tool_guard_result(*, tool_history: list[dict]) -> dict:
-    latest_tool = tool_history[-1].get("tool") if tool_history else None
-    latest_result = tool_history[-1].get("result") if tool_history else None
-    if not tool_history:
+    latest_event = next(
+        (
+            event
+            for event in reversed(tool_history)
+            if event.get("tool") not in {"execution_guard", "autonomy_guard", "file_text_activation"}
+        ),
+        None,
+    )
+    latest_tool = latest_event.get("tool") if latest_event is not None else None
+    latest_result = latest_event.get("result") if latest_event is not None else None
+    if latest_event is None:
         return {
             "ok": False,
             "error": "empty_initial_turn",

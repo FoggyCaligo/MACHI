@@ -328,8 +328,10 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
         if result.get("message"):
             compact["message"] = _shorten(str(result.get("message") or ""), 240)
         recovery = result.get("recovery")
-        if isinstance(recovery, dict) and isinstance(recovery.get("next_tools"), list):
-            compact["next_tools"] = recovery.get("next_tools")[:8]
+        if isinstance(recovery, dict):
+            compact["recovery"] = _compact_value(recovery, limit=700)
+            if isinstance(recovery.get("next_tools"), list):
+                compact["next_tools"] = recovery.get("next_tools")[:8]
         return compact
 
     if tool == "code_index":
