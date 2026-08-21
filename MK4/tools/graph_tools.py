@@ -25,7 +25,7 @@ class GraphToolSuite:
         exclude_node_ids: set[str] | None = None,
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
-    ) -> list[dict | str]:
+    ) -> list[dict]:
         items = self._memory_service.user_memory_summary(
             user_id,
             query=query,
@@ -36,7 +36,7 @@ class GraphToolSuite:
             activation_node_weights=activation_node_weights,
         )
         formatted = [_format_memory_speaker(item, user_id=user_id) for item in items]
-        return [*formatted, _MEMORY_SUMMARY_NOTE]
+        return [*formatted, _memory_summary_note_item()]
 
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -139,6 +139,28 @@ class GraphToolSuite:
             session_id=session_id,
         )
         return {"replacement_fact_id": replacement_id}
+
+
+def _memory_summary_note_item() -> dict:
+    return {
+        "node_id": "memory_summary_contract",
+        "node_type": "system_note",
+        "label": _MEMORY_SUMMARY_NOTE,
+        "raw_label": _MEMORY_SUMMARY_NOTE,
+        "subgraph": {
+            "focus": {
+                "node_id": "memory_summary_contract",
+                "label": _MEMORY_SUMMARY_NOTE,
+                "node_type": "system_note",
+                "provenance": "system_policy",
+                "trust_score": 1.0,
+                "stability_score": 1.0,
+            },
+            "relations": [],
+        },
+        "score": 0.0,
+        "score_components": {},
+    }
 
 
 def _format_memory_speaker(item: dict, *, user_id: str) -> dict:
