@@ -7,6 +7,7 @@ from .tool_runtime import ToolDefinition, ToolRegistry
 
 _MAX_STEPS = 10
 _ACTION_TYPES = {"reasoning", "tool"}
+_RESERVED_PLAN_TOOLS = {"work_plan", "work_step_complete", "tool_manual"}
 
 
 class WorkPlanToolSuite:
@@ -112,6 +113,8 @@ class WorkPlanToolSuite:
                 raise ValueError(f"unsupported work_plan action_type: {action_type}")
             if action_type == "tool" and not tool:
                 raise ValueError(f"work_plan.steps[{index}].tool is required for tool steps")
+            if action_type == "tool" and tool in _RESERVED_PLAN_TOOLS:
+                raise ValueError(f"work_plan meta tool cannot be a planned work step: {tool}")
             if action_type == "reasoning" and tool is not None:
                 raise ValueError(f"work_plan.steps[{index}].tool must be null for reasoning steps")
             if not isinstance(depends_raw, list) or not all(isinstance(item, str) for item in depends_raw):
