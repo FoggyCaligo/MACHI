@@ -12,6 +12,7 @@ from ..tools.account_authorization import (
     set_account_role,
 )
 from ..tools.autonomy_tools import AutonomyChatModel
+from ..tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
 from ..tools.grounding_tools import EvidenceGroundingChatModel
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.code_index_tools import CodeIndexToolSuite
@@ -19,7 +20,7 @@ from ..tools.document_tools import DocumentReadToolSuite
 from ..tools.file_agent_tools import FileAgentToolSuite
 from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
-from ..tools.llm_client import ChatModel, OllamaToolChatModel
+from ..tools.llm_client import ChatModel
 from ..tools.manual_tools import ToolManualSuite
 from ..tools.model_tool_names import ModelToolNameAdapter
 from ..tools.scratchpad_tools import (
@@ -75,7 +76,7 @@ class Pipeline:
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = AccountAuthorizationChatModel(
-            ModelToolNameAdapter(chat_model or OllamaToolChatModel())
+            ModelToolNameAdapter(chat_model or AutomaticMemoryContextOllamaToolChatModel())
         )
         self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
         self._web_search = web_search or HttpWebSearchTool()
@@ -135,7 +136,7 @@ class Pipeline:
             reset_file_working_root(root_token)
         return PipelineResult(
             text=result.text,
-            used_tools=result.used_tools,
+            used_tools=[str(event.get("tool")) for event in result.tool_events if event.get("tool")],
             memory_writes=[*result.memory_writes, "assistant_utterance"],
             tool_events=result.tool_events,
         )
