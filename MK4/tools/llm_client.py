@@ -266,8 +266,8 @@ def _require_tool_manuals(
     tool_definitions: list[ToolDefinition],
     tool_history: list[dict[str, Any]],
 ) -> ModelTurn:
-    available = {definition.name for definition in tool_definitions}
-    if "tool_manual" not in available or not turn.tool_calls:
+    definitions = {definition.name: definition for definition in tool_definitions}
+    if "tool_manual" not in definitions or not turn.tool_calls:
         return turn
     consulted = {
         str(event.get("result", {}).get("tool") or "")
@@ -276,18 +276,35 @@ def _require_tool_manuals(
         and isinstance(event.get("result"), dict)
         and event["result"].get("ok") is True
     }
-    missing: list[str] = []
+    manual_names: list[str] = []
+    executable_calls: list[ToolCall] = []
     for call in turn.tool_calls:
-        if call.tool == "tool_manual" or call.tool in consulted or call.tool in missing:
+        if call.tool == "tool_manual" or call.tool in consulted:
+            executable_calls.append(call)
             continue
-        missing.append(call.tool)
-    if not missing:
+        if call.tool not in manual_names:
+            manual_names.append(call.tool)
+        definition = definitions.get(call.tool)
+        if definition is None or _has_required_tool_arguments(call, definition):
+            executable_calls.append(call)
+    if not manual_names:
         return turn
 
-    manual_calls = [ToolCall(tool="tool_manual", arguments={"tool": name}) for name in missing]
+    manual_calls = [ToolCall(tool="tool_manual", arguments={"tool": name}) for name in manual_names]
     return ModelTurn(
-        tool_calls=[*manual_calls, *turn.tool_calls],
+        tool_calls=[*manual_calls, *executable_calls],
         final_answer_kind="answer",
+    )
+
+
+def _has_required_tool_arguments(call: ToolCall, definition: ToolDefinition) -> bool:
+    schema = definition.input_schema if isinstance(definition.input_schema, dict) else {}
+    required = schema.get("required") if isinstance(schema, dict) else []
+    return all(
+        name in call.arguments
+        and call.arguments.get(name) is not None
+        and call.arguments.get(name) != ""
+        for name in required or []
     )
 
 
