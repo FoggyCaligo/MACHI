@@ -13,10 +13,11 @@ from .memory_context import (
     set_memory_commit_active,
     set_memory_draft_answer,
 )
-from .tool_runtime import ToolDefinition, ToolRegistry
+from .tool_runtime import ToolCall, ToolDefinition, ToolRegistry
 
 
 _MEMORY_TOOLS = {"write_memory", "revise_memory", "finish_memory_commit"}
+_INTERNAL_PHASE_TOOL = "_begin_memory_commit"
 
 
 @dataclass
@@ -102,7 +103,8 @@ class TurnCycleChatModel:
                 system=(
                     system
                     + "\nTurn phase: recall. Before any answer or other model-selected tool use, call recall_memory once. "
-                    "The first recall is intentionally one-hop; use more recall calls later if needed."
+                    "The first recall is intentionally one-hop; use more recall calls later if needed. "
+                    "Choose exactly one compact agent action: tool."
                 ),
                 user_message=user_message,
                 model=model,
@@ -114,14 +116,18 @@ class TurnCycleChatModel:
                 return turn
             raise RuntimeError("required recall phase was not completed: call recall_memory before answering")
 
-        normal_tools = [definition for definition in tool_definitions if definition.name not in _MEMORY_TOOLS]
+        normal_tools = [
+            definition
+            for definition in tool_definitions
+            if definition.name not in _MEMORY_TOOLS and definition.name != _INTERNAL_PHASE_TOOL
+        ]
         turn = await self.inner.next_turn(
             system=(
                 system
                 + "\nTurn phase: tool review and answer drafting. Review the exposed non-memory tools before answering. "
                 "Use any needed tool, including additional recall_memory. If no tool is needed, produce the final answer "
                 "draft directly; choosing a final answer while tools are exposed is the explicit no-tool decision. "
-                "Memory mutation is not available yet."
+                "Memory mutation is not available yet. Choose exactly one compact agent action: tool or answer."
             ),
             user_message=user_message,
             model=model,
@@ -137,14 +143,7 @@ class TurnCycleChatModel:
             state.draft_returned = False
             set_memory_draft_answer(turn.final_answer)
             state.commit_token = set_memory_commit_active(True)
-            return await self._memory_turn(
-                system=system,
-                user_message=user_message,
-                model=model,
-                memory_summary=memory_summary,
-                tool_definitions=tool_definitions,
-                tool_history=tool_history,
-            )
+            return ModelTurn(tool_calls=[ToolCall(tool=_INTERNAL_PHASE_TOOL, arguments={})])
         return turn
 
     async def _memory_turn(
@@ -173,15 +172,16 @@ class TurnCycleChatModel:
             + "The user-visible answer draft is already fixed. New semantic nodes may use only term_id values "
             + "from writable_terms. Existing node_id values must have been returned by recall_memory or created "
             + "during this memory commit. Relations may be freely chosen between in-scope nodes. You may make "
-            + "multiple chained graph mutations. Call finish_memory_commit only after at least one successful "
-            + "write_memory or revise_memory mutation.\n"
+            + "multiple chained graph mutations. Choose done only after at least one successful write_memory or "
+            + "revise_memory mutation.\n"
             + f"writable_terms={writable_terms!r}"
         )
         turn = await self.inner.next_turn(
             system=(
                 system
                 + "\nTurn phase: memory commit. Do not rewrite the answer. "
-                "Use write_memory/revise_memory to reflect this turn in the scoped graph, then finish_memory_commit."
+                "Use write_memory/revise_memory to reflect this turn in the scoped graph, then choose done. "
+                "Choose exactly one compact agent action: tool or done."
             ),
             user_message=commit_message,
             model=model,
@@ -191,12 +191,20 @@ class TurnCycleChatModel:
         )
         if turn.tool_calls:
             return turn
-        raise RuntimeError("memory commit phase requires graph mutation tools or finish_memory_commit")
+        raise RuntimeError("memory commit phase requires graph mutation tools or done")
 
 
 class TurnCycleToolSuite:
     def build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=_INTERNAL_PHASE_TOOL,
+                description="Internal framework transition into memory commit.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            self._begin_memory_commit,
+        )
         registry.register(
             ToolDefinition(
                 name="finish_memory_commit",
@@ -206,6 +214,11 @@ class TurnCycleToolSuite:
             self._finish_memory_commit,
         )
         return registry
+
+    async def _begin_memory_commit(self, arguments: dict) -> dict:
+        if not is_memory_commit_active():
+            return {"ok": False, "error": "memory_commit_not_active"}
+        return {"ok": True, "phase": "memory_commit"}
 
     async def _finish_memory_commit(self, arguments: dict) -> dict:
         if not is_memory_commit_active():
