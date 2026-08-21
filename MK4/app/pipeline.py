@@ -137,10 +137,18 @@ class Pipeline:
             reset_request_scratchpad(scratchpad_token)
             reset_file_task_message(task_tokens)
             reset_file_working_root(root_token)
+        semantic_writes = [
+            "semantic_memory"
+            for event in result.tool_events
+            if str(event.get("tool") or "") in {"write_memory", "revise_memory"}
+            and isinstance(event.get("result"), dict)
+            and event["result"].get("ok") is True
+        ]
+        automatic_writes = [item for item in result.memory_writes if item != "user_fact"]
         return PipelineResult(
             text=result.text,
             used_tools=[str(event.get("tool")) for event in result.tool_events if event.get("tool")],
-            memory_writes=[*result.memory_writes, "assistant_utterance"],
+            memory_writes=[*automatic_writes, *semantic_writes, "assistant_utterance"],
             tool_events=result.tool_events,
         )
 
