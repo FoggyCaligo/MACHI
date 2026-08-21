@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from MK4.core.agent.orchestrator import _file_execution_guard_result
 from MK4.tools.terminal_tools import TerminalToolSuite
 
@@ -96,4 +98,29 @@ def test_terminal_command_exposes_structured_change_and_verification_flags() -> 
 
     properties = definition.input_schema["properties"]
     assert properties["changes_state"]["type"] == "boolean"
+    assert properties["preconditions_verified"]["type"] == "boolean"
     assert properties["verification"]["type"] == "boolean"
+
+
+@pytest.mark.asyncio
+async def test_terminal_rejects_string_boolean_instead_of_silently_coercing() -> None:
+    suite = TerminalToolSuite()
+
+    with pytest.raises(ValueError, match="changes_state must be a JSON boolean"):
+        await suite._run({"command": "echo test", "changes_state": "True"})
+
+
+@pytest.mark.asyncio
+async def test_terminal_state_change_requires_verified_preconditions() -> None:
+    suite = TerminalToolSuite()
+
+    with pytest.raises(ValueError, match="state changes require preconditions_verified=true"):
+        await suite._run({"command": "echo test", "changes_state": True})
+
+
+@pytest.mark.asyncio
+async def test_preconditions_verified_is_only_valid_for_state_change() -> None:
+    suite = TerminalToolSuite()
+
+    with pytest.raises(ValueError, match="only valid with changes_state=true"):
+        await suite._run({"command": "echo test", "preconditions_verified": True})
