@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from typing import Any
+
+from ..core.graph.model_managed_memory import ModelManagedGraphMemoryService
 from ..core.graph.service import GraphMemoryService
+from .memory_context import get_memory_user_id
 from .tool_runtime import ToolDefinition, ToolRegistry
 
 
@@ -11,6 +15,15 @@ _MEMORY_SUMMARY_NOTE = (
 )
 _MEMORY_RETRIEVAL_INTERACTION_ROLE = "memory_retrieval"
 _MEMORY_RANK_OVERSAMPLE_FACTOR = 3
+_ENDPOINT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "node_id": {"type": "string"},
+        "kind": {"type": "string"},
+        "label": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
 
 
 class GraphToolSuite:
@@ -50,13 +63,8 @@ class GraphToolSuite:
             ToolDefinition(
                 name="graph_search",
                 description=(
-                    "Recall your persistent long-term graph memory for past user statements, assistant responses and "
-                    "recommendations, preferences, decisions, and project context. Call with no query/node_id to broadly "
-                    "browse the user's persistent memory, use query for targeted recall, or pass a returned relation node_id "
-                    "to expand that exact node. Assistant responses are conversation records only: they prove what the "
-                    "assistant previously said, not that external factual claims inside them are true. Results are small "
-                    "subgraph summaries containing a focus node, its important relations, and source metadata. Use before "
-                    "concluding that relevant past memory is unavailable. The current user identity is supplied by the system."
+                    "Recall persistent graph memory. Browse with no query/node_id, search by query, or expand a returned node_id. "
+                    "Use returned node ids when writing or revising related semantic memory so existing nodes can be reused."
                 ),
                 input_schema={
                     "x-model-name": "recall_memory",
@@ -73,8 +81,50 @@ class GraphToolSuite:
         )
         registry.register(
             ToolDefinition(
+                name="write_memory",
+                description=(
+                    "Store or reinforce one durable semantic relationship in long-term memory. "
+                    "Use kind='user' for the current user, or reuse node_id values returned by recall_memory. "
+                    "Exact duplicate nodes are reused and an identical relationship reinforces the existing memory instead of creating another copy."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "subject": _ENDPOINT_SCHEMA,
+                        "relation": {"type": "string"},
+                        "object": _ENDPOINT_SCHEMA,
+                    },
+                    "required": ["subject", "relation", "object"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._write_memory,
+        )
+        registry.register(
+            ToolDefinition(
+                name="revise_memory",
+                description=(
+                    "Replace one model-managed semantic memory returned by recall_memory. "
+                    "The old memory assertion is kept as inactive history and linked to the replacement."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "memory_node_id": {"type": "string"},
+                        "subject": _ENDPOINT_SCHEMA,
+                        "relation": {"type": "string"},
+                        "object": _ENDPOINT_SCHEMA,
+                    },
+                    "required": ["memory_node_id", "subject", "relation", "object"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._revise_memory,
+        )
+        registry.register(
+            ToolDefinition(
                 name="record_memory_correction",
-                description="Replace an incorrect user fact while preserving correction history.",
+                description="Replace an older legacy user fact while preserving correction history.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -140,6 +190,28 @@ class GraphToolSuite:
             "results": [_format_graph_search_speaker(item, user_id=user_id) for item in results],
         }
 
+    async def _write_memory(self, arguments: dict) -> dict:
+        service = self._model_managed_service()
+        return service.write_semantic_memory(
+            user_id=get_memory_user_id(),
+            subject=_require_endpoint(arguments, "subject"),
+            relation=str(arguments.get("relation") or ""),
+            object_=_require_endpoint(arguments, "object"),
+        )
+
+    async def _revise_memory(self, arguments: dict) -> dict:
+        service = self._model_managed_service()
+        memory_node_id = str(arguments.get("memory_node_id") or "").strip()
+        if not memory_node_id:
+            raise ValueError("revise_memory requires memory_node_id")
+        return service.revise_semantic_memory(
+            user_id=get_memory_user_id(),
+            memory_node_id=memory_node_id,
+            subject=_require_endpoint(arguments, "subject"),
+            relation=str(arguments.get("relation") or ""),
+            object_=_require_endpoint(arguments, "object"),
+        )
+
     async def _record_memory_correction(self, arguments: dict) -> dict:
         user_id = str(arguments.get("user_id") or "").strip()
         previous_fact_id = str(arguments.get("previous_fact_id") or "").strip()
@@ -154,9 +226,12 @@ class GraphToolSuite:
         )
         return {"replacement_fact_id": replacement_id}
 
+    def _model_managed_service(self) -> ModelManagedGraphMemoryService:
+        if not isinstance(self._memory_service, ModelManagedGraphMemoryService):
+            raise RuntimeError("model-managed semantic memory service is not active")
+        return self._memory_service
+
     def _mark_memory_retrieval_interaction(self, utterance_node_ids: set[str]) -> None:
-        # GraphToolSuite and GraphMemoryService are the same graph-memory subsystem.
-        # The current user utterance is supplied structurally by the orchestrator as an excluded node.
         repo = self._memory_service._repo
         for node_id in utterance_node_ids:
             node = repo.get_node(node_id)
@@ -174,23 +249,31 @@ class GraphToolSuite:
                 repo.upsert_node(fact)
 
     def _prioritize_content_memory(self, items: list[dict]) -> list[dict]:
+        semantic: list[dict] = []
         primary: list[dict] = []
         interaction: list[dict] = []
         for item in items:
+            if item.get("node_type") == "semantic_memory":
+                semantic.append(item)
+                continue
             node_id = str(item.get("node_id") or "")
             target = interaction if self._has_memory_retrieval_role(node_id) else primary
             target.append(item)
-        return [*primary, *interaction]
+        return [*semantic, *primary, *interaction]
 
     def _prioritize_graph_results(self, items: list[dict]) -> list[dict]:
+        semantic: list[dict] = []
         primary: list[dict] = []
         interaction: list[dict] = []
         for item in items:
             focus = item.get("focus") if isinstance(item.get("focus"), dict) else {}
+            if focus.get("node_type") == "semantic_memory":
+                semantic.append(item)
+                continue
             node_id = str(focus.get("node_id") or "")
             target = interaction if self._has_memory_retrieval_role(node_id) else primary
             target.append(item)
-        return [*primary, *interaction]
+        return [*semantic, *primary, *interaction]
 
     def _has_memory_retrieval_role(self, node_id: str) -> bool:
         if not node_id:
@@ -200,6 +283,13 @@ class GraphToolSuite:
             node is not None
             and node.payload.get("interaction_role") == _MEMORY_RETRIEVAL_INTERACTION_ROLE
         )
+
+
+def _require_endpoint(arguments: dict[str, Any], name: str) -> dict[str, Any]:
+    endpoint = arguments.get(name)
+    if not isinstance(endpoint, dict):
+        raise ValueError(f"{name} must be an object")
+    return dict(endpoint)
 
 
 def _oversampled_limit(limit: int) -> int:
