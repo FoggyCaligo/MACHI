@@ -1,0 +1,379 @@
+name: Apply single agent loop protocol
+
+on:
+  push:
+    branches:
+      - mk4-framework-owned-first-recall
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply structural patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) ModelTurn gets one framework-only continuation flag.
+          p = Path('MK4/tools/llm_client.py')
+          text = p.read_text(encoding='utf-8')
+          old = '''@dataclass(slots=True)\nclass ModelTurn:\n    final_answer: str | None = None\n    tool_calls: list[ToolCall] = field(default_factory=list)\n    final_answer_kind: str = "answer"\n    completion_tools: list[str] = field(default_factory=list)\n'''
+          new = '''@dataclass(slots=True)\nclass ModelTurn:\n    final_answer: str | None = None\n    tool_calls: list[ToolCall] = field(default_factory=list)\n    final_answer_kind: str = "answer"\n    completion_tools: list[str] = field(default_factory=list)\n    continue_loop: bool = False\n'''
+          if old not in text:
+              raise SystemExit('ModelTurn block not found')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # 2) Structured model uses a compact action protocol instead of the four-field envelope.
+          p = Path('MK4/tools/structured_context_model.py')
+          text = p.read_text(encoding='utf-8')
+          text = text.replace(
+              'from .tool_runtime import ToolDefinition\n',
+              'from .tool_runtime import ToolCall, ToolDefinition\n',
+              1,
+          )
+          text = text.replace(
+              '    _parse_model_turn,\n    _require_tool_manuals,\n    _response_schema_for_tools,\n',
+              '    _parse_model_turn,\n    _require_tool_manuals,\n',
+              1,
+          )
+          text = text.replace(
+              '                response_format=_response_schema_for_tools(tool_names),\n',
+              '                response_format=_agent_action_schema(tool_names),\n',
+              1,
+          )
+          text = text.replace(
+              '            turn = _parse_model_turn(raw)\n',
+              '            turn = _parse_agent_action(raw, tool_names=tool_names)\n',
+              1,
+          )
+          append = r'''
+
+
+def _agent_action_schema(tool_names: list[str]) -> dict[str, Any]:
+    names = sorted(set(tool_names))
+    name_set = set(names)
+    if name_set == {"recall_memory"}:
+        actions = ["tool"]
+    elif {"write_memory", "revise_memory"} & name_set and "finish_memory_commit" in name_set:
+        actions = ["tool", "done"]
+    elif names:
+        actions = ["tool", "answer"]
+    else:
+        actions = ["answer"]
+
+    tool_property: dict[str, Any] = {"type": ["string", "null"]}
+    if names:
+        tool_property["enum"] = [*names, None]
+    return {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": actions},
+            "tool": tool_property,
+            "arguments": {"type": "object"},
+            "content": {"type": ["string", "null"]},
+            "kind": {"type": "string", "enum": ["answer", "tool_completion", "blocked"]},
+            "completion_tools": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["action"],
+        "additionalProperties": False,
+    }
+
+
+def _parse_agent_action(raw: str, *, tool_names: list[str]) -> ModelTurn:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Keep the existing explicit parser as compatibility for legacy model output.
+        return _parse_model_turn(raw)
+    if not isinstance(data, dict) or "action" not in data:
+        return _parse_model_turn(raw)
+
+    action = data.get("action")
+    if action == "tool":
+        tool = data.get("tool")
+        arguments = data.get("arguments", {})
+        if not isinstance(tool, str) or not tool.strip():
+            raise ModelOutputParseError("tool action requires a non-empty tool name")
+        if tool_names and tool not in tool_names:
+            raise ModelOutputParseError(f"tool action requested unexposed tool: {tool}")
+        if not isinstance(arguments, dict):
+            raise ModelOutputParseError("tool action arguments must be an object")
+        return ModelTurn(tool_calls=[ToolCall(tool=tool.strip(), arguments=arguments)])
+
+    if action == "answer":
+        content = data.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ModelOutputParseError("answer action requires non-empty content")
+        kind = data.get("kind", "answer")
+        if kind not in {"answer", "tool_completion", "blocked"}:
+            raise ModelOutputParseError("answer kind is invalid")
+        completion_tools = data.get("completion_tools", [])
+        if not isinstance(completion_tools, list) or not all(isinstance(item, str) for item in completion_tools):
+            raise ModelOutputParseError("completion_tools must be a list of strings")
+        return ModelTurn(
+            final_answer=content.strip(),
+            final_answer_kind=kind,
+            completion_tools=[item.strip() for item in completion_tools if item.strip()],
+        )
+
+    if action == "done":
+        if "finish_memory_commit" not in tool_names:
+            raise ModelOutputParseError("done action is only valid during memory commit")
+        return ModelTurn(tool_calls=[ToolCall(tool="finish_memory_commit", arguments={})])
+
+    raise ModelOutputParseError(f"unknown agent action: {action!r}")
+'''
+          if '_agent_action_schema(' not in text.split('class StructuredContextOllamaToolChatModel', 1)[0]:
+              text = text.rstrip() + append + '\n'
+          p.write_text(text, encoding='utf-8')
+
+          # 3) Turn-cycle wrapper no longer nests a second LLM call when the draft is captured.
+          p = Path('MK4/tools/turn_cycle.py')
+          text = p.read_text(encoding='utf-8')
+          old = '''            state.commit_token = set_memory_commit_active(True)\n            return await self._memory_turn(\n                system=system,\n                user_message=user_message,\n                model=model,\n                memory_summary=memory_summary,\n                tool_definitions=tool_definitions,\n                tool_history=tool_history,\n            )\n'''
+          new = '''            state.commit_token = set_memory_commit_active(True)\n            return ModelTurn(continue_loop=True)\n'''
+          if old not in text:
+              raise SystemExit('nested memory turn block not found')
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              '                    "The first recall is intentionally one-hop; use more recall calls later if needed."\n',
+              '                    "The first recall is intentionally one-hop; use more recall calls later if needed. "\n                    "Choose exactly one compact agent action: tool."\n',
+              1,
+          )
+          text = text.replace(
+              '                "Memory mutation is not available yet."\n',
+              '                "Memory mutation is not available yet. Choose exactly one compact agent action: tool or answer."\n',
+              1,
+          )
+          text = text.replace(
+              '                "Use write_memory/revise_memory to reflect this turn in the scoped graph, then finish_memory_commit."\n',
+              '                "Use write_memory/revise_memory to reflect this turn in the scoped graph, then choose done. "\n                "Choose exactly one compact agent action: tool or done."\n',
+              1,
+          )
+          p.write_text(text, encoding='utf-8')
+
+          # 4) The orchestrator recognizes the framework-only phase transition without treating it as an empty turn.
+          p = Path('MK4/core/agent/orchestrator.py')
+          text = p.read_text(encoding='utf-8')
+          needle = '''            if turn.final_answer:\n                guard_result = _final_answer_evidence_guard_result(\n'''
+          replacement = '''            if turn.continue_loop:\n                _debug_log(f"agent_phase_transition round={round_index}")\n                continue\n            if turn.final_answer:\n                guard_result = _final_answer_evidence_guard_result(\n'''
+          if needle not in text:
+              raise SystemExit('orchestrator final-answer block not found')
+          p.write_text(text.replace(needle, replacement, 1), encoding='utf-8')
+
+          # 5) Update turn-cycle regression to assert one model call per agent-loop round.
+          p = Path('MK4/tests/test_turn_cycle.py')
+          text = p.read_text(encoding='utf-8')
+          start = text.index('@pytest.mark.asyncio\nasync def test_turn_cycle_requires_recall_then_tool_review_draft_and_memory_commit()')
+          end = text.index('\n\ndef test_new_nodes_require_current_turn_term_id()', start)
+          replacement = r'''@pytest.mark.asyncio
+async def test_turn_cycle_runs_one_model_call_per_agent_loop_round() -> None:
+    repo = GraphRepository(":memory:")
+    memory = ModelManagedGraphMemoryService(repo)
+    registry = GraphToolSuite(memory).build_registry()
+    registry.merge(TurnCycleToolSuite().build_registry())
+    model_inner = PhaseModel()
+    model = TurnCycleChatModel(model_inner)
+    definitions = [
+        _definition("graph_search"),
+        _definition("file_read"),
+        _definition("write_memory"),
+        _definition("revise_memory"),
+        _definition("finish_memory_commit"),
+    ]
+    user_token = set_memory_user_id("alice")
+    memory_token = set_memory_turn_scope("hello")
+    cycle_token = set_turn_cycle_state()
+    history: list[dict[str, Any]] = []
+    try:
+        first = await model.next_turn(
+            system="s", user_message="u", model=None, memory_summary=[],
+            tool_definitions=definitions, tool_history=history,
+        )
+        assert first.tool_calls[0].tool == "graph_search"
+        assert len(model_inner.exposed) == 1
+        recall_result = await registry.run(ToolCall(
+            tool="graph_search",
+            arguments={"user_id": "alice", "limit": 4},
+        ))
+        history.append({"tool": "graph_search", "arguments": {}, "result": recall_result})
+
+        second = await model.next_turn(
+            system="s", user_message="u", model=None, memory_summary=[],
+            tool_definitions=definitions, tool_history=history,
+        )
+        assert second.continue_loop is True
+        assert second.final_answer is None
+        assert second.tool_calls == []
+        assert len(model_inner.exposed) == 2
+        assert "file_read" in model_inner.exposed[1]
+        assert "write_memory" not in model_inner.exposed[1]
+
+        third = await model.next_turn(
+            system="s", user_message="u", model=None, memory_summary=[],
+            tool_definitions=definitions, tool_history=history,
+        )
+        assert third.tool_calls[0].tool == "write_memory"
+        assert len(model_inner.exposed) == 3
+        write_result = await registry.run(third.tool_calls[0])
+        assert write_result["ok"] is True
+        history.append({"tool": "write_memory", "arguments": third.tool_calls[0].arguments, "result": write_result})
+
+        fourth = await model.next_turn(
+            system="s", user_message="u", model=None, memory_summary=[],
+            tool_definitions=definitions, tool_history=history,
+        )
+        assert fourth.tool_calls[0].tool == "finish_memory_commit"
+        assert len(model_inner.exposed) == 4
+        finish_result = await registry.run(fourth.tool_calls[0])
+        assert finish_result["ok"] is True
+        history.append({"tool": "finish_memory_commit", "arguments": {}, "result": finish_result})
+
+        fifth = await model.next_turn(
+            system="s", user_message="u", model=None, memory_summary=[],
+            tool_definitions=definitions, tool_history=history,
+        )
+        assert fifth.final_answer == "hello back"
+        assert len(model_inner.exposed) == 4
+        assert get_memory_turn_scope().mutation_succeeded is True
+    finally:
+        reset_turn_cycle_state(cycle_token)
+        reset_memory_turn_scope(memory_token)
+        reset_memory_user_id(user_token)
+        repo.close()
+'''
+          p.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+
+          # 6) Add focused tests for the compact model-facing action protocol.
+          Path('MK4/tests/test_agent_action_protocol.py').write_text(r'''from __future__ import annotations
+
+import json
+
+import pytest
+
+from MK4.tools import structured_context_model
+from MK4.tools.structured_context_model import StructuredContextOllamaToolChatModel
+from MK4.tools.tool_runtime import ToolDefinition
+
+
+def _definition(name: str) -> ToolDefinition:
+    return ToolDefinition(name=name, description=name, input_schema={"type": "object"})
+
+
+@pytest.mark.asyncio
+async def test_recall_phase_uses_single_tool_action(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_chat(*, system, user, model, response_format):
+        captured["schema"] = response_format
+        return json.dumps({"action": "tool", "tool": "recall_memory", "arguments": {"query": "alice"}})
+
+    monkeypatch.setattr(structured_context_model, "ollama_chat", fake_chat)
+    turn = await StructuredContextOllamaToolChatModel().next_turn(
+        system="system",
+        user_message="hello",
+        model=None,
+        memory_summary=[],
+        tool_definitions=[_definition("recall_memory")],
+        tool_history=[],
+    )
+    assert turn.tool_calls[0].tool == "recall_memory"
+    assert captured["schema"]["required"] == ["action"]
+    assert captured["schema"]["properties"]["action"]["enum"] == ["tool"]
+
+
+@pytest.mark.asyncio
+async def test_work_phase_accepts_direct_answer_action(monkeypatch) -> None:
+    async def fake_chat(*, system, user, model, response_format):
+        assert set(response_format["properties"]["action"]["enum"]) == {"tool", "answer"}
+        return json.dumps({"action": "answer", "content": "hello back"})
+
+    monkeypatch.setattr(structured_context_model, "ollama_chat", fake_chat)
+    turn = await StructuredContextOllamaToolChatModel().next_turn(
+        system="system",
+        user_message="hello",
+        model=None,
+        memory_summary=[],
+        tool_definitions=[_definition("file_read"), _definition("recall_memory")],
+        tool_history=[],
+    )
+    assert turn.final_answer == "hello back"
+    assert turn.tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_memory_done_action_maps_to_finish_tool(monkeypatch) -> None:
+    async def fake_chat(*, system, user, model, response_format):
+        assert set(response_format["properties"]["action"]["enum"]) == {"tool", "done"}
+        return json.dumps({"action": "done"})
+
+    monkeypatch.setattr(structured_context_model, "ollama_chat", fake_chat)
+    turn = await StructuredContextOllamaToolChatModel().next_turn(
+        system="system",
+        user_message="commit",
+        model=None,
+        memory_summary=[],
+        tool_definitions=[
+            _definition("write_memory"),
+            _definition("revise_memory"),
+            _definition("finish_memory_commit"),
+        ],
+        tool_history=[],
+    )
+    assert turn.tool_calls[0].tool == "finish_memory_commit"
+    assert turn.tool_calls[0].arguments == {}
+''', encoding='utf-8')
+
+          # 7) Document the single-loop protocol succinctly.
+          p = Path('MK4/docs/turn_memory_cycle.md')
+          text = p.read_text(encoding='utf-8')
+          marker = '# Turn-scoped memory cycle\n'
+          note = '''# Turn-scoped memory cycle\n\nThe orchestrator owns one continuous agent loop. Each loop round performs at most one LLM call. The model returns one compact action (`tool`, `answer`, or memory-phase `done`) rather than a full four-field response envelope on every phase.\n'''
+          if text.startswith(marker):
+              text = note + text[len(marker):]
+          p.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Install MK4 dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r MK4/requirements.txt pytest pytest-asyncio
+      - name: Run full MK4 tests
+        id: tests
+        shell: bash
+        run: |
+          set +e
+          python -m pytest MK4/tests -q --tb=short > /tmp/mk4-tests.txt 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/mk4-tests.txt
+          exit 0
+      - name: Commit result and remove workflow
+        env:
+          STATUS: ${{ steps.tests.outputs.status }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/apply-single-agent-loop.yml
+          if [ "$STATUS" = "0" ]; then
+            rm -f MK4_TEST_FAILURES.txt
+            git add -A
+            git commit -m 'Use compact single-agent-loop actions'
+            git push origin HEAD:mk4-framework-owned-first-recall
+          else
+            cp /tmp/mk4-tests.txt MK4_TEST_FAILURES.txt
+            git add -A
+            git commit -m "Record single-agent-loop test failures (status=$STATUS)"
+            git push origin HEAD:mk4-framework-owned-first-recall
+            exit "$STATUS"
+          fi
