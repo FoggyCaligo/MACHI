@@ -3,11 +3,11 @@ from __future__ import annotations
 from .tool_runtime import ToolDefinition
 
 
-_TOOL_SUMMARY_LIMIT = 180
+_TOOL_SUMMARY_LIMIT = 120
 
 
 def compact_tool_catalog(tool_definitions: list[ToolDefinition]) -> list[dict[str, str]]:
-    """Return name + one-line purpose only; schemas remain lazy via tool_manual."""
+    """Return name + short purpose only; detailed schemas stay lazy via tool_manual."""
     return [
         {
             "name": definition.name,
