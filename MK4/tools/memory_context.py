@@ -46,6 +46,10 @@ def reset_memory_turn_scope(token: Token[MemoryTurnScope | None]) -> None:
     _memory_turn_scope.reset(token)
 
 
+def has_memory_turn_scope() -> bool:
+    return _memory_turn_scope.get() is not None
+
+
 def get_memory_turn_scope() -> MemoryTurnScope:
     scope = _memory_turn_scope.get()
     if scope is None:
