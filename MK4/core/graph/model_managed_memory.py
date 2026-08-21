@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .anchors import fact_node_id, utterance_node_id, user_anchor_id
+from .anchors import fact_node_id, user_anchor_id
 from .models import GraphEdge, GraphNode
-from .service import GraphMemoryService, _TEXT_GRAPH_VERSION
+from .service import GraphMemoryService
 
 
 _SEMANTIC_NODE_TYPE = "semantic_memory"
@@ -13,56 +13,7 @@ _SEMANTIC_ENTITY_TYPE = "semantic_entity"
 
 
 class ModelManagedGraphMemoryService(GraphMemoryService):
-    """Keep raw conversation automatic while making semantic memory model-managed."""
-
-    def record_user_utterance(self, *, user_id: str, text: str, session_id: str | None) -> str:
-        anchor_id = self.ensure_user_anchor(user_id)
-        utterance_id = utterance_node_id(user_id, text, session_id)
-        existing_utterance = self._repo.get_node(utterance_id)
-        is_new_utterance = existing_utterance is None
-        if is_new_utterance:
-            self._repo.upsert_node(GraphNode(
-                node_id=utterance_id,
-                labels=[text],
-                node_type="utterance",
-                payload={
-                    "user_id": user_id,
-                    "session_id": session_id,
-                    "text_graph_version": _TEXT_GRAPH_VERSION,
-                },
-                provenance="user_utterance",
-                trust_score=1.0,
-                stability_score=0.8,
-            ))
-            self._repo.add_edge(GraphEdge(
-                source_id=anchor_id,
-                target_id=utterance_id,
-                relation="spoke",
-                payload={"session_id": session_id},
-                provenance="user_utterance",
-                trust_score=1.0,
-            ))
-        needs_graph_refresh = (
-            is_new_utterance
-            or int((existing_utterance.payload if existing_utterance else {}).get("text_graph_version") or 0)
-            < _TEXT_GRAPH_VERSION
-        )
-        if needs_graph_refresh:
-            self._graphize_text(
-                owner_anchor_id=anchor_id,
-                carrier_node_id=utterance_id,
-                text=text,
-                edge_prefix="user",
-                payload={
-                    "user_id": user_id,
-                    "session_id": session_id,
-                    "text_graph_version": _TEXT_GRAPH_VERSION,
-                },
-            )
-            if existing_utterance is not None:
-                existing_utterance.payload["text_graph_version"] = _TEXT_GRAPH_VERSION
-                self._repo.upsert_node(existing_utterance)
-        return utterance_id
+    """Add model-managed durable semantic memory on top of raw graph records."""
 
     def write_semantic_memory(
         self,
