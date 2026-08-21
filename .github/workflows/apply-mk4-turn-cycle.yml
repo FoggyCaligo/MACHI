@@ -1,0 +1,323 @@
+name: Apply MK4 turn-scoped memory cycle
+
+on:
+  push:
+    branches:
+      - mk4-turn-scoped-memory-cycle
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply focused patches
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8-sig')
+              if old not in text:
+                  raise RuntimeError(f'patch target not found in {path}: {old[:120]!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # Graph recall results define the mutable turn scope only when a production turn scope exists.
+          replace_once(
+              'MK4/tools/graph_tools.py',
+              '    get_memory_user_id,\n    register_created_node_ids,\n',
+              '    get_memory_user_id,\n    has_memory_turn_scope,\n    register_created_node_ids,\n',
+          )
+          p = Path('MK4/tools/graph_tools.py')
+          text = p.read_text(encoding='utf-8')
+          text = text.replace(
+              '            register_recalled_node_ids(_result_node_ids(results))\n',
+              '            if has_memory_turn_scope():\n                register_recalled_node_ids(_result_node_ids(results))\n',
+          )
+          text = text.replace(
+              '        register_recalled_node_ids(_result_node_ids(formatted))\n',
+              '        if has_memory_turn_scope():\n            register_recalled_node_ids(_result_node_ids(formatted))\n',
+          )
+          p.write_text(text, encoding='utf-8')
+
+          # Orchestrator commits graph memory only after all normal final-answer guards pass.
+          replace_once(
+              'MK4/core/agent/orchestrator.py',
+              'from ...tools.llm_client import ChatModel, ModelRequestError, ModelTurn\n',
+              'from ...tools.llm_client import ChatModel, ModelRequestError, ModelTurn\n'
+              'from ...tools.memory_context import (\n'
+              '    reset_memory_commit_active,\n'
+              '    set_memory_commit_active,\n'
+              '    set_memory_draft_answer,\n'
+              ')\n',
+          )
+
+          old_final = '''                self._remember_dialogue_messages(\n                    conversation_key=conversation_key,\n                    user_message=message,\n                    assistant_message=turn.final_answer,\n                )\n                self._remember_activation_node_ids(\n                    conversation_key=conversation_key,\n                    node_ids=current_activation_node_ids | file_activation_node_ids,\n                    node_weights={\n                        **{node_id: 1.0 for node_id in current_activation_node_ids},\n                        **file_activation_node_weights,\n                    },\n                )\n                self._remember_tool_operations(\n                    conversation_key=conversation_key,\n                    tool_events=tool_events,\n                    tool_history=tool_history,\n                )\n                return AgentResponse(\n                    text=turn.final_answer,\n                    used_tools=used_tools,\n                    memory_writes=memory_writes,\n                    tool_events=tool_events,\n                )\n'''
+          new_final = '''                memory_committed = await self._commit_memory_after_draft(\n                    draft_answer=turn.final_answer,\n                    system_prompt=system_prompt,\n                    model_user_message=model_user_message,\n                    model=model,\n                    image_model=image_model,\n                    user_id=user_id,\n                    utterance_id=utterance_id,\n                    model_tool_definitions=model_tool_definitions,\n                    tool_history=tool_history,\n                    tool_events=tool_events,\n                    used_tools=used_tools,\n                )\n                if not memory_committed:\n                    failure_answer = (\n                        "[오류] 최종 답변 초안은 생성됐지만 필수 그래프 기억 반영을 완료하지 못해 "\n                        "이번 응답을 확정하지 않았습니다."\n                    )\n                    self._remember_dialogue_messages(\n                        conversation_key=conversation_key,\n                        user_message=message,\n                        assistant_message=failure_answer,\n                    )\n                    self._remember_activation_node_ids(\n                        conversation_key=conversation_key,\n                        node_ids=current_activation_node_ids | file_activation_node_ids,\n                        node_weights={\n                            **{node_id: 1.0 for node_id in current_activation_node_ids},\n                            **file_activation_node_weights,\n                        },\n                    )\n                    self._remember_tool_operations(\n                        conversation_key=conversation_key,\n                        tool_events=tool_events,\n                        tool_history=tool_history,\n                    )\n                    return AgentResponse(\n                        text=failure_answer,\n                        used_tools=used_tools,\n                        memory_writes=memory_writes,\n                        tool_events=tool_events,\n                    )\n                self._remember_dialogue_messages(\n                    conversation_key=conversation_key,\n                    user_message=message,\n                    assistant_message=turn.final_answer,\n                )\n                self._remember_activation_node_ids(\n                    conversation_key=conversation_key,\n                    node_ids=current_activation_node_ids | file_activation_node_ids,\n                    node_weights={\n                        **{node_id: 1.0 for node_id in current_activation_node_ids},\n                        **file_activation_node_weights,\n                    },\n                )\n                self._remember_tool_operations(\n                    conversation_key=conversation_key,\n                    tool_events=tool_events,\n                    tool_history=tool_history,\n                )\n                return AgentResponse(\n                    text=turn.final_answer,\n                    used_tools=used_tools,\n                    memory_writes=memory_writes,\n                    tool_events=tool_events,\n                )\n'''
+          replace_once('MK4/core/agent/orchestrator.py', old_final, new_final)
+
+          marker = '    def _remember_dialogue_messages(\n'
+          method = '''    async def _commit_memory_after_draft(\n        self,\n        *,\n        draft_answer: str,\n        system_prompt: str,\n        model_user_message: str,\n        model: str | None,\n        image_model: str | None,\n        user_id: str,\n        utterance_id: str,\n        model_tool_definitions: list[ToolDefinition],\n        tool_history: list[dict],\n        tool_events: list[dict],\n        used_tools: list[str],\n    ) -> bool:\n        set_memory_draft_answer(draft_answer)\n        commit_token = set_memory_commit_active(True)\n        mutation_succeeded = False\n        allowed = {"write_memory", "revise_memory", "finish_memory_commit", "tool_manual"}\n        try:\n            for _ in range(max(2, config.AGENT_MAX_ROUNDS)):\n                try:\n                    turn = await self._chat_model.next_turn(\n                        system=system_prompt,\n                        user_message=model_user_message,\n                        model=model,\n                        memory_summary=[],\n                        tool_definitions=model_tool_definitions,\n                        tool_history=tool_history,\n                    )\n                except ModelRequestError as exc:\n                    tool_history.append({\n                        "tool": "execution_guard",\n                        "arguments": {},\n                        "result": {\n                            "ok": False,\n                            "error": "memory_commit_model_request_failed",\n                            "message": _truncate(str(exc), 500),\n                        },\n                    })\n                    return False\n                except (RuntimeError, ValueError) as exc:\n                    tool_history.append({\n                        "tool": "execution_guard",\n                        "arguments": {},\n                        "result": {\n                            "ok": False,\n                            "error": "memory_commit_model_output_failed",\n                            "message": _truncate(str(exc), 500),\n                        },\n                    })\n                    continue\n\n                if not turn.tool_calls:\n                    tool_history.append({\n                        "tool": "execution_guard",\n                        "arguments": {},\n                        "result": {\n                            "ok": False,\n                            "error": "memory_commit_requires_tools",\n                            "message": (\n                                "The answer draft is fixed. Mutate the scoped graph with write_memory or "\n                                "revise_memory, then call finish_memory_commit."\n                            ),\n                        },\n                    })\n                    continue\n\n                round_failed = False\n                for call in turn.tool_calls:\n                    if call.tool not in allowed:\n                        tool_history.append({\n                            "tool": "execution_guard",\n                            "arguments": {},\n                            "result": {\n                                "ok": False,\n                                "error": "tool_not_allowed_in_memory_commit",\n                                "tool": call.tool,\n                                "message": "Only memory commit tools are allowed after the answer draft is fixed.",\n                            },\n                        })\n                        round_failed = True\n                        continue\n                    if call.tool == "finish_memory_commit" and not mutation_succeeded:\n                        event = {\n                            "tool": call.tool,\n                            "arguments": dict(call.arguments),\n                            "result": {\n                                "ok": False,\n                                "error": "memory_mutation_required",\n                                "message": "At least one write_memory or revise_memory mutation must succeed first.",\n                            },\n                        }\n                        tool_events.append(event)\n                        tool_history.append(event)\n                        round_failed = True\n                        continue\n\n                    result = await self._run_tool_call(\n                        call,\n                        user_id=user_id,\n                        utterance_id=utterance_id,\n                        image_model=image_model,\n                    )\n                    used_tools.append(call.tool)\n                    event = {\n                        "tool": call.tool,\n                        "arguments": result["arguments"],\n                        "result": result["result"],\n                    }\n                    tool_events.append(event)\n                    tool_history.append(event)\n                    if call.tool in {"write_memory", "revise_memory"}:\n                        if _tool_ok(result["result"]) is True:\n                            mutation_succeeded = True\n                        else:\n                            round_failed = True\n                    if (\n                        call.tool == "finish_memory_commit"\n                        and _tool_ok(result["result"]) is True\n                        and mutation_succeeded\n                        and not round_failed\n                    ):\n                        return True\n            return False\n        finally:\n            reset_memory_commit_active(commit_token)\n\n'''
+          p = Path('MK4/core/agent/orchestrator.py')
+          text = p.read_text(encoding='utf-8')
+          if marker not in text:
+              raise RuntimeError('orchestrator method insertion marker missing')
+          p.write_text(text.replace(marker, method + marker, 1), encoding='utf-8')
+
+          # Existing direct tool test now supplies a real turn scope and writable term id.
+          replace_once(
+              'MK4/tests/test_model_managed_memory.py',
+              'from MK4.tools.memory_context import reset_memory_user_id, set_memory_user_id\n',
+              'from MK4.tools.memory_context import (\n'
+              '    get_writable_terms,\n'
+              '    reset_memory_turn_scope,\n'
+              '    reset_memory_user_id,\n'
+              '    set_memory_draft_answer,\n'
+              '    set_memory_turn_scope,\n'
+              '    set_memory_user_id,\n'
+              ')\n',
+          )
+          old_test = '''    token = set_memory_user_id("alice")\n    try:\n        result = asyncio.run(registry.run(ToolCall(\n            tool="write_memory",\n            arguments={\n                "subject": {"kind": "user"},\n                "relation": "likes",\n                "object": {"kind": "concept", "label": "Chess"},\n            },\n        )))\n    finally:\n        reset_memory_user_id(token)\n'''
+          new_test = '''    token = set_memory_user_id("alice")\n    turn_token = set_memory_turn_scope("I like Chess")\n    try:\n        set_memory_draft_answer("You like Chess")\n        chess_term = next(item["term_id"] for item in get_writable_terms() if item["text"] == "Chess")\n        result = asyncio.run(registry.run(ToolCall(\n            tool="write_memory",\n            arguments={\n                "subject": {"kind": "user"},\n                "relation": "likes",\n                "object": {"kind": "concept", "term_id": chess_term},\n            },\n        )))\n    finally:\n        reset_memory_turn_scope(turn_token)\n        reset_memory_user_id(token)\n'''
+          replace_once('MK4/tests/test_model_managed_memory.py', old_test, new_test)
+
+          Path('MK4/tests/test_turn_cycle.py').write_text(r'''from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pytest
+
+from MK4.core.graph.model_managed_memory import ModelManagedGraphMemoryService
+from MK4.core.graph.repository import GraphRepository
+from MK4.tools.graph_tools import GraphToolSuite
+from MK4.tools.llm_client import ModelTurn
+from MK4.tools.memory_context import (
+    get_memory_turn_scope,
+    get_writable_terms,
+    register_recalled_node_ids,
+    reset_memory_commit_active,
+    reset_memory_turn_scope,
+    reset_memory_user_id,
+    set_memory_commit_active,
+    set_memory_draft_answer,
+    set_memory_turn_scope,
+    set_memory_user_id,
+)
+from MK4.tools.tool_runtime import ToolCall, ToolDefinition
+from MK4.tools.turn_cycle import TurnCycleChatModel
+
+
+class SequencedInnerModel:
+    def __init__(self) -> None:
+        self.seen_tools: list[list[str]] = []
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        names = [definition.name for definition in tool_definitions]
+        self.seen_tools.append(names)
+        if names == ["graph_search"]:
+            return ModelTurn(tool_calls=[ToolCall(tool="graph_search", arguments={})])
+        if "skip_tool_use" in names and not any(event.get("tool") == "skip_tool_use" for event in tool_history):
+            return ModelTurn(tool_calls=[ToolCall(tool="skip_tool_use", arguments={})])
+        return ModelTurn(final_answer="draft")
+
+
+@pytest.mark.asyncio
+async def test_turn_cycle_exposes_recall_then_tool_review_then_draft() -> None:
+    inner = SequencedInnerModel()
+    model = TurnCycleChatModel(inner)
+    definitions = [
+        ToolDefinition(name="graph_search", description="recall", input_schema={}),
+        ToolDefinition(name="skip_tool_use", description="skip", input_schema={}),
+        ToolDefinition(name="file_read", description="read", input_schema={}),
+        ToolDefinition(name="write_memory", description="write", input_schema={}),
+        ToolDefinition(name="revise_memory", description="revise", input_schema={}),
+        ToolDefinition(name="finish_memory_commit", description="finish", input_schema={}),
+    ]
+
+    first = await model.next_turn(
+        system="s", user_message="u", model=None, memory_summary=[], tool_definitions=definitions, tool_history=[]
+    )
+    assert first.tool_calls[0].tool == "graph_search"
+    assert inner.seen_tools[-1] == ["graph_search"]
+
+    history = [{"tool": "graph_search", "arguments": {}, "result": {"ok": True, "depth": 1, "results": []}}]
+    second = await model.next_turn(
+        system="s", user_message="u", model=None, memory_summary=[], tool_definitions=definitions, tool_history=history
+    )
+    assert second.tool_calls[0].tool == "skip_tool_use"
+    assert "write_memory" not in inner.seen_tools[-1]
+
+    history.append({"tool": "skip_tool_use", "arguments": {}, "result": {"ok": True}})
+    third = await model.next_turn(
+        system="s", user_message="u", model=None, memory_summary=[], tool_definitions=definitions, tool_history=history
+    )
+    assert third.final_answer == "draft"
+    assert "write_memory" not in inner.seen_tools[-1]
+
+
+@pytest.mark.asyncio
+async def test_memory_commit_exposes_only_memory_tools_and_writable_terms() -> None:
+    class CommitInner:
+        def __init__(self) -> None:
+            self.user_message = ""
+            self.names: list[str] = []
+
+        async def next_turn(self, **kwargs: Any) -> ModelTurn:
+            self.user_message = kwargs["user_message"]
+            self.names = [definition.name for definition in kwargs["tool_definitions"]]
+            return ModelTurn(tool_calls=[ToolCall(tool="write_memory", arguments={})])
+
+    inner = CommitInner()
+    model = TurnCycleChatModel(inner)
+    turn_token = set_memory_turn_scope("hello world")
+    commit_token = set_memory_commit_active(True)
+    try:
+        set_memory_draft_answer("hello again")
+        definitions = [
+            ToolDefinition(name="graph_search", description="recall", input_schema={}),
+            ToolDefinition(name="write_memory", description="write", input_schema={}),
+            ToolDefinition(name="revise_memory", description="revise", input_schema={}),
+            ToolDefinition(name="finish_memory_commit", description="finish", input_schema={}),
+            ToolDefinition(name="tool_manual", description="manual", input_schema={}),
+            ToolDefinition(name="file_read", description="read", input_schema={}),
+        ]
+        turn = await model.next_turn(
+            system="s", user_message="u", model=None, memory_summary=[], tool_definitions=definitions, tool_history=[]
+        )
+        assert turn.tool_calls[0].tool == "write_memory"
+        assert set(inner.names) == {"write_memory", "revise_memory", "finish_memory_commit", "tool_manual"}
+        assert "writable_terms=" in inner.user_message
+        assert any(item["text"] == "world" for item in get_writable_terms())
+    finally:
+        reset_memory_commit_active(commit_token)
+        reset_memory_turn_scope(turn_token)
+
+
+def test_scoped_write_rejects_unrecalled_node_and_allows_turn_term() -> None:
+    repo = GraphRepository(":memory:")
+    memory = ModelManagedGraphMemoryService(repo)
+    registry = GraphToolSuite(memory).build_registry()
+    user_token = set_memory_user_id("alice")
+    turn_token = set_memory_turn_scope("hello chess")
+    try:
+        set_memory_draft_answer("chess noted")
+        with pytest.raises(Exception):
+            asyncio.run(registry.run(ToolCall(
+                tool="write_memory",
+                arguments={
+                    "subject": {"node_id": "not-recalled"},
+                    "relation": "mentions",
+                    "object": {"kind": "user"},
+                },
+            )))
+        chess_term = next(item["term_id"] for item in get_writable_terms() if item["text"] == "chess")
+        result = asyncio.run(registry.run(ToolCall(
+            tool="write_memory",
+            arguments={
+                "subject": {"kind": "user"},
+                "relation": "mentions",
+                "object": {"term_id": chess_term, "kind": "concept"},
+            },
+        )))
+        assert result["ok"] is True
+        assert result["object_node_id"] in get_memory_turn_scope().created_node_ids
+    finally:
+        reset_memory_turn_scope(turn_token)
+        reset_memory_user_id(user_token)
+        repo.close()
+
+
+def test_revise_connect_can_chain_only_in_scope_nodes() -> None:
+    repo = GraphRepository(":memory:")
+    memory = ModelManagedGraphMemoryService(repo)
+    first = memory.write_semantic_memory(
+        user_id="alice",
+        subject={"kind": "user"},
+        relation="mentions",
+        object_={"kind": "concept", "label": "A"},
+    )
+    second = memory.write_semantic_memory(
+        user_id="alice",
+        subject={"kind": "user"},
+        relation="mentions",
+        object_={"kind": "concept", "label": "B"},
+    )
+    registry = GraphToolSuite(memory).build_registry()
+    user_token = set_memory_user_id("alice")
+    turn_token = set_memory_turn_scope("A then B")
+    try:
+        set_memory_draft_answer("A before B")
+        register_recalled_node_ids({first["object_node_id"], second["object_node_id"]})
+        result = asyncio.run(registry.run(ToolCall(
+            tool="revise_memory",
+            arguments={
+                "operation": "connect",
+                "subject": {"node_id": first["object_node_id"]},
+                "relation": "before",
+                "object": {"node_id": second["object_node_id"]},
+            },
+        )))
+        assert result["ok"] is True
+        assert result["support_count"] == 1
+        reinforced = asyncio.run(registry.run(ToolCall(
+            tool="revise_memory",
+            arguments={
+                "operation": "connect",
+                "subject": {"node_id": first["object_node_id"]},
+                "relation": "before",
+                "object": {"node_id": second["object_node_id"]},
+            },
+        )))
+        assert reinforced["support_count"] == 2
+    finally:
+        reset_memory_turn_scope(turn_token)
+        reset_memory_user_id(user_token)
+        repo.close()
+''', encoding='utf-8')
+          PY
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r MK4/requirements.txt pytest pytest-asyncio
+      - name: Run MK4 tests and persist result
+        shell: bash
+        run: |
+          set +e
+          python -m pytest MK4/tests -q --tb=short > /tmp/mk4-turn-cycle-tests.txt 2>&1
+          status=$?
+          set -e
+          rm .github/workflows/apply-mk4-turn-cycle.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$status" = "0" ]; then
+            rm -f MK4/tests/.turn_cycle_failure_report.txt
+            message="Implement turn-scoped memory cycle"
+          else
+            tail -n 260 /tmp/mk4-turn-cycle-tests.txt > MK4/tests/.turn_cycle_failure_report.txt
+            message="Record turn-cycle test failures (status=$status)"
+          fi
+          git add -A
+          git diff --cached --check
+          git commit -m "$message"
+          git push origin HEAD:mk4-turn-scoped-memory-cycle
+          exit "$status"
