@@ -38,9 +38,11 @@ class GraphToolSuite:
                 description=(
                     "Search persistent graph memory for past user statements, assistant responses and recommendations, "
                     "preferences, decisions, and project context. Results are small subgraph summaries containing a focus node, "
-                    "its important relations, and source metadata. Search by query first, then pass a "
-                    "returned relation node_id to expand that exact node. Use before concluding that "
-                    "relevant past memory is unavailable. The current user identity is supplied by the system."
+                    "its important relations, and source metadata. For utterance-derived memories, trust the structured "
+                    "focus.speaker/source.speaker field to distinguish user speech from assistant speech instead of inferring "
+                    "speaker from the text. Search by query first, then pass a returned relation node_id to expand that exact "
+                    "node. Use before concluding that relevant past memory is unavailable. The current user identity is supplied "
+                    "by the system."
                 ),
                 input_schema={
                     "type": "object",
@@ -119,29 +121,52 @@ class GraphToolSuite:
         return {"replacement_fact_id": replacement_id}
 
 
+def _speaker_from_provenance(provenance: object) -> str | None:
+    provenance_name = str(provenance or "")
+    if provenance_name == "assistant_utterance":
+        return "assistant"
+    if provenance_name in {"user_utterance", "user_assertion", "user_correction"}:
+        return "user"
+    return None
+
+
 def _format_memory_speaker(item: dict, *, user_id: str) -> dict:
     subgraph = item.get("subgraph") if isinstance(item.get("subgraph"), dict) else {}
     focus = subgraph.get("focus") if isinstance(subgraph.get("focus"), dict) else {}
-    if focus.get("provenance") != "assistant_utterance":
+    speaker = _speaker_from_provenance(focus.get("provenance"))
+    if speaker is None:
         return item
-    raw_label = str(item.get("raw_label") or focus.get("label") or "")
+
     formatted = dict(item)
-    formatted["label"] = (
-        f'assistant가 사용자({user_id})에게 이전에 말한 내용: "{raw_label}" '
-        "이 발화의 speaker는 assistant이며 사용자의 발언이나 사용자 사실이 아닙니다."
-    )
+    formatted_subgraph = dict(subgraph)
+    formatted_focus = dict(focus)
+    formatted_focus["speaker"] = speaker
+    formatted_subgraph["focus"] = formatted_focus
+    source = dict(formatted_subgraph.get("source") or {})
+    source.update({"speaker": speaker, "user_id": user_id})
+    formatted_subgraph["source"] = source
+    formatted["subgraph"] = formatted_subgraph
+
+    if speaker == "assistant":
+        raw_label = str(item.get("raw_label") or focus.get("label") or "")
+        formatted["label"] = (
+            f'assistant가 사용자({user_id})에게 이전에 말한 내용: "{raw_label}" '
+            "이 발화의 speaker는 assistant이며 사용자의 발언이나 사용자 사실이 아닙니다."
+        )
     return formatted
 
 
 def _format_graph_search_speaker(item: dict, *, user_id: str) -> dict:
     focus = item.get("focus") if isinstance(item.get("focus"), dict) else {}
-    if focus.get("provenance") != "assistant_utterance":
+    speaker = _speaker_from_provenance(focus.get("provenance"))
+    if speaker is None:
         return item
+
     formatted = dict(item)
     formatted_focus = dict(focus)
-    formatted_focus["speaker"] = "assistant"
+    formatted_focus["speaker"] = speaker
     formatted["focus"] = formatted_focus
     source = dict(formatted.get("source") or {})
-    source.update({"speaker": "assistant", "user_id": user_id})
+    source.update({"speaker": speaker, "user_id": user_id})
     formatted["source"] = source
     return formatted
