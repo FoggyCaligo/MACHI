@@ -67,7 +67,7 @@ class PhaseModel:
 
 
 @pytest.mark.asyncio
-async def test_turn_cycle_requires_recall_then_tool_review_draft_and_memory_commit() -> None:
+async def test_turn_cycle_runs_one_model_call_per_agent_loop_round() -> None:
     repo = GraphRepository(":memory:")
     memory = ModelManagedGraphMemoryService(repo)
     registry = GraphToolSuite(memory).build_registry()
@@ -79,6 +79,7 @@ async def test_turn_cycle_requires_recall_then_tool_review_draft_and_memory_comm
         _definition("file_read"),
         _definition("write_memory"),
         _definition("revise_memory"),
+        _definition("_begin_memory_commit"),
         _definition("finish_memory_commit"),
     ]
     user_token = set_memory_user_id("alice")
@@ -91,7 +92,7 @@ async def test_turn_cycle_requires_recall_then_tool_review_draft_and_memory_comm
             tool_definitions=definitions, tool_history=history,
         )
         assert first.tool_calls[0].tool == "graph_search"
-        assert model_inner.exposed[-1] == ["graph_search"]
+        assert len(model_inner.exposed) == 1
         recall_result = await registry.run(ToolCall(
             tool="graph_search",
             arguments={"user_id": "alice", "limit": 4},
@@ -103,27 +104,41 @@ async def test_turn_cycle_requires_recall_then_tool_review_draft_and_memory_comm
             tool_definitions=definitions, tool_history=history,
         )
         assert second.final_answer is None
-        assert second.tool_calls[0].tool == "write_memory"
+        assert second.tool_calls[0].tool == "_begin_memory_commit"
+        assert len(model_inner.exposed) == 2
         assert "file_read" in model_inner.exposed[1]
         assert "write_memory" not in model_inner.exposed[1]
-        write_result = await registry.run(second.tool_calls[0])
-        assert write_result["ok"] is True
-        history.append({"tool": "write_memory", "arguments": second.tool_calls[0].arguments, "result": write_result})
+        assert "_begin_memory_commit" not in model_inner.exposed[1]
+        begin_result = await registry.run(second.tool_calls[0])
+        assert begin_result["ok"] is True
+        history.append({"tool": "_begin_memory_commit", "arguments": {}, "result": begin_result})
 
         third = await model.next_turn(
             system="s", user_message="u", model=None, memory_summary=[],
             tool_definitions=definitions, tool_history=history,
         )
-        assert third.tool_calls[0].tool == "finish_memory_commit"
-        finish_result = await registry.run(third.tool_calls[0])
-        assert finish_result["ok"] is True
-        history.append({"tool": "finish_memory_commit", "arguments": {}, "result": finish_result})
+        assert third.tool_calls[0].tool == "write_memory"
+        assert len(model_inner.exposed) == 3
+        write_result = await registry.run(third.tool_calls[0])
+        assert write_result["ok"] is True
+        history.append({"tool": "write_memory", "arguments": third.tool_calls[0].arguments, "result": write_result})
 
         fourth = await model.next_turn(
             system="s", user_message="u", model=None, memory_summary=[],
             tool_definitions=definitions, tool_history=history,
         )
-        assert fourth.final_answer == "hello back"
+        assert fourth.tool_calls[0].tool == "finish_memory_commit"
+        assert len(model_inner.exposed) == 4
+        finish_result = await registry.run(fourth.tool_calls[0])
+        assert finish_result["ok"] is True
+        history.append({"tool": "finish_memory_commit", "arguments": {}, "result": finish_result})
+
+        fifth = await model.next_turn(
+            system="s", user_message="u", model=None, memory_summary=[],
+            tool_definitions=definitions, tool_history=history,
+        )
+        assert fifth.final_answer == "hello back"
+        assert len(model_inner.exposed) == 4
         assert get_memory_turn_scope().mutation_succeeded is True
     finally:
         reset_turn_cycle_state(cycle_token)
