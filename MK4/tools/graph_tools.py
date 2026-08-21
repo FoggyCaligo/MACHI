@@ -9,6 +9,8 @@ _MEMORY_SUMMARY_NOTE = (
     "Use recall_memory for broader recall before concluding that relevant memory is unavailable; "
     "call recall_memory with no query/node_id to browse broad user memory."
 )
+_MEMORY_RETRIEVAL_INTERACTION_ROLE = "memory_retrieval"
+_MEMORY_RANK_OVERSAMPLE_FACTOR = 3
 
 
 class GraphToolSuite:
@@ -26,15 +28,19 @@ class GraphToolSuite:
         activation_node_ids: set[str] | None = None,
         activation_node_weights: dict[str, float] | None = None,
     ) -> list[dict]:
+        candidate_limit = _oversampled_limit(limit)
         items = self._memory_service.user_memory_summary(
             user_id,
             query=query,
-            limit=limit,
+            limit=candidate_limit,
             min_signal=min_signal,
             exclude_node_ids=exclude_node_ids,
             activation_node_ids=activation_node_ids,
             activation_node_weights=activation_node_weights,
         )
+        items = self._prioritize_content_memory(items)
+        if limit > 0:
+            items = items[:limit]
         formatted = [_format_memory_speaker(item, user_id=user_id) for item in items]
         return [*formatted, _memory_summary_note_item()]
 
@@ -100,14 +106,17 @@ class GraphToolSuite:
         if not user_id:
             raise ValueError("recall_memory requires user_id")
 
+        self._mark_memory_retrieval_interaction(exclude_node_ids)
+
         if not query and not node_id:
             items = self._memory_service.user_memory_summary(
                 user_id,
                 query="",
-                limit=bounded_limit,
+                limit=_oversampled_limit(bounded_limit),
                 min_signal=0.0,
                 exclude_node_ids=exclude_node_ids,
             )
+            items = self._prioritize_content_memory(items)[:bounded_limit]
             results = [
                 _format_graph_search_speaker(item["subgraph"], user_id=user_id)
                 for item in items
@@ -115,13 +124,16 @@ class GraphToolSuite:
             ]
             return {"ok": True, "mode": "browse", "results": results}
 
+        search_limit = bounded_limit if node_id else _oversampled_limit(bounded_limit)
         results = self._memory_service.graph_search(
             user_id=user_id,
             query=query,
             node_id=node_id,
-            limit=bounded_limit,
+            limit=search_limit,
             exclude_node_ids=exclude_node_ids,
         )
+        if not node_id:
+            results = self._prioritize_graph_results(results)[:bounded_limit]
         return {
             "ok": True,
             "mode": "node" if node_id else "query",
@@ -141,6 +153,59 @@ class GraphToolSuite:
             session_id=session_id,
         )
         return {"replacement_fact_id": replacement_id}
+
+    def _mark_memory_retrieval_interaction(self, utterance_node_ids: set[str]) -> None:
+        # GraphToolSuite and GraphMemoryService are the same graph-memory subsystem.
+        # The current user utterance is supplied structurally by the orchestrator as an excluded node.
+        repo = self._memory_service._repo
+        for node_id in utterance_node_ids:
+            node = repo.get_node(node_id)
+            if node is None or node.node_type != "utterance" or node.provenance != "user_utterance":
+                continue
+            node.payload["interaction_role"] = _MEMORY_RETRIEVAL_INTERACTION_ROLE
+            repo.upsert_node(node)
+            for edge in repo.edges_for_node(node_id):
+                if edge.source_id != node_id or edge.relation != "derived_fact" or not edge.is_active:
+                    continue
+                fact = repo.get_node(edge.target_id)
+                if fact is None or fact.node_type != "fact":
+                    continue
+                fact.payload["interaction_role"] = _MEMORY_RETRIEVAL_INTERACTION_ROLE
+                repo.upsert_node(fact)
+
+    def _prioritize_content_memory(self, items: list[dict]) -> list[dict]:
+        primary: list[dict] = []
+        interaction: list[dict] = []
+        for item in items:
+            node_id = str(item.get("node_id") or "")
+            target = interaction if self._has_memory_retrieval_role(node_id) else primary
+            target.append(item)
+        return [*primary, *interaction]
+
+    def _prioritize_graph_results(self, items: list[dict]) -> list[dict]:
+        primary: list[dict] = []
+        interaction: list[dict] = []
+        for item in items:
+            focus = item.get("focus") if isinstance(item.get("focus"), dict) else {}
+            node_id = str(focus.get("node_id") or "")
+            target = interaction if self._has_memory_retrieval_role(node_id) else primary
+            target.append(item)
+        return [*primary, *interaction]
+
+    def _has_memory_retrieval_role(self, node_id: str) -> bool:
+        if not node_id:
+            return False
+        node = self._memory_service._repo.get_node(node_id)
+        return bool(
+            node is not None
+            and node.payload.get("interaction_role") == _MEMORY_RETRIEVAL_INTERACTION_ROLE
+        )
+
+
+def _oversampled_limit(limit: int) -> int:
+    if limit <= 0:
+        return limit
+    return limit * _MEMORY_RANK_OVERSAMPLE_FACTOR
 
 
 def _memory_summary_note_item() -> dict:
