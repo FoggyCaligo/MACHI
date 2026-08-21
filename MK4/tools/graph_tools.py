@@ -6,8 +6,8 @@ from .tool_runtime import ToolDefinition, ToolRegistry
 
 _MEMORY_SUMMARY_NOTE = (
     "Memory summary is only a partial automatic recall, not the full persistent store. "
-    "Use memory_search for broader recall before concluding that relevant memory is unavailable; "
-    "call memory_search with no query/node_id to browse broad user memory."
+    "Use recall_memory for broader recall before concluding that relevant memory is unavailable; "
+    "call recall_memory with no query/node_id to browse broad user memory."
 )
 
 
@@ -44,7 +44,7 @@ class GraphToolSuite:
             ToolDefinition(
                 name="graph_search",
                 description=(
-                    "Search your persistent long-term graph memory for past user statements, assistant responses and "
+                    "Recall your persistent long-term graph memory for past user statements, assistant responses and "
                     "recommendations, preferences, decisions, and project context. Call with no query/node_id to broadly "
                     "browse the user's persistent memory, use query for targeted recall, or pass a returned relation node_id "
                     "to expand that exact node. Assistant responses are conversation records only: they prove what the "
@@ -53,7 +53,7 @@ class GraphToolSuite:
                     "concluding that relevant past memory is unavailable. The current user identity is supplied by the system."
                 ),
                 input_schema={
-                    "x-model-name": "memory_search",
+                    "x-model-name": "recall_memory",
                     "type": "object",
                     "properties": {
                         "query": {"type": "string"},
@@ -98,7 +98,7 @@ class GraphToolSuite:
         limit = int(limit_raw) if isinstance(limit_raw, int) or str(limit_raw).isdigit() else 8
         bounded_limit = max(1, min(limit, 12))
         if not user_id:
-            raise ValueError("memory_search requires user_id")
+            raise ValueError("recall_memory requires user_id")
 
         if not query and not node_id:
             items = self._memory_service.user_memory_summary(
