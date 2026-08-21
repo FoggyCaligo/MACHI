@@ -4,15 +4,14 @@ from dataclasses import dataclass
 
 from ..core.agent.orchestrator import AgentOrchestrator
 from ..core.graph.assistant_memory import AssistantMemoryRecorder
+from ..core.graph.model_managed_memory import ModelManagedGraphMemoryService
 from ..core.graph.repository import GraphRepository
-from ..core.graph.service import GraphMemoryService
 from ..tools.account_authorization import (
     AccountAuthorizationChatModel,
     reset_account_role,
     set_account_role,
 )
 from ..tools.autonomy_tools import AutonomyChatModel
-from ..tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
 from ..tools.grounding_tools import EvidenceGroundingChatModel
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.code_index_tools import CodeIndexToolSuite
@@ -22,12 +21,9 @@ from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel
 from ..tools.manual_tools import ToolManualSuite
+from ..tools.memory_context import reset_memory_user_id, set_memory_user_id
 from ..tools.model_tool_names import ModelToolNameAdapter
-from ..tools.scratchpad_tools import (
-    ScratchpadToolSuite,
-    reset_request_scratchpad,
-    start_request_scratchpad,
-)
+from ..tools.structured_context_model import StructuredContextOllamaToolChatModel
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.tool_runtime import (
     get_file_working_root,
@@ -51,14 +47,9 @@ class PipelineResult:
 
 TRIAL_TOOL_NAMES = {
     "graph_search",
-    "record_memory_correction",
     "latest_search",
     "market_snapshot",
     "web_research",
-    "scratchpad_create",
-    "scratchpad_read",
-    "scratchpad_update",
-    "scratchpad_delete",
     "tool_manual",
 }
 
@@ -72,11 +63,11 @@ class Pipeline:
         web_search: WebSearchTool | None = None,
     ) -> None:
         self._graph_repo = graph_repo or GraphRepository()
-        self._memory = GraphMemoryService(self._graph_repo)
+        self._memory = ModelManagedGraphMemoryService(self._graph_repo)
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = AccountAuthorizationChatModel(
-            ModelToolNameAdapter(chat_model or AutomaticMemoryContextOllamaToolChatModel())
+            ModelToolNameAdapter(chat_model or StructuredContextOllamaToolChatModel())
         )
         self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
         self._web_search = web_search or HttpWebSearchTool()
@@ -96,7 +87,6 @@ class Pipeline:
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
         self._orchestrator.register_tool_registry(TerminalToolSuite().build_registry())
-        self._orchestrator.register_tool_registry(ScratchpadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(
             ToolManualSuite(self._orchestrator.tool_registry).build_registry()
         )
@@ -113,8 +103,8 @@ class Pipeline:
         conversation_key = f"{user_id}::{session_id or 'default'}"
         root_token = set_file_working_root(self._file_working_roots.get(conversation_key, "."))
         task_tokens = set_file_task_message(message)
-        scratchpad_token = start_request_scratchpad()
         account_role_token = set_account_role(account_role)
+        memory_user_token = set_memory_user_id(user_id)
         try:
             result = await self._orchestrator.respond(
                 user_id=user_id,
@@ -130,14 +120,22 @@ class Pipeline:
             )
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
+            reset_memory_user_id(memory_user_token)
             reset_account_role(account_role_token)
-            reset_request_scratchpad(scratchpad_token)
             reset_file_task_message(task_tokens)
             reset_file_working_root(root_token)
+        semantic_writes = [
+            "semantic_memory"
+            for event in result.tool_events
+            if str(event.get("tool") or "") in {"write_memory", "revise_memory"}
+            and isinstance(event.get("result"), dict)
+            and event["result"].get("ok") is True
+        ]
+        raw_writes = [item for item in result.memory_writes if item == "user_utterance"]
         return PipelineResult(
             text=result.text,
             used_tools=[str(event.get("tool")) for event in result.tool_events if event.get("tool")],
-            memory_writes=[*result.memory_writes, "assistant_utterance"],
+            memory_writes=[*raw_writes, *semantic_writes, "assistant_utterance"],
             tool_events=result.tool_events,
         )
 

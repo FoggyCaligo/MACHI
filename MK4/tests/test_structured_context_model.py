@@ -4,14 +4,14 @@ import json
 
 import pytest
 
-from MK4.tools import automatic_memory_model
+from MK4.tools import structured_context_model
 from MK4.tools.account_authorization import reset_account_role, set_account_role
-from MK4.tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
+from MK4.tools.structured_context_model import StructuredContextOllamaToolChatModel
 from MK4.tools.tool_runtime import ToolDefinition
 
 
 @pytest.mark.asyncio
-async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> None:
+async def test_automatic_memory_is_not_injected_into_model_payload(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     async def fake_chat(*, system, user, model, response_format):
@@ -23,14 +23,14 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
             "completion_tools": [],
         })
 
-    monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
+    monkeypatch.setattr(structured_context_model, "ollama_chat", fake_chat)
     definition = ToolDefinition(
         name="recall_memory",
         description="Recall persistent memory.",
         input_schema={"type": "object"},
     )
 
-    await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+    await StructuredContextOllamaToolChatModel().next_turn(
         system="system",
         user_message="what do you remember?",
         model=None,
@@ -43,16 +43,11 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
     assert list(payload) == [
         "user_message",
         "authorization_context",
-        "automatic_memory_context",
         "tool_catalog",
         "tool_history",
     ]
+    assert "automatic_memory_context" not in payload
     assert "tools" not in payload
-    context = payload["automatic_memory_context"]
-    assert context["source"] == "automatic_graph_activation"
-    assert context["scope"] == "partial"
-    assert context["is_tool_result"] is False
-    assert context["items"] == ["automatic node"]
     assert payload["tool_catalog"][0]["name"] == "recall_memory"
     assert payload["tool_history"] == []
 
@@ -70,10 +65,10 @@ async def test_owner_authorization_context_is_explicit_in_payload(monkeypatch) -
             "completion_tools": [],
         })
 
-    monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
+    monkeypatch.setattr(structured_context_model, "ollama_chat", fake_chat)
     token = set_account_role("owner")
     try:
-        await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+        await StructuredContextOllamaToolChatModel().next_turn(
             system="system",
             user_message="configure startup",
             model=None,
@@ -107,9 +102,9 @@ async def test_recall_memory_result_appears_only_in_tool_history(monkeypatch) ->
             "completion_tools": [],
         })
 
-    monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
+    monkeypatch.setattr(structured_context_model, "ollama_chat", fake_chat)
 
-    await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+    await StructuredContextOllamaToolChatModel().next_turn(
         system="system",
         user_message="remember more",
         model=None,
@@ -123,5 +118,5 @@ async def test_recall_memory_result_appears_only_in_tool_history(monkeypatch) ->
     )
 
     payload = json.loads(str(captured["user"]))
-    assert payload["automatic_memory_context"]["is_tool_result"] is False
+    assert "automatic_memory_context" not in payload
     assert payload["tool_history"][0]["tool"] == "recall_memory"
