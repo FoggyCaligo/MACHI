@@ -27,9 +27,11 @@ class TerminalToolSuite:
                     "cmd.exe; invoke PowerShell explicitly when PowerShell features are useful. The command may inspect or "
                     "modify files, user-profile locations, registry, shell configuration, Startup registration, and other "
                     "system state when the task requires it. Do not claim that a command is unavailable or unauthorized unless "
-                    "the actual shell/tool execution reports that failure. Set changes_state=true when a command intentionally "
-                    "changes persistent state. After a state-changing command, run a separate read/check command with "
-                    "verification=true. A verification call must inspect resulting state and must not intentionally mutate it."
+                    "the actual shell/tool execution reports that failure. Before any persistent state change, first inspect the "
+                    "real target/path/current state with a read-only tool call; never use placeholders or guessed paths for a "
+                    "state-changing command. Set changes_state=true and preconditions_verified=true only after that inspection. "
+                    "After a state-changing command, run a separate read/check command with verification=true. A verification "
+                    "call must inspect resulting state and must not intentionally mutate it."
                 ),
                 input_schema={
                     "type": "object",
@@ -39,14 +41,21 @@ class TerminalToolSuite:
                             "type": "boolean",
                             "description": (
                                 "Set true when this command intentionally changes filesystem, registry, shell configuration, "
-                                "startup registration, or other persistent system state."
+                                "startup registration, or other persistent system state. Must be a JSON boolean, not a string."
+                            ),
+                        },
+                        "preconditions_verified": {
+                            "type": "boolean",
+                            "description": (
+                                "For changes_state=true, set true only after a prior successful read-only inspection established "
+                                "the real target/path/current state. Never use this to bless placeholders or guessed values."
                             ),
                         },
                         "verification": {
                             "type": "boolean",
                             "description": (
                                 "Set true only for a follow-up read/check command that verifies a prior terminal change. "
-                                "The command must not intentionally mutate state."
+                                "The command must not intentionally mutate state. Must be a JSON boolean, not a string."
                             ),
                         },
                     },
@@ -60,12 +69,19 @@ class TerminalToolSuite:
 
     async def _run(self, arguments: dict) -> dict:
         command = str(arguments.get("command") or "").strip()
-        changes_state = arguments.get("changes_state") is True
-        verification = arguments.get("verification") is True
+        changes_state = _optional_bool(arguments, "changes_state")
+        preconditions_verified = _optional_bool(arguments, "preconditions_verified")
+        verification = _optional_bool(arguments, "verification")
         if not command:
             raise ValueError("terminal_command requires command")
         if changes_state and verification:
             raise ValueError("terminal_command cannot set both changes_state=true and verification=true")
+        if changes_state and not preconditions_verified:
+            raise ValueError(
+                "terminal_command state changes require preconditions_verified=true after a prior read-only inspection"
+            )
+        if preconditions_verified and not changes_state:
+            raise ValueError("preconditions_verified is only valid with changes_state=true")
 
         before = self._snapshot_files()
         process = await asyncio.create_subprocess_shell(
@@ -94,6 +110,7 @@ class TerminalToolSuite:
             "stdout": _decode_process_output(stdout),
             "stderr": _decode_process_output(stderr),
             "changes_state": changes_state,
+            "preconditions_verified": preconditions_verified,
             "verification": verification,
             "filesystem_changed": bool(changed_paths),
             "changed_paths": changed_paths[:50],
@@ -119,6 +136,15 @@ class TerminalToolSuite:
                 relative = str(path)
             snapshot[relative] = (stat.st_size, stat.st_mtime_ns)
         return snapshot
+
+
+def _optional_bool(arguments: dict, name: str) -> bool:
+    if name not in arguments:
+        return False
+    value = arguments[name]
+    if not isinstance(value, bool):
+        raise ValueError(f"terminal_command {name} must be a JSON boolean")
+    return value
 
 
 def _decode_process_output(data: bytes) -> str:
