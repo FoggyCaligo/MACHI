@@ -7,6 +7,7 @@ from ..core.graph.assistant_memory import AssistantMemoryRecorder
 from ..core.graph.repository import GraphRepository
 from ..core.graph.service import GraphMemoryService
 from ..tools.autonomy_tools import AutonomyChatModel
+from ..tools.grounding_tools import EvidenceGroundingChatModel
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.code_index_tools import CodeIndexToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
@@ -59,7 +60,7 @@ class Pipeline:
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = chat_model or OllamaToolChatModel()
-        self._chat_model = AutonomyChatModel(base_chat_model)
+        self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
         self._web_search = web_search or HttpWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
         self._orchestrator = AgentOrchestrator(
