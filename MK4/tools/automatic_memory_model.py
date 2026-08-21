@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .account_authorization import get_authorization_context
 from .llm_client import (
     ModelOutputParseError,
     ModelRequestError,
@@ -21,7 +22,7 @@ from .tool_runtime import ToolDefinition
 
 
 class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
-    """Expose automatic graph activation as context, never as an implied tool result."""
+    """Expose automatic graph activation and authorization as explicit model context."""
 
     async def next_turn(
         self,
@@ -35,6 +36,7 @@ class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
     ) -> ModelTurn:
         user_payload = {
             "user_message": user_message,
+            "authorization_context": get_authorization_context(),
             "automatic_memory_context": {
                 "source": "automatic_graph_activation",
                 "scope": "partial",
