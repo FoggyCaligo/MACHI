@@ -121,23 +121,6 @@ class GraphToolSuite:
             ),
             self._revise_memory,
         )
-        registry.register(
-            ToolDefinition(
-                name="record_memory_correction",
-                description="Replace an older legacy user fact while preserving correction history.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "previous_fact_id": {"type": "string"},
-                        "replacement_text": {"type": "string"},
-                        "session_id": {"type": ["string", "null"]},
-                    },
-                    "required": ["previous_fact_id", "replacement_text"],
-                    "additionalProperties": False,
-                },
-            ),
-            self._record_memory_correction,
-        )
         return registry
 
     async def _graph_search(self, arguments: dict) -> dict:
@@ -211,20 +194,6 @@ class GraphToolSuite:
             relation=str(arguments.get("relation") or ""),
             object_=_require_endpoint(arguments, "object"),
         )
-
-    async def _record_memory_correction(self, arguments: dict) -> dict:
-        user_id = str(arguments.get("user_id") or "").strip()
-        previous_fact_id = str(arguments.get("previous_fact_id") or "").strip()
-        replacement_text = str(arguments.get("replacement_text") or "").strip()
-        session_id_raw = arguments.get("session_id")
-        session_id = str(session_id_raw) if session_id_raw is not None else None
-        replacement_id = self._memory_service.record_fact_correction(
-            user_id=user_id,
-            previous_fact_id=previous_fact_id,
-            replacement_text=replacement_text,
-            session_id=session_id,
-        )
-        return {"replacement_fact_id": replacement_id}
 
     def _model_managed_service(self) -> ModelManagedGraphMemoryService:
         if not isinstance(self._memory_service, ModelManagedGraphMemoryService):
