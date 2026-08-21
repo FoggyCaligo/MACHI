@@ -16,6 +16,7 @@ from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
 from ..tools.manual_tools import ToolManualSuite
+from ..tools.model_tool_names import ModelToolNameAdapter
 from ..tools.scratchpad_tools import (
     ScratchpadToolSuite,
     reset_request_scratchpad,
@@ -68,7 +69,7 @@ class Pipeline:
         self._memory = GraphMemoryService(self._graph_repo)
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
-        base_chat_model = chat_model or OllamaToolChatModel()
+        base_chat_model = ModelToolNameAdapter(chat_model or OllamaToolChatModel())
         self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
         self._web_search = web_search or HttpWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
