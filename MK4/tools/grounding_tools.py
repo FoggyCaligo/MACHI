@@ -12,23 +12,23 @@ A web-evidence grounding review is required before this answer can be shown to t
 Review the proposed answer against the web evidence in tool_history.
 
 Rules:
-- `evidence_ids` may contain only evidence IDs that actually appear in tool_history.
 - Every externally sourced factual statement in the final answer must be directly supported by the selected evidence.
 - A `search_snippet` supports only what its title/snippet explicitly says. Do not infer an author, publication date, plot, product detail, or other attribute that is absent from it.
 - `page_evidence` may support facts that are explicit in its matched sections/excerpt.
 - Do not fill missing facts from memory or invent plausible titles, authors, dates, plots, or verification status.
 - If the available evidence does not support enough of the user's request, return tool_calls for additional `web_research` instead of a final answer.
-- When returning a final answer, include the supporting IDs in `evidence_ids`.
+- For this grounding-review response only: when returning a final answer, set `final_answer_kind` to `tool_completion` and put the supporting web evidence IDs in `completion_tools`. Do not put tool names there during this review.
 """.strip()
 
 
 class EvidenceGroundingChatModel:
     """Require an explicit grounding pass after web evidence enters a turn.
 
-    This wrapper does not infer claims from strings. It gives the model a focused
-    second pass and then structurally checks that every cited evidence ID exists
-    in the actual tool history. If the model still cannot satisfy that contract,
-    the failure is surfaced as blocked instead of presenting an ungrounded answer.
+    The normal model contract is left unchanged. During the internal grounding
+    review only, `completion_tools` is temporarily used as a structured carrier
+    for evidence IDs. The wrapper validates those IDs against actual tool history,
+    then strips them before the turn reaches the orchestrator. No claim routing or
+    semantic decision is made with string matching.
     """
 
     def __init__(self, delegate: ChatModel) -> None:
@@ -66,7 +66,6 @@ class EvidenceGroundingChatModel:
                     "error": "grounding_review_required",
                     "message": _GROUNDING_REVIEW_INSTRUCTION,
                     "proposed_final_answer": turn.final_answer,
-                    "proposed_evidence_ids": list(turn.evidence_ids),
                     "available_evidence": compact_evidence_catalog(tool_history),
                 },
             },
@@ -82,9 +81,17 @@ class EvidenceGroundingChatModel:
         if reviewed.tool_calls or not reviewed.final_answer or reviewed.final_answer_kind == "blocked":
             return reviewed
 
-        selected = [evidence_id for evidence_id in reviewed.evidence_ids if evidence_id]
-        if selected and all(evidence_id in catalog for evidence_id in selected):
-            return reviewed
+        selected = [evidence_id for evidence_id in reviewed.completion_tools if evidence_id]
+        if (
+            reviewed.final_answer_kind == "tool_completion"
+            and selected
+            and all(evidence_id in catalog for evidence_id in selected)
+        ):
+            return ModelTurn(
+                final_answer=reviewed.final_answer,
+                final_answer_kind="answer",
+                completion_tools=[],
+            )
 
         return ModelTurn(
             final_answer=(
@@ -92,5 +99,4 @@ class EvidenceGroundingChatModel:
                 "답변을 확정하지 않았습니다."
             ),
             final_answer_kind="blocked",
-            evidence_ids=[],
         )
