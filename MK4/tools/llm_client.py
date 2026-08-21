@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from .. import config
 from .ollama_client import chat as ollama_chat
+from .tool_catalog import compact_tool_catalog
 from .tool_runtime import ToolCall, ToolDefinition
 
 
@@ -147,8 +148,9 @@ class OllamaToolChatModel:
     ) -> ModelTurn:
         user_payload = {
             "user_message": user_message,
-            "tools": [tool.name for tool in tool_definitions],
             "memory_summary": [_compact_memory_item(item) for item in memory_summary],
+            "tool_catalog": compact_tool_catalog(tool_definitions),
+            "tools": [tool.name for tool in tool_definitions],
             "tool_history": [_compact_tool_history_event(event) for event in tool_history],
         }
         try:
