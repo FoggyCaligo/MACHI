@@ -98,7 +98,7 @@ class GraphToolSuite:
         limit = int(limit_raw) if isinstance(limit_raw, int) or str(limit_raw).isdigit() else 8
         bounded_limit = max(1, min(limit, 12))
         if not user_id:
-            raise ValueError("graph_search requires user_id")
+            raise ValueError("memory_search requires user_id")
 
         if not query and not node_id:
             items = self._memory_service.user_memory_summary(
