@@ -1,0 +1,80 @@
+name: Apply deferred utterance graphization
+
+on:
+  push:
+    branches:
+      - mk4-defer-utterance-graphization
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Patch service and orchestrator
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          service_path = Path('MK4/core/graph/service.py')
+          text = service_path.read_text(encoding='utf-8-sig')
+          old = '    def record_user_utterance(self, *, user_id: str, text: str, session_id: str | None) -> str:\n'
+          new = '    def record_user_utterance(\n        self,\n        *,\n        user_id: str,\n        text: str,\n        session_id: str | None,\n        graphize: bool = True,\n    ) -> str:\n'
+          if old not in text:
+              raise SystemExit('service signature patch target not found')
+          text = text.replace(old, new, 1)
+          old = '                        "text_graph_version": _TEXT_GRAPH_VERSION,\n'
+          new = '                        "text_graph_version": _TEXT_GRAPH_VERSION if graphize else 0,\n'
+          if old not in text:
+              raise SystemExit('service payload patch target not found')
+          text = text.replace(old, new, 1)
+          old = '        if needs_graph_refresh:\n            self._graphize_text(\n'
+          new = '        if graphize and needs_graph_refresh:\n            self._graphize_text(\n'
+          if old not in text:
+              raise SystemExit('service graphization gate target not found')
+          text = text.replace(old, new, 1)
+          service_path.write_text(text, encoding='utf-8')
+
+          orch_path = Path('MK4/core/agent/orchestrator.py')
+          text = orch_path.read_text(encoding='utf-8-sig')
+          old = '''        utterance_id = self._memory_service.record_user_utterance(\n            user_id=user_id,\n            text=message,\n            session_id=session_id,\n        )\n'''
+          new = '''        utterance_id = self._memory_service.record_user_utterance(\n            user_id=user_id,\n            text=message,\n            session_id=session_id,\n            graphize=False,\n        )\n'''
+          if old not in text:
+              raise SystemExit('orchestrator utterance patch target not found')
+          text = text.replace(old, new, 1)
+          orch_path.write_text(text, encoding='utf-8')
+          PY
+      - name: Run MK4 tests
+        id: tests
+        continue-on-error: true
+        run: |
+          python -m pytest MK4/tests -q --tb=short > /tmp/mk4-tests.txt 2>&1
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat /tmp/mk4-tests.txt
+      - name: Record result and remove workflow
+        env:
+          STATUS: ${{ steps.tests.outputs.status }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/apply-deferred-utterance-graphization.yml
+          if [ "$STATUS" = "0" ]; then
+            rm -f MK4_TEST_FAILURES.txt
+            git add -A
+            git commit -m 'MK4 deferred-graphization tests passed'
+            git push origin HEAD:mk4-defer-utterance-graphization
+          else
+            cp /tmp/mk4-tests.txt MK4_TEST_FAILURES.txt
+            git add -A
+            git commit -m "Record MK4 deferred-graphization test failures (status=$STATUS)"
+            git push origin HEAD:mk4-defer-utterance-graphization
+            exit "$STATUS"
+          fi
