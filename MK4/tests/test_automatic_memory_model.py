@@ -45,14 +45,15 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
         "authorization_context",
         "automatic_memory_context",
         "tool_catalog",
-        "tools",
         "tool_history",
     ]
+    assert "tools" not in payload
     context = payload["automatic_memory_context"]
     assert context["source"] == "automatic_graph_activation"
     assert context["scope"] == "partial"
     assert context["is_tool_result"] is False
     assert context["items"] == ["automatic node"]
+    assert payload["tool_catalog"][0]["name"] == "recall_memory"
     assert payload["tool_history"] == []
 
 

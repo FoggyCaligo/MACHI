@@ -34,6 +34,7 @@ class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
+        tool_names = [tool.name for tool in tool_definitions]
         user_payload = {
             "user_message": user_message,
             "authorization_context": get_authorization_context(),
@@ -44,7 +45,6 @@ class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
                 "items": [_compact_memory_item(item) for item in memory_summary],
             },
             "tool_catalog": compact_tool_catalog(tool_definitions),
-            "tools": [tool.name for tool in tool_definitions],
             "tool_history": [_compact_tool_history_event(event) for event in tool_history],
         }
         try:
@@ -52,7 +52,7 @@ class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
                 system=system,
                 user=json.dumps(user_payload, ensure_ascii=False),
                 model=model,
-                response_format=_response_schema_for_tools([tool.name for tool in tool_definitions]),
+                response_format=_response_schema_for_tools(tool_names),
             )
         except ValueError as exc:
             raise ModelRequestError(str(exc)) from exc
