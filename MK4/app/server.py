@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -15,6 +16,7 @@ from starlette.background import BackgroundTask
 
 from .pipeline import Pipeline
 from .accounts import AccountStore
+from .chat_jobs import ChatJobStore
 from .download_tokens import default_download_token_store
 from .schemas import ChatRequest, ChatResponse, LoginRequest, VoiceTTSRequest
 from .sessions import SessionStore
@@ -31,6 +33,7 @@ session_store = SessionStore(
     path=config.SESSIONS_DB_PATH,
     account_validator=account_store.is_active,
 )
+chat_job_store = ChatJobStore()
 voice_service = LocalVoiceService()
 _login_attempts: dict[str, deque[float]] = defaultdict(deque)
 _SESSION_COOKIE = "mk4_session"
@@ -43,6 +46,7 @@ async def lifespan(app: FastAPI):
     global pipeline
     pipeline = Pipeline()
     yield
+    await chat_job_store.shutdown()
     if pipeline is not None:
         pipeline.close()
         pipeline = None
@@ -83,7 +87,10 @@ def _render_ui_html() -> str:
     index_path = Path(_STATIC_DIR) / "index.html"
     html = index_path.read_text(encoding="utf-8-sig")
     head_assets = '  <link rel="stylesheet" href="/static/markdown-render.css" />\n'
-    body_assets = '  <script src="/static/markdown-render.js"></script>\n'
+    body_assets = (
+        '  <script src="/static/markdown-render.js"></script>\n'
+        '  <script src="/static/chat-resume.js"></script>\n'
+    )
     if config.VOICE_ENABLED:
         head_assets += '  <link rel="stylesheet" href="/static/voice-mode.css" />\n'
         body_assets += '  <script src="/static/voice-mode.js"></script>\n'
@@ -399,6 +406,77 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         memory_writes=result.memory_writes,
         tool_events=result.tool_events,
     )
+
+
+@app.post("/chat/jobs")
+async def start_chat_job(req: ChatRequest, request: Request) -> dict:
+    account = request.state.account
+    job = chat_job_store.create(graph_user_id=account.graph_user_id)
+    task = asyncio.create_task(
+        _run_chat_job(
+            job_id=job.job_id,
+            req=req,
+            graph_user_id=account.graph_user_id,
+            account_role=account.role,
+        )
+    )
+    chat_job_store.attach_task(job.job_id, task)
+    return {"ok": True, "job_id": job.job_id, "status": job.status}
+
+
+@app.get("/chat/jobs/{job_id}")
+async def get_chat_job(job_id: str, request: Request):
+    account = request.state.account
+    snapshot = chat_job_store.snapshot_for(job_id=job_id, graph_user_id=account.graph_user_id)
+    if snapshot is None:
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "chat_job_not_found", "message": "대화 작업을 찾을 수 없습니다."},
+        )
+    return snapshot
+
+
+async def _run_chat_job(
+    *,
+    job_id: str,
+    req: ChatRequest,
+    graph_user_id: str,
+    account_role: str,
+) -> None:
+    try:
+        async with chat_job_store.lock_for(graph_user_id):
+            chat_job_store.mark_running(job_id)
+            result = await _get_pipeline().run(
+                user_id=graph_user_id,
+                message=req.message,
+                model=req.model,
+                session_id=req.session_id,
+                account_role=account_role,
+            )
+        chat_job_store.complete(
+            job_id,
+            {
+                "text": result.text,
+                "used_tools": result.used_tools,
+                "memory_writes": result.memory_writes,
+                "tool_events": result.tool_events,
+            },
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        chat_job_store.fail(
+            job_id,
+            error=error,
+            response={
+                "detail": error,
+                "text": f"[오류] {error}",
+                "used_tools": [],
+                "memory_writes": [],
+                "tool_events": [],
+            },
+        )
 
 
 def _safe_upload_name(filename: str) -> str:
