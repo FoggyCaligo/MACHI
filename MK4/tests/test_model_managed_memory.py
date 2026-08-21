@@ -109,7 +109,19 @@ def test_graph_tools_write_memory_uses_request_user_context() -> None:
     repo.close()
 
 
-def test_semantic_memory_is_prioritized_in_user_memory_summary() -> None:
+def test_recall_memory_registry_contains_only_new_memory_workflow() -> None:
+    repo = GraphRepository(":memory:")
+    memory = ModelManagedGraphMemoryService(repo)
+    registry = GraphToolSuite(memory).build_registry()
+
+    assert registry.has_tool("graph_search")
+    assert registry.has_tool("write_memory")
+    assert registry.has_tool("revise_memory")
+    assert not registry.has_tool("record_memory_correction")
+    repo.close()
+
+
+def test_semantic_memory_is_prioritized_for_explicit_browse() -> None:
     repo = GraphRepository(":memory:")
     memory = ModelManagedGraphMemoryService(repo)
     memory.record_user_utterance(user_id="alice", text="Tell me about memory.", session_id="s1")
