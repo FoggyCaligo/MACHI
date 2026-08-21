@@ -20,53 +20,42 @@ def test_decode_process_output_recovers_cp949(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def test_windows_ls_is_blocked_before_subprocess(
+async def test_command_text_is_passed_to_real_shell_without_preblocking(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(terminal_tools, "_is_windows", lambda: True)
-    called = False
+    seen: dict[str, object] = {}
 
-    async def fail_if_called(*args, **kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("subprocess should not run for blocked Unix command")
+    class FakeProcess:
+        returncode = 1
 
-    monkeypatch.setattr(terminal_tools.asyncio, "create_subprocess_shell", fail_if_called)
+        async def communicate(self):
+            return b"", b"real shell failure"
+
+        def kill(self):
+            pass
+
+    async def fake_subprocess(command, **kwargs):
+        seen["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr(terminal_tools.asyncio, "create_subprocess_shell", fake_subprocess)
     suite = TerminalToolSuite(workspace_root=tmp_path)
 
     result = await suite._run({"command": "ls -d MK4"})
 
+    assert seen["command"] == "ls -d MK4"
     assert result["ok"] is False
-    assert result["error"] == "unsupported_windows_shell_command"
-    assert result["recovery"]["prefer_file_tree"] is True
-    assert result["recovery"]["next_tools"][0] == "file_tree"
-    assert called is False
+    assert result["returncode"] == 1
+    assert "real shell failure" in result["stderr"]
+    assert "error" not in result
 
 
 @pytest.mark.asyncio
-async def test_windows_cat_is_blocked_without_file_tree_preference(
+async def test_powershell_command_runs_through_same_shell_path(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(terminal_tools, "_is_windows", lambda: True)
-    suite = TerminalToolSuite(workspace_root=tmp_path)
-
-    result = await suite._run({"command": "cat README.md"})
-
-    assert result["ok"] is False
-    assert result["error"] == "unsupported_windows_shell_command"
-    assert result["recovery"]["prefer_file_tree"] is False
-    assert result["recovery"]["next_tools"] == ["terminal_command"]
-
-
-@pytest.mark.asyncio
-async def test_powershell_command_is_not_misclassified_as_direct_unix(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(terminal_tools, "_is_windows", lambda: True)
-
     class FakeProcess:
         returncode = 0
 
@@ -89,10 +78,12 @@ async def test_powershell_command_is_not_misclassified_as_direct_unix(
     assert "MK4" in result["stdout"]
 
 
-def test_tool_description_prefers_file_tree_for_directory_discovery(tmp_path) -> None:
+def test_tool_description_allows_system_level_shell_work(tmp_path) -> None:
     registry = TerminalToolSuite(workspace_root=tmp_path).build_registry()
     description = registry.definition("terminal_command").description
 
-    assert "prefer file_tree" in description.lower()
-    assert "ls" in description
-    assert "Windows cmd.exe" in description
+    assert "registry" in description.lower()
+    assert "startup" in description.lower()
+    assert "actual shell/tool execution" in description.lower()
+    assert "prefer file_tree" not in description.lower()
+    assert "do not use direct unix" not in description.lower()
