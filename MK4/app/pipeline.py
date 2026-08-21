@@ -16,6 +16,7 @@ from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel, OllamaToolChatModel
 from ..tools.manual_tools import ToolManualSuite
+from ..tools.research_plan_tools import ResearchPlanToolSuite
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.tool_runtime import (
     get_file_working_root,
@@ -40,6 +41,7 @@ class PipelineResult:
 TRIAL_TOOL_NAMES = {
     "graph_search",
     "record_memory_correction",
+    "research_plan",
     "latest_search",
     "market_snapshot",
     "web_research",
@@ -80,6 +82,7 @@ class Pipeline:
         self._orchestrator.register_tool_registry(DocumentReadToolSuite().build_registry())
         self._orchestrator.register_tool_registry(ImageAnalyzeToolSuite().build_registry())
         self._orchestrator.register_tool_registry(TerminalToolSuite().build_registry())
+        self._orchestrator.register_tool_registry(ResearchPlanToolSuite().build_registry())
         self._orchestrator.register_tool_registry(
             ToolManualSuite(self._orchestrator.tool_registry).build_registry()
         )
