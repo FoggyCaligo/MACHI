@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from .llm_client import ChatModel, ModelTurn
-from .tool_runtime import ToolCall, ToolDefinition
+from .tool_runtime import ToolDefinition
 
 
 _PLAN_REQUIRED_INSTRUCTION = """
@@ -97,6 +97,12 @@ class WorkPlanningChatModel:
         )
 
     async def _require_current_step(self, *, pending: dict[str, Any], **kwargs: Any) -> ModelTurn:
+        if str(pending.get("action_type") or "") == "tool":
+            planned_tool = str(pending.get("tool") or "")
+            available = {definition.name for definition in kwargs["tool_definitions"]}
+            if planned_tool not in available:
+                return _blocked_turn(f"work_plan_unknown_tool:{planned_tool}")
+
         step_instruction = (
             _STEP_INSTRUCTION
             + "\nCurrent step:\n"
