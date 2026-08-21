@@ -5,7 +5,14 @@ import asyncio
 from MK4.core.graph.model_managed_memory import ModelManagedGraphMemoryService
 from MK4.core.graph.repository import GraphRepository
 from MK4.tools.graph_tools import GraphToolSuite
-from MK4.tools.memory_context import reset_memory_user_id, set_memory_user_id
+from MK4.tools.memory_context import (
+    get_writable_terms,
+    reset_memory_turn_scope,
+    reset_memory_user_id,
+    set_memory_draft_answer,
+    set_memory_turn_scope,
+    set_memory_user_id,
+)
 from MK4.tools.tool_runtime import ToolCall
 
 
@@ -89,18 +96,22 @@ def test_graph_tools_write_memory_uses_request_user_context() -> None:
     repo = GraphRepository(":memory:")
     memory = ModelManagedGraphMemoryService(repo)
     registry = GraphToolSuite(memory).build_registry()
-    token = set_memory_user_id("alice")
+    user_token = set_memory_user_id("alice")
+    turn_token = set_memory_turn_scope("I like Chess")
     try:
+        set_memory_draft_answer("You like Chess")
+        chess_term = next(item["term_id"] for item in get_writable_terms() if item["text"] == "Chess")
         result = asyncio.run(registry.run(ToolCall(
             tool="write_memory",
             arguments={
                 "subject": {"kind": "user"},
                 "relation": "likes",
-                "object": {"kind": "concept", "label": "Chess"},
+                "object": {"kind": "concept", "term_id": chess_term},
             },
         )))
     finally:
-        reset_memory_user_id(token)
+        reset_memory_turn_scope(turn_token)
+        reset_memory_user_id(user_token)
 
     assert result["ok"] is True
     memory_node = repo.get_node(result["memory_node_id"])
@@ -138,6 +149,7 @@ def test_recall_memory_returns_written_semantic_memory() -> None:
     )))
 
     assert result["ok"] is True
+    assert result["depth"] == 1
     assert any(item["focus"]["node_id"] == written["memory_node_id"] for item in result["results"])
     repo.close()
 
