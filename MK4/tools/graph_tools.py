@@ -4,7 +4,16 @@ from typing import Any
 
 from ..core.graph.model_managed_memory import ModelManagedGraphMemoryService
 from ..core.graph.service import GraphMemoryService
-from .memory_context import get_memory_user_id
+from .memory_context import (
+    get_memory_user_id,
+    has_memory_turn_scope,
+    mark_memory_mutation_succeeded,
+    register_created_node_ids,
+    register_recalled_node_ids,
+    require_memory_mutation_enabled,
+    require_scoped_node_id,
+    resolve_writable_term,
+)
 from .tool_runtime import ToolDefinition, ToolRegistry
 
 
@@ -13,7 +22,7 @@ _ENDPOINT_SCHEMA = {
     "properties": {
         "node_id": {"type": "string"},
         "kind": {"type": "string"},
-        "label": {"type": "string"},
+        "term_id": {"type": "string"},
     },
     "additionalProperties": False,
 }
@@ -51,8 +60,8 @@ class GraphToolSuite:
             ToolDefinition(
                 name="graph_search",
                 description=(
-                    "Recall persistent graph memory. Browse with no query/node_id, search by query, or expand a returned node_id. "
-                    "Use returned node ids when writing or revising related semantic memory so existing nodes can be reused."
+                    "Recall persistent graph memory as one-hop focus neighborhoods. Browse with no query/node_id, "
+                    "search by query, or expand a returned node_id. Additional recall calls are allowed."
                 ),
                 input_schema={
                     "x-model-name": "recall_memory",
@@ -71,9 +80,9 @@ class GraphToolSuite:
             ToolDefinition(
                 name="write_memory",
                 description=(
-                    "Store or reinforce one durable semantic relationship in long-term memory. "
-                    "Use kind='user' for the current user, or reuse node_id values returned by recall_memory. "
-                    "Exact duplicate nodes are reused and an identical relationship reinforces the existing memory instead of creating another copy."
+                    "Write or reinforce one semantic relationship after the answer draft is fixed. Existing endpoints "
+                    "must use recalled/created node_id values; new endpoints must use term_id from the current turn's "
+                    "writable_terms. Identical relationships reinforce existing graph support."
                 ),
                 input_schema={
                     "type": "object",
@@ -92,18 +101,23 @@ class GraphToolSuite:
             ToolDefinition(
                 name="revise_memory",
                 description=(
-                    "Replace one model-managed semantic memory returned by recall_memory. "
-                    "The old memory assertion is kept as inactive history and linked to the replacement."
+                    "Modify only the current turn graph scope after the answer draft is fixed. operation='connect' "
+                    "adds/reinforces an edge between already recalled/created nodes; operation='update_node' merges "
+                    "model attributes into one in-scope node; operation='replace' supersedes an in-scope semantic "
+                    "memory and may use writable term_id values for replacement endpoints."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
+                        "operation": {"type": "string", "enum": ["connect", "update_node", "replace"]},
                         "memory_node_id": {"type": "string"},
+                        "node_id": {"type": "string"},
+                        "attributes": {"type": "object"},
                         "subject": _ENDPOINT_SCHEMA,
                         "relation": {"type": "string"},
                         "object": _ENDPOINT_SCHEMA,
                     },
-                    "required": ["memory_node_id", "subject", "relation", "object"],
+                    "required": ["operation"],
                     "additionalProperties": False,
                 },
             ),
@@ -140,7 +154,9 @@ class GraphToolSuite:
                 for item in items
                 if isinstance(item.get("subgraph"), dict)
             ]
-            return {"ok": True, "mode": "browse", "results": results}
+            if has_memory_turn_scope():
+                register_recalled_node_ids(_result_node_ids(results))
+            return {"ok": True, "mode": "browse", "depth": 1, "results": results}
 
         results = self._memory_service.graph_search(
             user_id=user_id,
@@ -149,33 +165,69 @@ class GraphToolSuite:
             limit=bounded_limit,
             exclude_node_ids=exclude_node_ids,
         )
+        formatted = [_format_graph_search_speaker(item, user_id=user_id) for item in results]
+        if has_memory_turn_scope():
+            register_recalled_node_ids(_result_node_ids(formatted))
         return {
             "ok": True,
             "mode": "node" if node_id else "query",
-            "results": [_format_graph_search_speaker(item, user_id=user_id) for item in results],
+            "depth": 1,
+            "results": formatted,
         }
 
     async def _write_memory(self, arguments: dict) -> dict:
+        require_memory_mutation_enabled()
         service = self._model_managed_service()
-        return service.write_semantic_memory(
+        result = service.write_semantic_memory(
             user_id=get_memory_user_id(),
-            subject=_require_endpoint(arguments, "subject"),
+            subject=_scoped_endpoint(arguments, "subject", allow_new=True),
             relation=str(arguments.get("relation") or ""),
-            object_=_require_endpoint(arguments, "object"),
+            object_=_scoped_endpoint(arguments, "object", allow_new=True),
         )
+        register_created_node_ids(_memory_result_node_ids(result))
+        mark_memory_mutation_succeeded()
+        return result
 
     async def _revise_memory(self, arguments: dict) -> dict:
+        require_memory_mutation_enabled()
         service = self._model_managed_service()
-        memory_node_id = str(arguments.get("memory_node_id") or "").strip()
-        if not memory_node_id:
-            raise ValueError("revise_memory requires memory_node_id")
-        return service.revise_semantic_memory(
-            user_id=get_memory_user_id(),
-            memory_node_id=memory_node_id,
-            subject=_require_endpoint(arguments, "subject"),
-            relation=str(arguments.get("relation") or ""),
-            object_=_require_endpoint(arguments, "object"),
-        )
+        operation = str(arguments.get("operation") or "").strip()
+        user_id = get_memory_user_id()
+
+        if operation == "connect":
+            result = service.connect_memory_nodes(
+                user_id=user_id,
+                subject=_scoped_endpoint(arguments, "subject", allow_new=False),
+                relation=str(arguments.get("relation") or ""),
+                object_=_scoped_endpoint(arguments, "object", allow_new=False),
+            )
+            register_created_node_ids(_memory_result_node_ids(result))
+            mark_memory_mutation_succeeded()
+            return result
+
+        if operation == "update_node":
+            node_id = require_scoped_node_id(str(arguments.get("node_id") or ""))
+            attributes = arguments.get("attributes")
+            if not isinstance(attributes, dict):
+                raise ValueError("update_node requires attributes object")
+            result = service.update_memory_node(user_id=user_id, node_id=node_id, attributes=dict(attributes))
+            mark_memory_mutation_succeeded()
+            return result
+
+        if operation == "replace":
+            memory_node_id = require_scoped_node_id(str(arguments.get("memory_node_id") or ""))
+            result = service.revise_semantic_memory(
+                user_id=user_id,
+                memory_node_id=memory_node_id,
+                subject=_scoped_endpoint(arguments, "subject", allow_new=True),
+                relation=str(arguments.get("relation") or ""),
+                object_=_scoped_endpoint(arguments, "object", allow_new=True),
+            )
+            register_created_node_ids(_memory_result_node_ids(result))
+            mark_memory_mutation_succeeded()
+            return result
+
+        raise ValueError("revise_memory operation must be connect, update_node, or replace")
 
     def _model_managed_service(self) -> ModelManagedGraphMemoryService:
         if not isinstance(self._memory_service, ModelManagedGraphMemoryService):
@@ -183,11 +235,46 @@ class GraphToolSuite:
         return self._memory_service
 
 
-def _require_endpoint(arguments: dict[str, Any], name: str) -> dict[str, Any]:
+def _scoped_endpoint(arguments: dict[str, Any], name: str, *, allow_new: bool) -> dict[str, Any]:
     endpoint = arguments.get(name)
     if not isinstance(endpoint, dict):
         raise ValueError(f"{name} must be an object")
-    return dict(endpoint)
+    node_id = str(endpoint.get("node_id") or "").strip()
+    if node_id:
+        return {"node_id": require_scoped_node_id(node_id)}
+    kind = str(endpoint.get("kind") or "").strip()
+    if kind.casefold() == "user":
+        return {"kind": "user"}
+    term_id = str(endpoint.get("term_id") or "").strip()
+    if not allow_new:
+        raise ValueError(f"{name} must use an in-scope node_id for this operation")
+    if not term_id:
+        raise ValueError(f"{name} requires an in-scope node_id, kind='user', or writable term_id")
+    return {"kind": kind or "concept", "label": resolve_writable_term(term_id)}
+
+
+def _result_node_ids(results: list[dict]) -> set[str]:
+    node_ids: set[str] = set()
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        focus = item.get("focus")
+        if isinstance(focus, dict) and str(focus.get("node_id") or "").strip():
+            node_ids.add(str(focus["node_id"]))
+        relations = item.get("relations")
+        if isinstance(relations, list):
+            for relation in relations:
+                if isinstance(relation, dict) and str(relation.get("node_id") or "").strip():
+                    node_ids.add(str(relation["node_id"]))
+    return node_ids
+
+
+def _memory_result_node_ids(result: dict[str, Any]) -> set[str]:
+    return {
+        str(result[key])
+        for key in ("memory_node_id", "subject_node_id", "object_node_id", "node_id")
+        if str(result.get(key) or "").strip()
+    }
 
 
 def _format_memory_speaker(item: dict, *, user_id: str) -> dict:

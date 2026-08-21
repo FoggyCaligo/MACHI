@@ -78,11 +78,7 @@ class ModelManagedGraphMemoryService(GraphMemoryService):
             provenance="model_memory",
             trust_score=0.85,
         ))
-        support_count = 0
-        for edge in self._repo.edges_for_node(memory_id):
-            if edge.source_id == anchor_id and edge.target_id == memory_id and edge.relation == "semantic_memory":
-                support_count = edge.support_count
-                break
+        support_count = self._edge_support_count(anchor_id, memory_id, "semantic_memory")
         return {
             "ok": True,
             "memory_node_id": memory_id,
@@ -133,6 +129,59 @@ class ModelManagedGraphMemoryService(GraphMemoryService):
             trust_score=1.0,
         ))
         return {**replacement, "revised": True, "previous_memory_node_id": memory_node_id}
+
+    def connect_memory_nodes(
+        self,
+        *,
+        user_id: str,
+        subject: dict[str, Any],
+        relation: str,
+        object_: dict[str, Any],
+    ) -> dict[str, Any]:
+        source_id, _ = self._resolve_memory_endpoint(user_id=user_id, endpoint=subject)
+        target_id, _ = self._resolve_memory_endpoint(user_id=user_id, endpoint=object_)
+        normalized_relation = _normalize_relation(relation)
+        self._repo.add_edge(GraphEdge(
+            source_id=source_id,
+            target_id=target_id,
+            relation=normalized_relation,
+            payload={"user_id": user_id},
+            provenance="model_memory_revision",
+            trust_score=0.8,
+        ))
+        return {
+            "ok": True,
+            "operation": "connect",
+            "subject_node_id": source_id,
+            "relation": normalized_relation,
+            "object_node_id": target_id,
+            "support_count": self._edge_support_count(source_id, target_id, normalized_relation),
+        }
+
+    def update_memory_node(
+        self,
+        *,
+        user_id: str,
+        node_id: str,
+        attributes: dict[str, Any],
+    ) -> dict[str, Any]:
+        node = self._repo.get_node(node_id)
+        if node is None or not node.is_active:
+            raise ValueError(f"memory node not found or inactive: {node_id}")
+        owner = str(node.payload.get("user_id") or "")
+        if owner and owner != user_id:
+            raise ValueError("memory node belongs to another user")
+        existing_attributes = node.payload.get("model_attributes")
+        merged = dict(existing_attributes) if isinstance(existing_attributes, dict) else {}
+        merged.update(dict(attributes))
+        node.payload["model_attributes"] = merged
+        self._repo.upsert_node(node)
+        return {
+            "ok": True,
+            "operation": "update_node",
+            "node_id": node_id,
+            "attributes": merged,
+        }
 
     def user_memory_summary(self, user_id: str, **kwargs: Any) -> list[dict]:
         limit = int(kwargs.get("limit", 5))
@@ -217,6 +266,12 @@ class ModelManagedGraphMemoryService(GraphMemoryService):
                 stability_score=0.8,
             ))
         return entity_id, existing.labels[0] if existing and existing.labels else label
+
+    def _edge_support_count(self, source_id: str, target_id: str, relation: str) -> int:
+        for edge in self._repo.edges_for_node(source_id):
+            if edge.source_id == source_id and edge.target_id == target_id and edge.relation == relation:
+                return edge.support_count
+        return 0
 
 
 def _canonical_label(label: str) -> str:
