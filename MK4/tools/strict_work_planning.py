@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from .llm_client import ChatModel, ModelTurn
+from .llm_client import ChatModel, ModelOutputParseError, ModelRequestError, ModelTurn
 from .required_tool_model import RequiredToolChatModel
 from .work_planning import (
     WorkPlanningChatModel,
-    _PLAN_COMPLETE_INSTRUCTION,
     _PLAN_REQUIRED_INSTRUCTION,
     _STEP_INSTRUCTION,
-    _blocked_turn,
     _matches_pending_step,
     _required_tool_for_step,
 )
@@ -47,12 +46,12 @@ class StrictWorkPlanningChatModel(WorkPlanningChatModel):
         required_tool = _required_tool_for_step(pending)
         available = {definition.name for definition in kwargs["tool_definitions"]}
         if required_tool not in available:
-            return _blocked_turn(f"work_plan_unknown_tool:{required_tool}")
+            raise ModelRequestError(f"Planned tool is not model-visible: {required_tool}")
 
         step_instruction = (
             _STEP_INSTRUCTION
             + "\nCurrent step:\n"
-            + __import__("json").dumps(pending, ensure_ascii=False, sort_keys=True)
+            + json.dumps(pending, ensure_ascii=False, sort_keys=True)
         )
         turn = await self._required_tool_model.next_required_tool(
             required_tool=required_tool,
@@ -63,9 +62,11 @@ class StrictWorkPlanningChatModel(WorkPlanningChatModel):
             tool_definitions=kwargs["tool_definitions"],
             tool_history=kwargs["tool_history"],
         )
-        if _matches_pending_step(turn, pending):
-            return turn
-        return _blocked_turn("work_plan_step_mismatch")
+        if not _matches_pending_step(turn, pending):
+            raise ModelOutputParseError(
+                f"Required tool call did not complete current work-plan step: {pending.get('step_id')!r}"
+            )
+        return turn
 
     async def _require_final_or_replan(self, **kwargs: Any) -> ModelTurn:
         # Final synthesis is intentionally unconstrained: only after every planned
