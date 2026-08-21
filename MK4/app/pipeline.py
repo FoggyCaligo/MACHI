@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 from ..core.agent.orchestrator import AgentOrchestrator
 from ..core.graph.assistant_memory import AssistantMemoryRecorder
+from ..core.graph.model_managed_memory import ModelManagedGraphMemoryService
 from ..core.graph.repository import GraphRepository
-from ..core.graph.service import GraphMemoryService
 from ..tools.account_authorization import (
     AccountAuthorizationChatModel,
     reset_account_role,
@@ -22,6 +22,7 @@ from ..tools.file_navigation_tools import FileNavigationToolSuite
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel
 from ..tools.manual_tools import ToolManualSuite
+from ..tools.memory_context import reset_memory_user_id, set_memory_user_id
 from ..tools.model_tool_names import ModelToolNameAdapter
 from ..tools.scratchpad_tools import (
     ScratchpadToolSuite,
@@ -72,7 +73,7 @@ class Pipeline:
         web_search: WebSearchTool | None = None,
     ) -> None:
         self._graph_repo = graph_repo or GraphRepository()
-        self._memory = GraphMemoryService(self._graph_repo)
+        self._memory = ModelManagedGraphMemoryService(self._graph_repo)
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = AccountAuthorizationChatModel(
@@ -115,6 +116,7 @@ class Pipeline:
         task_tokens = set_file_task_message(message)
         scratchpad_token = start_request_scratchpad()
         account_role_token = set_account_role(account_role)
+        memory_user_token = set_memory_user_id(user_id)
         try:
             result = await self._orchestrator.respond(
                 user_id=user_id,
@@ -130,6 +132,7 @@ class Pipeline:
             )
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
+            reset_memory_user_id(memory_user_token)
             reset_account_role(account_role_token)
             reset_request_scratchpad(scratchpad_token)
             reset_file_task_message(task_tokens)
