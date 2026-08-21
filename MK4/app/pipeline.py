@@ -48,6 +48,9 @@ from ..tools.workspace_tools import WorkspaceFileToolSuite
 from .download_tokens import default_download_token_store
 
 
+_INTERNAL_TURN_TOOLS = {"_begin_memory_commit", "finish_memory_commit"}
+
+
 @dataclass
 class PipelineResult:
     text: str
@@ -60,6 +63,7 @@ TRIAL_TOOL_NAMES = {
     "graph_search",
     "write_memory",
     "revise_memory",
+    "_begin_memory_commit",
     "finish_memory_commit",
     "latest_search",
     "market_snapshot",
@@ -160,15 +164,19 @@ class Pipeline:
             and event["result"].get("ok") is True
         ]
         raw_writes = [item for item in result.memory_writes if item == "user_utterance"]
+        visible_events = [
+            event for event in result.tool_events
+            if str(event.get("tool") or "") not in _INTERNAL_TURN_TOOLS
+        ]
         return PipelineResult(
             text=result.text,
             used_tools=[
                 str(event.get("tool"))
-                for event in result.tool_events
-                if event.get("tool") and event.get("tool") != "finish_memory_commit"
+                for event in visible_events
+                if event.get("tool")
             ],
             memory_writes=[*raw_writes, *semantic_writes, "assistant_utterance"],
-            tool_events=result.tool_events,
+            tool_events=visible_events,
         )
 
     def close(self) -> None:
