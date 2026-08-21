@@ -40,18 +40,20 @@ async def test_market_snapshot_stub() -> None:
     assert result["quote"]["name"] == "태광"
 
 
-def test_unconsulted_tool_call_is_replaced_with_manual_lookup() -> None:
+def test_unconsulted_tool_call_is_deferred_after_manual_lookup() -> None:
     definitions = [
         ToolDefinition(name="terminal_command", description="terminal", input_schema={}),
         ToolDefinition(name="tool_manual", description="manual", input_schema={}),
     ]
-    turn = ModelTurn(tool_calls=[
-        ToolCall(tool="terminal_command", arguments={"command": "tree -L 2 MK4"}),
-    ])
+    original = ToolCall(tool="terminal_command", arguments={"command": "tree -L 2 MK4"})
+    turn = ModelTurn(tool_calls=[original])
 
     guarded = _require_tool_manuals(turn, tool_definitions=definitions, tool_history=[])
 
-    assert guarded.tool_calls == [ToolCall(tool="tool_manual", arguments={"tool": "terminal_command"})]
+    assert guarded.tool_calls == [
+        ToolCall(tool="tool_manual", arguments={"tool": "terminal_command"}),
+        original,
+    ]
 
 
 def test_consulted_tool_call_is_preserved() -> None:
