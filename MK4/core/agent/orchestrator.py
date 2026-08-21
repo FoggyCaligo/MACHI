@@ -164,6 +164,7 @@ class AgentOrchestrator:
 
         model_parse_failures = 0
         unknown_tool_guards = 0
+        empty_turn_guards = 0
         identical_tool_call_counts: dict[str, int] = {}
         round_index = 0
 
@@ -283,11 +284,6 @@ class AgentOrchestrator:
                     turn=turn,
                     tool_history=tool_history,
                     rejected_final_answer=turn.final_answer,
-                ) or _local_tool_blocked_guard_result(
-                    turn=turn,
-                    available_tools=model_tool_definitions,
-                    tool_history=tool_history,
-                    rejected_final_answer=turn.final_answer,
                 ) or file_mutation_completion_guard_result(
                     user_message=message,
                     tool_history=tool_history,
@@ -332,6 +328,26 @@ class AgentOrchestrator:
                     tool_events=tool_events,
                 )
             if not turn.tool_calls:
+                empty_turn_guards += 1
+                if empty_turn_guards >= max(1, config.AGENT_MAX_EMPTY_TURN_GUARDS):
+                    guard_result = {
+                        "ok": False,
+                        "error": "empty_turn_recovery_exhausted",
+                        "message": (
+                            "The model repeatedly returned neither a final answer nor tool calls. "
+                            "Tool execution is stopping; synthesize the best available result now."
+                        ),
+                    }
+                    _debug_log(
+                        f"execution_guard round={round_index} "
+                        f"error={guard_result.get('error')}"
+                    )
+                    tool_history.append({
+                        "tool": "execution_guard",
+                        "arguments": {},
+                        "result": guard_result,
+                    })
+                    break
                 guard_result = _empty_turn_after_tool_guard_result(tool_history=tool_history)
                 _debug_log(
                     f"execution_guard round={round_index} "
@@ -343,6 +359,7 @@ class AgentOrchestrator:
                     "result": guard_result,
                 })
                 continue
+            empty_turn_guards = 0
             unknown_tool_call = next(
                 (
                     call
@@ -1127,27 +1144,5 @@ def _failed_web_research_guard_result(
         "ok": False,
         "error": "web_research_failed",
         "message": "The latest web_research failed. Retry with a better concise objective or return blocked.",
-        "rejected_final_answer": rejected_final_answer,
-    }
-
-
-def _local_tool_blocked_guard_result(
-    *,
-    turn: ModelTurn,
-    available_tools: list[ToolDefinition],
-    tool_history: list[dict],
-    rejected_final_answer: str,
-) -> dict | None:
-    available_tool_names = {tool.name for tool in available_tools}
-    if "terminal_command" not in available_tool_names:
-        return None
-    if any(event.get("tool") == "terminal_command" for event in tool_history):
-        return None
-    if turn.final_answer_kind != "blocked":
-        return None
-    return {
-        "ok": False,
-        "error": "local_tool_blocked_without_attempt",
-        "message": "terminal_command is available. Try it before returning blocked.",
         "rejected_final_answer": rejected_final_answer,
     }
