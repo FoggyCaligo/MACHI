@@ -13,6 +13,7 @@ class MemoryTurnScope:
     recalled_node_ids: set[str] = field(default_factory=set)
     created_node_ids: set[str] = field(default_factory=set)
     mutation_enabled: bool = False
+    mutation_succeeded: bool = False
 
 
 _memory_user_id: ContextVar[str] = ContextVar("memory_user_id", default="")
@@ -81,11 +82,23 @@ def set_memory_draft_answer(answer: str) -> None:
     scope = get_memory_turn_scope()
     scope.assistant_text = str(answer)
     scope.mutation_enabled = True
+    scope.mutation_succeeded = False
 
 
 def require_memory_mutation_enabled() -> None:
     if not get_memory_turn_scope().mutation_enabled:
         raise RuntimeError("memory mutation is only allowed after the final answer draft is fixed")
+
+
+def mark_memory_mutation_succeeded() -> None:
+    scope = get_memory_turn_scope()
+    if not scope.mutation_enabled:
+        raise RuntimeError("memory mutation success cannot be recorded before the answer draft is fixed")
+    scope.mutation_succeeded = True
+
+
+def has_successful_memory_mutation() -> bool:
+    return get_memory_turn_scope().mutation_succeeded
 
 
 def get_writable_terms() -> list[dict[str, str]]:
