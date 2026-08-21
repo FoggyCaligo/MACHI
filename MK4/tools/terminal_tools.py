@@ -52,13 +52,22 @@ class TerminalToolSuite:
                     "with [Environment]::GetFolderPath('Startup'), create a .lnk with the WScript.Shell CreateShortcut API, set "
                     "TargetPath to the already-discovered executable and WorkingDirectory to its parent directory, save it, then "
                     "re-open or inspect the shortcut to verify its TargetPath before claiming completion. "
-                    "After a mutating terminal command, run a separate read/check command with verification=true. A verification "
-                    "call must inspect resulting state and must not intentionally mutate it."
+                    "Set changes_state=true when a command intentionally changes filesystem, registry, shell configuration, "
+                    "startup registration, or other system state. After a state-changing command, run a separate read/check "
+                    "command with verification=true. A verification call must inspect resulting state and must not intentionally "
+                    "mutate it."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
                         "command": {"type": "string"},
+                        "changes_state": {
+                            "type": "boolean",
+                            "description": (
+                                "Set true when this command intentionally changes filesystem, registry, shell configuration, "
+                                "startup registration, or other persistent system state."
+                            ),
+                        },
                         "verification": {
                             "type": "boolean",
                             "description": (
@@ -77,11 +86,18 @@ class TerminalToolSuite:
 
     async def _run(self, arguments: dict) -> dict:
         command = str(arguments.get("command") or "").strip()
+        changes_state = arguments.get("changes_state") is True
         verification = arguments.get("verification") is True
         if not command:
             raise ValueError("terminal_command requires command")
+        if changes_state and verification:
+            raise ValueError("terminal_command cannot set both changes_state=true and verification=true")
 
-        unsupported = self._unsupported_windows_command_result(command, verification=verification)
+        unsupported = self._unsupported_windows_command_result(
+            command,
+            changes_state=changes_state,
+            verification=verification,
+        )
         if unsupported is not None:
             return unsupported
 
@@ -111,13 +127,20 @@ class TerminalToolSuite:
             "returncode": process.returncode,
             "stdout": _decode_process_output(stdout),
             "stderr": _decode_process_output(stderr),
+            "changes_state": changes_state,
             "verification": verification,
             "filesystem_changed": bool(changed_paths),
             "changed_paths": changed_paths[:50],
             "changed_paths_truncated": len(changed_paths) > 50,
         }
 
-    def _unsupported_windows_command_result(self, command: str, *, verification: bool) -> dict | None:
+    def _unsupported_windows_command_result(
+        self,
+        command: str,
+        *,
+        changes_state: bool,
+        verification: bool,
+    ) -> dict | None:
         if not _is_windows():
             return None
         if not (
@@ -151,6 +174,7 @@ class TerminalToolSuite:
             "returncode": None,
             "stdout": "",
             "stderr": "",
+            "changes_state": changes_state,
             "verification": verification,
             "filesystem_changed": False,
             "changed_paths": [],
