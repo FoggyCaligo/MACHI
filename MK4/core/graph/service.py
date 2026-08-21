@@ -109,64 +109,7 @@ class GraphMemoryService:
             if existing_utterance is not None:
                 existing_utterance.payload["text_graph_version"] = _TEXT_GRAPH_VERSION
                 self._repo.upsert_node(existing_utterance)
-        self.record_user_facts(
-            user_id=user_id,
-            text=text,
-            session_id=session_id,
-            utterance_id=utterance_id,
-        )
         return utterance_id
-
-    def record_user_facts(
-        self,
-        *,
-        user_id: str,
-        text: str,
-        session_id: str | None,
-        utterance_id: str,
-    ) -> list[str]:
-        anchor_id = self.ensure_user_anchor(user_id)
-        fact_ids: list[str] = []
-        for fact_text in self._extract_fact_candidates(text):
-            node_id = fact_node_id(user_id, fact_text, namespace="fact")
-            if self._repo.get_node(node_id) is None:
-                self._repo.upsert_node(
-                    GraphNode(
-                        node_id=node_id,
-                        labels=[fact_text],
-                        node_type="fact",
-                        payload={
-                            "user_id": user_id,
-                            "session_id": session_id,
-                            "source": "user_utterance",
-                        },
-                        provenance="user_assertion",
-                        trust_score=0.75,
-                        stability_score=0.5,
-                    )
-                )
-            self._repo.add_edge(
-                GraphEdge(
-                    source_id=anchor_id,
-                    target_id=node_id,
-                    relation="asserted_fact",
-                    payload={"session_id": session_id},
-                    provenance="user_assertion",
-                    trust_score=0.8,
-                )
-            )
-            self._repo.add_edge(
-                GraphEdge(
-                    source_id=utterance_id,
-                    target_id=node_id,
-                    relation="derived_fact",
-                    payload={"session_id": session_id},
-                    provenance="derived_from_utterance",
-                    trust_score=0.7,
-                )
-            )
-            fact_ids.append(node_id)
-        return fact_ids
 
     def record_search_results(self, *, query: str, results: list[dict]) -> list[str]:
         query_text = query.strip()
@@ -258,36 +201,6 @@ class GraphMemoryService:
                     "source": source,
                 },
             )
-
-            for fact_text in self._extract_fact_candidates(snippet):
-                fact_id = fact_node_id(url or title or query_text, fact_text, namespace="search_fact")
-                if self._repo.get_node(fact_id) is None:
-                    self._repo.upsert_node(
-                        GraphNode(
-                            node_id=fact_id,
-                            labels=[fact_text],
-                            node_type="search_fact",
-                            payload={
-                                "query": query_text,
-                                "title": title,
-                                "url": url,
-                                "source": source,
-                            },
-                            provenance="search",
-                            trust_score=0.6,
-                        )
-                    )
-                self._repo.add_edge(
-                    GraphEdge(
-                        source_id=result_node_id,
-                        target_id=fact_id,
-                        relation="supports_fact",
-                        payload={"source": source},
-                        provenance="search",
-                        trust_score=0.65,
-                    )
-                )
-                recorded.append(fact_id)
         return recorded
 
     def record_file_text_activation(
@@ -363,23 +276,20 @@ class GraphMemoryService:
         for node in self._repo.neighbors(anchor_id):
             if node.node_id in excluded:
                 continue
-            if self._is_derived_from_excluded_node(node.node_id, excluded):
-                continue
             if not node.labels or not node.is_active:
                 continue
             if node.payload.get("suppress_from_summary"):
                 continue
-            if node.node_type not in {"fact", "utterance"}:
+            if node.node_type != "utterance":
                 continue
             label = node.labels[0]
             label_terms = {term.lower() for term in re.findall(r"\w+", label)}
             relevance = len(terms.intersection(label_terms)) / max(1, len(terms)) if terms else 0.0
-            type_bonus = 1.0 if node.node_type == "fact" else 0.25
             activation = activation_weights.get(node.node_id, 0.0)
             if terms and max(relevance, activation) < max(0.0, min_signal):
                 continue
             activation_bonus = 1.5 * activation
-            score = relevance * 4.0 + activation_bonus + type_bonus + node.trust_score + node.stability_score
+            score = relevance * 4.0 + activation_bonus + 0.25 + node.trust_score + node.stability_score
             ranked.append((score, {
                 "node_id": node.node_id,
                 "node_type": node.node_type,
@@ -397,7 +307,7 @@ class GraphMemoryService:
                     "relevance_weighted": round(relevance * 4.0, 4),
                     "activation": round(activation, 4),
                     "activation_bonus": round(activation_bonus, 4),
-                    "type_bonus": round(type_bonus, 4),
+                    "type_bonus": 0.25,
                     "trust_score": round(node.trust_score, 4),
                     "stability_score": round(node.stability_score, 4),
                 },
@@ -471,7 +381,7 @@ class GraphMemoryService:
         return summary
 
     def _subgraph_relation_rank(self, *, edge: GraphEdge, other: GraphNode) -> tuple:
-        if edge.relation in {"replaces", "supports_fact", "derived_fact", "asserted_fact", "returned_result"}:
+        if edge.relation == "returned_result":
             priority = 0
         elif edge.relation == "spoke" or edge.relation.endswith("_mentions_concept"):
             priority = 1
@@ -505,9 +415,6 @@ class GraphMemoryService:
                 related[edge.source_id] = max(related.get(edge.source_id, 0.0), weight)
                 related[edge.target_id] = max(related.get(edge.target_id, 0.0), weight)
         return related
-
-    def _activation_related_node_ids(self, activation_node_ids: set[str]) -> set[str]:
-        return set(self._activation_related_node_weights({node_id: 1.0 for node_id in activation_node_ids}))
 
     def local_activation_node_ids_for_utterance(
         self,
@@ -561,99 +468,11 @@ class GraphMemoryService:
                 weights[node_id] = max(weights.get(node_id, 0.0), max(0.0, weight))
         return weights
 
-    def _is_derived_from_excluded_node(self, node_id: str, excluded_node_ids: set[str]) -> bool:
-        if not excluded_node_ids:
-            return False
-        for edge in self._repo.edges_for_node(node_id):
-            if edge.relation != "derived_fact":
-                continue
-            if edge.source_id in excluded_node_ids or edge.target_id in excluded_node_ids:
-                return True
-        return False
-
     def _format_user_memory_for_model(self, *, user_id: str, node: GraphNode, label: str) -> str:
-        if node.node_type == "fact":
-            return (
-                f'사용자({user_id})에 대한 기억: "{label}" '
-                "이 문장의 1인칭 표현은 assistant가 아니라 사용자에게 귀속됩니다."
-            )
         return (
             f'사용자({user_id})가 이전에 말한 발화: "{label}" '
             "이 발화의 speaker는 사용자이며 assistant의 자기소개가 아닙니다."
         )
-
-    def record_fact_correction(
-        self,
-        *,
-        user_id: str,
-        previous_fact_id: str,
-        replacement_text: str,
-        session_id: str | None = None,
-    ) -> str:
-        """Replace a user fact while preserving both provenance and history.
-
-        MK4 intentionally does not guess corrections from cue strings. The planner
-        calls this explicit operation after it has identified the previous fact.
-        """
-        anchor_id = self.ensure_user_anchor(user_id)
-        previous = self._repo.get_node(previous_fact_id)
-        if previous is None or previous.node_type != "fact":
-            raise ValueError("previous_fact_id must identify an existing fact")
-        if str(previous.payload.get("user_id") or "") != user_id:
-            raise ValueError("cannot correct another user's fact")
-
-        replacement = replacement_text.strip()
-        if not replacement:
-            raise ValueError("replacement_text must not be empty")
-        replacement_id = fact_node_id(user_id, replacement, namespace="fact")
-        self._repo.upsert_node(GraphNode(
-            node_id=replacement_id,
-            labels=[replacement],
-            node_type="fact",
-            payload={
-                "user_id": user_id,
-                "session_id": session_id,
-                "source": "user_correction",
-                "replaces": previous_fact_id,
-            },
-            provenance="user_correction",
-            trust_score=0.95,
-            stability_score=0.75,
-        ))
-        self._repo.add_edge(GraphEdge(
-            source_id=anchor_id,
-            target_id=replacement_id,
-            relation="asserted_fact",
-            payload={"session_id": session_id, "correction": True},
-            provenance="user_correction",
-            trust_score=0.95,
-        ))
-        self._repo.add_edge(GraphEdge(
-            source_id=replacement_id,
-            target_id=previous_fact_id,
-            relation="replaces",
-            payload={"session_id": session_id},
-            provenance="user_correction",
-            trust_score=1.0,
-            conflict_count=1,
-        ))
-        previous.payload["superseded_by"] = replacement_id
-        previous.payload["status"] = "superseded"
-        previous.is_active = False
-        previous.trust_score = min(previous.trust_score, 0.2)
-        self._repo.upsert_node(previous)
-        # Keep the original utterance for audit/provenance, but do not feed a
-        # sentence known to contain the superseded fact back into the LLM summary.
-        for edge in self._repo.edges_for_node(previous_fact_id):
-            if edge.relation != "derived_fact" or edge.target_id != previous_fact_id:
-                continue
-            utterance = self._repo.get_node(edge.source_id)
-            if utterance is None or utterance.node_type != "utterance":
-                continue
-            utterance.payload["suppress_from_summary"] = True
-            utterance.payload["superseded_fact_id"] = previous_fact_id
-            self._repo.upsert_node(utterance)
-        return replacement_id
 
     def graph_search(
         self,
@@ -685,8 +504,6 @@ class GraphMemoryService:
                 break
             if node.node_id in excluded:
                 continue
-            if self._is_derived_from_excluded_node(node.node_id, excluded):
-                continue
             owner = str(node.payload.get("user_id") or "")
             is_external = node.provenance == "search" or node.node_type.startswith("search_")
             if owner and owner != user_id:
@@ -709,27 +526,6 @@ class GraphMemoryService:
             user_id=cleaned,
             anchor_id=user_anchor_id(cleaned),
         )
-
-    def _extract_fact_candidates(self, text: str) -> list[str]:
-        normalized = re.sub(r"\s+", " ", text.strip())
-        if not normalized:
-            return []
-
-        parts = re.split(r"[\n\r]+|(?<=[.!????])\s+", normalized)
-        facts: list[str] = []
-        seen: set[str] = set()
-        for part in parts:
-            candidate = part.strip(" \t\"'[]()")
-            if len(candidate) < 6:
-                continue
-            if candidate.endswith("?"):
-                continue
-            lowered = candidate.lower()
-            if lowered in seen:
-                continue
-            seen.add(lowered)
-            facts.append(candidate)
-        return facts
 
     def _graphize_text(
         self,
