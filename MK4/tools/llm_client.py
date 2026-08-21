@@ -147,8 +147,8 @@ class OllamaToolChatModel:
     ) -> ModelTurn:
         user_payload = {
             "user_message": user_message,
-            "memory_summary": [_compact_memory_item(item) for item in memory_summary],
             "tools": [tool.name for tool in tool_definitions],
+            "memory_summary": [_compact_memory_item(item) for item in memory_summary],
             "tool_history": [_compact_tool_history_event(event) for event in tool_history],
         }
         try:
@@ -282,10 +282,6 @@ def _require_tool_manuals(
     if not missing:
         return turn
 
-    # A manual lookup is a prerequisite, not a replacement for the tool call the
-    # model already chose. Keep the original calls in the same turn so the
-    # orchestrator executes manuals first and then resumes the exact deferred
-    # calls without asking a small model to make the same routing decision twice.
     manual_calls = [ToolCall(tool="tool_manual", arguments={"tool": name}) for name in missing]
     return ModelTurn(
         tool_calls=[*manual_calls, *turn.tool_calls],
@@ -296,20 +292,27 @@ def _require_tool_manuals(
 def _compact_tool_result(*, tool: object, result: object) -> object:
     if not isinstance(result, dict):
         return _compact_value(result, limit=240)
+
     compact: dict[str, Any] = {}
     for key in ("ok", "error", "status", "mode", "path", "returncode", "freshness", "query"):
         if key in result:
             compact[key] = result.get(key)
-    if result.get("error") == "missing_required_arguments":
-        compact["tool"] = result.get("tool")
-        compact["missing_arguments"] = result.get("missing_arguments")
-        compact["description"] = _shorten(str(result.get("description") or ""), 300)
-        compact["input_schema"] = result.get("input_schema")
+
+    if result.get("error"):
+        compact["tool"] = result.get("tool") or tool
+        if result.get("missing_arguments"):
+            compact["missing_arguments"] = result.get("missing_arguments")
+        if result.get("missing_tools"):
+            compact["missing_tools"] = result.get("missing_tools")
+        if result.get("unknown_tool"):
+            compact["unknown_tool"] = result.get("unknown_tool")
+        if result.get("message"):
+            compact["message"] = _shorten(str(result.get("message") or ""), 240)
+        recovery = result.get("recovery")
+        if isinstance(recovery, dict) and isinstance(recovery.get("next_tools"), list):
+            compact["next_tools"] = recovery.get("next_tools")[:8]
         return compact
-    if result.get("error") == "tool_execution_failed":
-        compact["tool"] = result.get("tool")
-        compact["message"] = _shorten(str(result.get("message") or ""), 500)
-        return compact
+
     if tool == "code_index":
         for key in ("workspace_root", "indexed_root", "files_indexed", "classes", "functions", "routes"):
             if key in result:
@@ -392,12 +395,6 @@ def _compact_tool_result(*, tool: object, result: object) -> object:
         if isinstance(results, list):
             compact["result_count"] = len(results)
             compact["results"] = [_compact_graph_search_result(item) for item in results[:8]]
-    elif tool == "execution_guard":
-        compact["message"] = _shorten(str(result.get("message") or ""), 240)
-        if result.get("missing_tools"):
-            compact["missing_tools"] = result.get("missing_tools")
-        if result.get("unknown_tool"):
-            compact["unknown_tool"] = result.get("unknown_tool")
     elif tool == "tool_manual":
         compact["tool"] = result.get("tool")
         compact["description"] = _shorten(str(result.get("description") or ""), 300)
