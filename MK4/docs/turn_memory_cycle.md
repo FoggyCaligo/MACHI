@@ -14,15 +14,17 @@ MK4의 정상 대화 턴은 다음 순서를 따른다.
    - 일반 tool이 필요 없으면 skip_tool_use
 
 3. answer draft
-   - 기존 실행/검증 guard를 모두 통과한 user-visible 답변을 먼저 고정
+   - user-visible 답변을 먼저 생성하고 고정
+   - 이 시점까지 memory mutation은 노출하지 않음
 
 4. scoped memory commit
    - write_memory 또는 revise_memory를 최소 1회 성공
    - 필요하면 여러 mutation을 연쇄적으로 수행 가능
    - 완료 후 finish_memory_commit
 
-5. answer commit
-   - memory commit이 성공한 경우에만 이미 고정된 draft를 사용자에게 반환
+5. answer release
+   - memory commit이 성공한 경우에만 이미 고정된 draft를 정상 최종 답변으로 전달
+   - 기존 completion/evidence guard가 이후 draft를 거부하면 그 실패를 숨기지 않고 다음 실행 라운드로 돌아감
 ```
 
 ## Turn graph scope
