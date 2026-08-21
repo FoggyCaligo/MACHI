@@ -281,8 +281,14 @@ def _require_tool_manuals(
         missing.append(call.tool)
     if not missing:
         return turn
+
+    # A manual lookup is a prerequisite, not a replacement for the tool call the
+    # model already chose. Keep the original calls in the same turn so the
+    # orchestrator executes manuals first and then resumes the exact deferred
+    # calls without asking a small model to make the same routing decision twice.
+    manual_calls = [ToolCall(tool="tool_manual", arguments={"tool": name}) for name in missing]
     return ModelTurn(
-        tool_calls=[ToolCall(tool="tool_manual", arguments={"tool": name}) for name in missing],
+        tool_calls=[*manual_calls, *turn.tool_calls],
         final_answer_kind="answer",
     )
 
@@ -465,5 +471,3 @@ def _compact_value(value: object, *, limit: int) -> object:
 
 def _shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
-
-
