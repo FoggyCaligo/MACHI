@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextvars import ContextVar, Token
 from typing import Any
 
-from .tool_runtime import ToolCall, ToolDefinition, ToolRegistry
+from .tool_runtime import ToolDefinition, ToolRegistry
 
 
 _SCRATCHPAD: ContextVar[dict[str, str] | None] = ContextVar("request_scratchpad", default=None)
@@ -107,10 +107,10 @@ class ScratchpadToolSuite:
         if notes is None:
             return {"ok": False, "error": "scratchpad_not_active"}
         note_id = str(arguments.get("note_id") or "").strip()
-        content = str(arguments.get("content") or "").strip()
+        content = str(arguments.get("content") or "")
         if not note_id:
             return {"ok": False, "error": "missing_note_id"}
-        if not content:
+        if not content.strip():
             return {"ok": False, "error": "missing_content", "note_id": note_id}
         if note_id in notes:
             return {"ok": False, "error": "scratchpad_note_exists", "note_id": note_id}
@@ -133,10 +133,10 @@ class ScratchpadToolSuite:
         if notes is None:
             return {"ok": False, "error": "scratchpad_not_active"}
         note_id = str(arguments.get("note_id") or "").strip()
-        content = str(arguments.get("content") or "").strip()
+        content = str(arguments.get("content") or "")
         if not note_id:
             return {"ok": False, "error": "missing_note_id"}
-        if not content:
+        if not content.strip():
             return {"ok": False, "error": "missing_content", "note_id": note_id}
         if note_id not in notes:
             return {"ok": False, "error": "scratchpad_note_not_found", "note_id": note_id}
