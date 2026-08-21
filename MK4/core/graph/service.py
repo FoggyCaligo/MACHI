@@ -58,7 +58,14 @@ class GraphMemoryService:
             )
         return anchor_id
 
-    def record_user_utterance(self, *, user_id: str, text: str, session_id: str | None) -> str:
+    def record_user_utterance(
+        self,
+        *,
+        user_id: str,
+        text: str,
+        session_id: str | None,
+        graphize: bool = True,
+    ) -> str:
         anchor_id = self.ensure_user_anchor(user_id)
         utterance_id = utterance_node_id(user_id, text, session_id)
         existing_utterance = self._repo.get_node(utterance_id)
@@ -72,7 +79,7 @@ class GraphMemoryService:
                     payload={
                         "user_id": user_id,
                         "session_id": session_id,
-                        "text_graph_version": _TEXT_GRAPH_VERSION,
+                        "text_graph_version": _TEXT_GRAPH_VERSION if graphize else 0,
                     },
                     provenance="user_utterance",
                     trust_score=1.0,
@@ -94,7 +101,7 @@ class GraphMemoryService:
             or int((existing_utterance.payload if existing_utterance else {}).get("text_graph_version") or 0)
             < _TEXT_GRAPH_VERSION
         )
-        if needs_graph_refresh:
+        if graphize and needs_graph_refresh:
             self._graphize_text(
                 owner_anchor_id=anchor_id,
                 carrier_node_id=utterance_id,

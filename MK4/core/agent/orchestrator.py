@@ -81,6 +81,7 @@ class AgentOrchestrator:
             user_id=user_id,
             text=message,
             session_id=session_id,
+            graphize=False,
         )
         current_activation_node_ids = self._memory_service.local_activation_node_ids_for_utterance(
             user_id=user_id,
