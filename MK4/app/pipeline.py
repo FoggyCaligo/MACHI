@@ -12,7 +12,6 @@ from ..tools.account_authorization import (
     set_account_role,
 )
 from ..tools.autonomy_tools import AutonomyChatModel
-from ..tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
 from ..tools.grounding_tools import EvidenceGroundingChatModel
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.code_index_tools import CodeIndexToolSuite
@@ -24,6 +23,7 @@ from ..tools.llm_client import ChatModel
 from ..tools.manual_tools import ToolManualSuite
 from ..tools.memory_context import reset_memory_user_id, set_memory_user_id
 from ..tools.model_tool_names import ModelToolNameAdapter
+from ..tools.structured_context_model import StructuredContextOllamaToolChatModel
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.tool_runtime import (
     get_file_working_root,
@@ -67,7 +67,7 @@ class Pipeline:
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = AccountAuthorizationChatModel(
-            ModelToolNameAdapter(chat_model or AutomaticMemoryContextOllamaToolChatModel())
+            ModelToolNameAdapter(chat_model or StructuredContextOllamaToolChatModel())
         )
         self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
         self._web_search = web_search or HttpWebSearchTool()
@@ -131,11 +131,11 @@ class Pipeline:
             and isinstance(event.get("result"), dict)
             and event["result"].get("ok") is True
         ]
-        automatic_writes = [item for item in result.memory_writes if item != "user_fact"]
+        raw_writes = [item for item in result.memory_writes if item == "user_utterance"]
         return PipelineResult(
             text=result.text,
             used_tools=[str(event.get("tool")) for event in result.tool_events if event.get("tool")],
-            memory_writes=[*automatic_writes, *semantic_writes, "assistant_utterance"],
+            memory_writes=[*raw_writes, *semantic_writes, "assistant_utterance"],
             tool_events=result.tool_events,
         )
 
