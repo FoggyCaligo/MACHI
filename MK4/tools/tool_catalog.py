@@ -40,8 +40,10 @@ def _compact_tool_definition(definition: ToolDefinition) -> dict[str, object]:
     }
 
     fields: list[dict[str, object]] = []
+    property_schemas: dict[str, dict[str, Any]] = {}
     for name, raw_property in properties.items():
         property_schema = raw_property if isinstance(raw_property, dict) else {}
+        property_schemas[str(name)] = property_schema
         field: dict[str, object] = {
             "name": str(name),
             "type": _compact_schema_type(property_schema),
@@ -62,7 +64,7 @@ def _compact_tool_definition(definition: ToolDefinition) -> dict[str, object]:
         "call_template": {
             "tool": definition.name,
             "arguments": {
-                field["name"]: _type_placeholder(str(field["type"]))
+                field["name"]: _schema_example_value(property_schemas[str(field["name"])])
                 for field in fields
                 if field["required"] is True
             },
@@ -84,8 +86,26 @@ def _compact_schema_type(schema: dict[str, Any]) -> str:
     return "any"
 
 
-def _type_placeholder(type_name: str) -> str:
-    return f"<{type_name}>"
+def _schema_example_value(schema: dict[str, Any]) -> object:
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        return enum_values[0]
+    value = schema.get("type")
+    types = value if isinstance(value, list) else [value]
+    selected = next((item for item in types if item != "null"), None)
+    if selected == "string":
+        return "<string>"
+    if selected == "integer":
+        return 0
+    if selected == "number":
+        return 0.0
+    if selected == "boolean":
+        return False
+    if selected == "array":
+        return []
+    if selected == "object":
+        return {}
+    return None
 
 
 def _compact_tool_summary(description: str) -> str:
