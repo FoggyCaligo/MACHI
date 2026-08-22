@@ -11,7 +11,12 @@ _GROUNDING_REVIEW_INSTRUCTION = """
 A final-answer evidence review is required before this answer can be shown to the user.
 Review the proposed answer and the actual tool_history structurally.
 
-First classify whether the proposed answer depends on current, changing, or time-sensitive external facts. Examples include current prices, valuation metrics, exchange rates, weather, live status, current officeholders, recent releases, policies, schedules, availability, or other facts whose value can change over time. Do not classify from keyword matching; judge the meaning of the requested claim.
+Freshness definition:
+- Treat a fact as current/time-sensitive only when the answer depends on a value or state that could reasonably be different today from yesterday.
+- Examples include a current market price or valuation value, exchange rate, weather, live service status, current officeholder, current policy/status, schedule, availability, inventory, or other changing state.
+- Do NOT classify conceptual definitions, mathematical explanations, general domain knowledge, or fixed historical facts as freshness-sensitive merely because the topic itself can also have current values.
+- Example: explaining what PER means is not freshness-sensitive. Giving a company's current PER is freshness-sensitive because that value can change from one day to the next.
+- Do not classify from keyword matching; judge the meaning of the requested claim.
 
 Rules:
 - If the proposed answer needs current/time-sensitive external evidence and adequate evidence is not yet in tool_history, return tool_calls for the suitable exposed external tool(s). Do not return a final answer yet.
