@@ -81,14 +81,18 @@ class AgentOrchestrator:
             user_id=user_id,
             text=message,
             session_id=session_id,
-            graphize=False,
+        )
+        local_activation_node_ids = self._memory_service.local_activation_node_ids_for_utterance(
+            user_id=user_id,
+            utterance_id=utterance_id,
+            previous_activation_node_ids=previous_activation_node_ids,
         )
         current_activation_node_ids = self._memory_service.local_activation_node_ids_for_utterance(
             user_id=user_id,
             utterance_id=utterance_id,
             previous_activation_node_ids=None,
         )
-        _ = self._memory_service.local_activation_node_weights_for_utterance(
+        local_activation_node_weights = self._memory_service.local_activation_node_weights_for_utterance(
             user_id=user_id,
             utterance_id=utterance_id,
             previous_activation_node_ids=previous_activation_node_ids,
@@ -96,10 +100,17 @@ class AgentOrchestrator:
             previous_weight=0.5,
         )
 
-        memory_summary: list[dict] = []
+        memory_summary = self._graph_tools.get_user_memory_summary(
+            user_id=user_id,
+            query=message,
+            limit=config.MEMORY_SUMMARY_LIMIT,
+            min_signal=config.MEMORY_SUMMARY_MIN_SIGNAL,
+            exclude_node_ids={utterance_id},
+            activation_node_weights=local_activation_node_weights,
+        )
         tool_history: list[dict] = []
-        used_tools = ["memory.record_user_utterance"]
-        memory_writes = ["user_utterance"]
+        used_tools = ["memory.record_user_utterance", "graph.get_user_memory_summary"]
+        memory_writes = ["user_utterance", "user_fact"]
         tool_events: list[dict] = []
         file_activation_node_ids: set[str] = set()
         file_activation_node_weights: dict[str, float] = {}
@@ -444,7 +455,9 @@ class AgentOrchestrator:
                 )
                 used_tools.append(call.tool)
                 if call.tool in {"internet_search", "latest_search", "web_research", "market_snapshot"}:
-                    memory_writes.append("search_result")
+                    memory_writes.extend(["search_result", "search_fact"])
+                elif call.tool == "record_memory_correction":
+                    memory_writes.append("user_fact_correction")
                 elif call.tool in {"file_create", "file_read", "file_update", "file_delete"}:
                     memory_writes.append(call.tool)
                 event = {
@@ -602,8 +615,9 @@ class AgentOrchestrator:
         image_model: str | None = None,
     ) -> dict:
         arguments = dict(call.arguments)
-        if call.tool == "graph_search":
+        if call.tool in {"graph_search", "record_memory_correction"}:
             arguments["user_id"] = user_id
+        if call.tool == "graph_search":
             arguments["exclude_node_ids"] = [utterance_id]
         if call.tool == "image_analyze" and image_model and not str(arguments.get("model") or "").strip():
             arguments["model"] = image_model
@@ -1065,17 +1079,9 @@ def _file_execution_guard_result(
 
 
 def _empty_turn_after_tool_guard_result(*, tool_history: list[dict]) -> dict:
-    latest_event = next(
-        (
-            event
-            for event in reversed(tool_history)
-            if event.get("tool") not in {"execution_guard", "autonomy_guard", "file_text_activation"}
-        ),
-        None,
-    )
-    latest_tool = latest_event.get("tool") if latest_event is not None else None
-    latest_result = latest_event.get("result") if latest_event is not None else None
-    if latest_event is None:
+    latest_tool = tool_history[-1].get("tool") if tool_history else None
+    latest_result = tool_history[-1].get("result") if tool_history else None
+    if not tool_history:
         return {
             "ok": False,
             "error": "empty_initial_turn",
