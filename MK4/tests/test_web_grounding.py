@@ -112,6 +112,32 @@ async def test_current_market_answer_without_evidence_is_sent_back_to_tool_use()
 
 
 @pytest.mark.asyncio
+async def test_company_per_value_is_freshness_sensitive_even_without_current_keyword() -> None:
+    delegate = SequenceChatModel([
+        ModelTurn(final_answer="삼성전자의 PER은 12.6배입니다."),
+        ModelTurn(tool_calls=[ToolCall(
+            tool="web_research",
+            arguments={"objective": "삼성전자 현재 PER 확인"},
+        )]),
+    ])
+    grounded = EvidenceGroundingChatModel(delegate)
+
+    turn = await grounded.next_turn(
+        system="system",
+        user_message="삼성전자의 PER은 얼마야?",
+        model=None,
+        memory_summary=[],
+        tool_definitions=[],
+        tool_history=[],
+    )
+
+    assert turn.tool_calls == [ToolCall(
+        tool="web_research",
+        arguments={"objective": "삼성전자 현재 PER 확인"},
+    )]
+
+
+@pytest.mark.asyncio
 async def test_current_market_answer_accepts_successful_market_tool_declaration() -> None:
     delegate = SequenceChatModel([
         ModelTurn(final_answer="삼성전자의 현재 주가는 80,000원입니다."),
