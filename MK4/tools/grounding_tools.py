@@ -9,20 +9,23 @@ from .web_grounding import compact_evidence_catalog, web_evidence_catalog
 
 _GROUNDING_REVIEW_INSTRUCTION = """
 A final-answer evidence review is required before this answer can be shown to the user.
-Review the proposed answer and the actual tool_history structurally.
+Review every factual assertion contained in the proposed answer and the actual tool_history structurally.
 
 Freshness definition:
-- Treat a fact as current/time-sensitive only when the answer depends on a value or state that could reasonably be different today from yesterday.
+- Treat a fact as current/time-sensitive when its value or state could reasonably be different today from yesterday.
 - Examples include a current market price or valuation value, exchange rate, weather, live service status, current officeholder, current policy/status, schedule, availability, inventory, or other changing state.
 - Do NOT classify conceptual definitions, mathematical explanations, general domain knowledge, or fixed historical facts as freshness-sensitive merely because the topic itself can also have current values.
-- Example: explaining what PER means is not freshness-sensitive. Giving a company's current PER is freshness-sensitive because that value can change from one day to the next.
-- Do not classify from keyword matching; judge the meaning of the requested claim.
+- Example: explaining what PER means is not freshness-sensitive. Stating a company's PER, even as an aside or example inside a conceptual explanation, is freshness-sensitive because that value can change from one day to the next.
+- Judge each assertion in the proposed answer independently. Do not decide freshness only from the user's main question or from the answer's main purpose.
+- The source of a freshness-sensitive assertion does not matter. A value remembered from an earlier conversation, recalled from persistent memory, repeated from a prior assistant utterance, or supplied from model knowledge may be stale and must be refreshed.
+- Do not classify from keyword matching; judge the meaning of each claim.
 
 Rules:
-- If the proposed answer needs current/time-sensitive external evidence and adequate evidence is not yet in tool_history, return tool_calls for the suitable exposed external tool(s). Do not return a final answer yet.
-- If the proposed answer needs current/time-sensitive external evidence and adequate successful external tool results are already in tool_history, return the grounded final answer with final_answer_kind="tool_completion" and put only the successful external evidence tool names in completion_tools.
-- If the proposed answer does not need current/time-sensitive external evidence, return the grounded final answer with final_answer_kind="answer" and an empty completion_tools list.
-- Never treat automatic memory, recall_memory, prior assistant utterances, or unsupported model knowledge as current external evidence.
+- If even one factual assertion in the proposed answer is freshness-sensitive, every such assertion must be grounded in adequate successful external evidence from this turn.
+- If any freshness-sensitive assertion lacks adequate evidence in tool_history, return tool_calls for the suitable exposed external tool(s). Do not return a final answer yet, even if that assertion was only an optional example or aside.
+- If all freshness-sensitive assertions have adequate successful external evidence, return the grounded final answer with final_answer_kind="tool_completion" and put only the successful external evidence tool names in completion_tools.
+- If the proposed answer contains no freshness-sensitive factual assertions, return the grounded final answer with final_answer_kind="answer" and an empty completion_tools list.
+- Never treat automatic memory, recall_memory, prior assistant utterances, prior tool results from another turn, or unsupported model knowledge as current external evidence.
 - Every externally sourced factual statement in the final answer must be directly supported by the selected evidence.
 - A `search_snippet` supports only what its title/snippet explicitly says. Do not infer an author, publication date, plot, product detail, or other attribute that is absent from it.
 - `page_evidence` may support facts that are explicit in its matched sections/excerpt.
