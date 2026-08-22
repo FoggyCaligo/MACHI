@@ -291,25 +291,24 @@ async def voice_tts(req: VoiceTTSRequest):
 @app.get("/tools")
 async def get_tools(request: Request) -> dict:
     tools = [
-        "graph_search",
-        "write_memory",
-        "revise_memory",
-        "latest_search",
-        "market_snapshot",
-        "web_research",
-        "code_index",
-        "code_search",
-        "file_search",
-        "file_create",
-        "file_read",
-        "file_download_link",
-        "document_read",
-        "image_analyze",
-        "file_update",
-        "file_delete",
-        "terminal_command",
-        "tool_manual",
-    ]
+            "graph_search",
+            "record_memory_correction",
+            "latest_search",
+            "market_snapshot",
+            "web_research",
+            "code_index",
+            "code_search",
+            "file_search",
+            "file_create",
+            "file_read",
+            "file_download_link",
+            "document_read",
+            "image_analyze",
+            "file_update",
+            "file_delete",
+            "terminal_command",
+            "tool_manual",
+        ]
     if request.state.account.role == "trial":
         from .pipeline import TRIAL_TOOL_NAMES
         tools = [name for name in tools if name in TRIAL_TOOL_NAMES]

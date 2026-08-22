@@ -1,202 +1,232 @@
 # MK4 Architecture
 
-## 역할 분리
+## Goal
 
-MK4는 세 계층의 책임을 분리한다.
+`MK4`의 목적은 그래프를 사고 엔진으로 두지 않고, **장기 기억과 회수 인프라로 단순화한 뒤 LLM이 도구를 오케스트레이션하게 만드는 것**이다.
+
+핵심은 다음과 같다.
+
+- 하나의 대화 LLM이 응답 계획을 맡는다.
+- 그래프는 사용자와 세계에 대한 장기 기억을 저장한다.
+- 필요할 때 graph/search/file/document/image/terminal tool을 호출한다.
+- 이전 턴의 그래프 활성도는 다음 턴의 기억 회수 점수에 반영한다.
+- 전체 도구 schema 대신 모델에 공개된 도구 이름만 보내고, 필요한 경우 `tool_manual`로 상세 명세를 조회한다.
+
+## Why This Architecture
+
+이전 구조는 그래프 위에서 직접 사고하는 데 강점이 있었지만, 기본 응답 경로가 무거워지고 유지보수 부담도 커진다. `MK4`는 이 문제를 줄이기 위해 그래프의 책임을 다시 좁힌다.
+
+즉 이 단계에서 그래프는:
+
+- 생각하는 주체가 아니라
+- 기억을 저장하고
+- 다시 꺼내오고
+- 사용자별로 누적하는 기반 구조다
+
+LLM은 planner이자 최종 문장 생성자다. 오케스트레이터는 모델이 낸 JSON을 실행하고, 도구 실행이 필요한 요청에서 실제 실행 없이 완료 답변이 나가지 않도록 구조적으로 검증한다.
+
+## High-level Flow
+
+1. `user_id`, `session_id`, `message`를 받는다.
+2. `user_anchor::<user_id>`가 없으면 만든다.
+3. 사용자 발화를 해당 anchor 아래에 저장한다.
+4. anchor 주변에서 작은 기억 요약을 읽어 온다.
+5. 같은 세션의 이전 활성도 가중치를 가져와 현재 기억 요약의 순위에 반영한다.
+6. 현재 메시지 기준으로 관련 기억 요약을 만든다.
+7. 필요한 경우 자연어 목적을 `web_research`에 전달해 서버 측 웹 조사를 먼저 수행한다.
+8. LLM이 현재 메시지, 최근 대화, 기억 요약, 공개 도구 이름과 현재 턴 도구 결과를 바탕으로 답변을 계획한다.
+9. 필요에 따라 그래프 조회, 최신 검색, 시장 스냅샷, 파일 CRUD, 문서 읽기, 이미지 분석, 터미널 명령을 호출한다.
+10. 유용한 새 사실은 다시 그래프에 저장한다.
+11. 이번 턴의 active graph context를 다음 턴을 위해 세션별로 보관한다.
+
+## Memory Structure
+
+### 1. User anchors
+
+- 사용자별 지속 anchor를 둔다.
+- 같은 사용자의 기억을 세션을 넘어 같은 축에 누적한다.
+
+### 2. Persistent graph repository
+
+- SQLite 기반 그래프 저장소를 사용한다.
+- 사용자 발화 흔적, 사실, 검색 기반 정보, correction 단서를 보관한다.
+
+### 3. Retrieval-first usage
+
+- 그래프는 기본 응답 때 전부 순회되지 않는다.
+- 현재 질문과 가까운 기억만 요약해서 가져온다.
+
+### 4. Active graph context
+
+`MK4`는 장기 기억과 별도로, 세션 단위의 짧은 작업 기억을 둔다. 이것을 active graph context라고 부른다.
+
+active graph context는 다음과 같은 항목에서 만들어진다.
+
+- 현재 사용자 발화 노드
+- 현재 발화에서 추출된 concept 노드
+- `.txt`, `.md`, `.markdown` 파일 읽기에서 추출된 file text activation 노드
+
+이 context는 장기 기억 그 자체가 아니라, **다음 턴의 기억 회수 순위를 보조하는 가중치 상태**다. 모델에 별도의 `Previous active graph context` 필드로 전달하지 않는다.
+
+현재 구현에서는 active graph context를 인메모리로 보관한다. 서버를 재시작하면 이 작업 문맥은 사라지지만, 장기 그래프 기억은 SQLite 저장소에 남는다.
+
+### 5. Current memory activation
+
+매 턴 현재 발화의 로컬 노드와 이전 턴 가중치를 결합해 기억 회수 점수를 계산한다. 그 결과 중 관련성이 높은 기억만 **중심 기억, 핵심 관계 최대 4개, 회수 근거와 출처**로 구성된 작은 서브그래프 `memory_summary`로 압축해 모델에 제공한다. 명시적 `graph_search`도 같은 형식을 사용하되 핵심 관계를 결과별 최대 6개까지 제공한다. 모델은 최초 `query` 검색 뒤 반환된 관계의 `node_id`를 다시 전달하여 그 노드를 다음 탐색의 정확한 중심점으로 삼을 수 있다. 그래프 읽기·수정 도구의 `user_id`는 모델 입력을 신뢰하지 않고 현재 요청의 실제 사용자 ID로 강제한다.
+
+## LLM Input Contract
+
+`MK4`는 모델 입력을 의도적으로 짧게 유지한다. 현재 한 턴의 입력은 아래 요소로 구성된다.
 
 ```text
-Framework
-- raw user/assistant conversation 기록
-- 실제 tool 실행과 결과 보존
-
-LLM
-- 응답 판단
-- tool 선택
-- semantic memory의 저장/수정 판단
-
-Graph layer
-- 지속 장기기억
-- canonical node 재사용
-- 동일 edge/assertion 강화
-- revision history 보존
+system prompt
+user_payload
+  - current message
+  - recent dialogue, 기본 10개 메시지(약 5턴)
+  - recent tool operation summary
+  - 현재 발화 관련성 또는 활성도 기준을 통과한 memory summary, 기본 최대 5개
+  - visible tool names
+  - compact current-turn tool history
+response format
+  - JSON output contract
 ```
 
-그래프는 추론 본체가 아니다. LLM이 필요할 때 명시적으로 읽고 쓰는 외부 장기기억이다.
+### File text activation
 
-## 요청 흐름
+`file_read`가 `.txt`, `.md`, `.markdown` 파일을 성공적으로 읽으면 MK4는 파일 본문을 그대로 장기 기억으로 저장하지 않는다. 대신 파일 텍스트에서 후보 노드를 뽑고 점수를 매긴 뒤, 하위 30%를 제거한 결과만 `file_context`와 concept node로 국소활성화 그래프에 임시 편입한다.
+
+파일에서 온 노드는 사용자 발화에서 온 노드보다 약한 활성 강도로 들어간다.
 
 ```text
-User request
-  ↓
-raw user utterance 저장
-  ↓
-최근 dialogue context 구성
-  ↓
-LLM
-  │
-  ├─ 현재 문맥으로 답변 가능
-  │     └─ answer
-  │
-  ├─ 최근 문맥 밖의 과거 정보 필요
-  │     └─ recall_memory → tool_history → LLM
-  │
-  ├─ durable semantic information 발견
-  │     └─ write_memory
-  │
-  └─ 기존 semantic memory가 outdated
-        └─ recall_memory → revise_memory
-  ↓
-raw assistant utterance 저장
+current user utterance / local nodes: 1.0
+previous active graph nodes: 0.5
+file text activation nodes: 0.25
 ```
 
-과거 사용자 정보나 이전 대화가 필요하지만 recent dialogue에 없다면 `recall_memory`를 사용해야 한다.
+이 값은 “파일을 읽었다”는 사실이 현재 작업에는 중요하지만, 사용자가 직접 말한 기억과 같은 강도로 장기 문맥을 끌어당기면 안 된다는 판단을 반영한다. 파일 text activation은 다음 턴의 작업 문맥에만 약하게 이어지며, 새 턴에서 다시 파일을 읽지 않으면 장기 기억 summary 후보로 고정되거나 계속 재전파되지 않는다.
 
-## Model-facing context
+긴 파일에서 후처리가 멈추지 않도록 파일 text activation 입력은 기본 8,000자로 제한한다. 또한 2,000자를 넘는 파일은 Sentence_Breaker 대신 더 가벼운 token fallback으로 후보를 만든다. 현재 기본값은 상위 70%, 최대 24개이며, 각각 `MK4_FILE_TEXT_NODE_KEEP_RATIO`, `MK4_FILE_TEXT_NODE_MAX_ITEMS`, `MK4_FILE_TEXT_ACTIVATION_MAX_CHARS`로 조정할 수 있다.
 
-기본 model wrapper는 다음 구조만 전달한다.
+### Tool names and visibility
+
+기본 모델 입력에는 가시성 정책을 통과한 도구 이름만 전달된다. 설명, 인자 목록, 전체 schema는 기본 입력에 포함하지 않는다. `internet_search`와 `web_page_read` 같은 저수준 내부 도구는 모델 목록에서도 제외된다.
+
+### `tool_manual`
+
+`tool_manual`은 도구 설명서 조회용 도구다.
+
+모델이 특정 도구의 정확한 인자 구조를 모르면 다음처럼 먼저 설명서를 읽을 수 있다.
 
 ```json
 {
-  "user_message": "...recent dialogue + current message...",
-  "authorization_context": {},
-  "tool_catalog": [],
-  "tool_history": []
+  "tool": "tool_manual",
+  "arguments": {
+    "tool": "file_update"
+  }
 }
 ```
 
-그래프 memory summary를 자동으로 주입하지 않는다.
+그 결과에는 해당 도구의 전체 description과 `input_schema`가 들어간다. 즉 기본 프롬프트에는 짧은 목록만 넣고, 자세한 schema는 필요한 도구에 대해서만 가져오는 구조다.
 
-따라서 persistent graph의 실제 내용은 `recall_memory`가 성공한 뒤 그 결과가 `tool_history`에 추가되었을 때만 모델에게 보인다.
+### Compact tool history
 
-요청 단위 scratchpad 계층도 두지 않는다.
+도구 실행 결과도 원문 전체를 그대로 다시 넣지 않는다. 예를 들어 파일 읽기는 path, 성공 여부, content preview, content length 중심으로 요약되고, 이미지 분석은 path, 이미지 크기, 사용 모델, description preview 중심으로 요약된다.
 
-- 현재 agent loop의 임시 실행 상태: `tool_history`
-- 짧은 대화 문맥: recent dialogue
-- 지속 장기기억: graph memory
+파일 전체 내용이나 긴 검색 결과가 계속 누적되면 모델이 현재 작업보다 과거 결과에 끌려갈 수 있기 때문에, tool history는 기본적으로 “다음 행동 판단에 필요한 정도”로 압축한다.
 
-으로 책임을 구분한다.
+### Output contract
 
-## Raw conversation graph
+모델 출력은 JSON 하나로 고정된다.
 
-`GraphMemoryService.record_user_utterance()`는 다음을 기록한다.
+- `final_answer`: 사용자에게 보여줄 최종 답변, 없으면 `null`
+- `tool_calls`: 실행할 도구 호출 목록
+- `final_answer_kind`: `answer`, `tool_completion`, `blocked`
+- `completion_tools`: `tool_completion` 답변이 근거로 삼는 도구 이름 목록
 
-```text
-user_anchor
-  └─ spoke → utterance
-               └─ user_mentions_concept → concept
-```
+파일 수정, 터미널 실행, 이미지 분석처럼 사용자가 실제 도구 수행을 요구한 턴에서는 도구가 성공하기 전의 “했습니다”류 답변을 완료로 보지 않는다. 최종 문장 자체는 LLM이 만들지만, 오케스트레이터가 도구 실행 여부와 성공 여부를 구조적으로 검증한다.
 
-발화에서 별도 user fact를 자동 추출하지 않는다. 검색 snippet에서도 별도 search fact를 자동 추출하지 않는다.
+도구 라운드 수에는 고정 상한이 없다. 모델이 JSON 출력 계약을 반복해서 깨거나 존재하지 않는 도구를 반복 호출하면 회로차단기가 응답을 멈춘다. 같은 도구와 같은 인자의 반복 허용 횟수는 기본 3회이며 `MK4_AGENT_MAX_IDENTICAL_TOOL_CALLS`로 조정할 수 있다.
 
-raw graph의 목적은 semantic interpretation을 대신하는 것이 아니라 실제 대화/텍스트 흔적을 보존하고 graph search의 근거를 제공하는 것이다.
+웹 조사가 필요하면 모델이 사용자 입력을 간결한 조사 목적으로 정리해 `web_research`를 호출한다. 그래프 노드나 노드 조합으로 자동 검색을 시작하거나 검색어를 만들지는 않는다. 복수 검색 소스 조회부터 페이지 본문 근거 추출까지는 서버 측에서 수행한다.
 
-## Model-managed semantic memory
+모델에는 `web_research`만 상위 일반 검색 도구로 노출한다. `internet_search`와 `web_page_read`는 모델 도구 목록과 매뉴얼에서 숨기고, `web_research` 내부의 복수 검색 및 페이지 본문 추출 단계로만 사용한다.
 
-`ModelManagedGraphMemoryService`가 semantic memory 작업을 담당한다.
+## Tooling
 
-### Entity
+현재 `MK4`의 주요 도구군은 아래와 같다.
 
-모델이 label을 사용해 endpoint를 지정하면 graph layer가 canonical label을 계산한다.
+- graph memory: `graph_search`, `record_memory_correction`
+- search: `web_research`, `latest_search`
+- file discovery: `file_search`
+- code structure: `code_index`, `code_search`
+- file CRUD: `file_create`, `file_read`, `file_update`, `file_delete`
+- document: `document_read`
+- image: `image_analyze`
+- shell: `terminal_command`
+- manual: `tool_manual`
 
-```text
-"Chess"
-"  chess  "
-      ↓
-canonical: "chess"
-      ↓
-same semantic_entity node
-```
+`file_read`는 UTF-8 텍스트 파일만 읽는다. 이미지 파일은 `image_analyze`, PDF/DOCX는 `document_read`를 사용한다. 이 구분은 파일 확장자를 기반으로 도구가 안내하지만, 어떤 작업을 수행할지는 모델이 구조화된 tool call로 결정한다.
 
-이미 `recall_memory`가 반환한 entity라면 모델은 `node_id`를 재사용할 수 있다.
+## Image and Upload Flow
 
-### Assertion
+이미지 분석은 대화 모델과 별도의 모델을 사용할 수 있다.
 
-하나의 durable relationship은 canonical triple로 식별한다.
+- `MK4_OLLAMA_MODEL_NAME`: 일반 대화 모델
+- `MK4_OLLAMA_IMAGE_MODEL_NAME`: 이미지 분석 우선 모델
+- `MK4_OLLAMA_IMAGE_FALLBACK_MODEL_NAME`: 우선 모델이 이미지 요청을 거부할 때의 대체 모델
 
-```text
-subject_id | normalized_relation | object_id
-```
+UI에서도 대화 모델과 이미지 모델을 별도로 선택할 수 있다. 사용자가 클립 버튼으로 파일을 첨부하면 서버는 `/upload`로 파일을 받아 `.mk4_uploads/` 아래에 저장하고, 이후 대화에서는 업로드 경로를 `image_analyze`, `document_read`, `file_read` 같은 도구가 사용할 수 있다.
 
-이를 기반으로 하나의 `semantic_memory` assertion node를 만든다.
+이 방식은 사용자가 다른 PC에서 브라우저로 접속하는 경우에도 경로 문자열만 넘기는 방식보다 안전하다. 실제 파일 바이트가 서버에 업로드되기 때문이다.
 
-```text
-user_anchor
-   │ semantic_memory
-   ▼
-[semantic_memory assertion]
-   ├─ memory_subject → [subject]
-   └─ memory_object  → [object]
-```
+## What Changes In Practice
 
-relation은 공백/하이픈 등을 정규화한 identifier로 저장한다.
+이 구조에서 바뀌는 것은 단순히 모듈 수가 아니라 응답의 기본 철학이다.
 
-### Duplicate reinforcement
+- 기본 경로에 thought loop를 두지 않는다.
+- 기본 경로에 conclusion graph 생성도 두지 않는다.
+- graph-to-language 계층을 기본값으로 두지 않는다.
+- LLM이 planner 역할을 하고 그래프는 memory substrate가 된다.
+- 그래프는 장기 기억 저장소이면서, 턴 단위로 활성화되는 working context를 제공한다.
+- 안전한 조사, 구현, 검증 단계는 사용자에게 선택을 요청하지 않고 목표가 충족될 때까지 이어서 수행한다.
+- 결과를 크게 바꾸는 결정이나 파괴적·외부 영향 작업이 아니라면 중간 승인을 요구하지 않는다.
+- 동일 도구 호출의 반복으로 정체가 감지되면 도구를 차단한 마지막 합성 라운드에서 수집한 근거로 최종 답변을 만든다.
+- 프롬프트는 규칙을 계속 덧붙이는 방식보다, 짧은 기본 원칙과 구조적 guard로 유지한다.
+- 문자열 신호나 임시 단어 목록으로 모델 행동을 틀어막기보다, JSON contract, tool schema, completion guard 같은 구조로 제어한다.
 
-동일한 subject/relation/object를 다시 저장하면 새 assertion node를 만들지 않는다.
+## Implementation Milestones
 
-`GraphRepository.add_edge()`의 동일 edge 계약에 따라 기존 edge의 `support_count`와 강도가 증가한다.
+### Milestone 1
 
-### Revision
+- 안정적인 user anchor 생성
+- 발화 저장
+- 그래프 기반 기억 요약 조회
+- 단순 채팅 엔드포인트
 
-`revise_memory`는 기존 assertion을 삭제하지 않는다.
+### Milestone 2
 
-```text
-old assertion (is_active=false)
-        │
-        └─ superseded_by → new assertion
-```
+- graph query tool 계약
+- 실제 모델 백엔드 연동
+- web search adapter
 
-이렇게 현재 상태와 수정 이력을 동시에 보존한다.
+### Milestone 3
 
-## Memory tools
+- fact write-back
+- correction / conflict 저장 규칙
+- memory browsing UI
 
-### recall_memory
+### Milestone 4
 
-Runtime tool 이름은 `graph_search`, model-facing 이름은 `recall_memory`다.
+- session-level active graph context
+- fresh graph activation per turn
+- active context persistence 여부 검토
 
-- no query/node id: 사용자 기억 browse
-- query: 관련 graph search
-- node_id: 특정 반환 노드 확장
+### Milestone 5
 
-현재 요청의 user id는 framework가 주입하므로 모델이 user id를 만들지 않는다.
-
-### write_memory
-
-하나의 durable semantic relationship을 저장하거나 기존 동일 assertion을 강화한다.
-
-### revise_memory
-
-기존 model-managed semantic assertion을 새로운 assertion으로 교체한다.
-
-옛 `record_memory_correction`/자동 fact correction 경로는 사용하지 않는다.
-
-## Search / file graph records
-
-웹 검색 결과와 file text context는 출처 추적 및 현재 작업 문맥을 위해 graph에 기록될 수 있다. 이것들은 model-managed user semantic memory와 별개다.
-
-텍스트 파일 context는 `suppress_from_summary`를 유지하며 semantic user memory로 자동 승격하지 않는다.
-
-## Recent dialogue
-
-Orchestrator는 최근 user/assistant 메시지를 `MK4_RECENT_MESSAGE_LIMIT` 범위에서 유지한다. 기본값 10개 메시지라면 약 5개 대화쌍이다.
-
-최근 dialogue에 이미 필요한 내용이 있으면 별도의 long-term recall 없이 답할 수 있다. 그 범위를 벗어난 과거 정보가 필요하면 `recall_memory`를 사용한다.
-
-## Failure contract
-
-- 모델이 도구로 확인 가능한 정보를 사용자에게 다시 요구하지 않는다.
-- 실제 tool/OS 실패 전에는 접근 불가를 가정하지 않는다.
-- mutation은 실제 target/state를 확인한 뒤 실행하고 검증한다.
-- 실패를 문자열 비교나 fallback으로 성공처럼 숨기지 않는다.
-- 존재하지 않는 기억을 framework가 자동 주입해 모델 판단 실패를 가리지 않는다.
-
-## Database transition
-
-이 구조 이전의 DB에는 다음 legacy data가 남아 있을 수 있다.
-
-- 자동 추출 `fact`
-- `derived_fact` / `asserted_fact`
-- old correction/replacement 관계
-- recall-test interaction metadata
-
-새 semantic-memory 구조를 검증할 때는 기존 DB를 백업하고 새 SQLite DB로 시작하는 것을 권장한다. 코드가 legacy node를 새 assertion으로 자동 migration하지는 않는다.
+- file CRUD 도구 분리
+- PDF/DOCX 문서 읽기
+- 이미지 분석 도구와 UI 첨부
+- 대화 모델/이미지 모델 선택 분리
+- model-visible tool names + on-demand `tool_manual`
+- compact tool history
+- `.txt`/`.md` 파일 읽기 결과의 약한 local graph activation

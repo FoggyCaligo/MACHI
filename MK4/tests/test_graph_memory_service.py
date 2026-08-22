@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 from MK4.core.graph.anchors import user_anchor_id
 from MK4.core.graph.repository import GraphRepository
@@ -22,24 +22,9 @@ def test_record_user_utterance_exposes_memory_summary() -> None:
 
     summary = service.user_memory_summary("alice")
     assert any("I build user interfaces." in item["label"] for item in summary)
-    assert all(item["node_type"] == "utterance" for item in summary)
+    assert any("I enjoy TypeScript." in item["label"] for item in summary)
     assert all(set(item["subgraph"]) >= {"focus", "relations"} for item in summary)
     assert all(len(item["subgraph"]["relations"]) <= 4 for item in summary)
-    repo.close()
-
-
-def test_record_user_utterance_does_not_create_automatic_fact_nodes() -> None:
-    repo = GraphRepository(":memory:")
-    service = GraphMemoryService(repo)
-
-    service.record_user_utterance(
-        user_id="alice",
-        text="I enjoy TypeScript.",
-        session_id="s1",
-    )
-
-    assert not any(node.node_type == "fact" for node in repo.all_nodes())
-    assert not any(edge.relation in {"asserted_fact", "derived_fact", "replaces"} for edge in repo.all_edges())
     repo.close()
 
 
@@ -66,8 +51,16 @@ def test_record_user_utterance_uses_sentence_breaker_segments() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)
 
-    service.record_user_utterance(user_id="alice", text="엄마", session_id="s1")
-    service.record_user_utterance(user_id="alice", text="엄마가 아이를 안는다.", session_id="s1")
+    service.record_user_utterance(
+        user_id="alice",
+        text="엄마",
+        session_id="s1",
+    )
+    service.record_user_utterance(
+        user_id="alice",
+        text="엄마가 아이를 안는다.",
+        session_id="s1",
+    )
 
     concept_labels = {
         label
@@ -180,39 +173,42 @@ def test_graph_repository_persists_across_reopen(tmp_path: Path) -> None:
     repo_b.close()
 
 
-def test_search_results_are_persisted_without_automatic_fact_extraction() -> None:
+def test_search_results_are_persisted_under_search_anchor() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)
 
     recorded = service.record_search_results(
         query="graph memory",
-        results=[{
-            "title": "Graph Memory",
-            "url": "https://example.com/graph-memory",
-            "snippet": "Graph memory stores durable context for agents.",
-            "source": "stub",
-        }],
+        results=[
+            {
+                "title": "Graph Memory",
+                "url": "https://example.com/graph-memory",
+                "snippet": "Graph memory stores durable context for agents.",
+                "source": "stub",
+            }
+        ],
     )
 
     assert recorded
     search_results = service.graph_search(user_id="alice", query="Graph Memory", limit=8)
     assert any(item["focus"]["node_type"] == "search_result" for item in search_results)
+    durable_results = service.graph_search(user_id="alice", query="durable", limit=8)
+    assert any(item["focus"]["node_type"] == "search_fact" for item in durable_results)
     concept_results = service.graph_search(user_id="alice", query="agents", limit=8)
     assert any(item["focus"]["node_type"] == "concept" for item in concept_results)
-    assert not any(node.node_type == "search_fact" for node in repo.all_nodes())
     repo.close()
 
 
-def test_repeated_raw_utterance_reinforces_existing_graph_edges() -> None:
+def test_repeated_relation_reinforces_one_semantic_edge() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)
 
     service.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
-    service.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
+    service.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s2")
 
-    spoke = [edge for edge in repo.all_edges() if edge.relation == "spoke"]
-    assert len(spoke) == 1
-    assert spoke[0].support_count >= 1
+    asserted = [edge for edge in repo.all_edges() if edge.relation == "asserted_fact"]
+    assert len(asserted) == 1
+    assert asserted[0].support_count >= 2
     repo.close()
 
 
@@ -247,7 +243,7 @@ def test_memory_summary_items_include_scores_and_components() -> None:
     repo.close()
 
 
-def test_memory_summary_min_signal_excludes_unrelated_memories() -> None:
+def test_memory_summary_min_signal_excludes_unrelated_stable_memories() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)
     service.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
@@ -263,6 +259,45 @@ def test_memory_summary_min_signal_excludes_unrelated_memories() -> None:
     assert items
     assert all("tomatoes" not in item["raw_label"] for item in items)
     assert any("TypeScript" in item["raw_label"] for item in items)
+    repo.close()
+
+
+def test_memory_summary_deduplicates_fact_and_utterance_with_same_text() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    service.record_user_utterance(user_id="alice", text="I enjoy TypeScript.", session_id="s1")
+
+    items = service.user_memory_summary(
+        "alice",
+        query="TypeScript",
+        limit=5,
+        min_signal=0.05,
+    )
+
+    assert [item["raw_label"] for item in items] == ["I enjoy TypeScript."]
+    repo.close()
+
+
+def test_memory_summary_min_signal_does_not_force_fill_requested_limit() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    for index in range(8):
+        service.record_user_utterance(
+            user_id="alice",
+            text=f"unrelated memory number {index}",
+            session_id="s1",
+        )
+    service.record_user_utterance(user_id="alice", text="Machi uses graph memory.", session_id="s1")
+
+    items = service.user_memory_summary(
+        "alice",
+        query="Machi graph",
+        limit=5,
+        min_signal=0.05,
+    )
+
+    assert 1 <= len(items) < 5
+    assert all("Machi" in item["raw_label"] or "graph" in item["raw_label"] for item in items)
     repo.close()
 
 
@@ -293,17 +328,43 @@ def test_memory_summary_preserves_user_speaker_attribution() -> None:
 
     assert summary
     assert any("사용자(신재용)" in item["label"] for item in summary)
-    assert any("speaker는 사용자" in item["label"] for item in summary)
+    assert any("assistant가 아니라 사용자" in item["label"] or "speaker는 사용자" in item["label"] for item in summary)
     repo.close()
 
 
-def test_user_scoped_search_does_not_return_other_users_utterance() -> None:
+def test_fact_correction_preserves_history_and_hides_superseded_fact() -> None:
+    repo = GraphRepository(":memory:")
+    service = GraphMemoryService(repo)
+    service.record_user_utterance(user_id="alice", text="I use JavaScript.", session_id="s1")
+    previous = next(node for node in repo.all_nodes() if node.node_type == "fact")
+
+    replacement_id = service.record_fact_correction(
+        user_id="alice",
+        previous_fact_id=previous.node_id,
+        replacement_text="I use TypeScript.",
+        session_id="s2",
+    )
+
+    old = repo.get_node(previous.node_id)
+    replacement = repo.get_node(replacement_id)
+    assert old is not None and old.is_active is False
+    assert old.payload["superseded_by"] == replacement_id
+    assert replacement is not None and replacement.provenance == "user_correction"
+    corrected_summary = service.user_memory_summary("alice")
+    assert not any("I use JavaScript." in item["label"] for item in corrected_summary)
+    assert any("I use TypeScript." in item["label"] for item in corrected_summary)
+    assert any(edge.relation == "replaces" for edge in repo.all_edges())
+    repo.close()
+
+
+def test_user_scoped_search_does_not_return_other_users_fact() -> None:
     repo = GraphRepository(":memory:")
     service = GraphMemoryService(repo)
     service.record_user_utterance(user_id="alice", text="Alice secret preference.", session_id="s1")
 
     results = service.graph_search(user_id="bob", query="secret preference", limit=8)
 
+    assert not any(item["focus"]["node_type"] == "fact" for item in results)
     assert not any(item["focus"]["node_type"] == "utterance" for item in results)
     repo.close()
 
@@ -346,3 +407,4 @@ def test_record_file_text_activation_ignores_non_text_extensions() -> None:
 
     assert result == {"node_ids": [], "nodes": []}
     repo.close()
+

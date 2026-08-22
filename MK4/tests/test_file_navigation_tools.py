@@ -125,6 +125,8 @@ def test_model_context_is_bounded_for_large_tree() -> None:
     assert "more results omitted" in compacted
 
 
-def test_system_prompt_requires_inspect_change_verify_workflow() -> None:
-    assert "Inspect before changing state and verify afterward." in SYSTEM_PROMPT
-    assert "prefer code_index/code_search before targeted reads" in SYSTEM_PROMPT
+def test_system_prompt_requires_complete_file_edit_workflow() -> None:
+    assert "file_tree" in SYSTEM_PROMPT
+    assert "file_text_search" in SYSTEM_PROMPT
+    assert "do not stop after merely locating a file" in SYSTEM_PROMPT
+    assert "verify the important changed section" in SYSTEM_PROMPT
