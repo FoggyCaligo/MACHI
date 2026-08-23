@@ -11,7 +11,11 @@ from ..tools.account_authorization import (
     reset_account_role,
     set_account_role,
 )
-from ..tools.adequacy_recovery import RecoveringToolRequirementGuardChatModel
+from ..tools.adequacy_recovery import (
+    RecoveringToolRequirementGuardChatModel,
+    reset_recovery_scope,
+    start_recovery_scope,
+)
 from ..tools.autonomy_tools import AutonomyChatModel
 from ..tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
 from ..tools.grounding_tools import EvidenceGroundingChatModel
@@ -128,6 +132,7 @@ class Pipeline:
         task_tokens = set_file_task_message(message)
         scratchpad_token = start_request_scratchpad()
         requirement_token = start_tool_requirement_scope()
+        recovery_token = start_recovery_scope()
         account_role_token = set_account_role(account_role)
         try:
             preflight_tool_definitions = [
@@ -155,6 +160,7 @@ class Pipeline:
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
             reset_account_role(account_role_token)
+            reset_recovery_scope(recovery_token)
             reset_tool_requirement_scope(requirement_token)
             reset_request_scratchpad(scratchpad_token)
             reset_file_task_message(task_tokens)
