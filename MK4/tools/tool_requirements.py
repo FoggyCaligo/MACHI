@@ -25,17 +25,17 @@ This is a pre-answer decision. Do not draft the answer and do not invent capabil
 
 Process:
 1. Treat automatic_memory_context as information that is already available before tool use. It is not a tool execution and does not need to be counted as one.
-2. Evaluate every exposed tool exactly once as required=true or required=false.
-3. Mark a tool required=true only when it belongs to a minimal way to obtain information or perform an action that is still necessary to honestly complete the user's request.
-4. A tool that is merely related, potentially useful, or nice to have is required=false.
-5. If already supplied memory fully resolves a stable memory-based question, additional recall tools are not required. If the needed past detail is missing from supplied memory, an explicit recall tool may be required.
-6. If the requested fact/state can reasonably differ today from yesterday, stale memory does not satisfy that current-information need; an appropriate current external tool can still be required.
-7. After evaluating tools individually, group required=true tools by substitutability:
+2. The response schema contains one boolean property for every exposed tool. Judge every property independently as true or false.
+3. Set a tool to true only when it belongs to a minimal way to obtain information or perform an action that is still necessary to honestly complete the user's request.
+4. A tool that is merely related, potentially useful, or nice to have is false.
+5. If already supplied memory fully resolves a stable memory-based question, additional recall tools are false. If the needed past detail is missing from supplied memory, an explicit recall tool may be true.
+6. If the requested fact/state can reasonably differ today from yesterday, stale memory does not satisfy that current-information need; an appropriate current external tool can still be true.
+7. After judging all tool booleans, group only true tools by substitutability in required_groups:
    - tools in the same group are alternatives; one successful tool in that group is enough for that part of the request,
    - tools that are jointly necessary must be in different groups,
-   - a required tool with no substitute forms a one-tool group.
-8. Never place a required=false tool in a group. Every required=true tool must appear in exactly one group.
-9. Use only tool names present in tool_catalog.
+   - a true tool with no substitute forms a one-tool group.
+8. Never place a false tool in a group. Every true tool must appear in exactly one group.
+9. Use only tool names present in the response schema/tool catalog.
 
 The final required_groups represent AND across groups and OR within each group.
 """.strip()
@@ -63,6 +63,10 @@ _ADEQUACY_RETRY_INSTRUCTION = """
 The required tool group was executed, but the returned results were reviewed as insufficient for the user's request.
 Use the exposed tools to resolve the listed missing aspects before answering. Choose the next tool and query based on the actual missing information; do not substitute instructions for the user.
 """.strip()
+
+
+class ToolRequirementPlanError(RuntimeError):
+    """The tool-necessity preflight violated its structured output contract."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,35 +238,26 @@ async def plan_tool_requirements(
     response_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "tool_evaluations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "tool": {"type": "string", "enum": tool_names},
-                        "required": {"type": "boolean"},
-                    },
-                    "required": ["tool", "required"],
-                    "additionalProperties": False,
+            "tool_requirements": {
+                "type": "object",
+                "properties": {
+                    name: {"type": "boolean"}
+                    for name in tool_names
                 },
+                "required": tool_names,
+                "additionalProperties": False,
             },
             "required_groups": {
                 "type": "array",
                 "items": {
-                    "type": "object",
-                    "properties": {
-                        "tools": {
-                            "type": "array",
-                            "items": {"type": "string", "enum": tool_names},
-                            "minItems": 1,
-                        },
-                    },
-                    "required": ["tools"],
-                    "additionalProperties": False,
+                    "type": "array",
+                    "items": {"type": "string", "enum": tool_names},
+                    "minItems": 1,
+                    "uniqueItems": True,
                 },
             },
         },
-        "required": ["tool_evaluations", "required_groups"],
+        "required": ["tool_requirements", "required_groups"],
         "additionalProperties": False,
     }
     payload = {
@@ -286,76 +281,71 @@ async def plan_tool_requirements(
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Tool requirement plan must be valid JSON: {exc}") from exc
-    return _parse_requirement_plan(data, tool_names=tool_names)
+        return _parse_requirement_plan(data, tool_names=tool_names)
+    except (json.JSONDecodeError, ToolRequirementPlanError) as exc:
+        error = (
+            ToolRequirementPlanError(f"Tool requirement plan must be valid JSON: {exc}")
+            if isinstance(exc, json.JSONDecodeError)
+            else exc
+        )
+        _debug_requirement_plan_error(raw=raw, error=error)
+        raise error
 
 
 def _parse_requirement_plan(data: object, *, tool_names: list[str]) -> FrozenToolRequirements:
     if not isinstance(data, dict):
-        raise RuntimeError("Tool requirement plan must be an object.")
-    evaluations_raw = data.get("tool_evaluations")
+        raise ToolRequirementPlanError("Tool requirement plan must be an object.")
+    requirements_raw = data.get("tool_requirements")
     groups_raw = data.get("required_groups")
-    if not isinstance(evaluations_raw, list):
-        raise RuntimeError("Tool requirement plan must contain tool_evaluations list.")
+    if not isinstance(requirements_raw, dict):
+        raise ToolRequirementPlanError("Tool requirement plan must contain tool_requirements object.")
     if not isinstance(groups_raw, list):
-        raise RuntimeError("Tool requirement plan must contain required_groups list.")
+        raise ToolRequirementPlanError("Tool requirement plan must contain required_groups list.")
 
     available = set(tool_names)
-    evaluations: list[ToolEvaluation] = []
-    seen_tools: set[str] = set()
-    for index, item in enumerate(evaluations_raw):
-        if not isinstance(item, dict):
-            raise RuntimeError(f"tool_evaluations[{index}] must be an object.")
-        tool = str(item.get("tool") or "").strip()
-        required = item.get("required")
-        if tool not in available:
-            raise RuntimeError(f"tool_evaluations[{index}] contains unavailable tool: {tool}")
-        if tool in seen_tools:
-            raise RuntimeError(f"Duplicate tool evaluation: {tool}")
-        if not isinstance(required, bool):
-            raise RuntimeError(f"tool_evaluations[{index}].required must be boolean.")
-        seen_tools.add(tool)
-        evaluations.append(ToolEvaluation(tool=tool, required=required))
-
-    if seen_tools != available:
-        missing = sorted(available - seen_tools)
-        extra = sorted(seen_tools - available)
-        raise RuntimeError(
+    returned_tools = set(requirements_raw)
+    if returned_tools != available:
+        missing = sorted(available - returned_tools)
+        extra = sorted(returned_tools - available)
+        raise ToolRequirementPlanError(
             "Tool requirement plan must evaluate every exposed tool exactly once. "
             f"missing={missing} extra={extra}"
         )
 
+    evaluations: list[ToolEvaluation] = []
+    for tool in tool_names:
+        required = requirements_raw.get(tool)
+        if not isinstance(required, bool):
+            raise ToolRequirementPlanError(f"tool_requirements.{tool} must be boolean.")
+        evaluations.append(ToolEvaluation(tool=tool, required=required))
+
     required_tools = {item.tool for item in evaluations if item.required}
     grouped_tools: set[str] = set()
     groups: list[ToolRequirementGroup] = []
-    for index, item in enumerate(groups_raw):
-        if not isinstance(item, dict):
-            raise RuntimeError(f"required_groups[{index}] must be an object.")
-        tools = item.get("tools")
+    for index, tools in enumerate(groups_raw):
         if not isinstance(tools, list) or not tools:
-            raise RuntimeError(f"required_groups[{index}].tools must be a non-empty list.")
+            raise ToolRequirementPlanError(f"required_groups[{index}] must be a non-empty list.")
         normalized = tuple(dict.fromkeys(str(name).strip() for name in tools if str(name).strip()))
         if len(normalized) != len(tools):
-            raise RuntimeError(f"required_groups[{index}] contains duplicate or empty tool names.")
+            raise ToolRequirementPlanError(f"required_groups[{index}] contains duplicate or empty tool names.")
         unknown = [name for name in normalized if name not in available]
         if unknown:
-            raise RuntimeError(f"required_groups[{index}] contains unavailable tools: {unknown}")
+            raise ToolRequirementPlanError(f"required_groups[{index}] contains unavailable tools: {unknown}")
         false_tools = [name for name in normalized if name not in required_tools]
         if false_tools:
-            raise RuntimeError(
+            raise ToolRequirementPlanError(
                 f"required_groups[{index}] contains tools evaluated required=false: {false_tools}"
             )
         duplicates = [name for name in normalized if name in grouped_tools]
         if duplicates:
-            raise RuntimeError(f"Required tools may appear in only one group: {duplicates}")
+            raise ToolRequirementPlanError(f"Required tools may appear in only one group: {duplicates}")
         grouped_tools.update(normalized)
         groups.append(ToolRequirementGroup(tools=normalized))
 
     if grouped_tools != required_tools:
         missing = sorted(required_tools - grouped_tools)
         extra = sorted(grouped_tools - required_tools)
-        raise RuntimeError(
+        raise ToolRequirementPlanError(
             "Every required=true tool must appear in exactly one required group and no required=false tool may appear. "
             f"missing={missing} extra={extra}"
         )
@@ -473,6 +463,18 @@ def _debug_requirement_plan(requirements: FrozenToolRequirements) -> None:
     ) or "none"
     print(
         f"[MK4 requirement] required_tools={','.join(true_tools) or 'none'} groups={groups}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _debug_requirement_plan_error(*, raw: str, error: Exception) -> None:
+    if not config.AGENT_DEBUG_LOG:
+        return
+    limit = max(0, config.MODEL_FAILURE_PREVIEW_CHARS)
+    preview = raw[:limit] if limit else "<disabled>"
+    print(
+        f"[MK4 requirement] plan_error={error!r} raw_chars={len(raw)} raw_preview={preview!r}",
         file=sys.stderr,
         flush=True,
     )
