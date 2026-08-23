@@ -12,6 +12,7 @@ from MK4.tools.tool_requirements import (
     ToolEvaluation,
     ToolRequirementGroup,
     ToolRequirementGuardChatModel,
+    ToolRequirementPlanError,
     reset_tool_requirement_scope,
     start_tool_requirement_scope,
 )
@@ -47,14 +48,14 @@ def _definition(name: str, description: str) -> ToolDefinition:
 
 def _news_plan() -> dict[str, Any]:
     return {
-        "tool_evaluations": [
-            {"tool": "latest_search", "required": True},
-            {"tool": "market_snapshot", "required": False},
-            {"tool": "recall_memory", "required": False},
-            {"tool": "web_research", "required": True},
-        ],
+        "tool_requirements": {
+            "latest_search": True,
+            "market_snapshot": False,
+            "recall_memory": False,
+            "web_research": True,
+        },
         "required_groups": [
-            {"tools": ["latest_search", "web_research"]},
+            ["latest_search", "web_research"],
         ],
     }
 
@@ -101,6 +102,19 @@ async def test_planner_evaluates_each_tool_and_groups_only_required_alternatives
         "already_available_before_tool_use": True,
         "items": ["예전에 할리우드 배우 이야기를 한 적이 있음"],
     }
+    schema = captured["schema"]
+    requirements_schema = schema["properties"]["tool_requirements"]
+    assert requirements_schema["required"] == [
+        "latest_search",
+        "market_snapshot",
+        "recall_memory",
+        "web_research",
+    ]
+    assert set(requirements_schema["properties"]) == set(requirements_schema["required"])
+    assert all(
+        property_schema == {"type": "boolean"}
+        for property_schema in requirements_schema["properties"].values()
+    )
     assert "do not invent capabilities" in captured["system"].lower()
 
 
@@ -112,10 +126,10 @@ async def test_automatic_memory_can_make_explicit_recall_unnecessary(monkeypatch
             "사용자는 예전에 SF 소설 A와 B를 추천받았다."
         ]
         return json.dumps({
-            "tool_evaluations": [
-                {"tool": "recall_memory", "required": False},
-                {"tool": "web_research", "required": False},
-            ],
+            "tool_requirements": {
+                "recall_memory": False,
+                "web_research": False,
+            },
             "required_groups": [],
         })
 
@@ -141,13 +155,13 @@ async def test_stale_memory_does_not_remove_current_external_requirement(monkeyp
         payload = json.loads(user)
         assert payload["automatic_memory_context"]["items"] == ["삼성전자 PER은 예전에 12.6배였다."]
         return json.dumps({
-            "tool_evaluations": [
-                {"tool": "market_snapshot", "required": True},
-                {"tool": "recall_memory", "required": False},
-                {"tool": "web_research", "required": False},
-            ],
+            "tool_requirements": {
+                "market_snapshot": True,
+                "recall_memory": False,
+                "web_research": False,
+            },
             "required_groups": [
-                {"tools": ["market_snapshot"]},
+                ["market_snapshot"],
             ],
         })
 
@@ -168,28 +182,28 @@ async def test_stale_memory_does_not_remove_current_external_requirement(monkeyp
 
 
 def test_requirement_plan_rejects_missing_tool_evaluation() -> None:
-    with pytest.raises(RuntimeError, match="evaluate every exposed tool exactly once"):
+    with pytest.raises(ToolRequirementPlanError, match="evaluate every exposed tool exactly once"):
         tool_requirements._parse_requirement_plan(
             {
-                "tool_evaluations": [
-                    {"tool": "latest_search", "required": True},
-                ],
-                "required_groups": [{"tools": ["latest_search"]}],
+                "tool_requirements": {
+                    "latest_search": True,
+                },
+                "required_groups": [["latest_search"]],
             },
             tool_names=["latest_search", "web_research"],
         )
 
 
 def test_requirement_plan_rejects_false_tool_inside_group() -> None:
-    with pytest.raises(RuntimeError, match="required=false"):
+    with pytest.raises(ToolRequirementPlanError, match="required=false"):
         tool_requirements._parse_requirement_plan(
             {
-                "tool_evaluations": [
-                    {"tool": "latest_search", "required": True},
-                    {"tool": "market_snapshot", "required": False},
-                ],
+                "tool_requirements": {
+                    "latest_search": True,
+                    "market_snapshot": False,
+                },
                 "required_groups": [
-                    {"tools": ["latest_search", "market_snapshot"]},
+                    ["latest_search", "market_snapshot"],
                 ],
             },
             tool_names=["latest_search", "market_snapshot"],
@@ -197,15 +211,15 @@ def test_requirement_plan_rejects_false_tool_inside_group() -> None:
 
 
 def test_requirement_plan_rejects_required_tool_missing_from_groups() -> None:
-    with pytest.raises(RuntimeError, match="must appear in exactly one required group"):
+    with pytest.raises(ToolRequirementPlanError, match="must appear in exactly one required group"):
         tool_requirements._parse_requirement_plan(
             {
-                "tool_evaluations": [
-                    {"tool": "latest_search", "required": True},
-                    {"tool": "web_research", "required": True},
-                ],
+                "tool_requirements": {
+                    "latest_search": True,
+                    "web_research": True,
+                },
                 "required_groups": [
-                    {"tools": ["latest_search"]},
+                    ["latest_search"],
                 ],
             },
             tool_names=["latest_search", "web_research"],
@@ -213,20 +227,49 @@ def test_requirement_plan_rejects_required_tool_missing_from_groups() -> None:
 
 
 def test_requirement_plan_rejects_tool_in_multiple_groups() -> None:
-    with pytest.raises(RuntimeError, match="only one group"):
+    with pytest.raises(ToolRequirementPlanError, match="only one group"):
         tool_requirements._parse_requirement_plan(
             {
-                "tool_evaluations": [
-                    {"tool": "latest_search", "required": True},
-                    {"tool": "web_research", "required": True},
-                ],
+                "tool_requirements": {
+                    "latest_search": True,
+                    "web_research": True,
+                },
                 "required_groups": [
-                    {"tools": ["latest_search", "web_research"]},
-                    {"tools": ["web_research"]},
+                    ["latest_search", "web_research"],
+                    ["web_research"],
                 ],
             },
             tool_names=["latest_search", "web_research"],
         )
+
+
+@pytest.mark.asyncio
+async def test_planner_contract_error_is_logged_as_requirement_error(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(tool_requirements.config, "AGENT_DEBUG_LOG", True)
+    monkeypatch.setattr(tool_requirements.config, "MODEL_FAILURE_PREVIEW_CHARS", 200)
+
+    async def fake_chat(*, system, user, model, response_format):
+        return json.dumps({
+            "tool_requirements": {"latest_search": True},
+            "required_groups": [["latest_search"]],
+        })
+
+    monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
+
+    with pytest.raises(ToolRequirementPlanError, match="evaluate every exposed tool exactly once"):
+        await tool_requirements.plan_tool_requirements(
+            user_message="현재 대한민국 대통령 이름을 확인해줘",
+            model=None,
+            memory_summary=[],
+            tool_definitions=[
+                _definition("latest_search", "Search recent information."),
+                _definition("web_research", "Research public web sources."),
+            ],
+        )
+
+    stderr = capsys.readouterr().err
+    assert "[MK4 requirement] plan_error=" in stderr
+    assert "raw_preview=" in stderr
 
 
 def test_missing_groups_are_and_across_groups_or_within_group() -> None:
@@ -397,9 +440,9 @@ async def test_stable_concept_question_remains_tool_free(monkeypatch) -> None:
         if "Review whether the successful tool results" in system:
             raise AssertionError("adequacy review should not run without required groups")
         return json.dumps({
-            "tool_evaluations": [
-                {"tool": "web_research", "required": False},
-            ],
+            "tool_requirements": {
+                "web_research": False,
+            },
             "required_groups": [],
         })
 
