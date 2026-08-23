@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 import json
+import sys
 from typing import Any
 
-from .llm_client import ModelRequestError
+from .. import config
+from .llm_client import ChatModel, ModelRequestError, ModelTurn
 from .ollama_client import chat as ollama_chat
 from .tool_catalog import compact_tool_catalog
 from .tool_runtime import ToolDefinition
@@ -26,6 +29,12 @@ Rules:
 - Keep requirements minimal. Different capabilities may be required together when the task genuinely needs both.
 """.strip()
 
+_REQUIREMENT_RETRY_INSTRUCTION = """
+The tool requirements for this user request were decided before drafting and are frozen for this request.
+The proposed response cannot be released because one or more required capabilities have not been satisfied by a successful tool execution in this turn.
+Use one of the listed satisfying tools for each missing capability. Do not replace the requested execution with instructions for the user.
+""".strip()
+
 
 @dataclass(frozen=True, slots=True)
 class ToolRequirement:
@@ -40,6 +49,87 @@ class FrozenToolRequirements:
     @property
     def required(self) -> bool:
         return bool(self.requirements)
+
+
+_ACTIVE_REQUIREMENTS: ContextVar[FrozenToolRequirements | None] = ContextVar(
+    "mk4_active_tool_requirements",
+    default=None,
+)
+
+
+class ToolRequirementGuardChatModel:
+    """Freeze semantic tool needs before drafting and enforce them on final messages."""
+
+    def __init__(self, delegate: ChatModel) -> None:
+        self._delegate = delegate
+
+    async def next_turn(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+    ) -> ModelTurn:
+        requirements = _ACTIVE_REQUIREMENTS.get()
+        if requirements is None:
+            requirements = await plan_tool_requirements(
+                user_message=user_message,
+                model=model,
+                memory_summary=memory_summary,
+                tool_definitions=tool_definitions,
+            )
+            _ACTIVE_REQUIREMENTS.set(requirements)
+            _debug_requirement_plan(requirements)
+
+        turn = await self._delegate.next_turn(
+            system=system,
+            user_message=user_message,
+            model=model,
+            memory_summary=memory_summary,
+            tool_definitions=tool_definitions,
+            tool_history=tool_history,
+        )
+        if turn.tool_calls or not turn.final_answer or turn.final_answer_kind == "blocked":
+            return turn
+
+        missing = missing_required_capabilities(requirements, tool_history)
+        if not missing:
+            return turn
+
+        _debug_missing_requirements(missing)
+        retry_history = [
+            *tool_history,
+            {
+                "tool": "tool_requirement_guard",
+                "arguments": {},
+                "result": {
+                    "ok": False,
+                    "error": "frozen_tool_requirement_unmet",
+                    "message": _REQUIREMENT_RETRY_INSTRUCTION,
+                    "missing_requirements": [_requirement_payload(item) for item in missing],
+                    "rejected_response": turn.final_answer[:1000],
+                },
+            },
+        ]
+        retry = await self._delegate.next_turn(
+            system=f"{system}\n\n{_REQUIREMENT_RETRY_INSTRUCTION}",
+            user_message=user_message,
+            model=model,
+            memory_summary=memory_summary,
+            tool_definitions=tool_definitions,
+            tool_history=retry_history,
+        )
+        if retry.tool_calls or not retry.final_answer or retry.final_answer_kind == "blocked":
+            return retry
+        if not missing_required_capabilities(requirements, tool_history):
+            return retry
+        return ModelTurn(
+            final_answer="필요한 도구 실행이 완료되지 않아 이 요청의 답변을 확정하지 않았습니다.",
+            final_answer_kind="blocked",
+        )
 
 
 async def plan_tool_requirements(
@@ -144,4 +234,40 @@ def _event_succeeded(event: dict[str, Any]) -> bool:
         return False
     if "returncode" in result and result.get("returncode") not in {None, 0}:
         return False
-    return event.get("tool") not in {"execution_guard", "evidence_grounding_guard", "autonomy_guard", "file_text_activation"}
+    return event.get("tool") not in {
+        "execution_guard",
+        "evidence_grounding_guard",
+        "tool_requirement_guard",
+        "autonomy_guard",
+        "file_text_activation",
+    }
+
+
+def _requirement_payload(requirement: ToolRequirement) -> dict[str, Any]:
+    return {
+        "capability": requirement.capability,
+        "satisfying_tools": list(requirement.satisfying_tools),
+    }
+
+
+def _debug_requirement_plan(requirements: FrozenToolRequirements) -> None:
+    if not config.AGENT_DEBUG_LOG:
+        return
+    if not requirements.requirements:
+        text = "none"
+    else:
+        text = "; ".join(
+            f"{item.capability}=[{','.join(item.satisfying_tools)}]"
+            for item in requirements.requirements
+        )
+    print(f"[MK4 requirement] frozen={text}", file=sys.stderr, flush=True)
+
+
+def _debug_missing_requirements(missing: list[ToolRequirement]) -> None:
+    if not config.AGENT_DEBUG_LOG:
+        return
+    text = "; ".join(
+        f"{item.capability}=[{','.join(item.satisfying_tools)}]"
+        for item in missing
+    )
+    print(f"[MK4 requirement] unmet={text}", file=sys.stderr, flush=True)
