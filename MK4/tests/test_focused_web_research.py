@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from MK4.tools import focused_web_search
-from MK4.tools.focused_web_search import FocusedWebSearchTool
+from MK4.tools.focused_web_search import FocusedWebSearchTool, _FocusedReadableHtmlParser
 from MK4.tools.web_search import SearchHit
 
 
@@ -78,3 +78,78 @@ async def test_web_research_rejects_missing_language_without_guessing():
 
     with pytest.raises(ValueError, match="language"):
         await tool._run_research({"objective": "current president of South Korea"})
+
+
+def test_html_parser_prefers_main_and_excludes_page_chrome_and_related_articles():
+    parser = _FocusedReadableHtmlParser()
+    parser.feed(
+        """
+        <html>
+          <head><title>Example News</title></head>
+          <body>
+            <header>site header</header>
+            <nav>home politics culture</nav>
+            <main>
+              <article>
+                <h1>Bushcraft guide</h1>
+                <p>main article paragraph one</p>
+                <aside>recommended links inside main</aside>
+                <p>main article paragraph two</p>
+              </article>
+            </main>
+            <article><h2>related article</h2><p>unrelated recommendation</p></article>
+            <footer>copyright and contact</footer>
+          </body>
+        </html>
+        """
+    )
+
+    content = parser.text()
+    assert parser.title == "Example News"
+    assert "Bushcraft guide" in content
+    assert "main article paragraph one" in content
+    assert "main article paragraph two" in content
+    assert "site header" not in content
+    assert "home politics culture" not in content
+    assert "recommended links inside main" not in content
+    assert "related article" not in content
+    assert "unrelated recommendation" not in content
+    assert "copyright and contact" not in content
+
+
+def test_html_parser_uses_article_when_main_is_absent():
+    parser = _FocusedReadableHtmlParser()
+    parser.feed(
+        """
+        <body>
+          <header>site header</header>
+          <article>
+            <h1>Primary article</h1>
+            <p>article body</p>
+          </article>
+          <aside>sidebar recommendation</aside>
+          <footer>footer text</footer>
+        </body>
+        """
+    )
+
+    assert parser.text() == "Primary article\narticle body"
+
+
+def test_html_parser_falls_back_to_readable_text_without_main_or_article():
+    parser = _FocusedReadableHtmlParser()
+    parser.feed(
+        """
+        <body>
+          <nav>navigation</nav>
+          <div><h1>Legacy page</h1><p>useful legacy content</p></div>
+          <footer>footer text</footer>
+        </body>
+        """
+    )
+
+    content = parser.text()
+    assert "Legacy page" in content
+    assert "useful legacy content" in content
+    assert "navigation" not in content
+    assert "footer text" not in content
