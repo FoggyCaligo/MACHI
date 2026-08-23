@@ -7,6 +7,7 @@ import pytest
 from MK4.tools import automatic_memory_model
 from MK4.tools.account_authorization import reset_account_role, set_account_role
 from MK4.tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
+from MK4.tools.llm_client import ModelOutputParseError
 from MK4.tools.tool_requirements import (
     FrozenToolRequirements,
     ToolEvaluation,
@@ -214,3 +215,55 @@ async def test_recall_memory_result_appears_only_in_tool_history(monkeypatch) ->
     payload = json.loads(str(captured["user"]))
     assert payload["automatic_memory_context"]["is_tool_result"] is False
     assert payload["tool_history"][0]["tool"] == "recall_memory"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "nested_message",
+    [
+        json.dumps({"content": "안녕하세요"}, ensure_ascii=False),
+        json.dumps(["안녕하세요"], ensure_ascii=False),
+    ],
+)
+async def test_nested_structured_message_is_visible_contract_failure(monkeypatch, nested_message: str) -> None:
+    async def fake_chat(*, system, user, model, response_format):
+        return _light_response(nested_message)
+
+    monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
+    token = start_tool_requirement_scope()
+    try:
+        with pytest.raises(ModelOutputParseError, match="nested JSON object or array"):
+            await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+                system="system",
+                user_message="안녕?",
+                model=None,
+                memory_summary=[],
+                tool_definitions=[],
+                tool_history=[],
+            )
+    finally:
+        reset_tool_requirement_scope(token)
+
+
+@pytest.mark.asyncio
+async def test_plain_text_that_contains_json_fragment_remains_valid(monkeypatch) -> None:
+    answer = '예시는 {"content": "안녕하세요"} 같은 JSON입니다.'
+
+    async def fake_chat(*, system, user, model, response_format):
+        return _light_response(answer)
+
+    monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
+    token = start_tool_requirement_scope()
+    try:
+        turn = await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+            system="system",
+            user_message="JSON 예시를 보여줘",
+            model=None,
+            memory_summary=[],
+            tool_definitions=[],
+            tool_history=[],
+        )
+    finally:
+        reset_tool_requirement_scope(token)
+
+    assert turn.final_answer == answer
