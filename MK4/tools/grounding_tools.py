@@ -22,7 +22,7 @@ _EXTERNAL_EVIDENCE_TOOLS = {
 _GROUNDING_REVIEW_INSTRUCTION = """
 Review whether the proposed response is grounded in the evidence already available in this turn.
 
-This is a judgment-only review. You cannot call tools and must not choose a tool. If evidence is missing, report only the missing factual aspects that must be resolved before release.
+This is a judgment-only review. You cannot call tools, choose a tool, or rewrite the answer. If evidence is missing, report only the missing factual aspects that must be resolved before release.
 
 Freshness rule:
 - Inspect every factual assertion in the proposed response, including examples and asides.
@@ -34,8 +34,9 @@ Freshness rule:
 Evidence rule:
 - Judge only the supplied proposed response and current-turn evidence.
 - Do not request or select a specific tool.
+- Do not rewrite or improve the proposed response.
 - If the evidence is insufficient, set grounded=false and describe the unresolved factual aspects in missing_aspects.
-- If the evidence is sufficient, set grounded=true, keep missing_aspects empty, and return a corrected_response that stays within what the evidence supports.
+- If the evidence is sufficient, set grounded=true and keep missing_aspects empty.
 - If no freshness-sensitive assertion exists, grounded may be true without external evidence.
 - Do not invent unsupported values or silently fill gaps from memory.
 """.strip()
@@ -50,7 +51,6 @@ Resolve those missing aspects using the exposed tools when needed, then produce 
 class GroundingReview:
     grounded: bool
     missing_aspects: tuple[str, ...] = ()
-    corrected_response: str | None = None
 
 
 class EvidenceGroundingChatModel:
@@ -91,11 +91,11 @@ class EvidenceGroundingChatModel:
             supporting_tools = _successful_external_tool_names(tool_history)
             if supporting_tools:
                 return ModelTurn(
-                    final_answer=review.corrected_response,
+                    final_answer=turn.final_answer,
                     final_answer_kind="tool_completion",
                     completion_tools=supporting_tools,
                 )
-            return ModelTurn(final_answer=review.corrected_response)
+            return turn
 
         review_history = [
             *tool_history,
@@ -140,9 +140,8 @@ async def review_final_grounding(
                 "items": {"type": "string"},
                 "maxItems": 8,
             },
-            "corrected_response": {"type": ["string", "null"]},
         },
-        "required": ["grounded", "missing_aspects", "corrected_response"],
+        "required": ["grounded", "missing_aspects"],
         "additionalProperties": False,
     }
     payload = {
@@ -171,26 +170,15 @@ async def review_final_grounding(
     if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
         raise RuntimeError("Final grounding review missing_aspects must be a list of strings.")
     cleaned_missing = tuple(dict.fromkeys(item.strip() for item in missing if item.strip()))
-    corrected = data.get("corrected_response")
-    if corrected is not None and not isinstance(corrected, str):
-        raise RuntimeError("Final grounding review corrected_response must be string or null.")
-    cleaned_corrected = corrected.strip() if isinstance(corrected, str) else None
 
-    if data["grounded"]:
-        if cleaned_missing:
-            raise RuntimeError("Grounded final review must not contain missing_aspects.")
-        if not cleaned_corrected:
-            raise RuntimeError("Grounded final review must contain corrected_response.")
-    else:
-        if not cleaned_missing:
-            raise RuntimeError("Ungrounded final review must explain at least one missing aspect.")
-        if cleaned_corrected:
-            raise RuntimeError("Ungrounded final review must not provide corrected_response.")
+    if data["grounded"] and cleaned_missing:
+        raise RuntimeError("Grounded final review must not contain missing_aspects.")
+    if data["grounded"] is False and not cleaned_missing:
+        raise RuntimeError("Ungrounded final review must explain at least one missing aspect.")
 
     return GroundingReview(
         grounded=data["grounded"],
         missing_aspects=cleaned_missing,
-        corrected_response=cleaned_corrected,
     )
 
 
