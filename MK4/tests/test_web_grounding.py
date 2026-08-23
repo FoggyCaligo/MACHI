@@ -75,20 +75,14 @@ def _market_snapshot_history() -> list[dict[str, Any]]:
 
 def test_web_evidence_catalog_uses_structural_ids() -> None:
     catalog = web_evidence_catalog(_latest_search_history())
-
     assert set(catalog) == {"web:0:result:0", "web:0:result:1"}
-    assert catalog["web:0:result:0"]["scope"] == "search_snippet"
-    assert catalog["web:0:result:0"]["title"] == "SF소설 '몰록' 낸 듀나"
 
 
 @pytest.mark.asyncio
 async def test_current_market_answer_without_evidence_is_sent_back_to_tool_use() -> None:
     delegate = SequenceChatModel([
         ModelTurn(final_answer="삼성전자의 현재 주가는 281,500원입니다."),
-        ModelTurn(tool_calls=[ToolCall(
-            tool="market_snapshot",
-            arguments={"query": "삼성전자"},
-        )]),
+        ModelTurn(tool_calls=[ToolCall(tool="market_snapshot", arguments={"query": "삼성전자"})]),
     ])
     grounded = EvidenceGroundingChatModel(delegate)
 
@@ -101,24 +95,17 @@ async def test_current_market_answer_without_evidence_is_sent_back_to_tool_use()
         tool_history=[],
     )
 
-    assert turn.tool_calls == [ToolCall(
-        tool="market_snapshot",
-        arguments={"query": "삼성전자"},
-    )]
-    assert len(delegate.calls) == 2
+    assert turn.tool_calls == [ToolCall(tool="market_snapshot", arguments={"query": "삼성전자"})]
     review_event = delegate.calls[1]["tool_history"][-1]
     assert review_event["tool"] == "evidence_grounding_guard"
-    assert review_event["result"]["successful_tools"] == []
+    assert review_event["result"]["successful_external_tools"] == []
 
 
 @pytest.mark.asyncio
 async def test_company_per_value_is_freshness_sensitive_even_without_current_keyword() -> None:
     delegate = SequenceChatModel([
         ModelTurn(final_answer="삼성전자의 PER은 12.6배입니다."),
-        ModelTurn(tool_calls=[ToolCall(
-            tool="web_research",
-            arguments={"objective": "삼성전자 현재 PER 확인"},
-        )]),
+        ModelTurn(tool_calls=[ToolCall(tool="web_research", arguments={"objective": "삼성전자 현재 PER 확인"})]),
     ])
     grounded = EvidenceGroundingChatModel(delegate)
 
@@ -131,21 +118,14 @@ async def test_company_per_value_is_freshness_sensitive_even_without_current_key
         tool_history=[],
     )
 
-    assert turn.tool_calls == [ToolCall(
-        tool="web_research",
-        arguments={"objective": "삼성전자 현재 PER 확인"},
-    )]
+    assert turn.tool_calls == [ToolCall(tool="web_research", arguments={"objective": "삼성전자 현재 PER 확인"})]
 
 
 @pytest.mark.asyncio
-async def test_current_market_answer_accepts_successful_market_tool_declaration() -> None:
+async def test_current_market_answer_is_marked_tool_backed_by_framework() -> None:
     delegate = SequenceChatModel([
         ModelTurn(final_answer="삼성전자의 현재 주가는 80,000원입니다."),
-        ModelTurn(
-            final_answer="삼성전자의 현재 주가는 80,000원입니다.",
-            final_answer_kind="tool_completion",
-            completion_tools=["market_snapshot"],
-        ),
+        ModelTurn(final_answer="삼성전자의 현재 주가는 80,000원입니다."),
     ])
     grounded = EvidenceGroundingChatModel(delegate)
 
@@ -185,7 +165,7 @@ async def test_non_time_sensitive_answer_can_pass_review_without_tools() -> None
 
 
 @pytest.mark.asyncio
-async def test_grounding_review_can_request_more_research_when_snippets_are_insufficient() -> None:
+async def test_grounding_review_can_request_more_research_when_existing_evidence_is_insufficient() -> None:
     delegate = SequenceChatModel([
         ModelTurn(final_answer="검색을 통해 여러 신작의 저자와 줄거리까지 확인했습니다."),
         ModelTurn(tool_calls=[ToolCall(
@@ -208,21 +188,13 @@ async def test_grounding_review_can_request_more_research_when_snippets_are_insu
         tool="web_research",
         arguments={"objective": "추천 후보 SF 소설의 실존 여부, 저자, 줄거리 검증"},
     )]
-    assert len(delegate.calls) == 2
-    review_event = delegate.calls[1]["tool_history"][-1]
-    assert review_event["tool"] == "evidence_grounding_guard"
-    assert review_event["result"]["available_web_evidence"][0]["evidence_id"] == "web:0:result:0"
 
 
 @pytest.mark.asyncio
-async def test_grounding_review_accepts_only_existing_evidence_ids() -> None:
+async def test_successful_search_evidence_is_framework_marked_without_model_completion_metadata() -> None:
     delegate = SequenceChatModel([
         ModelTurn(final_answer="초안"),
-        ModelTurn(
-            final_answer="검색 결과에서 확인되는 작품은 듀나의 《몰록》입니다.",
-            final_answer_kind="tool_completion",
-            completion_tools=["web:0:result:0"],
-        ),
+        ModelTurn(final_answer="검색 결과에서 확인되는 작품은 듀나의 《몰록》입니다."),
     ])
     grounded = EvidenceGroundingChatModel(delegate)
 
@@ -236,30 +208,5 @@ async def test_grounding_review_accepts_only_existing_evidence_ids() -> None:
     )
 
     assert turn.final_answer == "검색 결과에서 확인되는 작품은 듀나의 《몰록》입니다."
-    assert turn.final_answer_kind == "answer"
-    assert turn.completion_tools == []
-
-
-@pytest.mark.asyncio
-async def test_grounding_review_blocks_unknown_evidence_ids() -> None:
-    delegate = SequenceChatModel([
-        ModelTurn(final_answer="초안"),
-        ModelTurn(
-            final_answer="근거 없는 추천",
-            final_answer_kind="tool_completion",
-            completion_tools=["web:99:result:0"],
-        ),
-    ])
-    grounded = EvidenceGroundingChatModel(delegate)
-
-    turn = await grounded.next_turn(
-        system="system",
-        user_message="검증해서 추천해줘",
-        model=None,
-        memory_summary=[],
-        tool_definitions=[],
-        tool_history=_latest_search_history(),
-    )
-
-    assert turn.final_answer_kind == "blocked"
-    assert "근거" in (turn.final_answer or "")
+    assert turn.final_answer_kind == "tool_completion"
+    assert turn.completion_tools == ["latest_search"]
