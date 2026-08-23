@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 import json
 from typing import Any
 
@@ -16,13 +15,17 @@ from .tool_runtime import ToolDefinition
 
 
 _COMPACT_REQUIREMENT_INSTRUCTION = """
-Decide which exposed tools must actually succeed before the user's request can be answered honestly.
-Return one boolean for every exposed tool. true means that exact tool is mandatory; false means it is only optional or irrelevant. All true tools are independently required; there is no substitution group.
+Evaluate every exposed tool independently against the single current user input.
 
-Judge only the user request, current date, and tool summaries. Do not draft the answer or tool arguments.
-Use explicit persistent-memory recall only when the request requires the user's past conversation, preferences, decisions, recommendations, or project context. Automatic memory supplied later does not satisfy an explicit recall requirement.
-Information whose value or state could reasonably differ today from yesterday requires an appropriate current external tool. Stable conceptual explanations can remain tool-free.
-Do not invent capabilities or mark a tool true merely because it could be useful.
+For each tool, inspect only the kind of information or action result that a successful execution provides. Ask one question: is a result of this kind required to answer the user's input correctly?
+
+Return true when that exact tool's result kind is required. Return false when the result kind is unnecessary, merely useful, optional, or only capable of improving an answer that can already be correct without it.
+
+Do not compare tools with one another, choose substitutes, build OR groups, draft an answer, construct tool arguments, or use tool names as semantic shortcuts. All true tools are independently required and must later succeed before release.
+
+Judge the request as written. Do not add unstated user constraints. A concrete real-world recommendation can require external factual evidence when correctness depends on facts about actual current options; a timeless conceptual explanation does not require external evidence merely because research could improve it.
+
+Return only the required structured booleans.
 """.strip()
 
 
@@ -31,7 +34,6 @@ async def plan_compact_tool_requirements(
     user_message: str,
     model: str | None,
     tool_definitions: list[ToolDefinition],
-    current_date: str | None = None,
 ) -> FrozenToolRequirements:
     if not tool_definitions:
         return FrozenToolRequirements()
@@ -51,9 +53,8 @@ async def plan_compact_tool_requirements(
         "additionalProperties": False,
     }
     payload = {
-        "user_request": user_message,
-        "current_date": current_date or datetime.now().astimezone().date().isoformat(),
-        "tool_catalog": requirement_tool_catalog(tool_definitions),
+        "user_input": user_message,
+        "tools": requirement_tool_catalog(tool_definitions),
     }
     try:
         raw = await ollama_chat(
