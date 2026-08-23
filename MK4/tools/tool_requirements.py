@@ -19,25 +19,31 @@ from .tool_runtime import ToolDefinition
 
 
 _TOOL_REQUIREMENT_INSTRUCTION = """
-Decide only whether the user's request requires one or more exposed tool capabilities to be actually executed before a final response can honestly satisfy the request.
+Decide which currently exposed tools are genuinely required after considering the user's request together with the already supplied automatic memory context.
 
-This is a pre-answer decision. Do not draft the answer.
+This is a pre-answer decision. Do not draft the answer and do not invent capabilities.
 
-Rules:
-- Use the meaning of the user's request, not keyword matching.
-- A tool is required when the requested result itself depends on performing an external action, retrieval, inspection, search, recall beyond already supplied automatic memory, or state change.
-- Read-only exploration may be required even when the model could instead give instructions; if the user asked for the result of a search/read/inspection, the corresponding capability is required.
-- If automatic_memory_context already contains enough information for a broad memory response, explicit memory recall need not be required. If the request asks for past details not established by that supplied context, persistent recall may be required.
-- Stable conceptual explanations that can be answered directly do not require tools merely because related tools exist.
-- For each requirement, name a short semantic capability and select every currently exposed tool that could validly satisfy that capability for this request.
-- Never invent tool names. Use only names present in tool_catalog.
-- Keep requirements minimal. Different capabilities may be required together when the task genuinely needs both.
+Process:
+1. Treat automatic_memory_context as information that is already available before tool use. It is not a tool execution and does not need to be counted as one.
+2. Evaluate every exposed tool exactly once as required=true or required=false.
+3. Mark a tool required=true only when it belongs to a minimal way to obtain information or perform an action that is still necessary to honestly complete the user's request.
+4. A tool that is merely related, potentially useful, or nice to have is required=false.
+5. If already supplied memory fully resolves a stable memory-based question, additional recall tools are not required. If the needed past detail is missing from supplied memory, an explicit recall tool may be required.
+6. If the requested fact/state can reasonably differ today from yesterday, stale memory does not satisfy that current-information need; an appropriate current external tool can still be required.
+7. After evaluating tools individually, group required=true tools by substitutability:
+   - tools in the same group are alternatives; one successful tool in that group is enough for that part of the request,
+   - tools that are jointly necessary must be in different groups,
+   - a required tool with no substitute forms a one-tool group.
+8. Never place a required=false tool in a group. Every required=true tool must appear in exactly one group.
+9. Use only tool names present in tool_catalog.
+
+The final required_groups represent AND across groups and OR within each group.
 """.strip()
 
 _REQUIREMENT_RETRY_INSTRUCTION = """
-The tool requirements for this user request were decided before drafting and are frozen for this request.
-The proposed response cannot be released because one or more required capabilities have not been satisfied by a successful tool execution in this turn.
-Use one of the listed satisfying tools for each missing capability. Do not replace the requested execution with instructions for the user.
+The required tool groups for this request were decided before drafting and are frozen for this request.
+The proposed response cannot be released because one or more required groups have no successful tool execution in this turn.
+For each missing group, use one tool from that group. Do not replace requested execution with instructions for the user.
 """.strip()
 
 _RESULT_ADEQUACY_INSTRUCTION = """
@@ -54,24 +60,30 @@ Rules:
 """.strip()
 
 _ADEQUACY_RETRY_INSTRUCTION = """
-The required tool capability was executed, but the returned results were reviewed as insufficient for the user's request.
+The required tool group was executed, but the returned results were reviewed as insufficient for the user's request.
 Use the exposed tools to resolve the listed missing aspects before answering. Choose the next tool and query based on the actual missing information; do not substitute instructions for the user.
 """.strip()
 
 
 @dataclass(frozen=True, slots=True)
-class ToolRequirement:
-    capability: str
-    satisfying_tools: tuple[str, ...]
+class ToolEvaluation:
+    tool: str
+    required: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRequirementGroup:
+    tools: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class FrozenToolRequirements:
-    requirements: tuple[ToolRequirement, ...] = ()
+    evaluations: tuple[ToolEvaluation, ...] = ()
+    groups: tuple[ToolRequirementGroup, ...] = ()
 
     @property
     def required(self) -> bool:
-        return bool(self.requirements)
+        return bool(self.groups)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +107,7 @@ def reset_tool_requirement_scope(token: Token[FrozenToolRequirements | None]) ->
 
 
 class ToolRequirementGuardChatModel:
-    """Freeze semantic tool needs, then require both execution and adequate results."""
+    """Freeze tool-by-tool needs, then require both execution and adequate results."""
 
     def __init__(self, delegate: ChatModel) -> None:
         self._delegate = delegate
@@ -132,7 +144,7 @@ class ToolRequirementGuardChatModel:
         if turn.tool_calls or not turn.final_answer or turn.final_answer_kind == "blocked":
             return turn
 
-        missing = missing_required_capabilities(requirements, tool_history)
+        missing = missing_required_groups(requirements, tool_history)
         if missing:
             _debug_missing_requirements(missing)
             retry_history = [
@@ -144,7 +156,7 @@ class ToolRequirementGuardChatModel:
                         "ok": False,
                         "error": "frozen_tool_requirement_unmet",
                         "message": _REQUIREMENT_RETRY_INSTRUCTION,
-                        "missing_requirements": [_requirement_payload(item) for item in missing],
+                        "missing_groups": [_group_payload(group) for group in missing],
                         "rejected_response": turn.final_answer[:1000],
                     },
                 },
@@ -222,28 +234,44 @@ async def plan_tool_requirements(
     response_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "requirements": {
+            "tool_evaluations": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "capability": {"type": "string"},
-                        "satisfying_tools": {
+                        "tool": {"type": "string", "enum": tool_names},
+                        "required": {"type": "boolean"},
+                    },
+                    "required": ["tool", "required"],
+                    "additionalProperties": False,
+                },
+            },
+            "required_groups": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "tools": {
                             "type": "array",
                             "items": {"type": "string", "enum": tool_names},
+                            "minItems": 1,
                         },
                     },
-                    "required": ["capability", "satisfying_tools"],
+                    "required": ["tools"],
                     "additionalProperties": False,
                 },
             },
         },
-        "required": ["requirements"],
+        "required": ["tool_evaluations", "required_groups"],
         "additionalProperties": False,
     }
     payload = {
-        "user_message": user_message,
-        "automatic_memory_context": memory_summary,
+        "user_request": user_message,
+        "automatic_memory_context": {
+            "source": "automatic_graph_activation",
+            "already_available_before_tool_use": True,
+            "items": memory_summary,
+        },
         "tool_catalog": compact_tool_catalog(tool_definitions),
     }
     try:
@@ -260,30 +288,82 @@ async def plan_tool_requirements(
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Tool requirement plan must be valid JSON: {exc}") from exc
-    if not isinstance(data, dict) or not isinstance(data.get("requirements"), list):
-        raise RuntimeError("Tool requirement plan must contain a requirements list.")
+    return _parse_requirement_plan(data, tool_names=tool_names)
+
+
+def _parse_requirement_plan(data: object, *, tool_names: list[str]) -> FrozenToolRequirements:
+    if not isinstance(data, dict):
+        raise RuntimeError("Tool requirement plan must be an object.")
+    evaluations_raw = data.get("tool_evaluations")
+    groups_raw = data.get("required_groups")
+    if not isinstance(evaluations_raw, list):
+        raise RuntimeError("Tool requirement plan must contain tool_evaluations list.")
+    if not isinstance(groups_raw, list):
+        raise RuntimeError("Tool requirement plan must contain required_groups list.")
 
     available = set(tool_names)
-    requirements: list[ToolRequirement] = []
-    seen_capabilities: set[str] = set()
-    for index, item in enumerate(data["requirements"]):
+    evaluations: list[ToolEvaluation] = []
+    seen_tools: set[str] = set()
+    for index, item in enumerate(evaluations_raw):
         if not isinstance(item, dict):
-            raise RuntimeError(f"requirements[{index}] must be an object.")
-        capability = str(item.get("capability") or "").strip()
-        tools = item.get("satisfying_tools")
-        if not capability:
-            raise RuntimeError(f"requirements[{index}].capability must be non-empty.")
-        if not isinstance(tools, list) or not tools:
-            raise RuntimeError(f"requirements[{index}].satisfying_tools must be a non-empty list.")
-        normalized_tools = tuple(dict.fromkeys(str(name).strip() for name in tools if str(name).strip()))
-        if not normalized_tools or any(name not in available for name in normalized_tools):
-            raise RuntimeError(f"requirements[{index}] contains unavailable tool names.")
-        if capability in seen_capabilities:
-            raise RuntimeError(f"Duplicate required capability: {capability}")
-        seen_capabilities.add(capability)
-        requirements.append(ToolRequirement(capability=capability, satisfying_tools=normalized_tools))
+            raise RuntimeError(f"tool_evaluations[{index}] must be an object.")
+        tool = str(item.get("tool") or "").strip()
+        required = item.get("required")
+        if tool not in available:
+            raise RuntimeError(f"tool_evaluations[{index}] contains unavailable tool: {tool}")
+        if tool in seen_tools:
+            raise RuntimeError(f"Duplicate tool evaluation: {tool}")
+        if not isinstance(required, bool):
+            raise RuntimeError(f"tool_evaluations[{index}].required must be boolean.")
+        seen_tools.add(tool)
+        evaluations.append(ToolEvaluation(tool=tool, required=required))
 
-    return FrozenToolRequirements(requirements=tuple(requirements))
+    if seen_tools != available:
+        missing = sorted(available - seen_tools)
+        extra = sorted(seen_tools - available)
+        raise RuntimeError(
+            "Tool requirement plan must evaluate every exposed tool exactly once. "
+            f"missing={missing} extra={extra}"
+        )
+
+    required_tools = {item.tool for item in evaluations if item.required}
+    grouped_tools: set[str] = set()
+    groups: list[ToolRequirementGroup] = []
+    for index, item in enumerate(groups_raw):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"required_groups[{index}] must be an object.")
+        tools = item.get("tools")
+        if not isinstance(tools, list) or not tools:
+            raise RuntimeError(f"required_groups[{index}].tools must be a non-empty list.")
+        normalized = tuple(dict.fromkeys(str(name).strip() for name in tools if str(name).strip()))
+        if len(normalized) != len(tools):
+            raise RuntimeError(f"required_groups[{index}] contains duplicate or empty tool names.")
+        unknown = [name for name in normalized if name not in available]
+        if unknown:
+            raise RuntimeError(f"required_groups[{index}] contains unavailable tools: {unknown}")
+        false_tools = [name for name in normalized if name not in required_tools]
+        if false_tools:
+            raise RuntimeError(
+                f"required_groups[{index}] contains tools evaluated required=false: {false_tools}"
+            )
+        duplicates = [name for name in normalized if name in grouped_tools]
+        if duplicates:
+            raise RuntimeError(f"Required tools may appear in only one group: {duplicates}")
+        grouped_tools.update(normalized)
+        groups.append(ToolRequirementGroup(tools=normalized))
+
+    if grouped_tools != required_tools:
+        missing = sorted(required_tools - grouped_tools)
+        extra = sorted(grouped_tools - required_tools)
+        raise RuntimeError(
+            "Every required=true tool must appear in exactly one required group and no required=false tool may appear. "
+            f"missing={missing} extra={extra}"
+        )
+
+    return FrozenToolRequirements(
+        evaluations=tuple(evaluations),
+        groups=tuple(groups),
+    )
 
 
 async def review_tool_result_adequacy(
@@ -309,7 +389,7 @@ async def review_tool_result_adequacy(
     }
     payload = {
         "user_request": user_message,
-        "frozen_requirements": [_requirement_payload(item) for item in requirements.requirements],
+        "frozen_required_groups": [_group_payload(group) for group in requirements.groups],
         "successful_tool_results": _successful_tool_result_payloads(tool_history),
     }
     try:
@@ -337,19 +417,19 @@ async def review_tool_result_adequacy(
     return ToolResultAdequacy(adequate=data["adequate"], missing_aspects=cleaned)
 
 
-def missing_required_capabilities(
+def missing_required_groups(
     requirements: FrozenToolRequirements,
     tool_history: list[dict[str, Any]],
-) -> list[ToolRequirement]:
+) -> list[ToolRequirementGroup]:
     successful_tools = {
         str(event.get("tool") or "").strip()
         for event in tool_history
         if _event_succeeded(event)
     }
     return [
-        requirement
-        for requirement in requirements.requirements
-        if not successful_tools.intersection(requirement.satisfying_tools)
+        group
+        for group in requirements.groups
+        if not successful_tools.intersection(group.tools)
     ]
 
 
@@ -379,34 +459,30 @@ def _event_succeeded(event: dict[str, Any]) -> bool:
     }
 
 
-def _requirement_payload(requirement: ToolRequirement) -> dict[str, Any]:
-    return {
-        "capability": requirement.capability,
-        "satisfying_tools": list(requirement.satisfying_tools),
-    }
+def _group_payload(group: ToolRequirementGroup) -> dict[str, Any]:
+    return {"tools": list(group.tools)}
 
 
 def _debug_requirement_plan(requirements: FrozenToolRequirements) -> None:
     if not config.AGENT_DEBUG_LOG:
         return
-    if not requirements.requirements:
-        text = "none"
-    else:
-        text = "; ".join(
-            f"{item.capability}=[{','.join(item.satisfying_tools)}]"
-            for item in requirements.requirements
-        )
-    print(f"[MK4 requirement] frozen={text}", file=sys.stderr, flush=True)
+    true_tools = [item.tool for item in requirements.evaluations if item.required]
+    groups = " AND ".join(
+        f"({' OR '.join(group.tools)})"
+        for group in requirements.groups
+    ) or "none"
+    print(
+        f"[MK4 requirement] required_tools={','.join(true_tools) or 'none'} groups={groups}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
-def _debug_missing_requirements(missing: list[ToolRequirement]) -> None:
+def _debug_missing_requirements(missing: list[ToolRequirementGroup]) -> None:
     if not config.AGENT_DEBUG_LOG:
         return
-    text = "; ".join(
-        f"{item.capability}=[{','.join(item.satisfying_tools)}]"
-        for item in missing
-    )
-    print(f"[MK4 requirement] unmet={text}", file=sys.stderr, flush=True)
+    text = " AND ".join(f"({' OR '.join(group.tools)})" for group in missing)
+    print(f"[MK4 requirement] unmet_groups={text}", file=sys.stderr, flush=True)
 
 
 def _debug_adequacy(adequacy: ToolResultAdequacy) -> None:
