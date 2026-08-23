@@ -18,13 +18,17 @@ from ..tools.adequacy_recovery import (
 from ..tools.adequacy_recovery_window import RecoveryExplorationWindowChatModel
 from ..tools.autonomy_tools import AutonomyChatModel
 from ..tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
-from ..tools.grounding_tools import EvidenceGroundingChatModel
+from ..tools.compact_focused_web_search import CompactFocusedWebSearchTool
+from ..tools.grounding_tools import (
+    EvidenceGroundingChatModel,
+    reset_grounding_review_scope,
+    start_grounding_review_scope,
+)
 from ..tools.graph_tools import GraphToolSuite
 from ..tools.code_index_tools import CodeIndexToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
 from ..tools.file_agent_tools import FileAgentToolSuite
 from ..tools.file_navigation_tools import FileNavigationToolSuite
-from ..tools.focused_web_search import FocusedWebSearchTool
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel
 from ..tools.manual_tools import ToolManualSuite
@@ -96,7 +100,7 @@ class Pipeline:
             )
         )
         self._chat_model = EvidenceGroundingChatModel(base_chat_model)
-        self._web_search = web_search or FocusedWebSearchTool()
+        self._web_search = web_search or CompactFocusedWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
         self._orchestrator = AgentOrchestrator(
             memory_service=self._memory,
@@ -133,6 +137,7 @@ class Pipeline:
         scratchpad_token = start_request_scratchpad()
         requirement_token = start_tool_requirement_scope()
         recovery_token = start_recovery_scope()
+        grounding_token = start_grounding_review_scope()
         account_role_token = set_account_role(account_role)
         try:
             preflight_tool_definitions = [
@@ -160,6 +165,7 @@ class Pipeline:
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
             reset_account_role(account_role_token)
+            reset_grounding_review_scope(grounding_token)
             reset_recovery_scope(recovery_token)
             reset_tool_requirement_scope(requirement_token)
             reset_request_scratchpad(scratchpad_token)
