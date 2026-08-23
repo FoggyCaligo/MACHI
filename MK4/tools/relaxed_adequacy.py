@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from time import perf_counter
 
+from .debug_timing import log_timing
 from .llm_client import ModelRequestError
 from .ollama_client import chat as ollama_chat
 from .tool_requirements import (
@@ -55,15 +57,19 @@ async def review_relaxed_tool_result_adequacy(
         "frozen_required_tools": list(requirements.required_tools),
         "successful_tool_results": _successful_tool_result_payloads(tool_history),
     }
+    started = perf_counter()
     try:
-        raw = await ollama_chat(
-            system=f"{system}\n\n{_RELAXED_RESULT_ADEQUACY_INSTRUCTION}",
-            user=json.dumps(payload, ensure_ascii=False),
-            model=model,
-            response_format=response_schema,
-        )
-    except ValueError as exc:
-        raise ModelRequestError(str(exc)) from exc
+        try:
+            raw = await ollama_chat(
+                system=f"{system}\n\n{_RELAXED_RESULT_ADEQUACY_INSTRUCTION}",
+                user=json.dumps(payload, ensure_ascii=False),
+                model=model,
+                response_format=response_schema,
+            )
+        except ValueError as exc:
+            raise ModelRequestError(str(exc)) from exc
+    finally:
+        log_timing("adequacy_review", perf_counter() - started)
 
     try:
         data = json.loads(raw)
