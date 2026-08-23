@@ -48,6 +48,7 @@ def web_evidence_catalog(tool_history: list[dict[str, Any]]) -> dict[str, dict[s
                         "query_node": item.get("query_node"),
                         "matched_sections": item.get("matched_sections"),
                         "excerpt": item.get("excerpt"),
+                        "excerpt_context": item.get("excerpt_context"),
                     }
                 continue
 
@@ -99,6 +100,7 @@ def compact_evidence_catalog(tool_history: list[dict[str, Any]], *, limit: int =
                 "snippet",
                 "matched_sections",
                 "excerpt",
+                "excerpt_context",
             )
             if item.get(key) not in (None, "", [])
         })
