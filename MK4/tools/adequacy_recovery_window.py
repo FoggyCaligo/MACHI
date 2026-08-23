@@ -15,6 +15,7 @@ from .adequacy_recovery import (
     get_recovery_state,
 )
 from .llm_client import ModelTurn
+from .relaxed_adequacy import review_relaxed_tool_result_adequacy
 from .tool_requirements import (
     _REQUIREMENT_RETRY_INSTRUCTION,
     _debug_adequacy,
@@ -24,7 +25,6 @@ from .tool_requirements import (
     get_frozen_tool_requirements,
     missing_required_tools,
     plan_tool_requirements,
-    review_tool_result_adequacy,
 )
 from .tool_runtime import ToolDefinition
 
@@ -35,7 +35,7 @@ A successful recovery-tool execution does not by itself end the recovery cycle.
 
 Continue investigating the unresolved missing aspects with the exposed read/search/inspection tools as many times as materially useful. You may reuse a tool with different arguments when another query or source can add relevant evidence, and you may use other exposed tools when they can help.
 
-Do not call tools merely to increase a count. Stop exploring only when you judge that the available evidence is sufficient for the user's original request, then return a final answer. A final answer triggers the result-adequacy review, and only an adequate review closes the recovery cycle.
+Do not call tools merely to increase a count. Stop exploring when the available evidence is good enough to answer the user's original request without a material error. Do not continue merely to make the answer more comprehensive, polished, deeply compared, or broadly sourced. Then return a final answer. A final answer triggers the result-adequacy review, and only an adequate review closes the recovery cycle.
 """.strip()
 
 
@@ -164,7 +164,7 @@ class RecoveryExplorationWindowChatModel(RecoveringToolRequirementGuardChatModel
                 recovery=recovery,
             )
 
-        adequacy = await review_tool_result_adequacy(
+        adequacy = await review_relaxed_tool_result_adequacy(
             system=f"{system}\n\n{_ADEQUACY_SCOPE_LOCK_INSTRUCTION}",
             user_message=user_message,
             model=model,
