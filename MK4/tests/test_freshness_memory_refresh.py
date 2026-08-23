@@ -75,8 +75,8 @@ async def test_concept_answer_with_memory_backed_current_value_requires_refresh(
     assert len(delegate.calls) == 2
     review_event = delegate.calls[1]["tool_history"][-1]
     assert review_event["tool"] == "evidence_grounding_guard"
-    assert review_event["result"]["proposed_final_answer"] == proposed
-    assert review_event["result"]["successful_tools"] == []
+    assert review_event["result"]["proposed_response"] == proposed
+    assert review_event["result"]["successful_external_tools"] == []
 
 
 @pytest.mark.asyncio
