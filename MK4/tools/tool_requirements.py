@@ -108,6 +108,10 @@ def freeze_tool_requirements(requirements: FrozenToolRequirements) -> None:
     _ACTIVE_REQUIREMENTS.set(requirements)
 
 
+def get_frozen_tool_requirements() -> FrozenToolRequirements | None:
+    return _ACTIVE_REQUIREMENTS.get()
+
+
 class ToolRequirementGuardChatModel:
     """Require frozen tools to execute successfully, then require adequate results."""
 
@@ -124,7 +128,7 @@ class ToolRequirementGuardChatModel:
         tool_definitions: list[ToolDefinition],
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
-        requirements = _ACTIVE_REQUIREMENTS.get()
+        requirements = get_frozen_tool_requirements()
         if requirements is None:
             requirements = await plan_tool_requirements(
                 user_message=user_message,
