@@ -84,11 +84,13 @@ class Pipeline:
         base_chat_model = AccountAuthorizationChatModel(
             ModelToolNameAdapter(
                 ToolRequirementGuardChatModel(
-                    chat_model or AutomaticMemoryContextOllamaToolChatModel()
+                    AutonomyChatModel(
+                        chat_model or AutomaticMemoryContextOllamaToolChatModel()
+                    )
                 )
             )
         )
-        self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
+        self._chat_model = EvidenceGroundingChatModel(base_chat_model)
         self._web_search = web_search or HttpWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
         self._orchestrator = AgentOrchestrator(
