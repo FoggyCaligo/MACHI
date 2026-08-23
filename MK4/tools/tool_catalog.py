@@ -6,7 +6,6 @@ from .tool_runtime import ToolDefinition
 
 
 _TOOL_SUMMARY_LIMIT = 160
-_REQUIREMENT_TOOL_SUMMARY_LIMIT = 120
 _FIELD_DESCRIPTION_LIMIT = 96
 
 
@@ -21,18 +20,16 @@ def compact_tool_catalog(tool_definitions: list[ToolDefinition]) -> list[dict[st
 
 
 def requirement_tool_catalog(tool_definitions: list[ToolDefinition]) -> list[dict[str, str]]:
-    """Return only the information needed to judge whether each tool is required.
+    """Return the result-kind contract used only by requirement planning.
 
-    Requirement planning never constructs tool arguments, so input fields and call
-    templates add context cost without helping the semantic necessity decision.
+    Requirement planning receives no invocation schema or call template. Each tool is
+    represented only by its model-facing name and the tool owner's own capability/result
+    contract so the planner can independently judge whether that kind of result is needed.
     """
     return [
         {
             "name": definition.name,
-            "summary": _compact_tool_summary(
-                definition.description,
-                limit=_REQUIREMENT_TOOL_SUMMARY_LIMIT,
-            ),
+            "result_kind": " ".join(str(definition.description or "").split()),
         }
         for definition in tool_definitions
     ]

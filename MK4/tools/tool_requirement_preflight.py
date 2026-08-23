@@ -18,9 +18,8 @@ async def plan_and_freeze_before_memory(
     user_message: str,
     model: str | None,
     tool_definitions: list[ToolDefinition],
-    current_date: str | None = None,
 ) -> FrozenToolRequirements:
-    """Plan exact required tool executions before automatic recall, then freeze them."""
+    """Plan exact required tool executions from only the current user input, then freeze them."""
     model_definitions = model_facing_definitions(tool_definitions)
     started = perf_counter()
     try:
@@ -28,7 +27,6 @@ async def plan_and_freeze_before_memory(
             user_message=user_message,
             model=model,
             tool_definitions=model_definitions,
-            current_date=current_date,
         )
     finally:
         log_timing("requirement_planner", perf_counter() - started)
