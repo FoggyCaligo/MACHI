@@ -12,10 +12,10 @@ from ..tools.account_authorization import (
     set_account_role,
 )
 from ..tools.adequacy_recovery import (
-    RecoveringToolRequirementGuardChatModel,
     reset_recovery_scope,
     start_recovery_scope,
 )
+from ..tools.adequacy_recovery_window import RecoveryExplorationWindowChatModel
 from ..tools.autonomy_tools import AutonomyChatModel
 from ..tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
 from ..tools.grounding_tools import EvidenceGroundingChatModel
@@ -88,7 +88,7 @@ class Pipeline:
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = AccountAuthorizationChatModel(
             ModelToolNameAdapter(
-                RecoveringToolRequirementGuardChatModel(
+                RecoveryExplorationWindowChatModel(
                     AutonomyChatModel(
                         chat_model or AutomaticMemoryContextOllamaToolChatModel()
                     )
