@@ -51,6 +51,19 @@ Execute the listed tools now. Choose the arguments and queries yourself from the
 Do not replace execution with an answer, explanation, or instructions for the user.
 """.strip()
 
+_ADEQUACY_SCOPE_LOCK_INSTRUCTION = """
+The result-adequacy review is scope-locked to the user's actual request.
+
+When deciding adequacy or writing missing_aspects:
+- Preserve the requested target, product/category, task, constraints, and requested output form.
+- missing_aspects may describe only facts, attributes, evidence, or distinctions that are actually needed to answer that request.
+- Do not replace the requested target with a safer, easier, broader, narrower, or different alternative.
+- Do not add a new deliverable that the user did not request.
+- Do not turn cautionary advice, professional consultation, or an alternative product/category into a missing requirement unless the user explicitly asked for that consultation or alternative.
+- Safety or uncertainty may affect how confidently the eventual answer is phrased, but they do not authorize redefining what the user asked for.
+- If the evidence is insufficient for the requested answer, identify the missing evidence needed for that same requested answer.
+""".strip()
+
 _MAX_RECOVERY_CYCLES = 3
 
 
@@ -60,6 +73,7 @@ class RecoveryState:
     requirements: FrozenToolRequirements | None = None
     baseline_history_len: int = 0
     missing_aspects: tuple[str, ...] = ()
+    reviewed_evidence_version: int = -1
 
 
 _ACTIVE_RECOVERY: ContextVar[RecoveryState | None] = ContextVar(
@@ -82,6 +96,10 @@ def get_recovery_state() -> RecoveryState:
 
 def _set_recovery_state(state: RecoveryState) -> None:
     _ACTIVE_RECOVERY.set(state)
+
+
+def _evidence_version(tool_history: list[dict[str, Any]]) -> int:
+    return len(_successful_tool_result_payloads(tool_history))
 
 
 async def plan_recovery_tool_requirements(
@@ -189,7 +207,12 @@ class RecoveringToolRequirementGuardChatModel:
                     recovery=recovery,
                     recovery_missing=recovery_missing,
                 )
-            _set_recovery_state(RecoveryState(cycles_started=recovery.cycles_started))
+            _set_recovery_state(
+                RecoveryState(
+                    cycles_started=recovery.cycles_started,
+                    reviewed_evidence_version=recovery.reviewed_evidence_version,
+                )
+            )
 
         turn = await self._delegate.next_turn(
             system=system,
@@ -237,8 +260,26 @@ class RecoveringToolRequirementGuardChatModel:
         if not requirements.required:
             return turn
 
+        evidence_version = _evidence_version(tool_history)
+        recovery = get_recovery_state()
+        if (
+            recovery.requirements is None
+            and recovery.missing_aspects
+            and recovery.reviewed_evidence_version == evidence_version
+        ):
+            _debug_reused_inadequacy(recovery)
+            return await self._plan_and_request_recovery(
+                system=system,
+                user_message=user_message,
+                model=model,
+                memory_summary=memory_summary,
+                tool_definitions=tool_definitions,
+                tool_history=tool_history,
+                recovery=recovery,
+            )
+
         adequacy = await review_tool_result_adequacy(
-            system=system,
+            system=f"{system}\n\n{_ADEQUACY_SCOPE_LOCK_INSTRUCTION}",
             user_message=user_message,
             model=model,
             requirements=requirements,
@@ -246,9 +287,41 @@ class RecoveringToolRequirementGuardChatModel:
         )
         _debug_adequacy(adequacy)
         if adequacy.adequate:
+            _set_recovery_state(
+                RecoveryState(
+                    cycles_started=recovery.cycles_started,
+                    reviewed_evidence_version=evidence_version,
+                )
+            )
             return turn
 
-        recovery = get_recovery_state()
+        pending = RecoveryState(
+            cycles_started=recovery.cycles_started,
+            missing_aspects=adequacy.missing_aspects,
+            reviewed_evidence_version=evidence_version,
+        )
+        _set_recovery_state(pending)
+        return await self._plan_and_request_recovery(
+            system=system,
+            user_message=user_message,
+            model=model,
+            memory_summary=memory_summary,
+            tool_definitions=tool_definitions,
+            tool_history=tool_history,
+            recovery=pending,
+        )
+
+    async def _plan_and_request_recovery(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        model: str | None,
+        memory_summary: list[Any],
+        tool_definitions: list[ToolDefinition],
+        tool_history: list[dict[str, Any]],
+        recovery: RecoveryState,
+    ) -> ModelTurn:
         if recovery.cycles_started >= self._max_recovery_cycles:
             return ModelTurn(
                 final_answer=(
@@ -261,20 +334,21 @@ class RecoveringToolRequirementGuardChatModel:
         next_cycle = recovery.cycles_started + 1
         recovery_requirements = await plan_recovery_tool_requirements(
             user_message=user_message,
-            missing_aspects=adequacy.missing_aspects,
+            missing_aspects=recovery.missing_aspects,
             successful_tool_results=_successful_tool_result_payloads(tool_history),
             model=model,
             tool_definitions=tool_definitions,
             recovery_attempt=next_cycle,
         )
-        recovery = RecoveryState(
+        active = RecoveryState(
             cycles_started=next_cycle,
             requirements=recovery_requirements,
             baseline_history_len=len(tool_history),
-            missing_aspects=adequacy.missing_aspects,
+            missing_aspects=recovery.missing_aspects,
+            reviewed_evidence_version=recovery.reviewed_evidence_version,
         )
-        _set_recovery_state(recovery)
-        _debug_recovery_plan(recovery)
+        _set_recovery_state(active)
+        _debug_recovery_plan(active)
         return await self._request_recovery_tools(
             system=system,
             user_message=user_message,
@@ -282,7 +356,7 @@ class RecoveringToolRequirementGuardChatModel:
             memory_summary=memory_summary,
             tool_definitions=tool_definitions,
             tool_history=tool_history,
-            recovery=recovery,
+            recovery=active,
             recovery_missing=recovery_requirements.required_tools,
         )
 
@@ -363,6 +437,18 @@ def _debug_recovery_plan(recovery: RecoveryState) -> None:
         "[MK4 recovery] "
         f"attempt={recovery.cycles_started}/{_MAX_RECOVERY_CYCLES} "
         f"required_tools={','.join(recovery.requirements.required_tools)}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _debug_reused_inadequacy(recovery: RecoveryState) -> None:
+    if not config.AGENT_DEBUG_LOG:
+        return
+    missing = " | ".join(recovery.missing_aspects) if recovery.missing_aspects else "none"
+    print(
+        "[MK4 adequacy] reuse_previous_inadequate=true "
+        f"evidence_version={recovery.reviewed_evidence_version} missing={missing}",
         file=sys.stderr,
         flush=True,
     )
