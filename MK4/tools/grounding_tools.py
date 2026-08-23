@@ -127,14 +127,7 @@ class EvidenceGroundingChatModel:
                 tool_history=tool_history,
             )
         if review.grounded:
-            supporting_tools = _successful_external_tool_names(tool_history)
-            if supporting_tools:
-                return ModelTurn(
-                    final_answer=turn.final_answer,
-                    final_answer_kind="tool_completion",
-                    completion_tools=supporting_tools,
-                )
-            return turn
+            return _release_grounded_turn(turn, tool_history=tool_history)
 
         review_history = [
             *tool_history,
@@ -152,13 +145,25 @@ class EvidenceGroundingChatModel:
                 },
             },
         ]
-        return await self._delegate.next_turn(
+        retry = await self._delegate.next_turn(
             system=f"{system}\n\n{_GROUNDING_RETRY_INSTRUCTION}",
             user_message=user_message,
             model=model,
             memory_summary=memory_summary,
             tool_definitions=tool_definitions,
             tool_history=review_history,
+        )
+        if retry.tool_calls or not retry.final_answer:
+            return retry
+
+        retry_review = take_precomputed_grounding_review(proposed_response=retry.final_answer)
+        if retry_review is None:
+            return retry
+        if retry_review.grounded:
+            return _release_grounded_turn(retry, tool_history=tool_history)
+        return ModelTurn(
+            final_answer="최종 근거 검증을 통과하지 못해 답변을 확정하지 않았습니다.",
+            final_answer_kind="blocked",
         )
 
 
@@ -222,6 +227,17 @@ async def review_final_grounding(
     return GroundingReview(
         grounded=data["grounded"],
         missing_aspects=cleaned_missing,
+    )
+
+
+def _release_grounded_turn(turn: ModelTurn, *, tool_history: list[dict[str, Any]]) -> ModelTurn:
+    supporting_tools = _successful_external_tool_names(tool_history)
+    if not supporting_tools:
+        return turn
+    return ModelTurn(
+        final_answer=turn.final_answer,
+        final_answer_kind="tool_completion",
+        completion_tools=supporting_tools,
     )
 
 
