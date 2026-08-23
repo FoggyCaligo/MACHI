@@ -15,12 +15,16 @@ from MK4.tools.tool_runtime import ToolDefinition
 
 
 @pytest.mark.asyncio
-async def test_preflight_uses_only_user_input_and_tool_result_kinds(monkeypatch) -> None:
+async def test_preflight_uses_recent_dialogue_current_input_and_tool_result_kinds(monkeypatch) -> None:
     captured: dict[str, object] = {}
     recall_contract = (
         "Return persistent long-term memory records from the user's past conversation, preferences, decisions, "
         "recommendations, and project context. This intentionally exceeds the old 120-character planner cutoff."
     )
+    dialogue = [
+        {"user": "첫 질문", "assistant": "첫 답변"},
+        {"user": "둘째 질문", "assistant": "둘째 답변"},
+    ]
 
     async def fake_chat(*, system, user, model, response_format):
         captured["system"] = system
@@ -61,6 +65,7 @@ async def test_preflight_uses_only_user_input_and_tool_result_kinds(monkeypatch)
     try:
         plan = await plan_and_freeze_before_memory(
             user_message="전에 추천했던 책 뭐였지?",
+            recent_dialogue_pairs=dialogue,
             model=None,
             tool_definitions=definitions,
         )
@@ -71,19 +76,22 @@ async def test_preflight_uses_only_user_input_and_tool_result_kinds(monkeypatch)
     assert plan.required_tools == ("recall_memory",)
     assert frozen == plan
     payload = captured["payload"]
-    assert set(payload) == {"user_input", "tools"}
+    assert set(payload) == {"recent_dialogue_pairs", "user_input", "tools"}
+    assert payload["recent_dialogue_pairs"] == dialogue
     assert payload["user_input"] == "전에 추천했던 책 뭐였지?"
     assert [item["name"] for item in payload["tools"]] == ["recall_memory", "latest_search"]
     assert all(set(item) == {"name", "result_kind"} for item in payload["tools"])
     assert payload["tools"][0]["result_kind"] == recall_contract
     assert "automatic_memory_context" not in payload
     assert "current_date" not in payload
+    assert "tool_history" not in payload
     assert "input" not in payload["tools"][0]
     assert "call_template" not in payload["tools"][0]
 
     prompt = str(captured["system"]).lower()
-    assert "every exposed tool independently" in prompt
-    assert "kind of information or action result" in prompt
+    assert "four immediately preceding user/assistant dialogue pairs" in prompt
+    assert "context, not evidence" in prompt
+    assert "new successful result" in prompt
     assert "do not compare tools" in prompt
     assert "tool names as semantic shortcuts" in prompt
 
@@ -93,10 +101,43 @@ async def test_preflight_uses_only_user_input_and_tool_result_kinds(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_preflight_limits_dialogue_context_to_four_pairs(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_chat(*, system, user, model, response_format):
+        captured["payload"] = json.loads(user)
+        return json.dumps({"tool_requirements": {"web_research": True}})
+
+    monkeypatch.setattr(compact_requirement_planner, "ollama_chat", fake_chat)
+    pairs = [
+        {"user": f"u{index}", "assistant": f"a{index}"}
+        for index in range(6)
+    ]
+    token = start_tool_requirement_scope()
+    try:
+        await plan_and_freeze_before_memory(
+            user_message="현재 입력",
+            recent_dialogue_pairs=pairs,
+            model=None,
+            tool_definitions=[
+                ToolDefinition(
+                    name="web_research",
+                    description="Return current public-web evidence about concrete real-world options.",
+                    input_schema={"type": "object"},
+                )
+            ],
+        )
+    finally:
+        reset_tool_requirement_scope(token)
+
+    assert captured["payload"]["recent_dialogue_pairs"] == pairs[-4:]
+
+
+@pytest.mark.asyncio
 async def test_preflight_true_tools_have_no_substitution_group(monkeypatch) -> None:
     async def fake_chat(*, system, user, model, response_format):
         payload = json.loads(user)
-        assert set(payload) == {"user_input", "tools"}
+        assert set(payload) == {"recent_dialogue_pairs", "user_input", "tools"}
         assert set(response_format["properties"]) == {"tool_requirements"}
         return json.dumps({
             "tool_requirements": {
@@ -110,6 +151,7 @@ async def test_preflight_true_tools_have_no_substitution_group(monkeypatch) -> N
     try:
         plan = await plan_and_freeze_before_memory(
             user_message="최근 사건을 찾고 세부 근거까지 조사해줘",
+            recent_dialogue_pairs=[],
             model=None,
             tool_definitions=[
                 ToolDefinition(
@@ -131,7 +173,7 @@ async def test_preflight_true_tools_have_no_substitution_group(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_preflight_product_recommendation_exposes_web_result_kind_without_answer_context(monkeypatch) -> None:
+async def test_preflight_product_followup_uses_prior_pair_only_as_context(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     async def fake_chat(*, system, user, model, response_format):
@@ -144,10 +186,15 @@ async def test_preflight_product_recommendation_exposes_web_result_kind_without_
         })
 
     monkeypatch.setattr(compact_requirement_planner, "ollama_chat", fake_chat)
+    prior_pair = {
+        "user": "입문용 만년필 하나를 추천해 줄래?",
+        "assistant": "라미 사파리, 플래티넘 프레피 등을 추천합니다.",
+    }
     token = start_tool_requirement_scope()
     try:
         plan = await plan_and_freeze_before_memory(
-            user_message="입문용 만년필 하나를 추천해 줄래?",
+            user_message="EF닙에 컨버터 형식으로. 겸용도 상관은 없어.",
+            recent_dialogue_pairs=[prior_pair],
             model=None,
             tool_definitions=[
                 ToolDefinition(
@@ -170,7 +217,8 @@ async def test_preflight_product_recommendation_exposes_web_result_kind_without_
 
     assert plan.required_tools == ("web_research",)
     payload = captured["payload"]
-    assert payload["user_input"] == "입문용 만년필 하나를 추천해 줄래?"
+    assert payload["recent_dialogue_pairs"] == [prior_pair]
+    assert payload["user_input"] == "EF닙에 컨버터 형식으로. 겸용도 상관은 없어."
     assert all("result_kind" in item for item in payload["tools"])
     assert "memory_summary" not in payload
     assert "tool_history" not in payload
