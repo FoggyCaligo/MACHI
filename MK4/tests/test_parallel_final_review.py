@@ -18,6 +18,7 @@ from MK4.tools.grounding_tools import (
 )
 from MK4.tools.llm_client import ModelTurn
 from MK4.tools.tool_runtime import ToolDefinition
+from MK4.tools.web_grounding import web_evidence_catalog
 
 
 class FinalChatModel:
@@ -74,6 +75,17 @@ def test_web_evidence_dedup_keeps_unique_context_and_removes_exact_repetition() 
     assert compact["matched_sections"] == ["same paragraph", "second matched paragraph"]
     assert compact["excerpt_context"] == "unique surrounding context"
     assert "excerpt" not in compact
+
+    catalog = web_evidence_catalog([{
+        "tool": "web_research",
+        "result": {
+            "ok": True,
+            "evidence": [compact],
+            "results": [],
+        },
+    }])
+    evidence = catalog["web:0:evidence:0"]
+    assert evidence["excerpt_context"] == "unique surrounding context"
 
 
 def test_read_search_result_keeps_source_metadata_without_repeating_page_snippet() -> None:
