@@ -6,6 +6,7 @@ from .tool_runtime import ToolDefinition
 
 
 _TOOL_SUMMARY_LIMIT = 160
+_REQUIREMENT_TOOL_SUMMARY_LIMIT = 120
 _FIELD_DESCRIPTION_LIMIT = 96
 
 
@@ -17,6 +18,24 @@ def compact_tool_catalog(tool_definitions: list[ToolDefinition]) -> list[dict[st
     and full JSON Schema details remain available through tool_manual.
     """
     return [_compact_tool_definition(definition) for definition in tool_definitions]
+
+
+def requirement_tool_catalog(tool_definitions: list[ToolDefinition]) -> list[dict[str, str]]:
+    """Return only the information needed to judge whether each tool is required.
+
+    Requirement planning never constructs tool arguments, so input fields and call
+    templates add context cost without helping the semantic necessity decision.
+    """
+    return [
+        {
+            "name": definition.name,
+            "summary": _compact_tool_summary(
+                definition.description,
+                limit=_REQUIREMENT_TOOL_SUMMARY_LIMIT,
+            ),
+        }
+        for definition in tool_definitions
+    ]
 
 
 def missing_required_arguments(arguments: dict[str, Any], definition: ToolDefinition) -> list[str]:
@@ -108,11 +127,11 @@ def _schema_example_value(schema: dict[str, Any]) -> object:
     return None
 
 
-def _compact_tool_summary(description: str) -> str:
+def _compact_tool_summary(description: str, *, limit: int = _TOOL_SUMMARY_LIMIT) -> str:
     one_line = " ".join(str(description or "").split())
-    if len(one_line) <= _TOOL_SUMMARY_LIMIT:
+    if len(one_line) <= limit:
         return one_line
-    return one_line[: _TOOL_SUMMARY_LIMIT - 3] + "..."
+    return one_line[: limit - 3] + "..."
 
 
 def _compact_field_description(description: object) -> str:
