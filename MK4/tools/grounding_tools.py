@@ -4,45 +4,40 @@ from typing import Any
 
 from .llm_client import ChatModel, ModelTurn
 from .tool_runtime import ToolDefinition
-from .web_grounding import compact_evidence_catalog, web_evidence_catalog
+from .web_grounding import compact_evidence_catalog
+
+
+_EXTERNAL_EVIDENCE_TOOLS = {
+    "internet_search",
+    "latest_search",
+    "web_page_read",
+    "web_research",
+    "market_snapshot",
+}
 
 
 _GROUNDING_REVIEW_INSTRUCTION = """
-A final-answer evidence review is required before this answer can be shown to the user.
-Review every factual assertion contained in the proposed answer and the actual tool_history structurally.
+Review the proposed response before it is shown to the user.
 
-Freshness definition:
-- Treat a fact as current/time-sensitive when its value or state could reasonably be different today from yesterday.
-- Examples include a current market price or valuation value, exchange rate, weather, live service status, current officeholder, current policy/status, schedule, availability, inventory, or other changing state.
-- Do NOT classify conceptual definitions, mathematical explanations, general domain knowledge, or fixed historical facts as freshness-sensitive merely because the topic itself can also have current values.
-- Example: explaining what PER means is not freshness-sensitive. Stating a company's PER, even as an aside or example inside a conceptual explanation, is freshness-sensitive because that value can change from one day to the next.
-- Judge each assertion in the proposed answer independently. Do not decide freshness only from the user's main question or from the answer's main purpose.
-- The source of a freshness-sensitive assertion does not matter. A value remembered from an earlier conversation, recalled from persistent memory, repeated from a prior assistant utterance, or supplied from model knowledge may be stale and must be refreshed.
-- Do not classify from keyword matching; judge the meaning of each claim.
+Freshness rule:
+- Inspect every factual assertion in the proposed response, including examples and asides.
+- A fact is freshness-sensitive when its value or state could reasonably differ today from yesterday.
+- If even one freshness-sensitive fact appears, it must be refreshed from a successful current-turn external data/search tool result.
+- Old automatic memory, recall_memory, prior assistant replies, previous-turn tool results, and model knowledge may help identify what to check, but they are not current evidence.
+- Stable definitions, mathematical explanations, general domain knowledge, and fixed historical facts do not need fresh evidence.
 
-Rules:
-- If even one factual assertion in the proposed answer is freshness-sensitive, every such assertion must be grounded in adequate successful external evidence from this turn.
-- If any freshness-sensitive assertion lacks adequate evidence in tool_history, return tool_calls for the suitable exposed external tool(s). Do not return a final answer yet, even if that assertion was only an optional example or aside.
-- If all freshness-sensitive assertions have adequate successful external evidence, return the grounded final answer with final_answer_kind="tool_completion" and put only the successful external evidence tool names in completion_tools.
-- If the proposed answer contains no freshness-sensitive factual assertions, return the grounded final answer with final_answer_kind="answer" and an empty completion_tools list.
-- Never treat automatic memory, recall_memory, prior assistant utterances, prior tool results from another turn, or unsupported model knowledge as current external evidence.
-- Every externally sourced factual statement in the final answer must be directly supported by the selected evidence.
-- A `search_snippet` supports only what its title/snippet explicitly says. Do not infer an author, publication date, plot, product detail, or other attribute that is absent from it.
-- `page_evidence` may support facts that are explicit in its matched sections/excerpt.
-- Do not fill missing facts from memory or invent plausible titles, authors, dates, plots, prices, ratios, or verification status.
-- If available web evidence does not support enough of the user's request, return tool_calls for additional `web_research` instead of a final answer.
-- During this review, web evidence IDs may be used in completion_tools only when selecting specific web evidence. The wrapper will validate those IDs against actual tool_history.
+Evidence rule:
+- If current external evidence is missing or insufficient for any freshness-sensitive assertion, call an appropriate read-only external tool now. Do not answer yet.
+- If the available current-turn evidence is sufficient, return the corrected grounded response.
+- If no freshness-sensitive assertion exists, return the response normally.
+- Do not invent unsupported values or silently fill gaps from memory.
+
+Tool use during this review is exploratory. When current evidence may help, prefer checking over guessing.
 """.strip()
 
 
 class EvidenceGroundingChatModel:
-    """Require a structured evidence/freshness review before every final answer.
-
-    Semantic classification is delegated to the model instead of keyword routing in
-    framework code. The wrapper validates only structural contracts against actual
-    tool history: requested tool calls are executed by the orchestrator, web evidence
-    IDs must exist, and declared completion tools must have succeeded.
-    """
+    """Review draft answers while keeping the main model action contract lightweight."""
 
     def __init__(self, delegate: ChatModel) -> None:
         self._delegate = delegate
@@ -65,10 +60,9 @@ class EvidenceGroundingChatModel:
             tool_definitions=tool_definitions,
             tool_history=tool_history,
         )
-        if turn.tool_calls or not turn.final_answer or turn.final_answer_kind == "blocked":
+        if turn.tool_calls or not turn.final_answer:
             return turn
 
-        catalog = web_evidence_catalog(tool_history)
         review_history = [
             *tool_history,
             {
@@ -78,75 +72,47 @@ class EvidenceGroundingChatModel:
                     "ok": False,
                     "error": "final_evidence_review_required",
                     "message": _GROUNDING_REVIEW_INSTRUCTION,
-                    "proposed_final_answer": turn.final_answer,
+                    "proposed_response": turn.final_answer,
                     "available_web_evidence": compact_evidence_catalog(tool_history),
-                    "successful_tools": _successful_tool_names(tool_history),
+                    "successful_external_tools": _successful_external_tool_names(tool_history),
                 },
             },
         ]
         reviewed = await self._delegate.next_turn(
-            system=f"{system}\n{_GROUNDING_REVIEW_INSTRUCTION}",
+            system=f"{system}\n\n{_GROUNDING_REVIEW_INSTRUCTION}",
             user_message=user_message,
             model=model,
             memory_summary=memory_summary,
             tool_definitions=tool_definitions,
             tool_history=review_history,
         )
-        if reviewed.tool_calls or not reviewed.final_answer or reviewed.final_answer_kind == "blocked":
+        if reviewed.tool_calls or not reviewed.final_answer:
             return reviewed
 
-        if reviewed.final_answer_kind == "answer" and not reviewed.completion_tools:
-            return ModelTurn(
-                final_answer=reviewed.final_answer,
-                final_answer_kind="answer",
-                completion_tools=[],
-            )
-
-        selected = [item for item in reviewed.completion_tools if item]
-        if reviewed.final_answer_kind != "tool_completion" or not selected:
-            return _blocked_review_turn()
-
-        if catalog and all(evidence_id in catalog for evidence_id in selected):
-            return ModelTurn(
-                final_answer=reviewed.final_answer,
-                final_answer_kind="answer",
-                completion_tools=[],
-            )
-
-        successful_tools = set(_successful_tool_names(tool_history))
-        if all(tool_name in successful_tools for tool_name in selected):
+        supporting_tools = _successful_external_tool_names(tool_history)
+        if supporting_tools:
             return ModelTurn(
                 final_answer=reviewed.final_answer,
                 final_answer_kind="tool_completion",
-                completion_tools=selected,
+                completion_tools=supporting_tools,
             )
+        return ModelTurn(final_answer=reviewed.final_answer)
 
-        return _blocked_review_turn()
 
-
-def _successful_tool_names(tool_history: list[dict[str, Any]]) -> list[str]:
+def _successful_external_tool_names(tool_history: list[dict[str, Any]]) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for event in tool_history:
         tool_name = str(event.get("tool") or "").strip()
-        if not tool_name or tool_name in seen:
+        if tool_name not in _EXTERNAL_EVIDENCE_TOOLS or tool_name in seen:
             continue
         result = event.get("result")
-        if isinstance(result, dict):
-            if result.get("ok") is False:
-                continue
-            if "returncode" in result and result.get("returncode") != 0:
-                continue
+        if not isinstance(result, dict):
+            continue
+        if result.get("ok") is False:
+            continue
+        if "returncode" in result and result.get("returncode") != 0:
+            continue
         seen.add(tool_name)
         names.append(tool_name)
     return names
-
-
-def _blocked_review_turn() -> ModelTurn:
-    return ModelTurn(
-        final_answer=(
-            "최종 답변에 필요한 최신 외부 근거를 실제 도구 결과와 연결하지 못해 "
-            "답변을 확정하지 않았습니다."
-        ),
-        final_answer_kind="blocked",
-    )
