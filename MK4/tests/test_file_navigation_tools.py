@@ -126,7 +126,7 @@ def test_model_context_is_bounded_for_large_tree() -> None:
 
 
 def test_system_prompt_requires_complete_file_edit_workflow() -> None:
-    assert "file_tree" in SYSTEM_PROMPT
-    assert "file_text_search" in SYSTEM_PROMPT
-    assert "do not stop after merely locating a file" in SYSTEM_PROMPT
-    assert "verify the important changed section" in SYSTEM_PROMPT
+    assert "file/document/image reads" in SYSTEM_PROMPT
+    assert "inspect the real target first" in SYSTEM_PROMPT
+    assert "Make the requested change only after the target is known" in SYSTEM_PROMPT
+    assert "verify the result" in SYSTEM_PROMPT
