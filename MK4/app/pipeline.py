@@ -56,6 +56,9 @@ from ..tools.workspace_tools import WorkspaceFileToolSuite
 from .download_tokens import default_download_token_store
 
 
+_PLANNER_DIALOGUE_PAIR_LIMIT = 4
+
+
 @dataclass
 class PipelineResult:
     text: str
@@ -102,6 +105,7 @@ class Pipeline:
         self._chat_model = EvidenceGroundingChatModel(base_chat_model)
         self._web_search = web_search or CompactFocusedWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
+        self._planner_recent_dialogue_pairs: dict[str, list[dict[str, str]]] = {}
         self._orchestrator = AgentOrchestrator(
             memory_service=self._memory,
             graph_tools=self._tools,
@@ -132,6 +136,7 @@ class Pipeline:
         account_role: str = "owner",
     ) -> PipelineResult:
         conversation_key = f"{user_id}::{session_id or 'default'}"
+        recent_dialogue_pairs = list(self._planner_recent_dialogue_pairs.get(conversation_key, []))
         root_token = set_file_working_root(self._file_working_roots.get(conversation_key, "."))
         task_tokens = set_file_task_message(message)
         scratchpad_token = start_request_scratchpad()
@@ -147,6 +152,7 @@ class Pipeline:
             ]
             await plan_and_freeze_before_memory(
                 user_message=message,
+                recent_dialogue_pairs=recent_dialogue_pairs,
                 model=model,
                 tool_definitions=preflight_tool_definitions,
             )
@@ -163,6 +169,11 @@ class Pipeline:
                 session_id=session_id,
             )
             self._file_working_roots[conversation_key] = get_file_working_root()
+            self._remember_planner_dialogue_pair(
+                conversation_key=conversation_key,
+                user_message=message,
+                assistant_message=result.text,
+            )
         finally:
             reset_account_role(account_role_token)
             reset_grounding_review_scope(grounding_token)
@@ -177,6 +188,17 @@ class Pipeline:
             memory_writes=[*result.memory_writes, "assistant_utterance"],
             tool_events=result.tool_events,
         )
+
+    def _remember_planner_dialogue_pair(
+        self,
+        *,
+        conversation_key: str,
+        user_message: str,
+        assistant_message: str,
+    ) -> None:
+        existing = list(self._planner_recent_dialogue_pairs.get(conversation_key, []))
+        existing.append({"user": user_message, "assistant": assistant_message})
+        self._planner_recent_dialogue_pairs[conversation_key] = existing[-_PLANNER_DIALOGUE_PAIR_LIMIT:]
 
     def close(self) -> None:
         self._graph_repo.close()
