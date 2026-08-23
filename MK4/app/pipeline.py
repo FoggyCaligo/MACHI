@@ -11,6 +11,7 @@ from ..tools.account_authorization import (
     reset_account_role,
     set_account_role,
 )
+from ..tools.adequacy_recovery import RecoveringToolRequirementGuardChatModel
 from ..tools.autonomy_tools import AutonomyChatModel
 from ..tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
 from ..tools.grounding_tools import EvidenceGroundingChatModel
@@ -32,7 +33,6 @@ from ..tools.scratchpad_tools import (
 from ..tools.terminal_tools import TerminalToolSuite
 from ..tools.tool_requirement_preflight import plan_and_freeze_before_memory
 from ..tools.tool_requirements import (
-    ToolRequirementGuardChatModel,
     reset_tool_requirement_scope,
     start_tool_requirement_scope,
 )
@@ -84,7 +84,7 @@ class Pipeline:
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = AccountAuthorizationChatModel(
             ModelToolNameAdapter(
-                ToolRequirementGuardChatModel(
+                RecoveringToolRequirementGuardChatModel(
                     AutonomyChatModel(
                         chat_model or AutomaticMemoryContextOllamaToolChatModel()
                     )
