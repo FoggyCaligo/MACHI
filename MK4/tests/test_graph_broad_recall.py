@@ -27,7 +27,7 @@ def test_memory_summary_ends_with_structural_graph_search_note() -> None:
     note = summary[-1]
     assert note["node_type"] == "system_note"
     assert note["subgraph"]["focus"]["provenance"] == "system_policy"
-    assert "graph_search" in note["label"]
+    assert "recall_memory" in note["label"]
     assert "partial automatic recall" in note["label"]
     repo.close()
 
