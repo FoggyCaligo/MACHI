@@ -16,6 +16,7 @@ from .llm_client import (
 )
 from .ollama_client import chat as ollama_chat
 from .tool_catalog import compact_tool_catalog, missing_required_arguments
+from .tool_requirements import get_frozen_tool_requirements, missing_required_tools
 from .tool_runtime import ToolCall, ToolDefinition
 
 
@@ -42,7 +43,7 @@ _MODEL_TURN_SCHEMA: dict[str, Any] = {
 
 
 class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
-    """Expose graph context and a deliberately small model-facing action contract."""
+    """Expose automatic memory, frozen tool obligations, and a small action contract."""
 
     async def next_turn(
         self,
@@ -55,9 +56,21 @@ class AutomaticMemoryContextOllamaToolChatModel(OllamaToolChatModel):
         tool_history: list[dict[str, Any]],
     ) -> ModelTurn:
         tool_names = [tool.name for tool in tool_definitions]
+        frozen = get_frozen_tool_requirements()
+        required_tools = list(frozen.required_tools) if frozen is not None else []
+        missing_tools = list(missing_required_tools(frozen, tool_history)) if frozen is not None else []
         user_payload = {
             "user_message": user_message,
             "authorization_context": get_authorization_context(),
+            "frozen_tool_requirements": {
+                "required_tools": required_tools,
+                "missing_tools": missing_tools,
+                "contract": (
+                    "Every tool in missing_tools still needs a successful explicit execution before final answer release. "
+                    "Automatic memory is context only and does not satisfy an explicit tool requirement. "
+                    "Tools outside required_tools remain available for optional exploration."
+                ),
+            },
             "automatic_memory_context": {
                 "source": "automatic_graph_activation",
                 "scope": "partial",

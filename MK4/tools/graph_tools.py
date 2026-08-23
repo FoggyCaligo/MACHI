@@ -5,11 +5,13 @@ from .tool_runtime import ToolDefinition, ToolRegistry
 
 
 _MEMORY_SUMMARY_NOTE = (
-    "Memory summary is only a partial automatic recall, not the full persistent store. "
-    "Use recall_memory when the user's requested source of truth is their past conversation, preferences, decisions, "
-    "recommendations, or project context and the supplied summary is insufficient. Persistent memory is not a way to "
-    "refresh public or external facts that may have changed since they were recorded; current external facts must be "
-    "checked with an appropriate current external tool."
+    "Memory summary is partial automatic recall supplied after tool requirements were already frozen. "
+    "It is context, not an explicit recall_memory execution, so it never satisfies a frozen recall_memory requirement. "
+    "If frozen_tool_requirements.missing_tools lists recall_memory, execute recall_memory even when this summary appears "
+    "sufficient. Outside a frozen requirement, use recall_memory when the user's requested source of truth is their past "
+    "conversation, preferences, decisions, recommendations, or project context and broader recall is useful. Persistent "
+    "memory is not a way to refresh public or external facts that may have changed since they were recorded; current "
+    "external facts must be checked with an appropriate current external tool."
 )
 _MEMORY_RETRIEVAL_INTERACTION_ROLE = "memory_retrieval"
 _MEMORY_RANK_OVERSAMPLE_FACTOR = 3
@@ -54,14 +56,16 @@ class GraphToolSuite:
                 description=(
                     "Recall your persistent long-term graph memory when the user's requested source of truth is past "
                     "conversation or personal context: prior user statements, assistant responses and recommendations, "
-                    "preferences, decisions, and project context. Call with no query/node_id to broadly browse the user's "
-                    "persistent memory, use query for targeted recall, or pass a returned relation node_id to expand that "
-                    "exact node. Do not use persistent memory to refresh public or external facts that may have changed since "
-                    "recording; current external facts require an appropriate current external research/data tool. Assistant "
-                    "responses are conversation records only: they prove what the assistant previously said, not that external "
-                    "factual claims inside them are true. Results are small subgraph summaries containing a focus node, its "
-                    "important relations, and source metadata. Use before concluding that relevant past user memory is "
-                    "unavailable. The current user identity is supplied by the system."
+                    "preferences, decisions, and project context. If frozen_tool_requirements.missing_tools lists "
+                    "recall_memory, execute this tool even when automatic memory already appears to contain the answer; "
+                    "automatic memory is context and does not count as this explicit execution. Call with no query/node_id "
+                    "to broadly browse the user's persistent memory, use query for targeted recall, or pass a returned "
+                    "relation node_id to expand that exact node. Do not use persistent memory to refresh public or external "
+                    "facts that may have changed since recording; current external facts require an appropriate current "
+                    "external research/data tool. Assistant responses are conversation records only: they prove what the "
+                    "assistant previously said, not that external factual claims inside them are true. Results are small "
+                    "subgraph summaries containing a focus node, its important relations, and source metadata. The current "
+                    "user identity is supplied by the system."
                 ),
                 input_schema={
                     "x-model-name": "recall_memory",

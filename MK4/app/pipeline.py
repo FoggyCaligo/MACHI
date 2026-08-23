@@ -29,6 +29,7 @@ from ..tools.scratchpad_tools import (
     start_request_scratchpad,
 )
 from ..tools.terminal_tools import TerminalToolSuite
+from ..tools.tool_requirement_preflight import plan_and_freeze_before_memory
 from ..tools.tool_requirements import (
     ToolRequirementGuardChatModel,
     reset_tool_requirement_scope,
@@ -83,11 +84,13 @@ class Pipeline:
         base_chat_model = AccountAuthorizationChatModel(
             ModelToolNameAdapter(
                 ToolRequirementGuardChatModel(
-                    chat_model or AutomaticMemoryContextOllamaToolChatModel()
+                    AutonomyChatModel(
+                        chat_model or AutomaticMemoryContextOllamaToolChatModel()
+                    )
                 )
             )
         )
-        self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
+        self._chat_model = EvidenceGroundingChatModel(base_chat_model)
         self._web_search = web_search or HttpWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
         self._orchestrator = AgentOrchestrator(
@@ -126,6 +129,16 @@ class Pipeline:
         requirement_token = start_tool_requirement_scope()
         account_role_token = set_account_role(account_role)
         try:
+            preflight_tool_definitions = [
+                definition
+                for definition in self._orchestrator.tool_registry.model_definitions()
+                if account_role != "trial" or definition.name in TRIAL_TOOL_NAMES
+            ]
+            await plan_and_freeze_before_memory(
+                user_message=message,
+                model=model,
+                tool_definitions=preflight_tool_definitions,
+            )
             result = await self._orchestrator.respond(
                 user_id=user_id,
                 message=message,
