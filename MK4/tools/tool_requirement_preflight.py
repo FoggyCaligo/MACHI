@@ -3,11 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 from time import perf_counter
 
+from .compact_requirement_planner import plan_compact_tool_requirements
 from .debug_timing import log_timing
 from .tool_requirements import (
     FrozenToolRequirements,
     freeze_tool_requirements,
-    plan_tool_requirements,
     _debug_requirement_plan,
 )
 from .tool_runtime import ToolDefinition
@@ -24,7 +24,7 @@ async def plan_and_freeze_before_memory(
     model_definitions = model_facing_definitions(tool_definitions)
     started = perf_counter()
     try:
-        requirements = await plan_tool_requirements(
+        requirements = await plan_compact_tool_requirements(
             user_message=user_message,
             model=model,
             tool_definitions=model_definitions,
