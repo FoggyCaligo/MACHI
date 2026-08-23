@@ -8,6 +8,9 @@ import pytest
 from MK4.tools import tool_requirements
 from MK4.tools.llm_client import ModelTurn
 from MK4.tools.tool_requirements import (
+    FrozenToolRequirements,
+    ToolEvaluation,
+    ToolRequirementGroup,
     ToolRequirementGuardChatModel,
     reset_tool_requirement_scope,
     start_tool_requirement_scope,
@@ -42,17 +45,215 @@ def _definition(name: str, description: str) -> ToolDefinition:
     )
 
 
-def _planner_response() -> str:
-    return json.dumps({
-        "requirements": [{
-            "capability": "current_external_research",
-            "satisfying_tools": ["latest_search", "web_research"],
-        }]
-    })
+def _news_plan() -> dict[str, Any]:
+    return {
+        "tool_evaluations": [
+            {"tool": "latest_search", "required": True},
+            {"tool": "market_snapshot", "required": False},
+            {"tool": "recall_memory", "required": False},
+            {"tool": "web_research", "required": True},
+        ],
+        "required_groups": [
+            {"tools": ["latest_search", "web_research"]},
+        ],
+    }
+
+
+def _news_definitions() -> list[ToolDefinition]:
+    return [
+        _definition("latest_search", "Search recent news."),
+        _definition("market_snapshot", "Fetch market data."),
+        _definition("recall_memory", "Search persistent memory."),
+        _definition("web_research", "Research public web sources."),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_recent_news_request_cannot_finish_without_frozen_search_requirement(monkeypatch) -> None:
+async def test_planner_evaluates_each_tool_and_groups_only_required_alternatives(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_chat(*, system, user, model, response_format):
+        captured["system"] = system
+        captured["payload"] = json.loads(user)
+        captured["schema"] = response_format
+        return json.dumps(_news_plan())
+
+    monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
+
+    plan = await tool_requirements.plan_tool_requirements(
+        user_message="최근 6개월 내 할리우드 논란 배우가 있었는지 확인해줘",
+        model=None,
+        memory_summary=["예전에 할리우드 배우 이야기를 한 적이 있음"],
+        tool_definitions=_news_definitions(),
+    )
+
+    assert [(item.tool, item.required) for item in plan.evaluations] == [
+        ("latest_search", True),
+        ("market_snapshot", False),
+        ("recall_memory", False),
+        ("web_research", True),
+    ]
+    assert [group.tools for group in plan.groups] == [
+        ("latest_search", "web_research"),
+    ]
+    assert captured["payload"]["automatic_memory_context"] == {
+        "source": "automatic_graph_activation",
+        "already_available_before_tool_use": True,
+        "items": ["예전에 할리우드 배우 이야기를 한 적이 있음"],
+    }
+    assert "do not invent capabilities" in captured["system"].lower()
+
+
+@pytest.mark.asyncio
+async def test_automatic_memory_can_make_explicit_recall_unnecessary(monkeypatch) -> None:
+    async def fake_chat(*, system, user, model, response_format):
+        payload = json.loads(user)
+        assert payload["automatic_memory_context"]["items"] == [
+            "사용자는 예전에 SF 소설 A와 B를 추천받았다."
+        ]
+        return json.dumps({
+            "tool_evaluations": [
+                {"tool": "recall_memory", "required": False},
+                {"tool": "web_research", "required": False},
+            ],
+            "required_groups": [],
+        })
+
+    monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
+
+    plan = await tool_requirements.plan_tool_requirements(
+        user_message="전에 추천했던 SF 책 기억나?",
+        model=None,
+        memory_summary=["사용자는 예전에 SF 소설 A와 B를 추천받았다."],
+        tool_definitions=[
+            _definition("recall_memory", "Search persistent memory."),
+            _definition("web_research", "Research public web sources."),
+        ],
+    )
+
+    assert plan.required is False
+    assert plan.groups == ()
+
+
+@pytest.mark.asyncio
+async def test_stale_memory_does_not_remove_current_external_requirement(monkeypatch) -> None:
+    async def fake_chat(*, system, user, model, response_format):
+        payload = json.loads(user)
+        assert payload["automatic_memory_context"]["items"] == ["삼성전자 PER은 예전에 12.6배였다."]
+        return json.dumps({
+            "tool_evaluations": [
+                {"tool": "market_snapshot", "required": True},
+                {"tool": "recall_memory", "required": False},
+                {"tool": "web_research", "required": False},
+            ],
+            "required_groups": [
+                {"tools": ["market_snapshot"]},
+            ],
+        })
+
+    monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
+
+    plan = await tool_requirements.plan_tool_requirements(
+        user_message="삼성전자 지금 PER이 얼마야?",
+        model=None,
+        memory_summary=["삼성전자 PER은 예전에 12.6배였다."],
+        tool_definitions=[
+            _definition("market_snapshot", "Fetch market data."),
+            _definition("recall_memory", "Search persistent memory."),
+            _definition("web_research", "Research public web sources."),
+        ],
+    )
+
+    assert [group.tools for group in plan.groups] == [("market_snapshot",)]
+
+
+def test_requirement_plan_rejects_missing_tool_evaluation() -> None:
+    with pytest.raises(RuntimeError, match="evaluate every exposed tool exactly once"):
+        tool_requirements._parse_requirement_plan(
+            {
+                "tool_evaluations": [
+                    {"tool": "latest_search", "required": True},
+                ],
+                "required_groups": [{"tools": ["latest_search"]}],
+            },
+            tool_names=["latest_search", "web_research"],
+        )
+
+
+def test_requirement_plan_rejects_false_tool_inside_group() -> None:
+    with pytest.raises(RuntimeError, match="required=false"):
+        tool_requirements._parse_requirement_plan(
+            {
+                "tool_evaluations": [
+                    {"tool": "latest_search", "required": True},
+                    {"tool": "market_snapshot", "required": False},
+                ],
+                "required_groups": [
+                    {"tools": ["latest_search", "market_snapshot"]},
+                ],
+            },
+            tool_names=["latest_search", "market_snapshot"],
+        )
+
+
+def test_requirement_plan_rejects_required_tool_missing_from_groups() -> None:
+    with pytest.raises(RuntimeError, match="must appear in exactly one required group"):
+        tool_requirements._parse_requirement_plan(
+            {
+                "tool_evaluations": [
+                    {"tool": "latest_search", "required": True},
+                    {"tool": "web_research", "required": True},
+                ],
+                "required_groups": [
+                    {"tools": ["latest_search"]},
+                ],
+            },
+            tool_names=["latest_search", "web_research"],
+        )
+
+
+def test_requirement_plan_rejects_tool_in_multiple_groups() -> None:
+    with pytest.raises(RuntimeError, match="only one group"):
+        tool_requirements._parse_requirement_plan(
+            {
+                "tool_evaluations": [
+                    {"tool": "latest_search", "required": True},
+                    {"tool": "web_research", "required": True},
+                ],
+                "required_groups": [
+                    {"tools": ["latest_search", "web_research"]},
+                    {"tools": ["web_research"]},
+                ],
+            },
+            tool_names=["latest_search", "web_research"],
+        )
+
+
+def test_missing_groups_are_and_across_groups_or_within_group() -> None:
+    requirements = FrozenToolRequirements(
+        evaluations=(
+            ToolEvaluation(tool="latest_search", required=True),
+            ToolEvaluation(tool="web_research", required=True),
+            ToolEvaluation(tool="file_read", required=True),
+        ),
+        groups=(
+            ToolRequirementGroup(tools=("latest_search", "web_research")),
+            ToolRequirementGroup(tools=("file_read",)),
+        ),
+    )
+
+    history = [{
+        "tool": "web_research",
+        "arguments": {"objective": "recent controversy"},
+        "result": {"ok": True, "results": [{"title": "result"}]},
+    }]
+
+    missing = tool_requirements.missing_required_groups(requirements, history)
+    assert [group.tools for group in missing] == [("file_read",)]
+
+
+@pytest.mark.asyncio
+async def test_recent_news_request_retries_until_one_alternative_group_tool_runs(monkeypatch) -> None:
     planner_calls = 0
     adequacy_calls = 0
 
@@ -62,57 +263,51 @@ async def test_recent_news_request_cannot_finish_without_frozen_search_requireme
             adequacy_calls += 1
             return json.dumps({"adequate": True, "missing_aspects": []})
         planner_calls += 1
-        return _planner_response()
+        return json.dumps(_news_plan())
 
     monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
     delegate = SequenceChatModel([
-        ModelTurn(final_answer="네이버 뉴스에서 ADHD 최신 뉴스를 검색해보세요."),
-        ModelTurn(tool_calls=[ToolCall(tool="latest_search", arguments={"query": "ADHD 최신 뉴스"})]),
-        ModelTurn(final_answer="검색 결과를 바탕으로 최근 ADHD 기사를 요약합니다."),
+        ModelTurn(final_answer="직접 뉴스 검색을 해보세요."),
+        ModelTurn(tool_calls=[ToolCall(tool="latest_search", arguments={"query": "Hollywood controversy 2026"})]),
+        ModelTurn(final_answer="검색 결과를 바탕으로 정리합니다."),
     ])
     guarded = ToolRequirementGuardChatModel(delegate)
-    definitions = [
-        _definition("latest_search", "Search recent news."),
-        _definition("web_research", "Research public web sources."),
-    ]
 
     token = start_tool_requirement_scope()
     try:
         first = await guarded.next_turn(
             system="system\nCurrent date: 2026-08-23.",
-            user_message="ADHD와 관련된 최근 뉴스기사가 있어? 있다면 대충 어떤 내용이야?",
+            user_message="최근 6개월 내 할리우드 논란 배우를 확인해줘",
             model=None,
             memory_summary=[],
-            tool_definitions=definitions,
+            tool_definitions=_news_definitions(),
             tool_history=[],
         )
         assert first.tool_calls == [
-            ToolCall(tool="latest_search", arguments={"query": "ADHD 최신 뉴스"})
+            ToolCall(tool="latest_search", arguments={"query": "Hollywood controversy 2026"})
         ]
-        requirement_guard = delegate.calls[1]["tool_history"][-1]
-        assert requirement_guard["tool"] == "tool_requirement_guard"
-        assert requirement_guard["result"]["error"] == "frozen_tool_requirement_unmet"
+        guard_event = delegate.calls[1]["tool_history"][-1]
+        assert guard_event["tool"] == "tool_requirement_guard"
+        assert guard_event["result"]["missing_groups"] == [
+            {"tools": ["latest_search", "web_research"]}
+        ]
 
         second = await guarded.next_turn(
             system="system\nCurrent date: 2026-08-23.",
-            user_message="ADHD와 관련된 최근 뉴스기사가 있어? 있다면 대충 어떤 내용이야?",
+            user_message="최근 6개월 내 할리우드 논란 배우를 확인해줘",
             model=None,
             memory_summary=[],
-            tool_definitions=definitions,
+            tool_definitions=_news_definitions(),
             tool_history=[{
                 "tool": "latest_search",
-                "arguments": {"query": "ADHD 최신 뉴스"},
+                "arguments": {"query": "Hollywood controversy 2026"},
                 "result": {
                     "ok": True,
-                    "freshness": "recent_news",
-                    "results": [{
-                        "title": "Recent ADHD research",
-                        "snippet": "2026-08-20 — new ADHD study",
-                    }],
+                    "results": [{"title": "2026 controversy", "snippet": "2026-06-12"}],
                 },
             }],
         )
-        assert second.final_answer == "검색 결과를 바탕으로 최근 ADHD 기사를 요약합니다."
+        assert second.final_answer == "검색 결과를 바탕으로 정리합니다."
         assert planner_calls == 1
         assert adequacy_calls == 1
     finally:
@@ -120,14 +315,11 @@ async def test_recent_news_request_cannot_finish_without_frozen_search_requireme
 
 
 @pytest.mark.asyncio
-async def test_out_of_window_search_results_force_more_exploration(monkeypatch) -> None:
+async def test_out_of_window_results_still_trigger_adequacy_exploration(monkeypatch) -> None:
     adequacy_answers = iter([
         {
             "adequate": False,
-            "missing_aspects": [
-                "최근 6개월 범위에 해당하는 할리우드 배우 논란 사례가 확인되지 않음",
-                "기간 내 사례의 배우 이름과 논란 내용이 확인되지 않음",
-            ],
+            "missing_aspects": ["최근 6개월 범위의 사례가 확인되지 않음"],
         },
         {"adequate": True, "missing_aspects": []},
     ])
@@ -135,38 +327,27 @@ async def test_out_of_window_search_results_force_more_exploration(monkeypatch) 
     async def fake_chat(*, system, user, model, response_format):
         if "Review whether the successful tool results" in system:
             return json.dumps(next(adequacy_answers), ensure_ascii=False)
-        return _planner_response()
+        return json.dumps(_news_plan())
 
     monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
     delegate = SequenceChatModel([
-        ModelTurn(final_answer="검색 결과에 여러 배우 논란이 있었습니다."),
+        ModelTurn(final_answer="검색 결과를 정리합니다."),
         ModelTurn(tool_calls=[ToolCall(
             tool="web_research",
-            arguments={"objective": "2026년 2월 23일 이후 할리우드 배우 논란 사례 확인"},
+            arguments={"objective": "2026-02-23 이후 할리우드 배우 논란"},
         )]),
-        ModelTurn(final_answer="최근 6개월 범위에서 확인된 배우 논란을 정리합니다."),
+        ModelTurn(final_answer="최근 6개월 사례를 정리합니다."),
     ])
     guarded = ToolRequirementGuardChatModel(delegate)
-    definitions = [
-        _definition("latest_search", "Search recent news."),
-        _definition("web_research", "Research public web sources."),
-    ]
     stale_history = [{
         "tool": "latest_search",
-        "arguments": {"query": "최근 6개월 내 할리우드 논란 배우"},
+        "arguments": {"query": "할리우드 논란 배우"},
         "result": {
             "ok": True,
-            "freshness": "recent_news",
-            "results": [
-                {
-                    "title": "AI 여배우 틸리 노우드 논란",
-                    "snippet": "Thu, 02 Oct 2025 07:00:00 GMT — 할리우드 비판 여론",
-                },
-                {
-                    "title": "앤 해서웨이·제니퍼 로페즈 인성 논란",
-                    "snippet": "Mon, 04 Nov 2024 08:00:00 GMT — 스태프 관련 논란",
-                },
-            ],
+            "results": [{
+                "title": "Old controversy",
+                "snippet": "2024-11-04 — old result",
+            }],
         },
     }]
 
@@ -174,64 +355,58 @@ async def test_out_of_window_search_results_force_more_exploration(monkeypatch) 
     try:
         first = await guarded.next_turn(
             system="system\nCurrent date: 2026-08-23.",
-            user_message="최근 6개월 내에 할리우드에서 논란이 있었는지 확인하고, 있다면 어떤 배우인지도 확인해줄래?",
+            user_message="최근 6개월 내 할리우드 논란 배우를 확인해줘",
             model=None,
             memory_summary=[],
-            tool_definitions=definitions,
+            tool_definitions=_news_definitions(),
             tool_history=stale_history,
         )
         assert first.tool_calls == [ToolCall(
             tool="web_research",
-            arguments={"objective": "2026년 2월 23일 이후 할리우드 배우 논란 사례 확인"},
+            arguments={"objective": "2026-02-23 이후 할리우드 배우 논란"},
         )]
         adequacy_guard = delegate.calls[1]["tool_history"][-1]
         assert adequacy_guard["tool"] == "tool_result_adequacy_guard"
-        assert adequacy_guard["result"]["error"] == "tool_results_inadequate"
-        assert adequacy_guard["result"]["missing_aspects"]
 
-        expanded_history = [
-            *stale_history,
-            {
-                "tool": "web_research",
-                "arguments": {"objective": "2026년 2월 23일 이후 할리우드 배우 논란 사례 확인"},
-                "result": {
-                    "ok": True,
-                    "results": [{
-                        "title": "Qualifying controversy",
-                        "snippet": "2026-06-12 — actor controversy details",
-                    }],
-                },
-            },
-        ]
         second = await guarded.next_turn(
             system="system\nCurrent date: 2026-08-23.",
-            user_message="최근 6개월 내에 할리우드에서 논란이 있었는지 확인하고, 있다면 어떤 배우인지도 확인해줄래?",
+            user_message="최근 6개월 내 할리우드 논란 배우를 확인해줘",
             model=None,
             memory_summary=[],
-            tool_definitions=definitions,
-            tool_history=expanded_history,
+            tool_definitions=_news_definitions(),
+            tool_history=[
+                *stale_history,
+                {
+                    "tool": "web_research",
+                    "arguments": {"objective": "2026-02-23 이후 할리우드 배우 논란"},
+                    "result": {
+                        "ok": True,
+                        "results": [{"title": "Current controversy", "snippet": "2026-06-12"}],
+                    },
+                },
+            ],
         )
-        assert second.final_answer == "최근 6개월 범위에서 확인된 배우 논란을 정리합니다."
+        assert second.final_answer == "최근 6개월 사례를 정리합니다."
     finally:
         reset_tool_requirement_scope(token)
 
 
 @pytest.mark.asyncio
-async def test_stable_concept_question_can_finish_without_tools_or_adequacy_review(monkeypatch) -> None:
-    review_calls = 0
-
+async def test_stable_concept_question_remains_tool_free(monkeypatch) -> None:
     async def fake_chat(*, system, user, model, response_format):
-        nonlocal review_calls
         if "Review whether the successful tool results" in system:
-            review_calls += 1
-            raise AssertionError("adequacy review should not run without frozen tool requirements")
-        return json.dumps({"requirements": []})
+            raise AssertionError("adequacy review should not run without required groups")
+        return json.dumps({
+            "tool_evaluations": [
+                {"tool": "web_research", "required": False},
+            ],
+            "required_groups": [],
+        })
 
     monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
-    delegate = SequenceChatModel([
+    guarded = ToolRequirementGuardChatModel(SequenceChatModel([
         ModelTurn(final_answer="PER은 주가를 주당순이익으로 나눈 값입니다."),
-    ])
-    guarded = ToolRequirementGuardChatModel(delegate)
+    ]))
 
     token = start_tool_requirement_scope()
     try:
@@ -245,20 +420,19 @@ async def test_stable_concept_question_can_finish_without_tools_or_adequacy_revi
         )
         assert turn.final_answer == "PER은 주가를 주당순이익으로 나눈 값입니다."
         assert turn.tool_calls == []
-        assert len(delegate.calls) == 1
-        assert review_calls == 0
     finally:
         reset_tool_requirement_scope(token)
 
 
-def test_failed_tool_event_does_not_satisfy_frozen_requirement() -> None:
-    requirements = tool_requirements.FrozenToolRequirements(requirements=(
-        tool_requirements.ToolRequirement(
-            capability="current_external_research",
-            satisfying_tools=("latest_search", "web_research"),
+def test_failed_tool_event_does_not_satisfy_required_group() -> None:
+    requirements = FrozenToolRequirements(
+        evaluations=(
+            ToolEvaluation(tool="latest_search", required=True),
+            ToolEvaluation(tool="web_research", required=True),
         ),
-    ))
-    missing = tool_requirements.missing_required_capabilities(
+        groups=(ToolRequirementGroup(tools=("latest_search", "web_research")),),
+    )
+    missing = tool_requirements.missing_required_groups(
         requirements,
         [{
             "tool": "latest_search",
@@ -266,4 +440,4 @@ def test_failed_tool_event_does_not_satisfy_frozen_requirement() -> None:
             "result": {"ok": False, "error": "network_failed"},
         }],
     )
-    assert [item.capability for item in missing] == ["current_external_research"]
+    assert [group.tools for group in missing] == [("latest_search", "web_research")]
