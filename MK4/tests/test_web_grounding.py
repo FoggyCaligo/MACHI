@@ -76,11 +76,10 @@ def _market_snapshot_history() -> list[dict[str, Any]]:
     }]
 
 
-def _grounded_response(text: str) -> str:
+def _grounded_response() -> str:
     return json.dumps({
         "grounded": True,
         "missing_aspects": [],
-        "corrected_response": text,
     }, ensure_ascii=False)
 
 
@@ -88,7 +87,6 @@ def _ungrounded_response(*missing: str) -> str:
     return json.dumps({
         "grounded": False,
         "missing_aspects": list(missing),
-        "corrected_response": None,
     }, ensure_ascii=False)
 
 
@@ -129,8 +127,9 @@ async def test_grounding_reviewer_reports_missing_evidence_then_agent_chooses_to
 
     assert turn.tool_calls == [ToolCall(tool="market_snapshot", arguments={"query": "삼성전자"})]
     assert "tool_catalog" not in captured["payload"]
-    assert "tool_calls" not in captured["schema"]["properties"]
+    assert set(captured["schema"]["properties"]) == {"grounded", "missing_aspects"}
     assert "cannot call tools" in captured["system"].lower()
+    assert "rewrite the answer" in captured["system"].lower()
 
     review_event = delegate.calls[1]["tool_history"][-1]
     assert review_event["tool"] == "evidence_grounding_guard"
@@ -179,7 +178,7 @@ async def test_current_market_answer_is_marked_tool_backed_after_judgment_only_r
     async def fake_review(*, system, user, model, response_format):
         payload = json.loads(user)
         assert payload["successful_external_tools"] == ["market_snapshot"]
-        return _grounded_response("삼성전자의 현재 주가는 80,000원입니다.")
+        return _grounded_response()
 
     monkeypatch.setattr(grounding_tools, "ollama_chat", fake_review)
     delegate = SequenceChatModel([
@@ -205,7 +204,7 @@ async def test_current_market_answer_is_marked_tool_backed_after_judgment_only_r
 @pytest.mark.asyncio
 async def test_non_time_sensitive_answer_can_pass_review_without_tools(monkeypatch) -> None:
     async def fake_review(*, system, user, model, response_format):
-        return _grounded_response("PER은 주가를 주당순이익으로 나눈 값입니다.")
+        return _grounded_response()
 
     monkeypatch.setattr(grounding_tools, "ollama_chat", fake_review)
     delegate = SequenceChatModel([
@@ -223,6 +222,7 @@ async def test_non_time_sensitive_answer_can_pass_review_without_tools(monkeypat
     )
 
     assert len(delegate.calls) == 1
+    assert turn.final_answer == "PER은 주가를 주당순이익으로 나눈 값입니다."
     assert turn.final_answer_kind == "answer"
     assert turn.completion_tools == []
 
@@ -262,13 +262,13 @@ async def test_insufficient_existing_evidence_returns_missing_aspects_to_agent(m
 
 
 @pytest.mark.asyncio
-async def test_successful_search_evidence_is_framework_marked_without_second_agent_draft(monkeypatch) -> None:
+async def test_successful_search_evidence_passes_original_draft_without_second_agent_call(monkeypatch) -> None:
     async def fake_review(*, system, user, model, response_format):
-        return _grounded_response("검색 결과에서 확인되는 작품은 듀나의 《몰록》입니다.")
+        return _grounded_response()
 
     monkeypatch.setattr(grounding_tools, "ollama_chat", fake_review)
     delegate = SequenceChatModel([
-        ModelTurn(final_answer="초안"),
+        ModelTurn(final_answer="검색 결과에서 확인되는 작품은 듀나의 《몰록》입니다."),
     ])
     grounded = EvidenceGroundingChatModel(delegate)
 
@@ -293,7 +293,6 @@ async def test_grounding_contract_failure_is_visible(monkeypatch) -> None:
         return json.dumps({
             "grounded": False,
             "missing_aspects": [],
-            "corrected_response": None,
         })
 
     monkeypatch.setattr(grounding_tools, "ollama_chat", fake_review)
