@@ -28,7 +28,7 @@ def test_missing_required_arguments_does_not_repeat_manual_schema() -> None:
     }
 
 
-def test_failed_tool_history_keeps_error_and_compact_recovery_only() -> None:
+def test_failed_tool_history_keeps_error_and_bounded_structured_recovery() -> None:
     compact = _compact_tool_result(
         tool="file_update",
         result={
@@ -49,5 +49,6 @@ def test_failed_tool_history_keeps_error_and_compact_recovery_only() -> None:
     assert compact["path"] == "MK4/app/static/index.html"
     assert len(compact["message"]) <= 240
     assert compact["next_tools"] == ["file_read", "file_text_search", "file_update"]
-    assert "recovery" not in compact
-    assert "verbose_hint" not in compact
+    assert isinstance(compact["recovery"], dict)
+    assert compact["recovery"]["next_tools"] == ["file_read", "file_text_search", "file_update"]
+    assert len(compact["recovery"]["verbose_hint"]) <= 700
