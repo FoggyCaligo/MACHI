@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from MK4.tools import tool_requirements
+from MK4.tools import compact_requirement_planner
 from MK4.tools.tool_requirement_preflight import plan_and_freeze_before_memory
 from MK4.tools.tool_requirements import (
     get_frozen_tool_requirements,
@@ -29,7 +29,7 @@ async def test_preflight_uses_model_facing_names_and_no_automatic_memory(monkeyp
             },
         })
 
-    monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
+    monkeypatch.setattr(compact_requirement_planner, "ollama_chat", fake_chat)
     definitions = [
         ToolDefinition(
             name="graph_search",
@@ -37,7 +37,13 @@ async def test_preflight_uses_model_facing_names_and_no_automatic_memory(monkeyp
             input_schema={
                 "x-model-name": "recall_memory",
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Long invocation-only field description that preflight does not need.",
+                    },
+                },
+                "required": ["query"],
             },
         ),
         ToolDefinition(
@@ -65,6 +71,9 @@ async def test_preflight_uses_model_facing_names_and_no_automatic_memory(monkeyp
     assert payload["current_date"] == "2026-08-23"
     assert "automatic_memory_context" not in payload
     assert [item["name"] for item in payload["tool_catalog"]] == ["recall_memory", "latest_search"]
+    assert all(set(item) == {"name", "summary"} for item in payload["tool_catalog"])
+    assert "input" not in payload["tool_catalog"][0]
+    assert "call_template" not in payload["tool_catalog"][0]
     schema_properties = captured["schema"]["properties"]["tool_requirements"]["properties"]
     assert set(schema_properties) == {"recall_memory", "latest_search"}
     assert "graph_search" not in schema_properties
@@ -81,7 +90,7 @@ async def test_preflight_true_tools_have_no_substitution_group(monkeypatch) -> N
             },
         })
 
-    monkeypatch.setattr(tool_requirements, "ollama_chat", fake_chat)
+    monkeypatch.setattr(compact_requirement_planner, "ollama_chat", fake_chat)
     token = start_tool_requirement_scope()
     try:
         plan = await plan_and_freeze_before_memory(
