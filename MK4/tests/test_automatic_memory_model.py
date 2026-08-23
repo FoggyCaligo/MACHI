@@ -60,6 +60,7 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
         "tool_history",
     ]
     assert payload["frozen_tool_requirements"]["required_tools"] == []
+    assert payload["frozen_tool_requirements"]["missing_tools"] == []
     assert "does not satisfy an explicit tool requirement" in payload["frozen_tool_requirements"]["contract"]
     context = payload["automatic_memory_context"]
     assert context["source"] == "automatic_graph_activation"
@@ -108,9 +109,46 @@ async def test_frozen_required_tools_are_visible_even_when_automatic_memory_has_
         reset_tool_requirement_scope(token)
 
     payload = json.loads(str(captured["user"]))
-    assert payload["frozen_tool_requirements"]["required_tools"] == ["recall_memory"]
+    frozen = payload["frozen_tool_requirements"]
+    assert frozen["required_tools"] == ["recall_memory"]
+    assert frozen["missing_tools"] == ["recall_memory"]
     assert payload["automatic_memory_context"]["items"] == ["추천했던 책은 A와 B였다."]
     assert payload["automatic_memory_context"]["is_tool_result"] is False
+
+
+@pytest.mark.asyncio
+async def test_successful_required_tool_disappears_from_missing_tools(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_chat(*, system, user, model, response_format):
+        captured["user"] = user
+        return _light_response()
+
+    monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
+    token = start_tool_requirement_scope()
+    try:
+        freeze_tool_requirements(FrozenToolRequirements(
+            evaluations=(ToolEvaluation(tool="recall_memory", required=True),),
+        ))
+        await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+            system="system",
+            user_message="remember more",
+            model=None,
+            memory_summary=["automatic node"],
+            tool_definitions=[],
+            tool_history=[{
+                "tool": "recall_memory",
+                "arguments": {},
+                "result": {"ok": True, "mode": "browse", "results": []},
+            }],
+        )
+    finally:
+        reset_tool_requirement_scope(token)
+
+    payload = json.loads(str(captured["user"]))
+    assert payload["frozen_tool_requirements"]["required_tools"] == ["recall_memory"]
+    assert payload["frozen_tool_requirements"]["missing_tools"] == []
+    assert payload["tool_history"][0]["tool"] == "recall_memory"
 
 
 @pytest.mark.asyncio
