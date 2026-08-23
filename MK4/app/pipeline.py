@@ -19,6 +19,7 @@ from ..tools.code_index_tools import CodeIndexToolSuite
 from ..tools.document_tools import DocumentReadToolSuite
 from ..tools.file_agent_tools import FileAgentToolSuite
 from ..tools.file_navigation_tools import FileNavigationToolSuite
+from ..tools.focused_web_search import FocusedWebSearchTool
 from ..tools.image_tools import ImageAnalyzeToolSuite
 from ..tools.llm_client import ChatModel
 from ..tools.manual_tools import ToolManualSuite
@@ -42,7 +43,7 @@ from ..tools.tool_runtime import (
     set_file_task_message,
     set_file_working_root,
 )
-from ..tools.web_search import HttpWebSearchTool, WebSearchTool
+from ..tools.web_search import WebSearchTool
 from ..tools.workspace_tools import WorkspaceFileToolSuite
 from .download_tokens import default_download_token_store
 
@@ -91,7 +92,7 @@ class Pipeline:
             )
         )
         self._chat_model = EvidenceGroundingChatModel(base_chat_model)
-        self._web_search = web_search or HttpWebSearchTool()
+        self._web_search = web_search or FocusedWebSearchTool()
         self._file_working_roots: dict[str, str] = {}
         self._orchestrator = AgentOrchestrator(
             memory_service=self._memory,
