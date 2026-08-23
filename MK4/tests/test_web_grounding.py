@@ -135,7 +135,7 @@ async def test_grounding_reviewer_reports_missing_evidence_then_agent_chooses_to
 
     review_event = delegate.calls[1]["tool_history"][-1]
     assert review_event["tool"] == "evidence_grounding_guard"
-    assert review_event["result"]["error"] == "final_evidence_insufficient"
+    assert review_event["result"]["error"] == "final_grounding_or_alignment_failed"
     assert review_event["result"]["missing_aspects"] == [
         "삼성전자의 현재 주가와 PER을 뒷받침하는 현재 근거"
     ]
