@@ -17,6 +17,7 @@ def test_recall_memory_description_excludes_refreshing_current_external_facts() 
 
         description = definition.description.lower()
         assert "past conversation or personal context" in description
+        assert "frozen_tool_requirements.missing_tools" in description
         assert "automatic memory is context" in description
         assert "do not use persistent memory to refresh public or external facts" in description
         assert "current external facts require" in description
@@ -33,6 +34,7 @@ def test_automatic_memory_note_preserves_frozen_tool_boundary() -> None:
         note = summary[-1]["label"].lower()
         assert "supplied after tool requirements were already frozen" in note
         assert "never satisfies a frozen recall_memory requirement" in note
+        assert "frozen_tool_requirements.missing_tools lists recall_memory" in note
         assert "execute recall_memory even when this summary appears sufficient" in note
         assert "persistent memory is not a way to refresh public or external facts" in note
         assert "current external facts must be checked" in note
