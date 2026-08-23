@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -13,6 +14,11 @@ from MK4.tools.adequacy_recovery import (
     start_recovery_scope,
 )
 from MK4.tools.adequacy_recovery_window import RecoveryExplorationWindowChatModel
+from MK4.tools.grounding_tools import (
+    GroundingReview,
+    reset_grounding_review_scope,
+    start_grounding_review_scope,
+)
 from MK4.tools.llm_client import ModelTurn
 from MK4.tools.tool_requirements import (
     FrozenToolRequirements,
@@ -69,16 +75,26 @@ def _event(label: str) -> dict[str, Any]:
     }
 
 
-@pytest.mark.asyncio
-async def test_satisfied_recovery_requirement_keeps_cycle_open_for_more_tool_calls(monkeypatch) -> None:
-    adequacy_calls = 0
-
+def _install_successful_reviewers(monkeypatch, adequacy_counter: list[int]) -> None:
     async def fake_adequacy(**kwargs):
-        nonlocal adequacy_calls
-        adequacy_calls += 1
+        adequacy_counter[0] += 1
         return ToolResultAdequacy(adequate=True, missing_aspects=())
 
-    monkeypatch.setattr(adequacy_recovery_window, "review_relaxed_recovery_adequacy", fake_adequacy)
+    async def fake_grounding(**kwargs):
+        return GroundingReview(grounded=True, missing_aspects=())
+
+    monkeypatch.setattr(
+        adequacy_recovery_window,
+        "review_relaxed_tool_result_adequacy",
+        fake_adequacy,
+    )
+    monkeypatch.setattr(adequacy_recovery_window, "review_final_grounding", fake_grounding)
+
+
+@pytest.mark.asyncio
+async def test_satisfied_recovery_requirement_keeps_cycle_open_for_more_tool_calls(monkeypatch) -> None:
+    adequacy_calls = [0]
+    _install_successful_reviewers(monkeypatch, adequacy_calls)
 
     second_search = ToolCall(
         tool="web_research",
@@ -92,6 +108,7 @@ async def test_satisfied_recovery_requirement_keeps_cycle_open_for_more_tool_cal
 
     requirement_token = start_tool_requirement_scope()
     recovery_token = start_recovery_scope()
+    grounding_token = start_grounding_review_scope()
     try:
         freeze_tool_requirements(_requirements())
         initial = _event("initial comparison")
@@ -116,7 +133,7 @@ async def test_satisfied_recovery_requirement_keeps_cycle_open_for_more_tool_cal
         )
 
         assert first.tool_calls == [second_search]
-        assert adequacy_calls == 0
+        assert adequacy_calls[0] == 0
         active = get_recovery_state()
         assert active.cycles_started == 1
         assert active.requirements is not None
@@ -135,26 +152,21 @@ async def test_satisfied_recovery_requirement_keeps_cycle_open_for_more_tool_cal
         )
 
         assert second.final_answer == "evidence is now sufficient"
-        assert adequacy_calls == 1
+        assert adequacy_calls[0] == 1
         closed = get_recovery_state()
         assert closed.cycles_started == 1
         assert closed.requirements is None
         assert closed.missing_aspects == ()
     finally:
+        reset_grounding_review_scope(grounding_token)
         reset_recovery_scope(recovery_token)
         reset_tool_requirement_scope(requirement_token)
 
 
 @pytest.mark.asyncio
 async def test_multiple_tool_calls_in_one_cycle_do_not_consume_additional_recovery_cycles(monkeypatch) -> None:
-    adequacy_calls = 0
-
-    async def fake_adequacy(**kwargs):
-        nonlocal adequacy_calls
-        adequacy_calls += 1
-        return ToolResultAdequacy(adequate=True, missing_aspects=())
-
-    monkeypatch.setattr(adequacy_recovery_window, "review_relaxed_recovery_adequacy", fake_adequacy)
+    adequacy_calls = [0]
+    _install_successful_reviewers(monkeypatch, adequacy_calls)
 
     third_search = ToolCall(
         tool="web_research",
@@ -173,6 +185,7 @@ async def test_multiple_tool_calls_in_one_cycle_do_not_consume_additional_recove
 
     requirement_token = start_tool_requirement_scope()
     recovery_token = start_recovery_scope()
+    grounding_token = start_grounding_review_scope()
     try:
         freeze_tool_requirements(_requirements())
         initial = _event("initial")
@@ -202,7 +215,7 @@ async def test_multiple_tool_calls_in_one_cycle_do_not_consume_additional_recove
         )
         assert turn_two.tool_calls == [fourth_search]
         assert get_recovery_state().cycles_started == 1
-        assert adequacy_calls == 0
+        assert adequacy_calls[0] == 0
 
         history.append(_event("recovery three"))
         final = await guarded.next_turn(
@@ -210,8 +223,59 @@ async def test_multiple_tool_calls_in_one_cycle_do_not_consume_additional_recove
             tool_definitions=[_definition()], tool_history=history,
         )
         assert final.final_answer == "final after several searches"
-        assert adequacy_calls == 1
+        assert adequacy_calls[0] == 1
         assert get_recovery_state().cycles_started == 1
     finally:
+        reset_grounding_review_scope(grounding_token)
+        reset_recovery_scope(recovery_token)
+        reset_tool_requirement_scope(requirement_token)
+
+
+@pytest.mark.asyncio
+async def test_final_only_starts_adequacy_and_grounding_concurrently(monkeypatch) -> None:
+    adequacy_started = asyncio.Event()
+    grounding_started = asyncio.Event()
+
+    async def fake_adequacy(**kwargs):
+        adequacy_started.set()
+        await grounding_started.wait()
+        return ToolResultAdequacy(adequate=True, missing_aspects=())
+
+    async def fake_grounding(**kwargs):
+        grounding_started.set()
+        await adequacy_started.wait()
+        return GroundingReview(grounded=True, missing_aspects=())
+
+    monkeypatch.setattr(
+        adequacy_recovery_window,
+        "review_relaxed_tool_result_adequacy",
+        fake_adequacy,
+    )
+    monkeypatch.setattr(adequacy_recovery_window, "review_final_grounding", fake_grounding)
+
+    guarded = RecoveryExplorationWindowChatModel(
+        SequenceChatModel([ModelTurn(final_answer="final draft")])
+    )
+    requirement_token = start_tool_requirement_scope()
+    recovery_token = start_recovery_scope()
+    grounding_token = start_grounding_review_scope()
+    try:
+        freeze_tool_requirements(_requirements())
+        result = await asyncio.wait_for(
+            guarded.next_turn(
+                system="system",
+                user_message="request",
+                model=None,
+                memory_summary=[],
+                tool_definitions=[_definition()],
+                tool_history=[_event("evidence")],
+            ),
+            timeout=1,
+        )
+        assert result.final_answer == "final draft"
+        assert adequacy_started.is_set()
+        assert grounding_started.is_set()
+    finally:
+        reset_grounding_review_scope(grounding_token)
         reset_recovery_scope(recovery_token)
         reset_tool_requirement_scope(requirement_token)

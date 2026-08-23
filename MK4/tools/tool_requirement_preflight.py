@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from time import perf_counter
 
+from .debug_timing import log_timing
 from .tool_requirements import (
     FrozenToolRequirements,
     freeze_tool_requirements,
@@ -20,12 +22,16 @@ async def plan_and_freeze_before_memory(
 ) -> FrozenToolRequirements:
     """Plan exact required tool executions before automatic recall, then freeze them."""
     model_definitions = model_facing_definitions(tool_definitions)
-    requirements = await plan_tool_requirements(
-        user_message=user_message,
-        model=model,
-        tool_definitions=model_definitions,
-        current_date=current_date,
-    )
+    started = perf_counter()
+    try:
+        requirements = await plan_tool_requirements(
+            user_message=user_message,
+            model=model,
+            tool_definitions=model_definitions,
+            current_date=current_date,
+        )
+    finally:
+        log_timing("requirement_planner", perf_counter() - started)
     freeze_tool_requirements(requirements)
     _debug_requirement_plan(requirements)
     return requirements

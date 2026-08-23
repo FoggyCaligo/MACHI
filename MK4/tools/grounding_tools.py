@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 import json
+from time import perf_counter
 from typing import Any
 
+from .debug_timing import log_timing
 from .llm_client import ChatModel, ModelRequestError, ModelTurn
 from .ollama_client import chat as ollama_chat
 from .tool_runtime import ToolDefinition
@@ -53,6 +56,40 @@ class GroundingReview:
     missing_aspects: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _PrecomputedGroundingReview:
+    proposed_response: str
+    review: GroundingReview
+
+
+_PRECOMPUTED_GROUNDING: ContextVar[_PrecomputedGroundingReview | None] = ContextVar(
+    "mk4_precomputed_grounding_review",
+    default=None,
+)
+
+
+def start_grounding_review_scope() -> Token[_PrecomputedGroundingReview | None]:
+    return _PRECOMPUTED_GROUNDING.set(None)
+
+
+def reset_grounding_review_scope(token: Token[_PrecomputedGroundingReview | None]) -> None:
+    _PRECOMPUTED_GROUNDING.reset(token)
+
+
+def store_precomputed_grounding_review(*, proposed_response: str, review: GroundingReview) -> None:
+    _PRECOMPUTED_GROUNDING.set(
+        _PrecomputedGroundingReview(proposed_response=proposed_response, review=review)
+    )
+
+
+def take_precomputed_grounding_review(*, proposed_response: str) -> GroundingReview | None:
+    pending = _PRECOMPUTED_GROUNDING.get()
+    _PRECOMPUTED_GROUNDING.set(None)
+    if pending is None or pending.proposed_response != proposed_response:
+        return None
+    return pending.review
+
+
 class EvidenceGroundingChatModel:
     """Review draft answers without granting the grounding reviewer tool-calling authority."""
 
@@ -80,22 +117,17 @@ class EvidenceGroundingChatModel:
         if turn.tool_calls or not turn.final_answer:
             return turn
 
-        review = await review_final_grounding(
-            system=system,
-            user_message=user_message,
-            proposed_response=turn.final_answer,
-            model=model,
-            tool_history=tool_history,
-        )
+        review = take_precomputed_grounding_review(proposed_response=turn.final_answer)
+        if review is None:
+            review = await review_final_grounding(
+                system=system,
+                user_message=user_message,
+                proposed_response=turn.final_answer,
+                model=model,
+                tool_history=tool_history,
+            )
         if review.grounded:
-            supporting_tools = _successful_external_tool_names(tool_history)
-            if supporting_tools:
-                return ModelTurn(
-                    final_answer=turn.final_answer,
-                    final_answer_kind="tool_completion",
-                    completion_tools=supporting_tools,
-                )
-            return turn
+            return _release_grounded_turn(turn, tool_history=tool_history)
 
         review_history = [
             *tool_history,
@@ -113,13 +145,25 @@ class EvidenceGroundingChatModel:
                 },
             },
         ]
-        return await self._delegate.next_turn(
+        retry = await self._delegate.next_turn(
             system=f"{system}\n\n{_GROUNDING_RETRY_INSTRUCTION}",
             user_message=user_message,
             model=model,
             memory_summary=memory_summary,
             tool_definitions=tool_definitions,
             tool_history=review_history,
+        )
+        if retry.tool_calls or not retry.final_answer:
+            return retry
+
+        retry_review = take_precomputed_grounding_review(proposed_response=retry.final_answer)
+        if retry_review is None:
+            return retry
+        if retry_review.grounded:
+            return _release_grounded_turn(retry, tool_history=tool_history)
+        return ModelTurn(
+            final_answer="최종 근거 검증을 통과하지 못해 답변을 확정하지 않았습니다.",
+            final_answer_kind="blocked",
         )
 
 
@@ -150,15 +194,19 @@ async def review_final_grounding(
         "available_web_evidence": compact_evidence_catalog(tool_history),
         "successful_external_tools": _successful_external_tool_names(tool_history),
     }
+    started = perf_counter()
     try:
-        raw = await ollama_chat(
-            system=f"{system}\n\n{_GROUNDING_REVIEW_INSTRUCTION}",
-            user=json.dumps(payload, ensure_ascii=False),
-            model=model,
-            response_format=response_schema,
-        )
-    except ValueError as exc:
-        raise ModelRequestError(str(exc)) from exc
+        try:
+            raw = await ollama_chat(
+                system=f"{system}\n\n{_GROUNDING_REVIEW_INSTRUCTION}",
+                user=json.dumps(payload, ensure_ascii=False),
+                model=model,
+                response_format=response_schema,
+            )
+        except ValueError as exc:
+            raise ModelRequestError(str(exc)) from exc
+    finally:
+        log_timing("grounding_review", perf_counter() - started)
 
     try:
         data = json.loads(raw)
@@ -179,6 +227,17 @@ async def review_final_grounding(
     return GroundingReview(
         grounded=data["grounded"],
         missing_aspects=cleaned_missing,
+    )
+
+
+def _release_grounded_turn(turn: ModelTurn, *, tool_history: list[dict[str, Any]]) -> ModelTurn:
+    supporting_tools = _successful_external_tool_names(tool_history)
+    if not supporting_tools:
+        return turn
+    return ModelTurn(
+        final_answer=turn.final_answer,
+        final_answer_kind="tool_completion",
+        completion_tools=supporting_tools,
     )
 
 

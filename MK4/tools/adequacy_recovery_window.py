@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+from time import perf_counter
 from typing import Any
 
 from .. import config
@@ -14,6 +16,8 @@ from .adequacy_recovery import (
     _set_recovery_state,
     get_recovery_state,
 )
+from .debug_timing import log_timing
+from .grounding_tools import review_final_grounding, store_precomputed_grounding_review
 from .llm_client import ModelTurn
 from .relaxed_adequacy import review_relaxed_tool_result_adequacy
 from .tool_requirements import (
@@ -100,14 +104,22 @@ class RecoveryExplorationWindowChatModel(RecoveringToolRequirementGuardChatModel
                 },
             ]
 
-        turn = await self._delegate.next_turn(
-            system=delegate_system,
-            user_message=user_message,
-            model=model,
-            memory_summary=memory_summary,
-            tool_definitions=tool_definitions,
-            tool_history=delegate_history,
-        )
+        delegate_started = perf_counter()
+        try:
+            turn = await self._delegate.next_turn(
+                system=delegate_system,
+                user_message=user_message,
+                model=model,
+                memory_summary=memory_summary,
+                tool_definitions=tool_definitions,
+                tool_history=delegate_history,
+            )
+        finally:
+            log_timing(
+                "normal_agent",
+                perf_counter() - delegate_started,
+                recovery_attempt=recovery.cycles_started or None,
+            )
         if turn.tool_calls or not turn.final_answer or turn.final_answer_kind == "blocked":
             return turn
 
@@ -164,15 +176,38 @@ class RecoveryExplorationWindowChatModel(RecoveringToolRequirementGuardChatModel
                 recovery=recovery,
             )
 
-        adequacy = await review_relaxed_tool_result_adequacy(
-            system=f"{system}\n\n{_ADEQUACY_SCOPE_LOCK_INSTRUCTION}",
-            user_message=user_message,
-            model=model,
-            requirements=requirements,
-            tool_history=tool_history,
+        review_started = perf_counter()
+        adequacy_result, grounding_result = await asyncio.gather(
+            review_relaxed_tool_result_adequacy(
+                system=f"{system}\n\n{_ADEQUACY_SCOPE_LOCK_INSTRUCTION}",
+                user_message=user_message,
+                model=model,
+                requirements=requirements,
+                tool_history=tool_history,
+            ),
+            review_final_grounding(
+                system=system,
+                user_message=user_message,
+                proposed_response=turn.final_answer,
+                model=model,
+                tool_history=tool_history,
+            ),
+            return_exceptions=True,
         )
+        log_timing("final_review_parallel_wall", perf_counter() - review_started)
+
+        if isinstance(adequacy_result, BaseException):
+            raise adequacy_result
+        adequacy = adequacy_result
         _debug_adequacy(adequacy)
+
         if adequacy.adequate:
+            if isinstance(grounding_result, BaseException):
+                raise grounding_result
+            store_precomputed_grounding_review(
+                proposed_response=turn.final_answer,
+                review=grounding_result,
+            )
             _set_recovery_state(
                 RecoveryState(
                     cycles_started=recovery.cycles_started,
