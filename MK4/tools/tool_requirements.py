@@ -7,7 +7,12 @@ import sys
 from typing import Any
 
 from .. import config
-from .llm_client import ChatModel, ModelRequestError, ModelTurn
+from .llm_client import (
+    ChatModel,
+    ModelRequestError,
+    ModelTurn,
+    _compact_tool_history_event,
+)
 from .ollama_client import chat as ollama_chat
 from .tool_catalog import compact_tool_catalog
 from .tool_runtime import ToolDefinition
@@ -35,6 +40,24 @@ The proposed response cannot be released because one or more required capabiliti
 Use one of the listed satisfying tools for each missing capability. Do not replace the requested execution with instructions for the user.
 """.strip()
 
+_RESULT_ADEQUACY_INSTRUCTION = """
+Review whether the successful tool results obtained in this turn are sufficient to satisfy the user's actual request.
+Judge the tool results themselves, not the wording of a proposed answer.
+
+Rules:
+- Use semantic judgment, not keyword matching or tool-name-specific rules.
+- Check the user's explicit constraints such as time window, target entity, requested attributes, scope, relevance, and requested level of detail.
+- A successful tool call is not automatically adequate. Results may be stale, outside the requested period, irrelevant, incomplete, ambiguous, or too shallow to establish what the user asked for.
+- Do not demand information beyond the user's request.
+- Do not require a particular next tool. If results are inadequate, identify only the missing aspects that still need to be resolved.
+- If the available results already support the requested outcome at the requested level of detail, mark them adequate.
+""".strip()
+
+_ADEQUACY_RETRY_INSTRUCTION = """
+The required tool capability was executed, but the returned results were reviewed as insufficient for the user's request.
+Use the exposed tools to resolve the listed missing aspects before answering. Choose the next tool and query based on the actual missing information; do not substitute instructions for the user.
+""".strip()
+
 
 @dataclass(frozen=True, slots=True)
 class ToolRequirement:
@@ -49,6 +72,12 @@ class FrozenToolRequirements:
     @property
     def required(self) -> bool:
         return bool(self.requirements)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultAdequacy:
+    adequate: bool
+    missing_aspects: tuple[str, ...] = ()
 
 
 _ACTIVE_REQUIREMENTS: ContextVar[FrozenToolRequirements | None] = ContextVar(
@@ -66,7 +95,7 @@ def reset_tool_requirement_scope(token: Token[FrozenToolRequirements | None]) ->
 
 
 class ToolRequirementGuardChatModel:
-    """Freeze semantic tool needs before drafting and enforce them on final messages."""
+    """Freeze semantic tool needs, then require both execution and adequate results."""
 
     def __init__(self, delegate: ChatModel) -> None:
         self._delegate = delegate
@@ -104,26 +133,67 @@ class ToolRequirementGuardChatModel:
             return turn
 
         missing = missing_required_capabilities(requirements, tool_history)
-        if not missing:
+        if missing:
+            _debug_missing_requirements(missing)
+            retry_history = [
+                *tool_history,
+                {
+                    "tool": "tool_requirement_guard",
+                    "arguments": {},
+                    "result": {
+                        "ok": False,
+                        "error": "frozen_tool_requirement_unmet",
+                        "message": _REQUIREMENT_RETRY_INSTRUCTION,
+                        "missing_requirements": [_requirement_payload(item) for item in missing],
+                        "rejected_response": turn.final_answer[:1000],
+                    },
+                },
+            ]
+            retry = await self._delegate.next_turn(
+                system=f"{system}\n\n{_REQUIREMENT_RETRY_INSTRUCTION}",
+                user_message=user_message,
+                model=model,
+                memory_summary=memory_summary,
+                tool_definitions=tool_definitions,
+                tool_history=retry_history,
+            )
+            if retry.tool_calls or not retry.final_answer or retry.final_answer_kind == "blocked":
+                return retry
+            return ModelTurn(
+                final_answer="필요한 도구 실행이 완료되지 않아 이 요청의 답변을 확정하지 않았습니다.",
+                final_answer_kind="blocked",
+            )
+
+        if not requirements.required:
             return turn
 
-        _debug_missing_requirements(missing)
+        adequacy = await review_tool_result_adequacy(
+            system=system,
+            user_message=user_message,
+            model=model,
+            requirements=requirements,
+            tool_history=tool_history,
+        )
+        _debug_adequacy(adequacy)
+        if adequacy.adequate:
+            return turn
+
         retry_history = [
             *tool_history,
             {
-                "tool": "tool_requirement_guard",
+                "tool": "tool_result_adequacy_guard",
                 "arguments": {},
                 "result": {
                     "ok": False,
-                    "error": "frozen_tool_requirement_unmet",
-                    "message": _REQUIREMENT_RETRY_INSTRUCTION,
-                    "missing_requirements": [_requirement_payload(item) for item in missing],
-                    "rejected_response": turn.final_answer[:1000],
+                    "error": "tool_results_inadequate",
+                    "message": _ADEQUACY_RETRY_INSTRUCTION,
+                    "missing_aspects": list(adequacy.missing_aspects),
+                    "successful_tool_results": _successful_tool_result_payloads(tool_history),
                 },
             },
         ]
         retry = await self._delegate.next_turn(
-            system=f"{system}\n\n{_REQUIREMENT_RETRY_INSTRUCTION}",
+            system=f"{system}\n\n{_ADEQUACY_RETRY_INSTRUCTION}",
             user_message=user_message,
             model=model,
             memory_summary=memory_summary,
@@ -133,7 +203,7 @@ class ToolRequirementGuardChatModel:
         if retry.tool_calls or not retry.final_answer or retry.final_answer_kind == "blocked":
             return retry
         return ModelTurn(
-            final_answer="필요한 도구 실행이 완료되지 않아 이 요청의 답변을 확정하지 않았습니다.",
+            final_answer="도구 결과가 요청 조건을 충분히 충족하지 않아 답변을 확정하지 않았습니다.",
             final_answer_kind="blocked",
         )
 
@@ -216,6 +286,57 @@ async def plan_tool_requirements(
     return FrozenToolRequirements(requirements=tuple(requirements))
 
 
+async def review_tool_result_adequacy(
+    *,
+    system: str,
+    user_message: str,
+    model: str | None,
+    requirements: FrozenToolRequirements,
+    tool_history: list[dict[str, Any]],
+) -> ToolResultAdequacy:
+    response_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "adequate": {"type": "boolean"},
+            "missing_aspects": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 8,
+            },
+        },
+        "required": ["adequate", "missing_aspects"],
+        "additionalProperties": False,
+    }
+    payload = {
+        "user_request": user_message,
+        "frozen_requirements": [_requirement_payload(item) for item in requirements.requirements],
+        "successful_tool_results": _successful_tool_result_payloads(tool_history),
+    }
+    try:
+        raw = await ollama_chat(
+            system=f"{system}\n\n{_RESULT_ADEQUACY_INSTRUCTION}",
+            user=json.dumps(payload, ensure_ascii=False),
+            model=model,
+            response_format=response_schema,
+        )
+    except ValueError as exc:
+        raise ModelRequestError(str(exc)) from exc
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Tool result adequacy review must be valid JSON: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("adequate"), bool):
+        raise RuntimeError("Tool result adequacy review must contain boolean adequate.")
+    missing = data.get("missing_aspects")
+    if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
+        raise RuntimeError("Tool result adequacy review missing_aspects must be a list of strings.")
+    cleaned = tuple(dict.fromkeys(item.strip() for item in missing if item.strip()))
+    if data["adequate"] is False and not cleaned:
+        raise RuntimeError("Inadequate tool result review must explain at least one missing aspect.")
+    return ToolResultAdequacy(adequate=data["adequate"], missing_aspects=cleaned)
+
+
 def missing_required_capabilities(
     requirements: FrozenToolRequirements,
     tool_history: list[dict[str, Any]],
@@ -232,6 +353,14 @@ def missing_required_capabilities(
     ]
 
 
+def _successful_tool_result_payloads(tool_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        _compact_tool_history_event(event)
+        for event in tool_history
+        if _event_succeeded(event)
+    ]
+
+
 def _event_succeeded(event: dict[str, Any]) -> bool:
     result = event.get("result")
     if not isinstance(result, dict):
@@ -244,6 +373,7 @@ def _event_succeeded(event: dict[str, Any]) -> bool:
         "execution_guard",
         "evidence_grounding_guard",
         "tool_requirement_guard",
+        "tool_result_adequacy_guard",
         "autonomy_guard",
         "file_text_activation",
     }
@@ -277,3 +407,14 @@ def _debug_missing_requirements(missing: list[ToolRequirement]) -> None:
         for item in missing
     )
     print(f"[MK4 requirement] unmet={text}", file=sys.stderr, flush=True)
+
+
+def _debug_adequacy(adequacy: ToolResultAdequacy) -> None:
+    if not config.AGENT_DEBUG_LOG:
+        return
+    missing = " | ".join(adequacy.missing_aspects) if adequacy.missing_aspects else "none"
+    print(
+        f"[MK4 adequacy] adequate={str(adequacy.adequate).lower()} missing={missing}",
+        file=sys.stderr,
+        flush=True,
+    )
