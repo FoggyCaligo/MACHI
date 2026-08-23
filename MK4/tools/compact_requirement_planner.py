@@ -53,7 +53,7 @@ async def plan_compact_tool_requirements(
     payload = {
         "user_request": user_message,
         "current_date": current_date or datetime.now().astimezone().date().isoformat(),
-        "tools": requirement_tool_catalog(tool_definitions),
+        "tool_catalog": requirement_tool_catalog(tool_definitions),
     }
     try:
         raw = await ollama_chat(
