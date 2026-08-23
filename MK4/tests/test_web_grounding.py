@@ -79,6 +79,7 @@ def _market_snapshot_history() -> list[dict[str, Any]]:
 def _grounded_response() -> str:
     return json.dumps({
         "grounded": True,
+        "task_aligned": True,
         "missing_aspects": [],
     }, ensure_ascii=False)
 
@@ -86,6 +87,7 @@ def _grounded_response() -> str:
 def _ungrounded_response(*missing: str) -> str:
     return json.dumps({
         "grounded": False,
+        "task_aligned": True,
         "missing_aspects": list(missing),
     }, ensure_ascii=False)
 
@@ -127,7 +129,7 @@ async def test_grounding_reviewer_reports_missing_evidence_then_agent_chooses_to
 
     assert turn.tool_calls == [ToolCall(tool="market_snapshot", arguments={"query": "삼성전자"})]
     assert "tool_catalog" not in captured["payload"]
-    assert set(captured["schema"]["properties"]) == {"grounded", "missing_aspects"}
+    assert set(captured["schema"]["properties"]) == {"grounded", "task_aligned", "missing_aspects"}
     assert "cannot call tools" in captured["system"].lower()
     assert "rewrite the answer" in captured["system"].lower()
 
@@ -292,6 +294,7 @@ async def test_grounding_contract_failure_is_visible(monkeypatch) -> None:
     async def fake_review(*, system, user, model, response_format):
         return json.dumps({
             "grounded": False,
+            "task_aligned": True,
             "missing_aspects": [],
         })
 
