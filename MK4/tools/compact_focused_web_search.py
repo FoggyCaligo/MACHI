@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import sys
 from typing import Any
 
+from .. import config
 from .focused_web_search import FocusedWebSearchTool
 
 
@@ -16,6 +19,7 @@ class CompactFocusedWebSearchTool(FocusedWebSearchTool):
 
     async def _run_research(self, arguments: dict[str, Any]) -> dict[str, Any]:
         result = await super()._run_research(arguments)
+        before_chars = _payload_chars(result)
         evidence = result.get("evidence")
         if not isinstance(evidence, list):
             return result
@@ -37,6 +41,7 @@ class CompactFocusedWebSearchTool(FocusedWebSearchTool):
                 for item in search_results
             ]
         result["evidence"] = compact_evidence
+        _debug_payload_compaction(before_chars=before_chars, after_chars=_payload_chars(result))
         return result
 
 
@@ -88,3 +93,18 @@ def _deduplicate_search_result(item: object, *, evidence_urls: set[str]) -> obje
 
 def _normalize_text(text: str) -> str:
     return " ".join(text.split())
+
+
+def _payload_chars(payload: object) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+
+def _debug_payload_compaction(*, before_chars: int, after_chars: int) -> None:
+    if not config.AGENT_DEBUG_LOG:
+        return
+    print(
+        "[MK4 web] research_payload_chars "
+        f"before={before_chars} after={after_chars} saved={max(0, before_chars - after_chars)}",
+        file=sys.stderr,
+        flush=True,
+    )
