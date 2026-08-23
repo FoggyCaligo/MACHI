@@ -47,7 +47,7 @@ SENTENCE_BREAKER_DB_PATH = Path(
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").strip()
 OLLAMA_MODEL_NAME = os.getenv(
     "MK4_OLLAMA_MODEL_NAME",
-    os.getenv("OLLAMA_MODEL_NAME", "qwen3:8b"),
+    os.getenv("OLLAMA_MODEL_NAME", "gemma4:e4b"),
 ).strip()
 OLLAMA_IMAGE_MODEL_NAME = os.getenv("MK4_OLLAMA_IMAGE_MODEL_NAME", "gemma4:12b").strip()
 OLLAMA_IMAGE_FALLBACK_MODEL_NAME = os.getenv("MK4_OLLAMA_IMAGE_FALLBACK_MODEL_NAME", "gemma4:12b").strip()
