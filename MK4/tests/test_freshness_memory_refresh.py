@@ -48,6 +48,7 @@ async def test_concept_answer_with_memory_backed_current_value_requires_refresh(
         assert payload["successful_external_tools"] == []
         return json.dumps({
             "grounded": False,
+            "task_aligned": True,
             "missing_aspects": ["삼성전자의 현재 PER을 뒷받침하는 현재 근거"],
         }, ensure_ascii=False)
 
@@ -104,6 +105,7 @@ async def test_pure_concept_answer_still_needs_no_external_tool(monkeypatch) -> 
         assert payload["proposed_response"] == answer
         return json.dumps({
             "grounded": True,
+            "task_aligned": True,
             "missing_aspects": [],
         }, ensure_ascii=False)
 
