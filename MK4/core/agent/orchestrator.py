@@ -1067,7 +1067,7 @@ def _file_execution_guard_result(
     if _has_terminal_filesystem_change_without_verification(tool_history):
         return {
             "ok": False,
-            "error": "terminal_change_not_verified",
+            "error": "terminal_filesystem_change_not_verified",
             "message": (
                 "terminal_command changed state. Verify the resulting state before completion. "
                 "Use a successful file read/check when appropriate, or run a separate terminal_command with verification=true. "
@@ -1078,10 +1078,27 @@ def _file_execution_guard_result(
     return None
 
 
+def _latest_substantive_tool_event(tool_history: list[dict]) -> dict | None:
+    internal_tools = {
+        "execution_guard",
+        "evidence_grounding_guard",
+        "tool_requirement_guard",
+        "tool_result_adequacy_guard",
+        "autonomy_guard",
+        "file_text_activation",
+    }
+    for event in reversed(tool_history):
+        if event.get("tool") in internal_tools:
+            continue
+        return event
+    return None
+
+
 def _empty_turn_after_tool_guard_result(*, tool_history: list[dict]) -> dict:
-    latest_tool = tool_history[-1].get("tool") if tool_history else None
-    latest_result = tool_history[-1].get("result") if tool_history else None
-    if not tool_history:
+    latest_event = _latest_substantive_tool_event(tool_history)
+    latest_tool = latest_event.get("tool") if latest_event is not None else None
+    latest_result = latest_event.get("result") if latest_event is not None else None
+    if latest_event is None:
         return {
             "ok": False,
             "error": "empty_initial_turn",

@@ -7,6 +7,7 @@ import pytest
 from MK4.core.agent.orchestrator import AgentOrchestrator, _final_answer_evidence_guard_result
 from MK4.core.graph.repository import GraphRepository
 from MK4.core.graph.service import GraphMemoryService
+from MK4.tools.autonomy_tools import AutonomyChatModel
 from MK4.tools.graph_tools import GraphToolSuite
 from MK4.tools.document_tools import DocumentReadToolSuite
 from MK4.tools.llm_client import ModelTurn
@@ -753,8 +754,8 @@ class LocalToolBlockedThenTerminalModel:
         if any(event.get("tool") == "terminal_command" for event in tool_history):
             return ModelTurn(final_answer="커밋 목록을 확인했습니다.")
         if any(
-            event.get("tool") == "execution_guard"
-            and event.get("result", {}).get("error") == "local_tool_blocked_without_attempt"
+            event.get("tool") == "autonomy_guard"
+            and event.get("result", {}).get("error") == "blocked_without_tool_failure"
             for event in tool_history
         ):
             self.saw_blocked_guard = True
@@ -1504,7 +1505,8 @@ async def test_orchestrator_rejects_local_tool_blocked_before_terminal_attempt(t
     repo = GraphRepository(":memory:")
     memory = GraphMemoryService(repo)
     graph_tools = GraphToolSuite(memory)
-    chat_model = LocalToolBlockedThenTerminalModel()
+    base_chat_model = LocalToolBlockedThenTerminalModel()
+    chat_model = AutonomyChatModel(base_chat_model)
     orchestrator = AgentOrchestrator(
         memory_service=memory,
         graph_tools=graph_tools,
@@ -1521,7 +1523,7 @@ async def test_orchestrator_rejects_local_tool_blocked_before_terminal_attempt(t
     )
 
     assert result.text == "커밋 목록을 확인했습니다."
-    assert chat_model.saw_blocked_guard is True
+    assert base_chat_model.saw_blocked_guard is True
     assert any(event["tool"] == "terminal_command" for event in result.tool_events)
     repo.close()
 
@@ -2021,4 +2023,3 @@ async def test_orchestrator_runs_final_synthesis_after_identical_tool_loop_stagn
     assert chat_model.synthesis_called is True
     assert result.text == "수집한 결과를 종합했습니다."
     repo.close()
-
