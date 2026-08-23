@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 import json
 import sys
@@ -55,6 +55,14 @@ _ACTIVE_REQUIREMENTS: ContextVar[FrozenToolRequirements | None] = ContextVar(
     "mk4_active_tool_requirements",
     default=None,
 )
+
+
+def start_tool_requirement_scope() -> Token[FrozenToolRequirements | None]:
+    return _ACTIVE_REQUIREMENTS.set(None)
+
+
+def reset_tool_requirement_scope(token: Token[FrozenToolRequirements | None]) -> None:
+    _ACTIVE_REQUIREMENTS.reset(token)
 
 
 class ToolRequirementGuardChatModel:
@@ -123,8 +131,6 @@ class ToolRequirementGuardChatModel:
             tool_history=retry_history,
         )
         if retry.tool_calls or not retry.final_answer or retry.final_answer_kind == "blocked":
-            return retry
-        if not missing_required_capabilities(requirements, tool_history):
             return retry
         return ModelTurn(
             final_answer="필요한 도구 실행이 완료되지 않아 이 요청의 답변을 확정하지 않았습니다.",
