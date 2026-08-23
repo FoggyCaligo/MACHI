@@ -218,21 +218,47 @@ async def test_recall_memory_result_appears_only_in_tool_history(monkeypatch) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "nested_message",
-    [
-        json.dumps({"content": "안녕하세요"}, ensure_ascii=False),
-        json.dumps(["안녕하세요"], ensure_ascii=False),
-    ],
-)
-async def test_nested_structured_message_is_visible_contract_failure(monkeypatch, nested_message: str) -> None:
+@pytest.mark.parametrize("wrapper_key", ["content", "text", "response"])
+async def test_single_string_field_nested_object_is_unwrapped(monkeypatch, wrapper_key: str) -> None:
+    nested_message = json.dumps({wrapper_key: "안녕하세요"}, ensure_ascii=False)
+
     async def fake_chat(*, system, user, model, response_format):
         return _light_response(nested_message)
 
     monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
     token = start_tool_requirement_scope()
     try:
-        with pytest.raises(ModelOutputParseError, match="nested JSON object or array"):
+        turn = await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+            system="system",
+            user_message="안녕?",
+            model=None,
+            memory_summary=[],
+            tool_definitions=[],
+            tool_history=[],
+        )
+    finally:
+        reset_tool_requirement_scope(token)
+
+    assert turn.final_answer == "안녕하세요"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "nested_message",
+    [
+        json.dumps({"content": "안녕하세요", "meta": "extra"}, ensure_ascii=False),
+        json.dumps({"content": {"text": "안녕하세요"}}, ensure_ascii=False),
+        json.dumps(["안녕하세요"], ensure_ascii=False),
+    ],
+)
+async def test_ambiguous_nested_structured_message_is_contract_failure(monkeypatch, nested_message: str) -> None:
+    async def fake_chat(*, system, user, model, response_format):
+        return _light_response(nested_message)
+
+    monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
+    token = start_tool_requirement_scope()
+    try:
+        with pytest.raises(ModelOutputParseError, match="ambiguous"):
             await AutomaticMemoryContextOllamaToolChatModel().next_turn(
                 system="system",
                 user_message="안녕?",

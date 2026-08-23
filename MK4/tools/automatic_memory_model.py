@@ -120,8 +120,6 @@ def _parse_lightweight_turn(raw: str) -> ModelTurn:
     message = data.get("message")
     if message is not None and not isinstance(message, str):
         raise ModelOutputParseError("message must be string or null.")
-    if isinstance(message, str):
-        _reject_nested_structured_message(message)
     tool_calls_raw = data.get("tool_calls")
     if not isinstance(tool_calls_raw, list):
         raise ModelOutputParseError("tool_calls must be a list.")
@@ -138,22 +136,31 @@ def _parse_lightweight_turn(raw: str) -> ModelTurn:
             raise ModelOutputParseError(f"tool_calls[{idx}].arguments must be an object.")
         tool_calls.append(ToolCall(tool=tool.strip(), arguments=arguments))
 
-    cleaned_message = message.strip() if isinstance(message, str) else None
+    cleaned_message = _normalize_message_text(message) if isinstance(message, str) else None
     return ModelTurn(final_answer=cleaned_message or None, tool_calls=tool_calls)
 
 
-def _reject_nested_structured_message(message: str) -> None:
+def _normalize_message_text(message: str) -> str:
     stripped = message.strip()
     if not stripped:
-        return
+        return ""
     try:
         nested = json.loads(stripped)
     except json.JSONDecodeError:
-        return
-    if isinstance(nested, (dict, list)):
+        return stripped
+
+    if isinstance(nested, dict):
+        values = list(nested.values())
+        if len(values) == 1 and isinstance(values[0], str) and values[0].strip():
+            return values[0].strip()
         raise ModelOutputParseError(
-            "message must be plain response text, not a nested JSON object or array."
+            "message nested JSON object is ambiguous and cannot be reduced to one response string."
         )
+    if isinstance(nested, list):
+        raise ModelOutputParseError(
+            "message nested JSON array is ambiguous and cannot be reduced to one response string."
+        )
+    return stripped
 
 
 def _manual_for_incomplete_tool_calls(
