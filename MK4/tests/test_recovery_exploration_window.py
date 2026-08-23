@@ -78,7 +78,7 @@ async def test_satisfied_recovery_requirement_keeps_cycle_open_for_more_tool_cal
         adequacy_calls += 1
         return ToolResultAdequacy(adequate=True, missing_aspects=())
 
-    monkeypatch.setattr(adequacy_recovery_window, "review_tool_result_adequacy", fake_adequacy)
+    monkeypatch.setattr(adequacy_recovery_window, "review_relaxed_recovery_adequacy", fake_adequacy)
 
     second_search = ToolCall(
         tool="web_research",
@@ -154,7 +154,7 @@ async def test_multiple_tool_calls_in_one_cycle_do_not_consume_additional_recove
         adequacy_calls += 1
         return ToolResultAdequacy(adequate=True, missing_aspects=())
 
-    monkeypatch.setattr(adequacy_recovery_window, "review_tool_result_adequacy", fake_adequacy)
+    monkeypatch.setattr(adequacy_recovery_window, "review_relaxed_recovery_adequacy", fake_adequacy)
 
     third_search = ToolCall(
         tool="web_research",
