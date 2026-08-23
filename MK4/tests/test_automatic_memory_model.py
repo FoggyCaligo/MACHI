@@ -7,6 +7,13 @@ import pytest
 from MK4.tools import automatic_memory_model
 from MK4.tools.account_authorization import reset_account_role, set_account_role
 from MK4.tools.automatic_memory_model import AutomaticMemoryContextOllamaToolChatModel
+from MK4.tools.tool_requirements import (
+    FrozenToolRequirements,
+    ToolEvaluation,
+    freeze_tool_requirements,
+    reset_tool_requirement_scope,
+    start_tool_requirement_scope,
+)
 from MK4.tools.tool_runtime import ToolDefinition
 
 
@@ -30,23 +37,30 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
         input_schema={"type": "object"},
     )
 
-    turn = await AutomaticMemoryContextOllamaToolChatModel().next_turn(
-        system="system",
-        user_message="what do you remember?",
-        model=None,
-        memory_summary=["automatic node"],
-        tool_definitions=[definition],
-        tool_history=[],
-    )
+    token = start_tool_requirement_scope()
+    try:
+        turn = await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+            system="system",
+            user_message="what do you remember?",
+            model=None,
+            memory_summary=["automatic node"],
+            tool_definitions=[definition],
+            tool_history=[],
+        )
+    finally:
+        reset_tool_requirement_scope(token)
 
     payload = json.loads(str(captured["user"]))
     assert list(payload) == [
         "user_message",
         "authorization_context",
+        "frozen_tool_requirements",
         "automatic_memory_context",
         "tool_catalog",
         "tool_history",
     ]
+    assert payload["frozen_tool_requirements"]["required_tools"] == []
+    assert "does not satisfy an explicit tool requirement" in payload["frozen_tool_requirements"]["contract"]
     context = payload["automatic_memory_context"]
     assert context["source"] == "automatic_graph_activation"
     assert context["scope"] == "partial"
@@ -65,6 +79,41 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_frozen_required_tools_are_visible_even_when_automatic_memory_has_answer(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_chat(*, system, user, model, response_format):
+        captured["user"] = user
+        return _light_response()
+
+    monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
+    token = start_tool_requirement_scope()
+    try:
+        freeze_tool_requirements(FrozenToolRequirements(
+            evaluations=(ToolEvaluation(tool="recall_memory", required=True),),
+        ))
+        await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+            system="system",
+            user_message="전에 추천한 SF 책 뭐였지?",
+            model=None,
+            memory_summary=["추천했던 책은 A와 B였다."],
+            tool_definitions=[ToolDefinition(
+                name="recall_memory",
+                description="Recall persistent memory.",
+                input_schema={"type": "object"},
+            )],
+            tool_history=[],
+        )
+    finally:
+        reset_tool_requirement_scope(token)
+
+    payload = json.loads(str(captured["user"]))
+    assert payload["frozen_tool_requirements"]["required_tools"] == ["recall_memory"]
+    assert payload["automatic_memory_context"]["items"] == ["추천했던 책은 A와 B였다."]
+    assert payload["automatic_memory_context"]["is_tool_result"] is False
+
+
+@pytest.mark.asyncio
 async def test_owner_authorization_context_is_explicit_in_payload(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -73,7 +122,8 @@ async def test_owner_authorization_context_is_explicit_in_payload(monkeypatch) -
         return _light_response()
 
     monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
-    token = set_account_role("owner")
+    role_token = set_account_role("owner")
+    requirement_token = start_tool_requirement_scope()
     try:
         await AutomaticMemoryContextOllamaToolChatModel().next_turn(
             system="system",
@@ -84,7 +134,8 @@ async def test_owner_authorization_context_is_explicit_in_payload(monkeypatch) -
             tool_history=[],
         )
     finally:
-        reset_account_role(token)
+        reset_tool_requirement_scope(requirement_token)
+        reset_account_role(role_token)
 
     payload = json.loads(str(captured["user"]))
     authorization = payload["authorization_context"]
@@ -105,19 +156,22 @@ async def test_recall_memory_result_appears_only_in_tool_history(monkeypatch) ->
         return _light_response()
 
     monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
-
-    await AutomaticMemoryContextOllamaToolChatModel().next_turn(
-        system="system",
-        user_message="remember more",
-        model=None,
-        memory_summary=["automatic node"],
-        tool_definitions=[],
-        tool_history=[{
-            "tool": "recall_memory",
-            "arguments": {},
-            "result": {"ok": True, "mode": "browse", "results": []},
-        }],
-    )
+    token = start_tool_requirement_scope()
+    try:
+        await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+            system="system",
+            user_message="remember more",
+            model=None,
+            memory_summary=["automatic node"],
+            tool_definitions=[],
+            tool_history=[{
+                "tool": "recall_memory",
+                "arguments": {},
+                "result": {"ok": True, "mode": "browse", "results": []},
+            }],
+        )
+    finally:
+        reset_tool_requirement_scope(token)
 
     payload = json.loads(str(captured["user"]))
     assert payload["automatic_memory_context"]["is_tool_result"] is False
