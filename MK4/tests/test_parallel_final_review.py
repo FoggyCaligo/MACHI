@@ -45,7 +45,7 @@ async def test_outer_grounding_reuses_precomputed_parallel_review(monkeypatch) -
     try:
         store_precomputed_grounding_review(
             proposed_response="cached final",
-            review=GroundingReview(grounded=True, missing_aspects=()),
+            review=GroundingReview(grounded=True, task_aligned=True, missing_aspects=()),
         )
         guarded = EvidenceGroundingChatModel(FinalChatModel())
         turn = await guarded.next_turn(
