@@ -29,6 +29,11 @@ from ..tools.scratchpad_tools import (
     start_request_scratchpad,
 )
 from ..tools.terminal_tools import TerminalToolSuite
+from ..tools.tool_requirements import (
+    ToolRequirementGuardChatModel,
+    reset_tool_requirement_scope,
+    start_tool_requirement_scope,
+)
 from ..tools.tool_runtime import (
     get_file_working_root,
     reset_file_task_message,
@@ -76,7 +81,11 @@ class Pipeline:
         self._assistant_memory = AssistantMemoryRecorder(self._graph_repo)
         self._tools = GraphToolSuite(self._memory)
         base_chat_model = AccountAuthorizationChatModel(
-            ModelToolNameAdapter(chat_model or AutomaticMemoryContextOllamaToolChatModel())
+            ModelToolNameAdapter(
+                ToolRequirementGuardChatModel(
+                    chat_model or AutomaticMemoryContextOllamaToolChatModel()
+                )
+            )
         )
         self._chat_model = EvidenceGroundingChatModel(AutonomyChatModel(base_chat_model))
         self._web_search = web_search or HttpWebSearchTool()
@@ -114,6 +123,7 @@ class Pipeline:
         root_token = set_file_working_root(self._file_working_roots.get(conversation_key, "."))
         task_tokens = set_file_task_message(message)
         scratchpad_token = start_request_scratchpad()
+        requirement_token = start_tool_requirement_scope()
         account_role_token = set_account_role(account_role)
         try:
             result = await self._orchestrator.respond(
@@ -131,6 +141,7 @@ class Pipeline:
             self._file_working_roots[conversation_key] = get_file_working_root()
         finally:
             reset_account_role(account_role_token)
+            reset_tool_requirement_scope(requirement_token)
             reset_request_scratchpad(scratchpad_token)
             reset_file_task_message(task_tokens)
             reset_file_working_root(root_token)
