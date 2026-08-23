@@ -16,15 +16,17 @@ from .tool_runtime import ToolDefinition
 async def plan_and_freeze_before_memory(
     *,
     user_message: str,
+    recent_dialogue_pairs: list[dict[str, str]],
     model: str | None,
     tool_definitions: list[ToolDefinition],
 ) -> FrozenToolRequirements:
-    """Plan exact required tool executions from only the current user input, then freeze them."""
+    """Plan exact required tool executions from recent dialogue plus the current user input, then freeze them."""
     model_definitions = model_facing_definitions(tool_definitions)
     started = perf_counter()
     try:
         requirements = await plan_compact_tool_requirements(
             user_message=user_message,
+            recent_dialogue_pairs=recent_dialogue_pairs,
             model=model,
             tool_definitions=model_definitions,
         )
