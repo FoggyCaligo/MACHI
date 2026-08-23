@@ -65,7 +65,7 @@ Fix the actual problem before producing a new answer: use exposed tools when evi
 @dataclass(frozen=True, slots=True)
 class GroundingReview:
     grounded: bool
-    task_aligned: bool
+    task_aligned: bool = True
     missing_aspects: tuple[str, ...] = ()
 
 
