@@ -3,15 +3,19 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import asdict
+from html.parser import HTMLParser
 from typing import Any
 
 from .tool_runtime import ToolDefinition, ToolRegistry
 from .web_search import (
     HttpWebSearchTool,
     SearchHit,
+    _MAX_PAGE_CHARS,
     _clean_domains,
     _ddg_search,
     _error_summary,
+    _fetch_public_page,
+    _focused_passages,
     _objective_terms,
     _rank_research_results,
     _wiki_search,
@@ -19,6 +23,143 @@ from .web_search import (
 
 
 _LANGUAGE_RE = re.compile(r"^[a-z][a-z0-9-]{1,11}$")
+
+
+class _FocusedReadableHtmlParser(HTMLParser):
+    """Extract readable page text using HTML structure rather than text heuristics.
+
+    Semantic ``main`` content has highest priority, then ``article`` content, then
+    the broad readable-text fallback. Explicit non-content regions such as
+    navigation, footers and sidebars are ignored at every level.
+    """
+
+    _SKIP_TAGS = {
+        "script",
+        "style",
+        "noscript",
+        "svg",
+        "canvas",
+        "template",
+        "nav",
+        "footer",
+        "aside",
+        "form",
+        "dialog",
+        "menu",
+        "iframe",
+    }
+    _BLOCK_TAGS = {
+        "article",
+        "blockquote",
+        "br",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "figcaption",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "li",
+        "main",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "td",
+        "th",
+        "tr",
+        "ul",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self._main_depth = 0
+        self._article_depth = 0
+        self._in_title = False
+        self._title_parts: list[str] = []
+        self._fallback_parts: list[str] = []
+        self._main_parts: list[str] = []
+        self._article_parts: list[str] = []
+
+    @property
+    def title(self) -> str:
+        return " ".join(" ".join(self._title_parts).split())
+
+    def _append_boundary(self) -> None:
+        self._fallback_parts.append("\n")
+        if self._main_depth > 0:
+            self._main_parts.append("\n")
+        if self._article_depth > 0:
+            self._article_parts.append("\n")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lowered = tag.lower()
+        if lowered == "title":
+            self._in_title = True
+
+        if lowered in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if self._skip_depth > 0:
+            return
+
+        if lowered == "main":
+            self._main_depth += 1
+        if lowered == "article":
+            self._article_depth += 1
+        if lowered in self._BLOCK_TAGS:
+            self._append_boundary()
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.lower()
+        if lowered == "title":
+            self._in_title = False
+
+        if lowered in self._SKIP_TAGS:
+            if self._skip_depth > 0:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth > 0:
+            return
+
+        if lowered in self._BLOCK_TAGS:
+            self._append_boundary()
+        if lowered == "main" and self._main_depth > 0:
+            self._main_depth -= 1
+        if lowered == "article" and self._article_depth > 0:
+            self._article_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self._title_parts.append(data)
+        if self._skip_depth > 0:
+            return
+        self._fallback_parts.append(data)
+        if self._main_depth > 0:
+            self._main_parts.append(data)
+        if self._article_depth > 0:
+            self._article_parts.append(data)
+
+    @staticmethod
+    def _normalize(parts: list[str]) -> str:
+        lines = [" ".join(line.split()) for line in "".join(parts).splitlines()]
+        return "\n".join(line for line in lines if line)
+
+    def text(self) -> str:
+        main = self._normalize(self._main_parts)
+        if main:
+            return main
+        article = self._normalize(self._article_parts)
+        if article:
+            return article
+        return self._normalize(self._fallback_parts)
 
 
 class FocusedWebSearchTool(HttpWebSearchTool):
@@ -76,6 +217,30 @@ class FocusedWebSearchTool(HttpWebSearchTool):
             self._run_research,
         )
         return registry
+
+    async def _run_page_read(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        url = str(arguments.get("url") or "").strip()
+        if not url:
+            raise ValueError("web_page_read requires url")
+        focus = [
+            str(item).strip()
+            for item in arguments.get("focus", [])
+            if str(item).strip()
+        ][:8]
+        final_url, content_type, html = await _fetch_public_page(url)
+        parser = _FocusedReadableHtmlParser()
+        parser.feed(html)
+        content = parser.text()
+        return {
+            "ok": True,
+            "url": final_url,
+            "title": parser.title,
+            "content_type": content_type,
+            "focus": focus,
+            "matched_sections": _focused_passages(content, focus),
+            "content": content[:_MAX_PAGE_CHARS],
+            "truncated": len(content) > _MAX_PAGE_CHARS,
+        }
 
     async def _research_search_with_diagnostics(
         self,
