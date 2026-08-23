@@ -38,7 +38,7 @@ def test_terminal_filesystem_change_requires_verification() -> None:
     )
 
     assert guard is not None
-    assert guard["error"] == "terminal_change_not_verified"
+    assert guard["error"] == "terminal_filesystem_change_not_verified"
 
 
 def test_declared_external_state_change_requires_verification() -> None:
@@ -48,7 +48,7 @@ def test_declared_external_state_change_requires_verification() -> None:
     )
 
     assert guard is not None
-    assert guard["error"] == "terminal_change_not_verified"
+    assert guard["error"] == "terminal_filesystem_change_not_verified"
 
 
 def test_read_only_terminal_verification_satisfies_guard() -> None:
@@ -73,7 +73,7 @@ def test_mutating_terminal_verification_does_not_satisfy_guard() -> None:
     )
 
     assert guard is not None
-    assert guard["error"] == "terminal_change_not_verified"
+    assert guard["error"] == "terminal_filesystem_change_not_verified"
 
 
 def test_failed_terminal_verification_does_not_satisfy_guard() -> None:
@@ -86,7 +86,7 @@ def test_failed_terminal_verification_does_not_satisfy_guard() -> None:
     )
 
     assert guard is not None
-    assert guard["error"] == "terminal_change_not_verified"
+    assert guard["error"] == "terminal_filesystem_change_not_verified"
 
 
 def test_terminal_command_exposes_structured_change_and_verification_flags() -> None:
