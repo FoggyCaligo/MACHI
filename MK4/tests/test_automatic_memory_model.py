@@ -10,18 +10,18 @@ from MK4.tools.automatic_memory_model import AutomaticMemoryContextOllamaToolCha
 from MK4.tools.tool_runtime import ToolDefinition
 
 
+def _light_response(message: str = "ok") -> str:
+    return json.dumps({"message": message, "tool_calls": []})
+
+
 @pytest.mark.asyncio
 async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     async def fake_chat(*, system, user, model, response_format):
         captured["user"] = user
-        return json.dumps({
-            "final_answer": "ok",
-            "tool_calls": [],
-            "final_answer_kind": "answer",
-            "completion_tools": [],
-        })
+        captured["response_format"] = response_format
+        return _light_response()
 
     monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
     definition = ToolDefinition(
@@ -30,7 +30,7 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
         input_schema={"type": "object"},
     )
 
-    await AutomaticMemoryContextOllamaToolChatModel().next_turn(
+    turn = await AutomaticMemoryContextOllamaToolChatModel().next_turn(
         system="system",
         user_message="what do you remember?",
         model=None,
@@ -47,7 +47,6 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
         "tool_catalog",
         "tool_history",
     ]
-    assert "tools" not in payload
     context = payload["automatic_memory_context"]
     assert context["source"] == "automatic_graph_activation"
     assert context["scope"] == "partial"
@@ -55,6 +54,14 @@ async def test_automatic_memory_is_separate_from_tool_history(monkeypatch) -> No
     assert context["items"] == ["automatic node"]
     assert payload["tool_catalog"][0]["name"] == "recall_memory"
     assert payload["tool_history"] == []
+    assert turn.final_answer == "ok"
+
+    response_schema = captured["response_format"]
+    assert set(response_schema["properties"]) == {"message", "tool_calls"}
+    assert response_schema["required"] == ["message", "tool_calls"]
+    assert "final_answer" not in response_schema["properties"]
+    assert "final_answer_kind" not in response_schema["properties"]
+    assert "completion_tools" not in response_schema["properties"]
 
 
 @pytest.mark.asyncio
@@ -63,12 +70,7 @@ async def test_owner_authorization_context_is_explicit_in_payload(monkeypatch) -
 
     async def fake_chat(*, system, user, model, response_format):
         captured["user"] = user
-        return json.dumps({
-            "final_answer": "ok",
-            "tool_calls": [],
-            "final_answer_kind": "answer",
-            "completion_tools": [],
-        })
+        return _light_response()
 
     monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
     token = set_account_role("owner")
@@ -100,12 +102,7 @@ async def test_recall_memory_result_appears_only_in_tool_history(monkeypatch) ->
 
     async def fake_chat(*, system, user, model, response_format):
         captured["user"] = user
-        return json.dumps({
-            "final_answer": "ok",
-            "tool_calls": [],
-            "final_answer_kind": "answer",
-            "completion_tools": [],
-        })
+        return _light_response()
 
     monkeypatch.setattr(automatic_memory_model, "ollama_chat", fake_chat)
 
