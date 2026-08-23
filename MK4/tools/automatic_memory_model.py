@@ -120,6 +120,8 @@ def _parse_lightweight_turn(raw: str) -> ModelTurn:
     message = data.get("message")
     if message is not None and not isinstance(message, str):
         raise ModelOutputParseError("message must be string or null.")
+    if isinstance(message, str):
+        _reject_nested_structured_message(message)
     tool_calls_raw = data.get("tool_calls")
     if not isinstance(tool_calls_raw, list):
         raise ModelOutputParseError("tool_calls must be a list.")
@@ -138,6 +140,20 @@ def _parse_lightweight_turn(raw: str) -> ModelTurn:
 
     cleaned_message = message.strip() if isinstance(message, str) else None
     return ModelTurn(final_answer=cleaned_message or None, tool_calls=tool_calls)
+
+
+def _reject_nested_structured_message(message: str) -> None:
+    stripped = message.strip()
+    if not stripped:
+        return
+    try:
+        nested = json.loads(stripped)
+    except json.JSONDecodeError:
+        return
+    if isinstance(nested, (dict, list)):
+        raise ModelOutputParseError(
+            "message must be plain response text, not a nested JSON object or array."
+        )
 
 
 def _manual_for_incomplete_tool_calls(
